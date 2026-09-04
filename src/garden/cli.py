@@ -908,6 +908,35 @@ def prs(target: str | None = typer.Argument(None, help="product/phase (default: 
     console.print(table)
 
 
+@app.command("friction-report")
+def friction_report(
+    target: str = typer.Argument(..., help="product/phase"),
+    text: str = typer.Argument(..., help="Friction description"),
+    page: str = typer.Option("cli", help="Page or context where friction was noticed"),
+    no_task: bool = typer.Option(False, help="Only append to friction.md, do not create a draft task"),
+):
+    """File a friction report: appends to <phase>/docs/friction.md and creates a draft task."""
+    import datetime as _dt
+
+    from .friction import append_friction_report, create_friction_draft_task
+
+    store = _store()
+    product, phase_name = _split_target(target)
+    try:
+        ph = store.phase(product, phase_name)
+    except KeyError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    doc = ph.path / "docs" / "friction.md"
+    date = _dt.date.today().isoformat()
+    append_friction_report(doc, text, page, date)
+    console.print(f"appended to {store.rel(doc)}")
+    if not no_task:
+        t = create_friction_draft_task(store, product, phase_name, text, page, date)
+        console.print(f"created draft task {t.id}: {t.title}")
+
+
 @app.command()
 def friction(target: str = typer.Argument(..., help="product/phase")):
     """Collect ## Friction sections from task PR bodies and write <phase>/docs/friction.md."""
