@@ -88,6 +88,7 @@ def test_conftest_fixture_clears_ambient_env(tmp_path):
     )
     try:
         env = dict(os.environ)
+        env.pop("PYTEST_ADDOPTS", None)  # don't let the outer run's flags reselect/deselect the probe
         env["GARDEN_ROOT"] = str(tmp_path / "nonexistent")
         env["GARDEN_EXEC_ROOT"] = str(tmp_path)
         proc = subprocess.run(
