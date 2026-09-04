@@ -415,7 +415,9 @@ class Scheduler:
         st = self.state.get(task.id)
         force = bool(st.pop("force_push", False))
         try:
-            gitops.push(worktree, branch, force=force)
+            note = gitops.push(worktree, branch, force=force, base=base)
+            if note:
+                self.log(f"{task.id}: {note}")
         except gitops.GitError as e:
             self._transition(task, Status.FAILED, f"push failed: {e}{cost}")
             rep.transitions.append(f"{task.id} -> failed (push)")
