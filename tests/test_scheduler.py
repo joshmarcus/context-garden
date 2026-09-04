@@ -289,6 +289,39 @@ def test_max_parallel(sched, garden):
     assert len(rep.dispatched) == 2
 
 
+def test_max_parallel_override_and_clear(sched):
+    from garden.scheduler import State
+
+    assert sched.effective_max_parallel() == 2  # garden.yaml's max_parallel, no override yet
+    assert sched.overrides().get("max_parallel") is None
+    sched.set_override("max_parallel", 7, by="test")
+    assert sched.effective_max_parallel() == 7
+    on_disk = State(sched.state.path).get("_control")
+    assert on_disk["overrides"]["max_parallel"] == 7
+    sched.clear_override("max_parallel", by="test")
+    assert sched.effective_max_parallel() == 2  # back to the garden.yaml value
+    on_disk = State(sched.state.path).get("_control")
+    assert "max_parallel" not in on_disk.get("overrides", {})
+
+
+def test_tick_uses_max_parallel_override(sched, garden):
+    """The override takes effect on the very next tick, no restart, and running workers
+    are never stopped by lowering it (dispatch just skips them until the count drops)."""
+    for t in sched.store.tasks().values():
+        t.depends_on = []
+        sched.store.save(t)
+    for i in range(3, 6):
+        (garden / "demo" / "p1" / "tasks" / f"DM-00{i}.md").write_text(
+            f"---\nid: DM-00{i}\ntitle: t{i}\nstatus: ready\ndepends_on: []\npriority: 3\nreading: []\ncreated: ''\nupdated: ''\n---\n\n## Goal\n\nx\n")
+    sched.set_override("max_parallel", 1)
+    rep = sched.tick()
+    assert len(rep.dispatched) == 1  # override (1) wins over garden.yaml's max_parallel (2)
+    wait_for_runs(sched)
+    sched.clear_override("max_parallel")
+    rep = sched.tick()  # reaps the finished run, then dispatches up to garden.yaml's 2 again
+    assert len(rep.dispatched) == 2
+
+
 def test_no_github_still_pushes(sched, fake_github):
     fake_github.available = False
     sched.tick()
