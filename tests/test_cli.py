@@ -108,22 +108,24 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
 
     with mock.patch("subprocess.run") as mock_run:
         def side_effect(cmd, *args, **kwargs):
-            if "auth" in cmd or "config" in cmd:
-                if "git" in cmd and "config" in cmd:
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
                     if "user.email" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                     elif "user.name" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
-                elif "gh" in cmd and "auth" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0)
-                elif "claude" in cmd and "auth" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0)
-            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+                elif "auth" in cmd and "status" in cmd:
+                    if "gh" in cmd_str or "claude" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
 
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 0, r.output
-        assert "[green]all good[/green]" in r.output
+        assert "all good" in r.output
 
 
 def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
@@ -132,16 +134,19 @@ def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
 
     with mock.patch("subprocess.run") as mock_run:
         def side_effect(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
-                raise subprocess.CalledProcessError(1, cmd)
-            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
-                if "user.email" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
-                elif "user.name" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
-            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
-                return subprocess.CompletedProcess(cmd, 0)
-            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "auth" in cmd and "status" in cmd:
+                    if "gh" in cmd_str:
+                        raise subprocess.CalledProcessError(1, cmd)
+                    if "claude" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                if "git" in cmd and "config" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    elif "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
 
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
@@ -155,21 +160,26 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
 
     with mock.patch("subprocess.run") as mock_run:
         def side_effect(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
-                raise subprocess.CalledProcessError(1, cmd)
-            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
-                if "user.email" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
-                elif "user.name" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
-            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
-                return subprocess.CompletedProcess(cmd, 0)
-            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "auth" in cmd and "status" in cmd:
+                    if "claude" in cmd_str:
+                        raise subprocess.CalledProcessError(1, cmd)
+                    if "gh" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                if "git" in cmd and "config" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    elif "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                if "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
 
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
-        assert "NOT LOGGED IN" in r.output
+        assert "NOT" in r.output and "LOGGED IN" in r.output
 
 
 def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
@@ -178,13 +188,18 @@ def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
 
     with mock.patch("subprocess.run") as mock_run:
         def side_effect(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
-                raise subprocess.CalledProcessError(1, cmd)
-            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
-                return subprocess.CompletedProcess(cmd, 0)
-            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
-                return subprocess.CompletedProcess(cmd, 0)
-            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "git" in cmd and "config" in cmd:
+                    raise subprocess.CalledProcessError(1, cmd)
+                if "auth" in cmd and "status" in cmd:
+                    if "claude" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                    if "gh" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                if "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
 
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")

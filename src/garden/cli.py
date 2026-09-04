@@ -1113,7 +1113,7 @@ def doctor():
     if git_email and git_name:
         console.print(f"git identity: [green]{git_name} <{git_email}>[/green]")
     else:
-        console.print(f"[red]git identity: missing user.name or user.email[/red]")
+        console.print("[red]git identity: missing user.name or user.email[/red]")
         ok = False
     for name in sorted(runner_names):
         try:
