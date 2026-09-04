@@ -55,6 +55,20 @@ REVISE_RULES = """\
 This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain in the PR body why not. Do not start over; build on the existing commits. Reply to each review point in `pr_body` under a "Review responses" heading.
 """
 
+PRE_PR_REVISE_RULES = """\
+## Revision round
+
+The pre-PR check failed (below). Fix the issue, commit the change, and the garden will re-run the check. Do not start over; build on the existing commits.
+"""
+
+COMMITS_AHEAD = """\
+## Already on this branch
+
+The worktree has commits from the prior attempt:
+
+{commits}
+"""
+
 
 @dataclass
 class Brief:
@@ -75,8 +89,8 @@ class Brief:
 
     @property
     def fixed_tokens(self) -> int:
-        """Fixed cost: head + rules + principles + product + goals (+ optional stack/revise)."""
-        fixed_sections = {"head", "rules", "principles", "product", "goals", "stack", "revise", "qa"}
+        """Fixed cost: head + rules + principles + product + goals (+ optional stack/revise/commits_ahead/qa)."""
+        fixed_sections = {"head", "rules", "principles", "product", "goals", "stack", "revise", "commits_ahead", "qa"}
         chars = sum(v for k, v in self.sections.items() if k in fixed_sections)
         return max(1, chars // 4)
 
@@ -109,6 +123,7 @@ def build_brief(
     include_rules: bool = True,
     stack: dict | None = None,
     qa: list[dict] | None = None,
+    commits_ahead: list[str] | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -133,7 +148,13 @@ def build_brief(
         )
         sections.append(("rules", rules))
         if review_feedback:
-            sections.append(("revise", REVISE_RULES.format(pr=task.pr or "(unknown)")))
+            if task.pr:
+                sections.append(("revise", REVISE_RULES.format(pr=task.pr)))
+            else:
+                sections.append(("revise", PRE_PR_REVISE_RULES))
+        if commits_ahead:
+            commits_text = "\n".join(f"- {line}" for line in commits_ahead)
+            sections.append(("commits_ahead", COMMITS_AHEAD.format(commits=commits_text)))
         if stack:
             sections.append(("stack", STACK_NOTE.format(**stack)))
 
