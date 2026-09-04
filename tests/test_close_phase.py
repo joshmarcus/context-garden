@@ -98,6 +98,7 @@ def test_closed_phase_leaves_the_rail_and_joins_the_herbarium(garden):
     home = c.get("/").text
     assert '/phases/demo/p1"' not in home  # no drawer for the closed phase
     assert "Herbarium" in home and "1 closed phase" in home
+    assert "demo has no open phase" in home  # the rail points at planning the next one
 
     page = c.get("/herbarium")
     assert page.status_code == 200
@@ -129,6 +130,30 @@ def test_closed_phase_page_shows_the_closing_header(garden):
     assert "Outcomes" in html and "Artifacts" in html and "Pull requests" in html
     # no working controls
     assert "Approve all drafts" not in html and "Plan phase" not in html and "Run personas" not in html
+
+
+def test_phase_summary_figures():
+    from garden.events import phase_summary
+    from garden.model import Status, Task
+
+    tasks = {
+        "DM-001": Task(path=None, id="DM-001", title="A", status=Status.DONE, pr="https://x/pull/1", difficulty="easy"),
+        "DM-002": Task(path=None, id="DM-002", title="B", status=Status.CANCELLED),
+    }
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
+        {"at": "2026-09-01T11:00:00+00:00", "kind": "review", "task": "DM-001", "verdict": "approve"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "run_finished", "task": "DM-001", "cost_usd": 2.5},
+        {"at": "2026-09-02T10:00:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+    ]
+    s = phase_summary(events, tasks)
+    assert s["first_dispatch"] == "2026-09-01"
+    assert s["tasks_done"] == 1 and s["tasks_total"] == 2 and s["prs_merged"] == 1
+    assert s["avg_lead_hours"] == 24.0
+    assert s["first_pass_rate"] == 1.0
+    assert s["revisions"] == 0
+    assert s["cost_usd"] == 2.5
+    assert s["done_at"]["DM-001"].startswith("2026-09-02")
 
 
 def test_board_and_trellis_default_to_open_phases(garden):
