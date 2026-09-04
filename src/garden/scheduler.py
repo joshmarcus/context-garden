@@ -919,7 +919,16 @@ class Scheduler:
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
         qa = list(st.get("qa") or [])
-        brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa)
+        commits_ahead = None
+        wt_path = worktree_override or self.worktree_for(task)
+        if wt_path.exists() and (feedback or session_id):
+            try:
+                commits_log = gitops.log_summary(wt_path, base, n=20)
+                if commits_log.strip():
+                    commits_ahead = commits_log.strip().split("\n")
+            except gitops.GitError:
+                pass
+        brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
         text = prompt_override or brief.text
         run = self.runs.new_run(task.id, runner.name, mode=mode)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
