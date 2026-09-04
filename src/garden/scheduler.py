@@ -97,7 +97,10 @@ class Scheduler:
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
-        self.github = github if github is not None else GitHub(use_gh=bool(self.cfg.get("github.use_gh", True)))
+        self.github = github if github is not None else GitHub(
+            use_gh=bool(self.cfg.get("github.use_gh", True)),
+            bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
+        )
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)
 

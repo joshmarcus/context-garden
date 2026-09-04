@@ -36,8 +36,21 @@ def test_own_login_comments_count_but_garden_marked_ones_do_not(monkeypatch):
     )
     fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
     bodies = [i["body"] for i in fb.items]
-    assert bodies == ["looks close", "Can you add a screenshot?", "please also update the README"]
+    assert bodies == ["looks close", "Can you add a screenshot?", "please also update the README", "build passed"]
     assert all(GARDEN_MARKER not in b for b in bodies)
+    assert "comment from a bot" in fb.to_markdown()
+
+
+def test_bot_logins_from_config_are_ignored(monkeypatch):
+    gh = GitHub(use_gh=True, bot_logins=["dependabot[bot]"])
+    _stub(
+        monkeypatch, gh, reviews=[], comments=[],
+        issue_comments=[
+            {"user": {"login": "dependabot[bot]"}, "created_at": "2026-09-04T10:00:00Z", "body": "bump"},
+            {"user": {"login": "chatgpt-codex-connector[bot]"}, "created_at": "2026-09-04T10:01:00Z", "body": "P2: select the harness"},
+        ],
+    )
+    assert [i["body"] for i in gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z").items] == ["P2: select the harness"]
 
 
 def test_exclude_logins_and_since_still_apply(monkeypatch):

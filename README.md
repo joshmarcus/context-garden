@@ -349,6 +349,8 @@ github:
   use_gh: true              # gh CLI first, REST with GITHUB_TOKEN otherwise
   draft_pr: true            # PRs open as drafts; your triage marks them ready
   reviewers: []
+  bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
+                            # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
                             # To post garden comments (reviews, verdicts, persona reviews)
                             # under a separate identity (bot) instead of your user login:
                             # - set GITHUB_TOKEN to a fine-grained personal access token or app token
