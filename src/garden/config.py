@@ -28,12 +28,14 @@ DEFAULTS: dict[str, Any] = {
     "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
     "stall": {"enabled": True},   # escalate to a human when revise rounds stop changing the diff
     "budgets": {},                # "<product>/<phase>": usd cap; also products.<name>.budget_usd
+    "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 600},
     "review": {
         "enabled": True,
         "max_rounds": 2,          # automated review rounds per PR
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard
+        "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
     },
     "harnesses": {},
     "ssh": {"hosts": []},

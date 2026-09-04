@@ -23,16 +23,20 @@ from typing import Any
 
 from . import gitops
 from .brief import build_brief, resume_prompt
+from .checks import failures as check_failures
+from .checks import run_checks, to_feedback
 from .events import EventLog
 from .github import GitHub, GitHubError
 from .graph import blockers, ready, stack_parents
 from .harness import DIFFICULTIES
-from .model import Status, Task, now_iso
+from .model import Phase, Status, Task, now_iso
+from .personas import parse_persona, phase_brief, pr_brief, report_markdown, report_path, valid_name
 from .review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from .runner import get_runner
 from .runner.base import Runner
 from .runs import Run, RunStore
 from .store import Store
+from .trials import TrialLog, compare_brief, parse_compare, parse_contender, ranking_markdown
 
 
 @dataclass
@@ -91,6 +95,7 @@ class Scheduler:
         self.runs = RunStore(self.cfg.garden_dir)
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
+        self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self.github = github if github is not None else GitHub(use_gh=bool(self.cfg.get("github.use_gh", True)))
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)
@@ -130,7 +135,17 @@ class Scheduler:
         return gitops.ensure_repo(Path(repo), self.cfg.garden_dir / "repos")
 
     def worktree_for(self, task: Task) -> Path:
+        override = self.state.get(task.id).get("worktree")
+        if override:
+            return Path(override)
         return self.cfg.garden_dir / "worktrees" / task.id
+
+    def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
+        st = self.state.get(task.id)
+        return {"root": str(self.store.root), "task_id": task.id, "product": task.product, "phase": task.phase, "branch": branch, "base": base,
+                "repo_slug": self.slug_for(task) or "", "pr": task.pr, "pr_number": st.get("pr_number") or 0,
+                "head_sha": st.get("head_sha") or "", "failed_checks": st.get("failed_checks") or [],
+                "worktree": str(worktree or self.worktree_for(task))}
 
     def base_for(self, task: Task) -> str:
         """The branch this task's PR currently targets (a stack parent's branch, or the product base)."""
@@ -201,9 +216,17 @@ class Scheduler:
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         self.store.invalidate()
+        try:
+            self.reap_aux(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"aux reap failed: {e}")
         tasks = self.store.tasks()
         for t in list(tasks.values()):
             try:
+                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
+                    if self.reap_trial(t, rep):
+                        rep.reaped.append(t.id)
+                    continue
                 if t.status == Status.RUNNING and self.reap(t, rep):
                     rep.reaped.append(t.id)
                 elif t.status in (Status.IN_REVIEW, Status.CHANGES_REQUESTED) and self.reap_review(t, rep):
@@ -381,9 +404,19 @@ class Scheduler:
         task.branch = branch
         self._after_push(task, run, worktree, branch, base, result, rep, cost)
 
+    def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
+        specs = list(self.cfg.get("checks.pre_pr", []) or [])
+        if not specs or not worktree.exists():
+            return []
+        results = run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
+                             timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+        for r in results:
+            self.events.emit("check", task.id, stage="pre_pr", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+        return results
+
     def _after_push(self, task: Task, run: Run, worktree: Path, branch: str, base: str, result: dict[str, Any],
                     rep: TickReport, cost: str) -> None:
-        """Stall bookkeeping, then PR open/update, then a pending restack if the parent merged meanwhile."""
+        """Stall bookkeeping, token-free pre-PR checks, then PR open/update, then a pending restack."""
         st = self.state.get(task.id)
         stalled = False
         if bool(self.cfg.get("stall.enabled", True)) and worktree.exists():
@@ -391,6 +424,16 @@ class Scheduler:
             if run.mode == "revise" and h and h == st.get("last_diff_hash"):
                 stalled = True
             st["last_diff_hash"] = h
+        failed = check_failures(self._pre_pr_checks(task, worktree, branch, base))
+        if failed and not stalled:
+            st["pending_feedback"] = to_feedback(failed, "pre-PR check")
+            names = ", ".join(str(f.get("name")) for f in failed)
+            if task.pr:
+                self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); revise run will fix before the PR is updated{cost}")
+            else:
+                self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); no PR opened yet; revise run will fix{cost}")
+            rep.transitions.append(f"{task.id} -> changes_requested (checks)")
+            return
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
             self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff")
@@ -512,19 +555,24 @@ class Scheduler:
 
     # ---- automated review --------------------------------------------------
     def _maybe_review(self, task: Task, work_run: Run, rep: TickReport) -> None:
-        if not bool(self.cfg.get("review.enabled", True)) or not task.pr:
+        if not task.pr:
             return
         st = self.state.get(task.id)
-        if int(st.get("review_rounds", 0)) >= int(self.cfg.get("review.max_rounds", 2)):
-            return
-        try:
-            run = self.dispatch_review(task, work_run)
-            rep.dispatched.append(f"{task.id}(review)")
-            self.log(f"{task.id}: review run {run.run_id} started")
-        except Exception as e:  # noqa: BLE001
-            task.log(f"automated review could not start: {e}")
-            self.store.save(task)
-            rep.errors.append(f"{task.id}: review dispatch failed: {e}")
+        if bool(self.cfg.get("review.enabled", True)) and int(st.get("review_rounds", 0)) < int(self.cfg.get("review.max_rounds", 2)):
+            try:
+                run = self.dispatch_review(task, work_run)
+                rep.dispatched.append(f"{task.id}(review)")
+                self.log(f"{task.id}: review run {run.run_id} started")
+            except Exception as e:  # noqa: BLE001
+                task.log(f"automated review could not start: {e}")
+                self.store.save(task)
+                rep.errors.append(f"{task.id}: review dispatch failed: {e}")
+        for name in list(self.cfg.get("review.personas", []) or []):
+            try:
+                self.dispatch_persona_pr(task, str(name))
+                rep.dispatched.append(f"{task.id}(persona:{name})")
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"{task.id}: persona {name} dispatch failed: {e}")
 
     def dispatch_review(self, task: Task, work_run: Run | None = None) -> Run:
         harness_name = str(self.cfg.get("review.harness") or "")
@@ -666,11 +714,33 @@ class Scheduler:
         st["pr_updated_at"] = pr.updated_at
         since = task.last_dispatched_at
         fb = self.github.feedback_since(slug, number, since)
+        st["head_sha"] = pr.head_sha
         ci_note = ""
         if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
+            st["ci_failed_at"] = pr.updated_at
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
-            st["ci_failed_at"] = pr.updated_at
+            specs = list(self.cfg.get("checks.ci", []) or [])
+            if specs:
+                results = run_checks(specs, self.check_ctx(task, task.branch, self.base_for(task)),
+                                     cwd=self.worktree_for(task) if self.worktree_for(task).exists() else None,
+                                     timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+                for r in results:
+                    self.events.emit("check", task.id, stage="ci", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+                flaky = [r for r in results if r.get("status") == "flaky"]
+                if flaky and len(flaky) == len([r for r in results if r.get("status") != "pass"]) and int(st.get("ci_reruns", 0)) < 1:
+                    st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
+                    for r in flaky:
+                        if r.get("retry_command"):
+                            import subprocess
+
+                            subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True, timeout=120)
+                    task.log("CI failure judged flaky by checks; reran instead of dispatching a revise run")
+                    self.store.save(task)
+                    self.events.emit("ci_rerun", task.id, checks=[r.get("name") for r in flaky])
+                    ci_note = ""
+                elif check_failures(results):
+                    ci_note += "\n\n" + to_feedback(results, "CI check")
         if not fb and not ci_note:
             return
         pending = fb.to_markdown() + ("\n\n" + ci_note if ci_note else "")
@@ -822,11 +892,12 @@ class Scheduler:
                 "final_base": self.final_base_for(task)}
 
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
-                 session_id: str = "", prompt_override: str = "") -> Run:
+                 session_id: str = "", prompt_override: str = "", branch_override: str = "",
+                 worktree_override: Path | None = None, model_override: str | None = None) -> Run:
         runner = runner or self.runner_for(task)
-        branch = task.branch or task.default_branch()
+        branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
-        stack = self._stack_for(task) if mode == "work" else None
+        stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
         qa = list(st.get("qa") or [])
@@ -834,7 +905,7 @@ class Scheduler:
         text = prompt_override or brief.text
         run = self.runs.new_run(task.id, runner.name, mode=mode)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
-        run.model = self.model_for(task, runner)
+        run.model = model_override if model_override is not None else self.model_for(task, runner)
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
         if session_id and st.get("session_host"):
@@ -842,11 +913,12 @@ class Scheduler:
         runner.assign(run, self.active_runs())
         wt: Path | None = None
         if worktree and not runner.remote:
-            wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+            wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
             run.worktree = str(wt)
         run.save()
         runner.start(run, wt or self.store.root, text)
-        task.branch = branch
+        if not branch_override:
+            task.branch = branch
         task.attempts += 1 if mode == "work" else 0
         task.last_dispatched_at = now_iso()
         if mode == "revise":
@@ -878,6 +950,334 @@ class Scheduler:
             return self.dispatch(task, mode="resume", runner=runner, session_id=sid, prompt_override=resume_prompt(question, text))
         # harness can't resume: a fresh run with the Q&A in its brief
         return self.dispatch(task, mode="resume", runner=runner)
+
+    # ---- auxiliary runs (compare, persona) ---------------------------------
+    def _aux_list(self) -> list[dict[str, Any]]:
+        return self.state.get("_aux").setdefault("runs", [])
+
+    def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
+                     harness_name: str = "", difficulty: str = "") -> Run:
+        probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
+        runner = self.runner_for(probe, "local", harness_name)
+        run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
+        run.worktree = str(worktree)
+        run.model = self.model_for(probe, runner, difficulty or "hard")
+        run.brief_tokens = max(1, len(brief_text) // 4)
+        run.save()
+        runner.start(run, worktree, brief_text)
+        self._aux_list().append({"run_id": run.run_id, "task": run.task_id, "kind": kind, **meta})
+        self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model, harness=run.harness, **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
+        self.state.save()
+        return run
+
+    def reap_aux(self, rep: TickReport) -> None:
+        remaining = []
+        for entry in list(self._aux_list()):
+            run = next((r for r in self.runs.runs_for(entry["task"]) if r.run_id == entry["run_id"]), None)
+            if run is None:
+                continue
+            runner = self.runner_for(self.store.tasks().get(entry["task"]) or Task(path=self.store.root, id=entry["task"], title=""), run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                remaining.append(entry)
+                continue
+            final = ""
+            if run.status != "timeout":
+                run.exit_code = run.read_exit_code()
+                run.finished_at = now_iso()
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.error = collected.get("error") or ""
+                final = collected.get("final_text") or ""
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
+                run.status = "done"
+                run.save()
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd, usage=run.usage, status=run.status)
+            try:
+                if entry["kind"] == "compare":
+                    self._finish_trial(entry, run, final, rep)
+                elif entry["kind"] == "persona":
+                    self._finish_persona(entry, run, final, rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"{entry['task']}: {entry['kind']} failed: {e}")
+        self.state.get("_aux")["runs"] = remaining
+
+    # ---- model trials ------------------------------------------------------
+    def start_trial(self, task: Task, contenders: list[str]) -> list[Run]:
+        if task.status not in (Status.READY, Status.DRAFT, Status.FAILED) or task.pr:
+            raise RuntimeError(f"{task.id} must be ready/draft/failed without a PR to start a trial (is {task.status.value})")
+        if len(contenders) < 2:
+            raise RuntimeError("a trial needs at least two contenders")
+        default_h = task.harness or self.cfg.product_harness(task.product)
+        st = self.state.get(task.id)
+        trial: dict[str, Any] = {"id": now_iso(), "status": "running", "contenders": []}
+        runs: list[Run] = []
+        base_branch = task.branch or task.default_branch()
+        for spec in contenders:
+            label, harness, model = parse_contender(spec, default_h)
+            suffix = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+            branch = f"{base_branch}-trial-{suffix}"
+            wt = self.cfg.garden_dir / "worktrees" / f"{task.id}-trial-{suffix}"
+            runner = self.runner_for(task, "local", harness)
+            run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
+            trial["contenders"].append({"label": label, "harness": harness, "model": model, "branch": branch, "worktree": str(wt),
+                                        "run_id": run.run_id, "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None})
+            runs.append(run)
+        st["trial"] = trial
+        task.branch = base_branch
+        task.log(f"trial started with {', '.join(c['label'] for c in trial['contenders'])}")
+        self.store.save(task)
+        self.events.emit("trial_started", task.id, contenders=[c["label"] for c in trial["contenders"]])
+        self.state.save()
+        return runs
+
+    def reap_trial(self, task: Task, rep: TickReport) -> bool:
+        st = self.state.get(task.id)
+        trial = st["trial"]
+        if trial["status"] == "comparing":
+            return False
+        changed = False
+        for c in trial["contenders"]:
+            if c["status"] != "running":
+                continue
+            run = next((r for r in self.runs.runs_for(task.id) if r.run_id == c["run_id"]), None)
+            if run is None:
+                c["status"] = "failed"
+                c["note"] = "run record missing"
+                changed = True
+                continue
+            runner = self.runner_for(task, run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                continue
+            changed = True
+            self._finalize_contender(task, c, run, runner)
+        if not changed:
+            return False
+        if any(c["status"] == "running" for c in trial["contenders"]):
+            return True
+        with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
+        base = self.base_for(task)
+        if len(with_pr) >= 2:
+            diffs = {c["label"]: gitops.diff(Path(c["worktree"]), base) for c in with_pr}
+            text = compare_brief(self.store, task, with_pr, diffs, base, int(self.cfg.get("review.max_diff_chars", 60000)))
+            trial["status"] = "comparing"
+            self.dispatch_aux("compare", task, text, Path(with_pr[0]["worktree"]), {"trial_id": trial["id"]},
+                              harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or "hard"))
+            rep.dispatched.append(f"{task.id}(compare)")
+            task.log("all contenders finished; comparison run started")
+            self.store.save(task)
+        elif len(with_pr) == 1:
+            self._conclude_trial(task, {"winner": with_pr[0]["label"], "rationale": "only one contender produced a PR", "ranking": []}, rep)
+        else:
+            trial["status"] = "done"
+            self._transition(task, Status.FAILED, "trial: no contender produced a PR")
+            rep.transitions.append(f"{task.id} -> failed (trial)")
+        return True
+
+    def _finalize_contender(self, task: Task, c: dict[str, Any], run: Run, runner: Runner) -> None:
+        run.exit_code = run.read_exit_code()
+        run.finished_at = now_iso()
+        collected = runner.collect(run) if run.status != "timeout" else {"result": {}, "error": "timed out"}
+        run.result = collected.get("result") or {}
+        run.usage = collected.get("usage") or {}
+        run.cost_usd = collected.get("cost_usd")
+        run.error = collected.get("error") or ""
+        c["cost"] = run.cost_usd
+        self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
+                         status=str(run.result.get("status") or ("error" if run.error else "no_result")), cost_usd=run.cost_usd, usage=run.usage)
+        result = run.result
+        wt = Path(c["worktree"])
+        if str(result.get("status", "")).lower() != "done":
+            run.status = "failed"
+            run.save()
+            c["status"], c["note"] = "failed", (result.get("summary") or run.error or "no result")[:200]
+            return
+        try:
+            if gitops.has_uncommitted_changes(wt):
+                gitops.commit_all(wt, f"{task.id}: leftover changes from trial run {run.run_id}")
+            if gitops.commits_ahead(wt, self.base_for(task)) == 0:
+                raise gitops.GitError("no commits")
+            gitops.push(wt, c["branch"])
+        except gitops.GitError as e:
+            run.status = "failed"
+            run.save()
+            c["status"], c["note"] = "failed", str(e)[:200]
+            return
+        run.status = "done"
+        run.save()
+        c["pr_title"] = str(result.get("pr_title") or f"{task.id}: {task.title}")
+        c["pr_body"] = str(result.get("pr_body") or result.get("summary") or "")
+        slug = self.slug_for(task)
+        if slug and self.github.available:
+            try:
+                pr = self.github.create_pr(slug, c["branch"], self.base_for(task), f"[trial {c['label']}] {c['pr_title']}",
+                                           c["pr_body"] + f"\n\n---\nTrial contender `{c['label']}` for task `{task.id}`.",
+                                           draft=bool(self.cfg.get("github.draft_pr", False)))
+                c["pr"], c["pr_number"] = pr.url, pr.number
+            except GitHubError as e:
+                c["note"] = f"PR failed: {e}"[:200]
+        c["status"] = "pr"
+
+    def _finish_trial(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
+        task = self.store.task(entry["task"])
+        verdict = parse_compare(final)
+        if not verdict:
+            st = self.state.get(task.id)
+            with_pr = [c for c in st["trial"]["contenders"] if c["status"] == "pr"]
+            verdict = {"winner": with_pr[0]["label"], "rationale": "comparison run produced no verdict; first contender kept", "ranking": []}
+        self._conclude_trial(task, verdict, rep, compare_cost=run.cost_usd)
+
+    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None) -> None:
+        st = self.state.get(task.id)
+        trial = st["trial"]
+        scores = {str(r.get("label")): r for r in verdict.get("ranking") or [] if isinstance(r, dict)}
+        for c in trial["contenders"]:
+            r = scores.get(c["label"])
+            if r:
+                c["score"] = r.get("score")
+                c["summary"] = r.get("summary", "")
+        winner = next((c for c in trial["contenders"] if c["label"] == verdict.get("winner") and c["status"] == "pr"), None)
+        if winner is None:
+            with_pr = sorted([c for c in trial["contenders"] if c["status"] == "pr"], key=lambda c: -(c.get("score") or 0))
+            winner = with_pr[0]
+        trial["winner"] = winner["label"]
+        trial["rationale"] = str(verdict.get("rationale") or "")
+        trial["status"] = "done"
+        trial["compare_cost"] = compare_cost
+        record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": winner["label"], "rationale": trial["rationale"],
+                  "compare_cost": compare_cost,
+                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "score", "cost", "pr", "summary", "note")} for c in trial["contenders"]]}
+        self.trials.record(record)
+        md = ranking_markdown({"task": task.id, **record})
+        slug = self.slug_for(task)
+        for c in trial["contenders"]:
+            if c.get("pr_number") and slug and self.github.available:
+                try:
+                    self.github.comment(slug, c["pr_number"], md)
+                    if c is not winner:
+                        self.github.close_pr(slug, c["pr_number"])
+                except GitHubError as e:
+                    self.log(f"{task.id}: trial PR update failed: {e}")
+            if c is not winner and c.get("worktree"):
+                try:
+                    gitops.remove_worktree(self.repo_for(task), Path(c["worktree"]))
+                except Exception:  # noqa: BLE001
+                    pass
+        task.branch = winner["branch"]
+        task.pr = winner.get("pr", "")
+        st["pr_number"] = winner.get("pr_number") or 0
+        st["worktree"] = winner["worktree"]
+        st["revisions"] = 0
+        st["review_rounds"] = int(self.cfg.get("review.max_rounds", 2))  # the comparison stands in for the review pass
+        self.events.emit("trial_done", task.id, winner=winner["label"],
+                         scores={c["label"]: c.get("score") for c in trial["contenders"]})
+        self._transition(task, Status.IN_REVIEW, f"trial won by {winner['label']} (scores: " +
+                         ", ".join(f"{c['label']}={c.get('score') if c.get('score') is not None else '–'}" for c in trial["contenders"]) + f"): {task.pr or 'no PR'}")
+        rep.transitions.append(f"{task.id} -> in_review (trial winner {winner['label']})")
+
+    # ---- persona reviews ---------------------------------------------------
+    def phase_prs(self, phase: Phase) -> list[dict[str, Any]]:
+        rows = []
+        for t in phase.tasks:
+            if t.status in (Status.DRAFT, Status.READY, Status.CANCELLED) and not t.pr:
+                continue
+            body, title = "", t.title
+            latest = self.runs.latest(t.id)
+            if latest and latest.result:
+                body = str(latest.result.get("pr_body") or "")
+                title = str(latest.result.get("pr_title") or t.title)
+            slug = self.slug_for(t)
+            number = self._pr_number(t)
+            if not body and slug and number and self.github.available:
+                try:
+                    info = self.github.get_pr(slug, number)
+                    body, title = info.body, info.title or title
+                except GitHubError:
+                    pass
+            rows.append({"id": t.id, "title": title, "status": t.status.value, "pr": t.pr, "body": body})
+        return rows
+
+    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False) -> Run:
+        valid_name(name)
+        product = phase.product
+        probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
+        repo = self.repo_for(probe)
+        base = self.final_base_for(probe)
+        wt = self.cfg.garden_dir / "worktrees" / f"_phase-{product}-{phase.name}"
+        gitops.fetch(repo)
+        if wt.exists():
+            gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
+        else:
+            wt.parent.mkdir(parents=True, exist_ok=True)
+            gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
+        text = phase_brief(self.store, phase, name, base, self.phase_prs(phase))
+        return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
+                                                             "persona": name, "target": "phase", "file_tasks": file_tasks},
+                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or "hard"))
+
+    def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False) -> Run:
+        valid_name(name)
+        if not task.pr and not task.branch:
+            raise RuntimeError(f"{task.id} has no branch to review")
+        base = self.base_for(task)
+        branch = task.branch or task.default_branch()
+        wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        diff = gitops.diff(wt, base)
+        pr_title, pr_body = task.title, ""
+        latest = self.runs.latest(task.id)
+        if latest and latest.result:
+            pr_title = str(latest.result.get("pr_title") or task.title)
+            pr_body = str(latest.result.get("pr_body") or "")
+        text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff, int(self.cfg.get("review.max_diff_chars", 60000)))
+        return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
+                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or ""))
+
+    def _finish_persona(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
+        rev = parse_persona(final)
+        name = str(entry.get("persona"))
+        if not rev:
+            self.events.emit("persona", entry["task"], persona=name, status="no_verdict", target=entry.get("target"))
+            rep.errors.append(f"persona {name}: no verdict ({run.error[:100] or 'see final.md'})")
+            return
+        self.events.emit("persona", entry["task"], persona=name, target=entry.get("target"), score=rev.get("score"),
+                         high=sum(1 for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"))
+        if entry.get("target") == "phase":
+            phase = self.store.phase(str(entry["product"]), str(entry["phase"]))
+            path = report_path(phase, name)
+            path.write_text(report_markdown(rev, f"{name} review of {phase.key}", run.run_id))
+            self.log(f"persona {name}: report written to {self.store.rel(path)}")
+            rep.transitions.append(f"persona {name} report -> {self.store.rel(path)}")
+            if entry.get("file_tasks"):
+                for f in rev.get("findings") or []:
+                    if isinstance(f, dict) and f.get("severity") == "high" and f.get("summary"):
+                        t = self.store.create_task(phase.product, phase.name, str(f["summary"])[:80],
+                                                   f"## Goal\n\n{f.get('suggestion') or f['summary']}\n\n## Context\n\nRaised by the {name} persona review ({self.store.rel(path)}), area: {f.get('area', '')}.\n",
+                                                   priority=2, status="draft")
+                        t.discovered_from = f"persona:{name}"
+                        self.store.save(t)
+                        self.events.emit("discovered", entry["task"], new_task=t.id, title=t.title, blocking=False, status="draft", persona=name)
+                self.store.invalidate()
+            return
+        task = self.store.task(entry["task"])
+        md = report_markdown(rev, f"{name} review of {task.id}", run.run_id)
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if slug and number and self.github.available:
+            try:
+                self.github.comment(slug, number, md)
+            except GitHubError as e:
+                self.log(f"{task.id}: could not post persona review: {e}")
+        (run.path / "report.md").write_text(md)
+        task.log(f"persona {name} review: score {rev.get('score', '–')}/10, {len(rev.get('findings') or [])} finding(s)")
+        self.store.save(task)
+        rep.transitions.append(f"{task.id} persona {name}: {rev.get('score', '–')}/10")
+        highs = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"]
+        if entry.get("request_changes") and highs and task.status == Status.IN_REVIEW and bool(self.cfg.get("auto_revise", True)):
+            st = self.state.get(task.id)
+            st["pending_feedback"] = "\n".join(f"- **{name} persona** ({f.get('area', '')}): {f.get('summary', '')} — {f.get('suggestion', '')}" for f in highs)
+            self._transition(task, Status.CHANGES_REQUESTED, f"{name} persona review raised {len(highs)} high finding(s)")
+            rep.transitions.append(f"{task.id} -> changes_requested (persona {name})")
 
     # ---- manual controls ---------------------------------------------------
     def cancel(self, task: Task, note: str = "cancelled") -> None:

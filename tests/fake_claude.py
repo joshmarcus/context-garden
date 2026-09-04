@@ -22,6 +22,10 @@ args = sys.argv[1:]
 model = args[args.index("--model") + 1] if "--model" in args else ""
 if "GARDEN_REVIEW:" in brief:
     mode = os.environ.get("FAKE_CLAUDE_REVIEW", "review-ok")
+if "GARDEN_COMPARE:" in brief:
+    mode = "compare"
+if "GARDEN_PERSONA:" in brief:
+    mode = "persona"
 try:
     Path("model.txt").write_text(model + "\n")
 except OSError:
@@ -39,6 +43,27 @@ if mode == "plan":
     ]
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(items),
                       "usage": {"input_tokens": 100, "output_tokens": 50}, "total_cost_usd": 0.01}))
+    sys.exit(0)
+
+if mode == "compare":
+    import re as _re
+    labels = _re.findall(r"^- \*\*(.+?)\*\* — branch", brief, flags=_re.M)
+    winner = os.environ.get("FAKE_CLAUDE_WINNER") or labels[-1]
+    ranking = [{"label": lb, "score": (9 if lb == winner else 6), "summary": f"{lb} did fine"} for lb in labels]
+    verdict = {"winner": winner, "rationale": "the winner had tests", "ranking": ranking}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Compared.\nGARDEN_COMPARE: " + json.dumps(verdict),
+                      "usage": {"input_tokens": 3000, "output_tokens": 200}, "total_cost_usd": 0.03}))
+    sys.exit(0)
+
+if mode == "persona":
+    import re as _re
+    m = _re.search(r"^# Persona review: ([a-z0-9-]+)", brief, flags=_re.M)
+    name = m.group(1) if m else "persona"
+    sev = os.environ.get("FAKE_CLAUDE_PERSONA_SEVERITY", "medium")
+    rev = {"persona": name, "score": 7, "overall": f"As the {name}, mostly fine.",
+           "findings": [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions", "suggestion": "Add it to Quick start"}]}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed as persona.\nGARDEN_PERSONA: " + json.dumps(rev),
+                      "usage": {"input_tokens": 1500, "output_tokens": 120}, "total_cost_usd": 0.02}))
     sys.exit(0)
 
 if mode.startswith("review"):

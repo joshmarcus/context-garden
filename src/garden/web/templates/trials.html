@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Trials{% endblock %}
+{% block body %}
+<div class="panel">
+  <h3 style="margin-top:0">Model leaderboard</h3>
+  {% if rows %}<table><tr><th>contender</th><th>trials</th><th>wins</th><th>win rate</th><th>avg score</th><th>avg cost</th><th>failed</th></tr>
+  {% for r in rows %}<tr><td class="mono">{{ r.label }}</td><td>{{ r.trials }}</td><td>{{ r.wins }}</td><td>{% if r.win_rate is not none %}{{ (r.win_rate * 100)|round|int }}%{% endif %}</td><td>{% if r.avg_score is not none %}{{ r.avg_score }}{% endif %}</td><td>{% if r.avg_cost is not none %}${{ '%.2f' % r.avg_cost }}{% endif %}</td><td>{{ r.failed }}</td></tr>{% endfor %}</table>
+  {% else %}<span class="muted">No trials yet. On a ready task's page, start one with two or more contenders (e.g. <span class="mono">claude:sonnet, claude:opus</span>).</span>{% endif %}
+</div>
+{% for t, md in trials %}<div class="panel prose"><a href="/tasks/{{ t.task }}">{{ t.task }}</a> · <span class="muted">{{ t.at[:16] }}</span>{{ md|md|safe }}</div>{% endfor %}
+{% endblock %}

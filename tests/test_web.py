@@ -10,7 +10,7 @@ def client(garden):
 
 def test_pages_render(garden):
     c = client(garden)
-    for url in ["/", "/graph", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks"]:
+    for url in ["/", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks"]:
         r = c.get(url)
         assert r.status_code == 200, url
     assert "DM-002" in c.get("/").text
@@ -50,3 +50,11 @@ def test_events_page_and_answer_flow(garden, monkeypatch):
     assert c.get("/api/tasks").json()[0]["status"] == "running"
     page = c.get("/tasks/DM-001").text
     assert "Questions and answers" in page and "SQLite" in page and "Timeline" in page
+
+
+def test_trials_page_and_persona_form(garden):
+    c = client(garden)
+    r = c.get("/trials")
+    assert r.status_code == 200 and "No trials yet" in r.text
+    assert "Persona review of the body of work" in c.get("/phases/demo/p1").text
+    assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200

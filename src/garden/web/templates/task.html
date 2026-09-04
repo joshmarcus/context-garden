@@ -14,6 +14,8 @@
   {% if task.status.value == 'changes_requested' %}<a class="btn" href="/tasks/{{ task.id }}/brief?revise=1" target="_blank">View revise brief</a>{% endif %}
   {% if runs %}<a class="btn" href="/tasks/{{ task.id }}/log" target="_blank">Latest log</a>{% endif %}
   {% if task.pr and task.status.value in ('in_review','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button>Run automated review</button></form>{% endif %}
+  {% if task.pr or task.branch %}<form class="inline" method="post" action="/tasks/{{ task.id }}/persona" style="display:inline-flex;gap:4px"><input name="note" placeholder="personas: security, user" style="font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);width:180px"><button>Persona review</button></form>{% endif %}
+  {% if task.status.value in ('ready','draft','failed') and not task.pr %}<form class="inline" method="post" action="/tasks/{{ task.id }}/trial" style="display:inline-flex;gap:4px"><input name="note" placeholder="trial: claude:sonnet, claude:opus" style="font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);width:220px"><button>Start trial</button></form>{% endif %}
 </div>
 {% if task.status.value == 'waiting_human' %}
 <div class="panel" style="border-color:#b0306f">
@@ -48,6 +50,7 @@
         <dt>phase</dt><dd><a href="/phases/{{ task.product }}/{{ task.phase }}">{{ task.product }}/{{ task.phase }}</a></dd>
         <dt>priority</dt><dd>{{ task.priority }}{% if task.estimate %} · {{ task.estimate }}{% endif %} · {{ task.difficulty }}{% if task.model %} · model {{ task.model }}{% endif %}</dd>
         {% if task.discovered_from %}<dt>discovered by</dt><dd><a href="/tasks/{{ task.discovered_from }}">{{ task.discovered_from }}</a></dd>{% endif %}
+        {% if state.trial %}<dt>trial</dt><dd>{{ state.trial.status }}{% if state.trial.winner %} · winner {{ state.trial.winner }}{% endif %}<br>{% for c in state.trial.contenders %}<span class="mono">{{ c.label }}</span> {{ c.status }}{% if c.score is not none %} · {{ c.score }}/10{% endif %}{% if c.pr %} · <a href="{{ c.pr }}" target="_blank">PR</a>{% endif %}<br>{% endfor %}</dd>{% endif %}
         {% if state.stack_parent %}<dt>stacked on</dt><dd><a href="/tasks/{{ state.stack_parent }}">{{ state.stack_parent }}</a> <span class="muted">(PR targets {{ state.pr_base }})</span></dd>{% endif %}
         <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="muted">—</span>{% endfor %}</dd>

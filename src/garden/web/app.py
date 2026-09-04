@@ -32,6 +32,7 @@ from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
+from ..trials import TrialLog, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
 COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "in_review", "changes_requested", "done", "failed"]
@@ -191,8 +192,9 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             parts.append("---- stderr ----\n" + stderr[-8000:])
         return "\n\n".join(parts)
 
-    @app.get("/graph", response_class=HTMLResponse)
-    def graph_page(request: Request, product: str | None = None, phase: str | None = None):
+    @app.get("/trellis", response_class=HTMLResponse)
+    @app.get("/graph", response_class=HTMLResponse, include_in_schema=False)
+    def trellis_page(request: Request, product: str | None = None, phase: str | None = None):
         s = hub.fresh()
         tasks = {k: v for k, v in s.tasks().items()
                  if (not product or v.product == product) and (not phase or v.phase == phase)}
@@ -200,7 +202,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             cp = critical_path(tasks)
         except Exception:  # noqa: BLE001
             cp = []
-        return templates.TemplateResponse(request, "graph.html", ctx(
+        return templates.TemplateResponse(request, "trellis.html", ctx(
             request, svg=svg(tasks), mermaid=mermaid(tasks), product=product, phase=phase,
             critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
 
@@ -210,6 +212,13 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         rs = RunStore(s.config.garden_dir)
         return templates.TemplateResponse(request, "runs.html", ctx(
             request, runs=list(reversed(rs.all_runs())), totals=rs.totals(), events=list(reversed(hub.events))[:100]))
+
+    @app.get("/trials", response_class=HTMLResponse)
+    def trials_page(request: Request):
+        s = hub.fresh()
+        log = TrialLog(s.config.garden_dir / "trials.jsonl")
+        return templates.TemplateResponse(request, "trials.html", ctx(
+            request, rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
 
     @app.get("/events", response_class=HTMLResponse)
     def events_page(request: Request, since: str = "24h"):
@@ -239,8 +248,12 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         sched = hub.scheduler()
         phase_tasks = {t.id: t for t in ph.tasks}
         m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
+        from ..personas import DEFAULT_PERSONAS, list_personas
+
+        reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
+            personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
             rows=[(t, effective_status(t, tasks, stack), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
@@ -289,6 +302,12 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             elif action == "answer":
                 if t.status == Status.WAITING_HUMAN and note.strip():
                     sched.answer(t, note.strip())
+            elif action == "persona":
+                for name in [n.strip() for n in note.split(",") if n.strip()]:
+                    sched.dispatch_persona_pr(t, name)
+            elif action == "trial":
+                contenders = [n.strip() for n in note.split(",") if n.strip()]
+                sched.start_trial(t, contenders)
             elif action == "reset-revisions":
                 st = sched.state.get(t.id)
                 st["revisions"] = 0
@@ -307,6 +326,16 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
                 t.status = Status.READY
                 t.log("approved (web)")
                 s.save(t)
+        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+
+    @app.post("/phases/{product}/{phase}/persona")
+    def persona_phase(product: str, phase: str, personas: str = Form(""), file_tasks: str = Form("")):
+        s = hub.fresh()
+        ph = s.phase(product, phase)
+        with hub.lock:
+            sched = hub.scheduler()
+            for name in [n.strip() for n in personas.split(",") if n.strip()]:
+                sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
         return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
 
     @app.post("/phases/{product}/{phase}/plan")

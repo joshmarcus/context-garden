@@ -280,6 +280,12 @@ class GitHub:
             payload["base"] = base
         self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json=payload)
 
+    def close_pr(self, slug: str, number: int) -> None:
+        if self.gh:
+            self._gh("pr", "close", str(number), "-R", slug)
+        else:
+            self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "closed"})
+
     def comment(self, slug: str, number: int, body: str) -> None:
         if self.gh:
             self._gh("pr", "comment", str(number), "-R", slug, "--body-file", "-", input_=body)

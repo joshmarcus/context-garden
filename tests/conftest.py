@@ -109,6 +109,7 @@ class FakeGitHub:
         self.created: list[dict] = []
         self.comments: list[str] = []
         self.updated: list[dict] = []
+        self.closed: list[int] = []
         self.feedback: dict[int, Feedback] = {}
         self._n = 100
 
@@ -139,6 +140,12 @@ class FakeGitHub:
 
     def comment(self, slug, number, body):
         self.comments.append(body)
+
+    def close_pr(self, slug, number):
+        for pr in self.prs.values():
+            if pr.number == number:
+                pr.state = "CLOSED"
+                self.closed.append(number)
 
     def update_pr(self, slug, number, title="", body="", base=""):
         for pr in self.prs.values():

@@ -10,12 +10,18 @@ context files. This repo is also its own first product (`context-garden/`).
 - Lint: `.venv/bin/ruff check src tests`
 - Try it: `.venv/bin/garden status`, `garden graph`, `garden brief CG-008 --stats`, `garden prs`, `garden digest`, `garden serve`
 
+## Design docs
+
+`docs/design.md` (ideas, vocabulary, architecture, the loop) and `docs/roadmap.md`. Per-feature
+specs under `context-garden/phase-01-bootstrap/specs/`.
+
 ## Where things are
 
 - `src/garden/` the package; read `context-garden/product.md` for a module map
 - `principles/` cross-cutting principles; `00-index.md` is inlined into every agent brief
 - `context-garden/<phase>/` goals, specs and tasks for the tool itself
 - `.claude/skills/` `garden-take`, `garden-plan`, `garden-review` for interactive sessions
+- `personas/` reviewer personas for `garden persona-review`
 
 ## Rules
 

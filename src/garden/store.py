@@ -44,7 +44,7 @@ class Store:
                 if not tasks_dir.exists() and not goals.exists():
                     continue
                 specs = sorted((pd / "specs").glob("*.md")) if (pd / "specs").exists() else []
-                docs = sorted((pd / "docs").glob("*")) if (pd / "docs").exists() else []
+                docs = sorted(f for f in (pd / "docs").rglob("*") if f.is_file()) if (pd / "docs").exists() else []
                 tasks = [
                     self._load_task(f, d.name, pd.name)
                     for f in sorted(tasks_dir.glob("*.md"))

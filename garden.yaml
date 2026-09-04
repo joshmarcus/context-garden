@@ -26,6 +26,23 @@ review:
   max_diff_chars: 60000     # larger diffs are read by the reviewer from git instead of inlined
   harness: ""               # empty = the default harness
   difficulty: ""            # empty = the task's tier; or easy | medium | hard for the reviewer model
+  personas: []              # persona reviews on every new PR round, e.g. [security]; see personas/
+
+# Token-free checks. pre_pr runs in the worktree before a PR is opened or updated (failures
+# become a revise round, no PR yet). ci runs when a PR's CI goes red; results feed the revise
+# brief, and a `flaky` verdict with `rerun: true` reruns the jobs instead of spending tokens.
+checks:
+  pre_pr:                   # $GARDEN_ROOT is the garden; the worktree's own src/ is what gets tested
+    - name: tests
+      command: 'PYTHONPATH=src "$GARDEN_ROOT/.venv/bin/python" -m pytest -q -x'
+    - name: lint
+      command: '"$GARDEN_ROOT/.venv/bin/ruff" check src tests'
+  ci:
+    - name: actions
+      python: "garden.checks:github_actions_failures"
+      flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "rate limit", "Resource temporarily unavailable"]
+      rerun: true
+  timeout_seconds: 600
 
 brief:
   inline_max_chars: 24000   # reading-list files above this are referenced, not inlined

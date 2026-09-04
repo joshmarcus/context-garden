@@ -72,9 +72,10 @@ def init(
     name: str = typer.Option("garden", help="Garden name"),
 ):
     """Create garden.yaml and a principles digest in DIRECTORY."""
+    from .personas import write_default_personas
     from .scaffold import init_garden
 
-    created = init_garden(directory.resolve(), name)
+    created = init_garden(directory.resolve(), name) + write_default_personas(directory.resolve())
     for p in created:
         console.print(f"created {p}")
     console.print("Next: `garden new-product <name>` then `garden new-phase <product> <phase>`.")
@@ -273,12 +274,13 @@ def ready():
 
 
 @app.command()
-def graph(
+@app.command("graph", hidden=True)
+def trellis(
     fmt: str = typer.Option("text", "--format", "-f", help="text|mermaid|json"),
     product: str | None = typer.Option(None, "--product", "-p"),
     phase: str | None = typer.Option(None, "--phase"),
 ):
-    """Dependency graph (text, mermaid, or json)."""
+    """The trellis: the dependency and stacking structure the work grows along (text, mermaid, or json)."""
     from .graph import critical_path, effective_status, mermaid, topological_order
 
     store = _store()
@@ -631,6 +633,112 @@ def events(task_id: str | None = typer.Argument(None), since: str = typer.Option
     for ev in evs[-limit:]:
         extra = {k: v for k, v in ev.items() if k not in ("at", "kind", "task", "usage")}
         console.print(f"[dim]{ev['at'][5:19]}[/dim] {ev['task']:<8} [bold]{ev['kind']:<14}[/bold] " + " ".join(f"{k}={v}" for k, v in extra.items() if v not in ("", None, False, 0)))
+
+
+@app.command()
+def trial(
+    task_id: str,
+    contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5 (repeat)"),
+):
+    """Run a task with several models; a comparison run scores the PRs and keeps the best one."""
+    store = _store()
+    t = _task(store, task_id)
+    try:
+        runs = _scheduler(store).start_trial(t, contenders)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    for r in runs:
+        console.print(f"{t.id}: {r.harness}:{r.model or 'default'} -> run {r.run_id} on {r.branch}")
+
+
+@app.command()
+def trials(task_id: str | None = typer.Argument(None, help="Show one task's trial instead of the leaderboard")):
+    """Model leaderboard from every trial: wins, average score and cost per contender."""
+    from .trials import TrialLog, ranking_markdown
+
+    store = _store()
+    log = TrialLog(store.config.garden_dir / "trials.jsonl")
+    if task_id:
+        for tr in log.read():
+            if tr.get("task") == task_id:
+                console.print(ranking_markdown(tr))
+        return
+    rows = log.leaderboard()
+    if not rows:
+        console.print("no trials yet (garden trial ID -c claude:sonnet -c claude:opus)")
+        return
+    table = Table(title="model trials")
+    for c in ("contender", "trials", "wins", "win rate", "avg score", "avg cost", "failed"):
+        table.add_column(c)
+    for r in rows:
+        table.add_row(r["label"], str(r["trials"]), str(r["wins"]), f"{r['win_rate']:.0%}" if r["win_rate"] is not None else "",
+                      f"{r['avg_score']:.1f}" if r["avg_score"] is not None else "", f"${r['avg_cost']:.2f}" if r["avg_cost"] is not None else "", str(r["failed"]))
+    console.print(table)
+
+
+@app.command("persona-review")
+def persona_review(
+    target: str = typer.Argument(..., help="A task id (reviews its PR) or product/phase (reviews the body of work)"),
+    personas: list[str] = typer.Option(..., "--persona", "-p", help="Persona name (repeat); see `garden personas`"),
+    file_tasks: bool = typer.Option(False, help="Phase reviews: turn high-severity findings into draft tasks"),
+    request_changes: bool = typer.Option(False, help="PR reviews: high findings trigger a revise run"),
+):
+    """Persona reviews (designer, project-manager, staff-engineer, usability-expert, user, security, or your own)."""
+    store = _store()
+    sched = _scheduler(store)
+    if "/" in target:
+        product, phase = _split_target(target)
+        try:
+            ph = store.phase(product, phase)
+        except KeyError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        for name in personas:
+            run = sched.dispatch_persona_phase(ph, name, file_tasks=file_tasks)
+            console.print(f"{ph.key}: persona {name} -> run {run.run_id} (report lands in {ph.name}/docs/reviews/)")
+        return
+    t = _task(store, target)
+    for name in personas:
+        run = sched.dispatch_persona_pr(t, name, request_changes=request_changes)
+        console.print(f"{t.id}: persona {name} -> run {run.run_id} (comment on {t.pr or 'the PR'})")
+
+
+@app.command()
+def personas():
+    """List available personas (personas/*.md, plus the built-in defaults)."""
+    from .personas import DEFAULT_PERSONAS, list_personas
+
+    store = _store()
+    have = list_personas(store)
+    for name in sorted(set(have) | set(DEFAULT_PERSONAS)):
+        where = "personas/" + name + ".md" if name in have else "built-in default (garden init writes it)"
+        console.print(f"{name:<18} {where}")
+
+
+@app.command()
+def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci")):
+    """Run the token-free checks for a task by hand (pre_pr in its worktree, or ci analysers)."""
+    from .checks import run_checks
+
+    store = _store()
+    t = _task(store, task_id)
+    sched = _scheduler(store)
+    specs = list(store.config.get(f"checks.{stage}", []) or [])
+    if not specs:
+        err.print(f"no checks configured under checks.{stage}")
+        raise typer.Exit(1)
+    wt = sched.worktree_for(t)
+    results = run_checks(specs, sched.check_ctx(t, t.branch or t.default_branch(), sched.base_for(t), wt),
+                         cwd=wt if wt.exists() else None, timeout=int(store.config.get("checks.timeout_seconds", 600)))
+    bad = 0
+    for r in results:
+        color = "green" if r.get("status") == "pass" else ("yellow" if r.get("status") == "flaky" else "red")
+        console.print(f"[{color}]{r.get('status'):<6}[/{color}] {r.get('name')}: {r.get('summary', '')}")
+        if r.get("details") and r.get("status") != "pass":
+            print(r["details"])
+        bad += r.get("status") in ("fail", "error")
+    raise typer.Exit(1 if bad else 0)
 
 
 # --------------------------------------------------------------------------- planning

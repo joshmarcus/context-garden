@@ -64,9 +64,10 @@ details summary { cursor:pointer; color:var(--muted); }
   <a class="brand" href="/">🌱 {{ garden_name }}</a>
   <nav>
     <a href="/">Board</a>
-    <a href="/graph">Graph</a>
+    <a href="/trellis">Trellis</a>
     <a href="/runs">Runs</a>
     <a href="/events">Timeline</a>
+    <a href="/trials">Trials</a>
     {% for p in products %}{% for ph in p.phases %}<a href="/phases/{{ p.name }}/{{ ph.name }}" title="{{ p.name }}/{{ ph.name }}">{{ ph.name }}</a>{% endfor %}{% endfor %}
   </nav>
   <div class="right">

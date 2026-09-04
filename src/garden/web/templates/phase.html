@@ -2,7 +2,7 @@
 {% block title %}{{ phase.key }}{% endblock %}
 {% block body %}
 <h2 style="margin:0 0 6px">{{ phase.product }} / {{ phase.name }}</h2>
-<p class="muted">spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }} budget{% if spent >= budget %} <b style="color:var(--failed)">(exceeded; dispatch paused)</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked; polled every tick for merges, comments and CI · fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
+<p class="muted">spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }} budget{% if spent >= budget %} <b style="color:var(--failed)">(exceeded; dispatch paused)</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked; polled every tick for merges, comments and CI · fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">trellis</a></p>
 <div class="grid2">
   <div>
     <div class="panel">
@@ -24,6 +24,12 @@
         </form>
         {% if planning %}<span class="muted">{{ planning }}</span>{% endif %}
       </div>
+      <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/persona" class="actions" style="align-items:center">
+        <span class="muted">Persona review of the body of work:</span>
+        <input name="personas" placeholder="{{ personas|join(', ') }}" style="font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:320px">
+        <label class="muted"><input type="checkbox" name="file_tasks" value="1"> file high findings as tasks</label>
+        <button>Run personas</button>
+      </form>
     </div>
     {% if metrics.by_difficulty %}<div class="panel"><h3 style="margin-top:0">Metrics by difficulty</h3>
       <table><tr><th>tier</th><th>tasks</th><th>done</th><th>avg revisions</th><th>first-pass approve</th><th>cost</th><th>avg lead h</th></tr>
@@ -35,6 +41,7 @@
   <div>
     {% for name, text in specs %}<details class="panel" {% if loop.first %}open{% endif %}><summary class="mono">{{ name }}</summary><div class="prose">{{ text|md|safe }}</div></details>{% endfor %}
     {% for name, text in docs %}<details class="panel"><summary class="mono">{{ name }}</summary><div class="prose">{{ text|md|safe }}</div></details>{% endfor %}
+    {% for name, text in reviews %}<details class="panel"><summary class="mono">🧑‍🎨 {{ name }}</summary><div class="prose">{{ text|md|safe }}</div></details>{% endfor %}
   </div>
 </div>
 {% endblock %}

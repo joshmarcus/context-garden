@@ -50,7 +50,7 @@ garden new-phase widget phase-01
 $EDITOR principles/00-index.md widget/product.md widget/phase-01/goals.md widget/phase-01/specs/*.md
 
 garden plan widget/phase-01            # one model call -> task files, ready to dispatch
-garden graph                            # look at the plan (edit files, or `garden plan --draft` to gate on approval)
+garden trellis                          # look at the plan: dependencies and stacks (edit files, or `garden plan --draft` to gate on approval)
 
 garden serve                            # web UI at http://127.0.0.1:8765 + the scheduler loop
 # or: garden watch                      # scheduler loop only
@@ -128,13 +128,16 @@ push; the runner does.
 | Command | What it does |
 |---|---|
 | `garden init [dir]`, `new-product`, `new-phase`, `new-task` | scaffold |
-| `garden status` / `ls` / `show ID` / `ready` / `graph [--format mermaid]` / `validate` | read the garden |
+| `garden status` / `ls` / `show ID` / `ready` / `trellis [--format mermaid]` / `validate` | read the garden |
 | `garden brief ID [--stats] [--revise]` | the exact worker prompt |
 | `garden plan product/phase [--dry-run] [--import plan.json] [--guidance ...] [--draft]` | goals + specs -> tasks (ready by default) |
 | `garden approve ID... ` / `--all product/phase` | draft -> ready |
 | `garden prs [product/phase]` | every tracked PR: review decision, CI, failed checks, revisions |
 | `garden review ID` | start an automated review round now |
 | `garden answer ID "..."` | answer a `waiting_human` task; the worker resumes |
+| `garden trial ID -c h:m -c h:m` / `trials` | run a task with several models; leaderboard |
+| `garden persona-review TARGET -p name` / `personas` | persona review of a PR or a phase |
+| `garden check ID [--stage ci]` | run the token-free checks by hand |
 | `garden digest [--since 24h]` / `metrics [product/phase]` / `events [ID]` | what happened, how it's going, the timeline |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
@@ -159,6 +162,13 @@ Run it however you like: `garden watch` in a terminal, `garden serve` (loop + we
 or `garden tick` from cron/launchd every minute. Ticks are idempotent and safe to overlap
 with the UIs.
 
+## Design documents
+
+- `docs/design.md`: the idea, vocabulary, architecture, the loop, bounded loops, extension points.
+- `docs/roadmap.md`: shipped, next, later, not planned.
+- `context-garden/phase-01-bootstrap/specs/`: one spec per mechanism (task format, scheduler,
+  brief, harness, remote runner, review pass, coordination, trials, personas, checks).
+
 ## Coordination
 
 Borrowed from graph-based agent systems; all deterministic (details in
@@ -177,6 +187,22 @@ Borrowed from graph-based agent systems; all deterministic (details in
 - **Event log, digest, metrics.** `.garden/events.jsonl` feeds `garden digest --since
   24h` (what needs you, PRs opened/merged, cost), `garden metrics` (lead time, revise
   rounds, first-pass approval and cost per difficulty tier), and the Timeline page.
+
+## Personas, trials, and token-free checks
+
+- **Persona reviews.** `personas/*.md` describe reviewers (designer, project-manager,
+  staff-engineer, usability-expert, user, security by default; add your own). Run one
+  against a phase's body of work (`garden persona-review product/phase -p user`; the
+  report lands in the phase's `docs/reviews/`, where the planner reads it) or against a
+  PR (`garden persona-review ID -p security`; posted as a comment). `review.personas`
+  runs chosen personas on every new PR.
+- **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
+  per contender on separate branches, has one comparison run score the PRs, keeps the
+  winner, closes the rest, and records scores. `garden trials` is the leaderboard.
+- **Checks without tokens.** `checks.pre_pr` commands (tests, lint) gate PR creation in
+  the worktree; `checks.ci` scripts or Python callables analyse red CI, feed the revise
+  brief with the lines that matter, and rerun flaky jobs instead of spending a round. The
+  built-in `garden.checks:github_actions_failures` covers GitHub Actions via `gh`.
 
 ## Harnesses and models
 
@@ -259,6 +285,10 @@ review:
   max_rounds: 2
   max_diff_chars: 60000
   difficulty: ""            # reviewer tier; empty = the task's
+  personas: [security]      # persona reviews on every new PR round
+checks:
+  pre_pr: [{name: tests, command: "pytest -q -x"}]
+  ci: [{name: actions, python: "garden.checks:github_actions_failures", rerun: true}]
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
@@ -309,6 +339,10 @@ Ideas borrowed from beads (git-backed issues with a ready command), spec-kit and
 task-master (spec -> plan -> task DAG), Backlog.md (markdown task files with a board),
 and Claude Code's headless mode. Heavier DAG engines (Temporal, Airflow, Dagger) would
 work but bring a server and a mental model this doesn't need.
+
+## License
+
+MIT. See `LICENSE`.
 
 ## Development
 
