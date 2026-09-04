@@ -92,9 +92,9 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "Review and merge" in c.get("/").text
 
 
-def test_drawings_render_unescaped(garden):
+def test_drawings_render_unescaped(garden, tmp_path):
     """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
-    c = client(garden)
+    c = TestClient(create_app(Store(garden), watch=False, plates_dir=tmp_path / "plates"))
     for url in ["/", "/board", "/phases/demo/p1", "/tasks/DM-001", "/trellis"]:
         html = c.get(url).text
         assert "&lt;svg" not in html, url

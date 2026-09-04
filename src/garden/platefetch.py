@@ -29,13 +29,31 @@ ARTIST = "Otto Wilhelm Thomé"
 YEAR = "1885"
 
 # Commons names Thomé's plates "Illustration <Genus> <species>0.jpg" (and "... clean.jpg" for
-# the background-removed version); the fern has been filed under three names over the years.
+# the background-removed version). Three plants have no plate under their own name: Thomé drew
+# no corn poppy, so the poppy is his prickly poppy (Tafel 260); the bramble is his Tafel 398,
+# Rubus thyrsoideus Wimm. of the R. fruticosus aggregate, filed under a misspelt "candidans"; and
+# the male fern (Tafel 10) is missing from the plate-only set, so it comes from the Biodiversity
+# Heritage Library's scan of the 1903 printing, which Commons files under Thomé's Flora as well.
+#
+# The seven below are picked from Commons' "Thomé, Flora von Deutschland (modified)" category for
+# colour that pops against the other five's greens and dusty pinks: peony's deep magenta, quince's
+# blush, the lady's slipper's yellow pouch, thistle's violet, snapdragon's carmine, adonis' gloss
+# yellow, daphne's magenta-on-bare-wood. Each prefix pins the exact background-removed (or
+# otherwise cleaned) file named in the request, not a plain scan of the same plate.
 CANDIDATES: dict[str, list[str]] = {
     "pea": ["Illustration_Pisum_sativum"],
-    "bramble": ["Illustration_Rubus_fruticosus"],
+    "bramble": ["Illustration_Rubus_candidans0."],
     "foxglove": ["Illustration_Digitalis_purpurea"],
-    "fern": ["Illustration_Dryopteris_filix-mas", "Illustration_Aspidium_filix-mas", "Illustration_Polystichum_filix-mas"],
-    "poppy": ["Illustration_Papaver_rhoeas"],
+    "fern": ["Prof._Dr._Thomé's_Flora_von_Deutschland,_Österreich_und_der_Schweiz,_in_Wort_und_Bild,"
+             "_für_Schule_und_Haus;_mit_..._Tafeln_..._von_Walter_Müller_(Pl._10)_(7845241910)"],
+    "poppy": ["Illustration_Papaver_argemone0."],
+    "peony": ["Illustration_Paeonia_mascula1."],
+    "quince": ["Illustration_Cydonia_oblonga0_-_clean."],
+    "orchid": ["Illustration_Cypripedium_calceolus0_clean."],
+    "thistle": ["Illustration_Carduus_nutans0_white."],
+    "snapdragon": ["Illustration_Antirrhinum_majus_clean."],
+    "adonis": ["Illustration_Adonis_vernalis0_clean."],
+    "daphne": ["Daphne_mezereum,_Thomé-347."],
 }
 
 
