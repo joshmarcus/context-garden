@@ -116,14 +116,14 @@ def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Bota
 
 @app.command()
 def plants(
-    fetch: bool = typer.Option(False, "--fetch", help="Download the scanned plates (Thomé, 1885, public domain) from Wikimedia Commons into the web UI"),
-    out: Path | None = typer.Option(None, "--out", help="Where to write the plates (default: the package's static/plates directory)"),
+    fetch: bool = typer.Option(False, "--fetch", help="Download the scanned plates (Thomé, 1885, public domain) from Wikimedia Commons into the web UI's static plates directory"),
     height: int = typer.Option(900, help="Pixel height of the prepared plates"),
 ):
     """The botanical key: which plant each phase carries, whether its scanned plate is present, and the growth-stage names."""
     from .plants import PLANTS, STAGE_WORD, plant_info, plate_filename
+    from .web.app import PLATES_DIR
 
-    plates_dir = out or Path(__file__).parent / "web" / "static" / "plates"
+    plates_dir = PLATES_DIR
     if fetch:
         try:
             from .platefetch import fetch_all

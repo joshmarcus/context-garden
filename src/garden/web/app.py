@@ -49,6 +49,7 @@ from ..store import Store
 from ..trials import TrialLog, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
+PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
 COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
 
 
@@ -108,7 +109,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates.env.globals["statuses"] = STATUS_ORDER
     templates.env.globals["DEFS"] = DEFS
     templates.env.globals["VINE"] = Markup(vine_svg())
-    plates = plates_dir or Path(__file__).parent / "static" / "plates"
+    plates = plates_dir or PLATES_DIR
     plates.mkdir(parents=True, exist_ok=True)
     app.mount("/static/plates", StaticFiles(directory=str(plates)), name="plates")
 

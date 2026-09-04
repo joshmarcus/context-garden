@@ -5,7 +5,8 @@ The plates are from Otto Wilhelm Thomé's *Flora von Deutschland, Österreich un
 for most plates a "clean" version with the page background removed. This module resolves
 each plant to a file on Commons, downloads it, crops the margins, downsamples it and writes
 `<key>.webp` and `<key>-thumb.webp` under the web UI's static plates directory, plus a
-`SOURCES.md` recording exactly what was taken from where.
+`SOURCES.md` recording exactly what was taken from where. The set is staged and published
+whole: a failure part-way through leaves whatever was there before.
 
 Only `garden plants --fetch` calls this; nothing in the scheduler or the UIs touches the
 network for plates. Needs Pillow (`pip install "context-garden[plates]"`).
@@ -88,20 +89,30 @@ def prepare(raw: bytes, height: int = 900, thumb_height: int = 160) -> tuple[byt
     return encode(im, height), encode(im, thumb_height)
 
 
-def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, log=print) -> list[dict[str, Any]]:
+def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, log=print,
+              client: httpx.Client | None = None) -> list[dict[str, Any]]:
+    """Fetch every plate into a staging directory first; only a complete set, with its
+    SOURCES.md, is moved into `out_dir`, so a failure part-way leaves the UI as it was."""
+    import shutil
+    import tempfile
+
     out_dir.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".plates-", dir=out_dir.parent))
     rows: list[dict[str, Any]] = []
-    with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=60, follow_redirects=True) as client:
+    own_client = client is None
+    client = client or httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=60, follow_redirects=True)
+    try:
         for p in PLANTS:
             key = p["key"]
             if keys and key not in keys:
                 continue
             f = resolve(key, client)
             log(f"{key}: {f['name']} ({f.get('width')}x{f.get('height')})")
-            raw = client.get(f["url"]).content
-            main, thumb = prepare(raw, height=height)
-            (out_dir / f"{key}.webp").write_bytes(main)
-            (out_dir / f"{key}-thumb.webp").write_bytes(thumb)
+            r = client.get(f["url"])
+            r.raise_for_status()
+            main, thumb = prepare(r.content, height=height)
+            (staging / f"{key}.webp").write_bytes(main)
+            (staging / f"{key}-thumb.webp").write_bytes(thumb)
             meta = f.get("extmetadata") or {}
             rows.append({
                 "key": key, "latin": p["latin"], "title": f["name"], "url": f.get("descriptionurl") or f["url"],
@@ -109,7 +120,13 @@ def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, l
                 "license": _plain(meta.get("LicenseShortName", {}).get("value", "")) or "Public domain",
                 "bytes": len(main),
             })
-    (out_dir / "SOURCES.md").write_text(sources_markdown(rows), encoding="utf-8")
+        (staging / "SOURCES.md").write_text(sources_markdown(rows), encoding="utf-8")
+        for f in sorted(staging.iterdir()):
+            f.replace(out_dir / f.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        if own_client:
+            client.close()
     return rows
 
 
