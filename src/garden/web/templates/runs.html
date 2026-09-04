@@ -10,13 +10,13 @@
 </div>
 <div class="grid2">
   <div class="panel">
-    <table>
+    <div class="scroll"><table>
     <tr><th>task</th><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr>
     {% for r in runs %}
     <tr><td><a class="id" href="/tasks/{{ r.task_id }}">{{ r.task_id }}</a></td><td class="mono">{{ r.run_id }}</td><td>{{ r.mode }}</td><td>{{ r.status }}</td><td class="mono">{{ r.harness }}{% if r.model %}:{{ r.model }}{% endif %}</td>
       <td>{{ '%.0f' % r.elapsed_minutes() }}</td><td>{{ '{:,}'.format(r.brief_tokens) }}</td><td>{{ r.usage.get('input_tokens', '') }}</td><td>{{ r.usage.get('cache_read_input_tokens', '') }}</td><td>{{ r.usage.get('output_tokens', '') }}</td><td>{% if r.cost_usd is not none %}${{ '%.2f' % r.cost_usd }}{% endif %}</td></tr>
     {% else %}<tr><td colspan="9" class="faint">no runs yet</td></tr>{% endfor %}
-    </table>
+    </table></div>
   </div>
   <div class="panel"><div class="eyebrow">Scheduler log</div><div class="log" style="margin-top:6px">{% for e in events %}{{ e.at[11:19] }} {{ e.msg }}
 {% else %}nothing yet{% endfor %}</div></div>
