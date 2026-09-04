@@ -58,6 +58,53 @@ def test_svg():
     assert 'href="#st-fruit"' in out and 'href="#st-sprout"' in out and 'href="#st-seed"' in out
 
 
+def test_visible_ids_hides_done_and_cancelled():
+    from garden.graph import visible_ids
+
+    tasks = {t.id: t for t in [T("A", status="done"), T("B", ["A"]), T("C", status="cancelled")]}
+    assert visible_ids(tasks) == {"A", "B", "C"}
+    assert visible_ids(tasks, hide_done=True) == {"B"}
+
+
+def test_layers_hide_done_closes_gaps():
+    from garden.graph import layers, visible_ids
+
+    tasks = {t.id: t for t in [T("A-1", status="done"), T("B-2", ["A-1"]), T("C-3", ["B-2"])]}
+    vis = visible_ids(tasks, hide_done=True)
+    assert layers(tasks, vis) == {"B-2": 0, "C-3": 1}
+
+
+def test_svg_hide_done_relayouts_and_notes_hidden_dep():
+    from garden.graph import svg
+
+    tasks = {t.id: t for t in [T("A-1", status="done"), T("B-2", ["A-1"])]}
+    out = svg(tasks, hide_done=True)
+    assert out.count('<circle class="halo"') == 1
+    assert 'href="/tasks/B-2"' in out
+    assert "depends on hidden: A-1" in out
+    # B-2's only dependency is hidden, so it draws as a root (no vine reaching another node)
+    assert out.count("<path d=") == 1
+
+
+def test_svg_hide_done_all_hidden_returns_minimal():
+    from garden.graph import svg
+
+    tasks = {t.id: t for t in [T("A", status="done")]}
+    out = svg(tasks, hide_done=True)
+    assert out.startswith("<svg") and "halo" not in out
+
+
+def test_mermaid_visible_filters_nodes_and_edges():
+    from garden.graph import visible_ids
+
+    tasks = {t.id: t for t in [T("A-1", status="done"), T("B-2", ["A-1"])]}
+    vis = visible_ids(tasks, hide_done=True)
+    m = mermaid(tasks, visible=vis)
+    assert "A_1" not in m
+    assert "B_2" in m
+    assert "-->" not in m
+
+
 def test_every_status_renders_in_svg_and_mermaid():
     from garden.graph import svg
 

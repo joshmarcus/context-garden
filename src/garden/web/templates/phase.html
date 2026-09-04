@@ -16,6 +16,18 @@
   <div class="stack">
     <div class="panel"><div class="eyebrow">Progress</div><h3>Merged against scope</h3>{{ burnup|safe }}</div>
     <div class="panel">
+      <script>
+      (function() {
+        var key = "garden.phaseHideDone:{{ phase.product }}/{{ phase.name }}";
+        var hide = new URLSearchParams(location.search).get("hide");
+        if (hide === "done") localStorage.setItem(key, "done");
+        else localStorage.removeItem(key);
+      })();
+      </script>
+      <div class="actions" style="margin-bottom:10px">
+        {% if hide_done %}<a href="?" class="btn quiet" data-hide-toggle>show {{ hidden_count }} done</a>
+        {% else %}<a href="?hide=done" class="btn quiet" data-hide-toggle>hide {{ hidden_count }} done</a>{% endif %}
+      </div>
       <div class="scroll"><table>
       <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>brief</th><th>tokens</th><th>cost</th></tr>
       {% for t, eff, st, u, brief_tok in rows %}
@@ -27,7 +39,7 @@
         <td class="muted mono">~{{ '{:,}'.format(brief_tok) }}</td>
         <td class="muted mono" title="input / cache-read / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.cache_read_input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
         <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
-      {% else %}<tr><td colspan="13" class="faint">no tasks yet</td></tr>{% endfor %}
+      {% else %}<tr><td colspan="13" class="faint">{% if hide_done and hidden_count %}all {{ hidden_count }} tasks are done{% else %}no tasks yet{% endif %}</td></tr>{% endfor %}
       </table></div>
       <div class="actions" style="margin-top:12px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>

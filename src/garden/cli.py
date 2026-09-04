@@ -461,22 +461,26 @@ def trellis(
     fmt: str = typer.Option("text", "--format", "-f", help="text|mermaid|json"),
     product: str | None = typer.Option(None, "--product", "-p"),
     phase: str | None = typer.Option(None, "--phase"),
+    open_only: bool = typer.Option(False, "--open", help="hide done and cancelled tasks"),
 ):
     """The trellis: the dependency and stacking structure the work grows along (text, mermaid, or json)."""
-    from .graph import critical_path, effective_status, mermaid, topological_order
+    from .graph import critical_path, effective_status, mermaid, topological_order, visible_ids
 
     store = _store()
     tasks = {k: v for k, v in store.tasks().items()
              if (not product or v.product == product) and (not phase or v.phase == phase)}
+    stack = bool(store.config.get("stack", True))
+    vis = visible_ids(tasks, stack, open_only)
     if fmt == "mermaid":
-        print(mermaid(tasks))
+        print(mermaid(tasks, visible=vis))
         return
     if fmt == "json":
-        print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": effective_status(t, tasks)} for t in tasks.values()],
-                          "edges": [{"from": d, "to": t.id} for t in tasks.values() for d in t.depends_on]}, indent=2))
+        print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": effective_status(t, tasks)} for t in tasks.values() if t.id in vis],
+                          "edges": [{"from": d, "to": t.id} for t in tasks.values() if t.id in vis for d in t.depends_on if d in vis]}, indent=2))
         return
-    stack = bool(store.config.get("stack", True))
     for tid in topological_order(tasks):
+        if tid not in vis:
+            continue
         t = tasks[tid]
         arrows = f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""
         if t.discovered_from:

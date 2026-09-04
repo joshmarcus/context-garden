@@ -291,6 +291,12 @@ document.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click"
   try { await navigator.clipboard.writeText(t.value); } catch (err) { t.select(); document.execCommand("copy"); }
   const old = b.textContent; b.textContent = "Copied"; setTimeout(() => b.textContent = old, 1500);
 }));
+if (localStorage.getItem("garden.trellisHideDone") === "done") {
+  document.querySelectorAll('a[href^="/trellis"]:not([data-hide-toggle]), a[href^="/graph"]:not([data-hide-toggle])').forEach(a => {
+    const url = new URL(a.getAttribute("href"), location.origin);
+    if (!url.searchParams.has("hide")) { url.searchParams.set("hide", "done"); a.setAttribute("href", url.pathname + url.search); }
+  });
+}
 </script>
 </body>
 </html>
