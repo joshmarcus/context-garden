@@ -19,6 +19,19 @@ import httpx
 
 API = "https://api.github.com"
 
+# A bot comment matching one of these (case-insensitive substring) is a notice, not a
+# finding: a status line with nothing to act on. Overridden by a finding marker (a
+# `[P1]`/`[P2]` badge) or a diff-line comment, either of which means the bot did point at
+# code. A work setting can add its own bot's phrasing via `github.bot_notice_patterns`.
+DEFAULT_BOT_NOTICE_PATTERNS = [
+    "usage limit",
+    "no issues",
+    "looks good",
+    "reviewed and found nothing",
+]
+
+FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
+
 
 class GitHubError(Exception):
     pass
@@ -48,6 +61,9 @@ class Feedback:
     """Review feedback newer than a given timestamp, flattened to markdown."""
 
     items: list[dict[str, Any]] = field(default_factory=list)
+    # Bot comments that matched a notice pattern and carried no finding: not feedback,
+    # but worth a line in the task log so a human can see what was skipped and why.
+    ignored: list[dict[str, Any]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -91,10 +107,19 @@ def mark_garden_comment(body: str, run_id: str = "") -> str:
 
 
 class GitHub:
-    def __init__(self, use_gh: bool = True, token: str | None = None, bot_logins: list[str] | None = None):
+    def __init__(
+        self,
+        use_gh: bool = True,
+        token: str | None = None,
+        bot_logins: list[str] | None = None,
+        bot_notice_patterns: list[str] | None = None,
+    ):
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         self.gh = shutil.which("gh") if use_gh else None
         self.bot_logins = set(bot_logins or [])
+        self.bot_notice_patterns = [
+            str(p).lower() for p in (bot_notice_patterns if bot_notice_patterns is not None else DEFAULT_BOT_NOTICE_PATTERNS)
+        ]
         self._me: str | None = None
 
     @property
@@ -255,6 +280,7 @@ class GitHub:
         # `github.bot_logins` in config is the list of accounts to ignore.
         exclude = set(exclude_logins or set()) | self.bot_logins
         items: list[dict[str, Any]] = []
+        ignored: list[dict[str, Any]] = []
 
         def keep(author: str, created: str, body: str) -> bool:
             if not body.strip() or GARDEN_MARKER in body:
@@ -262,6 +288,13 @@ class GitHub:
             if author in exclude:
                 return False
             return created > since_iso if since_iso else True
+
+        def is_notice(author: str, body: str) -> bool:
+            """A bot comment with no finding: a notice pattern match, unless it points at code."""
+            if not author.endswith("[bot]") or FINDING_MARKER_RE.search(body):
+                return False
+            low = body.lower()
+            return any(p in low for p in self.bot_notice_patterns)
 
         if self.gh:
             reviews = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/reviews", "--paginate") or "[]")
@@ -279,17 +312,26 @@ class GitHub:
             if state == "CHANGES_REQUESTED" and (created > since_iso if since_iso else True) and author not in exclude:
                 items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
             elif keep(author, created, body):
-                items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
+                if is_notice(author, body):
+                    ignored.append({"author": author, "body": body, "created": created})
+                else:
+                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
         for c in comments:
             author = c.get("user", {}).get("login", "")
             if keep(author, c.get("created_at", ""), c.get("body", "")):
+                # a comment on a diff line always points at code, notice or not
                 items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
-            if keep(author, c.get("created_at", ""), c.get("body", "")):
-                items.append({"kind": "comment", "author": author, "body": c["body"], "created": c["created_at"]})
+            body = c.get("body", "")
+            if keep(author, c.get("created_at", ""), body):
+                if is_notice(author, body):
+                    ignored.append({"author": author, "body": body, "created": c["created_at"]})
+                else:
+                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))
-        return Feedback(items=items)
+        ignored.sort(key=lambda i: i.get("created", ""))
+        return Feedback(items=items, ignored=ignored)
 
     def update_pr(self, slug: str, number: int, title: str = "", body: str = "", base: str = "") -> None:
         if not title and not body and not base:
