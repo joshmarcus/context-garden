@@ -79,7 +79,7 @@ class Run:
             return 0.0
         start = dt.datetime.fromisoformat(self.started_at)
         end = dt.datetime.fromisoformat(self.finished_at) if self.finished_at else dt.datetime.now(dt.UTC)
-        return (end - start).total_seconds() / 60
+        return max(0.0, (end - start).total_seconds() / 60)
 
     def kill(self) -> None:
         if self.pid and _pid_alive(self.pid):

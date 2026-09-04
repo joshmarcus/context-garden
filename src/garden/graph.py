@@ -121,6 +121,7 @@ MERMAID_CLASS = {
     "in_review": "fill:#e2d9f3,stroke:#4b2e83,color:#333",
     "changes_requested": "fill:#ffe5d0,stroke:#b35c00,color:#333",
     "waiting_human": "fill:#fde2f3,stroke:#8a1c5c,color:#333",
+    "awaiting_triage": "fill:#e8dff8,stroke:#5b3fa8,color:#333",
     "done": "fill:#d4edda,stroke:#155724,color:#333",
     "failed": "fill:#f8d7da,stroke:#721c24,color:#333",
     "cancelled": "fill:#e9ecef,stroke:#6c757d,color:#999",
@@ -135,7 +136,7 @@ def mermaid(tasks: dict[str, Task], direction: str = "LR") -> str:
         if len(label) > 40:
             label = label[:37] + "..."
         lines.append(f'  {_mid(tid)}["{tid}<br/>{label}"]')
-        lines.append(f"  style {_mid(tid)} {MERMAID_CLASS[effective_status(t, tasks)]}")
+        lines.append(f"  style {_mid(tid)} {MERMAID_CLASS.get(effective_status(t, tasks), MERMAID_CLASS['draft'])}")
     for t in tasks.values():
         for d in t.depends_on:
             if d in tasks:
@@ -158,6 +159,7 @@ SVG_FILL = {
     "in_review": ("#e2d9f3", "#4b2e83"),
     "changes_requested": ("#ffe5d0", "#b35c00"),
     "waiting_human": ("#fde2f3", "#8a1c5c"),
+    "awaiting_triage": ("#e8dff8", "#5b3fa8"),
     "done": ("#d4edda", "#155724"),
     "failed": ("#f8d7da", "#721c24"),
     "cancelled": ("#e9ecef", "#6c757d"),
@@ -214,7 +216,7 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/") -> str:
             parts.append(f'<path d="M {x1:.0f} {y1:.0f} C {cx:.0f} {y1:.0f}, {cx:.0f} {y2:.0f}, {x2:.0f} {y2:.0f}" fill="none" stroke="#888" stroke-width="1.3"{dash} marker-end="url(#arrow)"/>')
     for tid, (x, y) in pos.items():
         t = tasks[tid]
-        fill, stroke = SVG_FILL[effective_status(t, tasks)]
+        fill, stroke = SVG_FILL.get(effective_status(t, tasks), SVG_FILL["draft"])
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
         parts.append(

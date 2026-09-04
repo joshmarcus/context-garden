@@ -28,6 +28,24 @@ Only four steps spend tokens: planning, working, reviewing, revising. Waiting is
 Python process sleeping, not an agent session polling. The model for each run is picked
 from the task's difficulty, so easy tasks run on cheap models.
 
+## Screenshots
+
+The Inbox is the home page: one row per decision, with its action inline.
+
+![Inbox](docs/screenshots/inbox-light.png)
+
+A task page: triage bar for the draft PR, usage across runs, the automated review, discovered work, and the timeline. Dark theme is designed separately, not inverted.
+
+![Task page, dark theme](docs/screenshots/task-dark.png)
+
+A phase: burn-up of merged work against scope, cost by difficulty tier, every tracked PR.
+
+![Phase page](docs/screenshots/phase-light.png)
+
+The trellis: dependencies left to right, dashed edges for discovered work.
+
+![Trellis](docs/screenshots/trellis-light.png)
+
 ## Install
 
 Python 3.11+.

@@ -47,3 +47,11 @@ def test_split_join():
 def test_default_branch():
     t = Task(path=Path("x"), id="CG-007", title="Add an Automated Review pass!")
     assert t.default_branch() == "garden/cg-007-add-an-automated-review-pass"
+
+
+def test_elapsed_minutes_never_negative(tmp_path):
+    from garden.runs import Run
+
+    r = Run(task_id="A", run_id="r", dir=str(tmp_path), runner="local",
+            started_at="2026-09-04T11:44:28.900000+00:00", finished_at="2026-09-04T11:44:28+00:00")
+    assert r.elapsed_minutes() == 0.0

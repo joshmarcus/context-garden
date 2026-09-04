@@ -54,3 +54,18 @@ def test_svg():
 
     out = svg(tasks)
     assert out.startswith("<svg") and 'href="/tasks/B-2"' in out and out.count("<rect") == 3 and out.count("marker-end") == 2
+
+
+def test_every_status_renders_in_svg_and_mermaid():
+    from garden.graph import svg
+
+    tasks = {}
+    prev = None
+    for i, st in enumerate(Status):
+        tid = f"S-{i}"
+        tasks[tid] = T(tid, [prev] if prev else (), status=st.value)
+        prev = tid
+    out = svg(tasks)
+    assert out.count("<rect") == len(list(Status))
+    m = mermaid(tasks)
+    assert m.count("style ") == len(list(Status))
