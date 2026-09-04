@@ -32,3 +32,30 @@ checks:
 harnesses:
   claude:
     models: {easy: haiku, medium: sonnet, hard: sonnet}   # cheaper tier map for work
+
+# How each product prepares its working environment. The runner runs `setup.command` once in
+# a fresh worktree (again only when the command changes), with `setup.env` added; `test`/`lint`
+# name the commands the brief gives the worker and the commands `checks.pre_pr` runs by default.
+# Nothing here assumes Python, pip, uv or a venv — a product sets whatever its stack needs.
+products:
+  webapp:                           # a Node product: npm for deps, make for the checks
+    repo: git@github.com:me/webapp.git
+    base_branch: main
+    id_prefix: WEB
+    setup:
+      command: "npm ci"             # runs in the fresh worktree before the worker
+      test: "make test"
+      lint: "make lint"
+      timeout_seconds: 900
+
+  ledger:                           # dependencies come from a company tool, not a public index
+    repo: git@github.com:me/ledger.git
+    base_branch: main
+    id_prefix: LGR
+    setup:
+      command: "acme-env install --frozen"   # your org's bootstrap; populates a company toolchain
+      env:
+        ACME_PROFILE: ci            # extra environment for setup, the worker and the checks
+        ACME_CACHE: /srv/acme/cache
+      test: "acme-env run -- ctest"
+      lint: "acme-env run -- clang-tidy src"

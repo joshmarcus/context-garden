@@ -23,8 +23,7 @@ OPERATING_RULES = """\
 {turn_cap_rule}- Do NOT edit files under `**/tasks/` in the context garden; task state is managed by the scheduler.
 - Work only in the directory you were started in: it is your checkout on your branch. Do not change into any other checkout of this repository.
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
-- Do NOT install packages into a shared environment or outside this worktree. The environment is prepared; run the product's own check commands from the product overview.
-- Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
+{env_rule}- Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
 - Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
 - Run the project's own fast checks (tests, lint, typecheck) before you finish. Fix what you broke.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
@@ -103,6 +102,25 @@ class Brief:
         reading_sections = {"reading", "reading_refs", "feedback"}
         chars = sum(v for k, v in self.sections.items() if k in reading_sections)
         return max(1, chars // 4)
+
+
+def _env_rule(setup: dict) -> str:
+    """The operating rule about the working environment: it is already prepared, so the worker
+    must not install packages or make a virtualenv, and here are the exact commands to run its
+    checks (from the product's `setup.test`/`setup.lint`). Nothing here names pip, uv or a venv
+    unless the product's own config does. Ends with a newline so it slots between rule lines."""
+    prepared = (
+        "- Your working environment is already prepared: do not install packages, create a "
+        "virtualenv, or run a package manager (the runner did any setup before you started)."
+    )
+    checks = []
+    for label, key in (("tests", "test"), ("lint", "lint")):
+        cmd = str((setup or {}).get(key) or "").strip()
+        if cmd:
+            checks.append(f"`{cmd}` ({label})")
+    if checks:
+        prepared += " Run the project's checks with " + " and ".join(checks) + " before you finish."
+    return prepared + "\n"
 
 
 def _read(p: Path) -> str:
@@ -187,6 +205,7 @@ def build_brief(
             base=base or cfg.product_base_branch(task.product),
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
+            env_rule=_env_rule(cfg.product_setup(task.product)),
         )
         sections.append(("rules", rules))
         if review_feedback:

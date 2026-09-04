@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runs import Run
-from .base import Runner, RunnerError
+from .base import Runner, RunnerError, setup_stamp
 
 REMOTE_SCRIPT = r"""
 set -e
@@ -62,6 +62,18 @@ GARDEN_BRIEF_EOF
 # itself a garden, find_root() walking up from the worktree would otherwise accept its
 # garden.yaml. GARDEN_ROOT points at a path with no garden.yaml, so any `garden` command refuses.
 export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
+# Prepare the environment per product config: extra env for setup, the worker and the checks,
+# then the setup command once per worktree (again only when it changes, tracked by a marker
+# kept beside the worktree so `git add -A` above cannot commit it). A setup failure fails the run.
+{setup_env}
+GARDEN_SETUP_CMD={setup_cmd}
+GARDEN_SETUP_STAMP={setup_stamp}
+GARDEN_SETUP_TIMEOUT={setup_timeout}
+GARDEN_SETUP_MARKER="$REPO/.garden-worktrees/.garden-setup-{task}"
+if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" != "$GARDEN_SETUP_STAMP" ]; then
+  if command -v timeout >/dev/null 2>&1; then GARDEN_SETUP_RUN="timeout $GARDEN_SETUP_TIMEOUT sh -c"; else GARDEN_SETUP_RUN="sh -c"; fi
+  if $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2; then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
+fi
 set +e
 {harness} < .garden-run/brief.md
 RC=$?
@@ -104,6 +116,16 @@ class SSHRunner(Runner):
                 return h
         raise RunnerError(f"unknown ssh host {name!r}")
 
+    def _setup_for(self, host: dict[str, Any]) -> dict[str, Any]:
+        """The product's `setup` block, with a per-host `setup` override merged on top
+        (env keys merge, other keys replace) so a host can differ in how it prepares the env."""
+        setup = dict(self.config.get("setup") or {})
+        override = host.get("setup")
+        if isinstance(override, dict) and override:
+            env = {**(setup.get("env") or {}), **(override.get("env") or {})}
+            setup = {**setup, **override, "env": env}
+        return setup
+
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         if self.harness is None:
             raise RunnerError("ssh runner needs a harness")
@@ -117,9 +139,17 @@ class SSHRunner(Runner):
         if "GARDEN_BRIEF_EOF" in brief_text:
             raise RunnerError("brief contains the heredoc delimiter")
         harness_cmd = self.harness_shell(run, None)
+        setup = self._setup_for(host)
+        setup_cmd = str(setup.get("command") or "").strip()
+        setup_env = "\n".join(
+            f"export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
+        )
         script = REMOTE_SCRIPT.format(
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
             brief=brief_text, harness=harness_cmd, run_id=run.run_id,
+            setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
+            setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
+            setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")

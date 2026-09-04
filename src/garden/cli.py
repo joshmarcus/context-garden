@@ -924,7 +924,10 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
     store = _store()
     t = _task(store, task_id)
     sched = _scheduler(store)
-    specs = list(store.config.get(f"checks.{stage}", []) or [])
+    # pre_pr goes through the same resolver as the automated gate: it falls back to the
+    # product's setup.test/setup.lint and merges setup.env, so the manual command agrees
+    # with what the scheduler actually runs. Other stages read checks.<stage> directly.
+    specs = sched._pre_pr_specs(t) if stage == "pre_pr" else list(store.config.get(f"checks.{stage}", []) or [])
     if not specs:
         err.print(f"no checks configured under checks.{stage}")
         raise typer.Exit(1)

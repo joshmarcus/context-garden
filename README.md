@@ -233,8 +233,10 @@ Borrowed from graph-based agent systems; all deterministic:
 - **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
   per contender on separate branches, has one comparison run score the PRs, keeps the
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.
-- **Checks without tokens.** `checks.pre_pr` commands (tests, lint) gate PR creation in
-  the worktree; `checks.ci` scripts or Python callables analyse red CI, feed the revise
+- **Checks without tokens.** `checks.pre_pr` commands gate PR creation in the worktree;
+  with none configured they default to the product's own `setup.test` and `setup.lint`
+  commands (run with `setup.env`), so a product's checks follow its stack, not a venv
+  assumption. `checks.ci` scripts or Python callables analyse red CI, feed the revise
   brief with the lines that matter, and rerun flaky jobs instead of spending a round. A
   GitHub Actions analyser ships as an optional plugin; per-environment overlays swap it
   for whatever CI you run elsewhere. Checks run with `GARDEN_EXEC_ROOT` set to the live
@@ -366,7 +368,23 @@ products:
     runner: local           # per-product overrides
     harness: claude
     # github: owner/name    # only if the origin remote isn't a github.com URL
+    setup:                  # how this product's working environment is prepared (all keys optional)
+      command: "uv sync --extra dev"   # run once in a fresh worktree before the worker; "" = nothing
+      env: {UV_PROJECT_ENVIRONMENT: .venv}   # added to the worker, the setup command and the checks
+      test: "uv run pytest -q -x"      # the brief tells the worker this; checks.pre_pr uses it
+      lint: "uv run ruff check src tests"
+      timeout_seconds: 600             # cap for the setup command
 ```
+
+The `setup` block is where "how do I install dependencies and run the checks" lives, per
+product. It assumes nothing about the stack: a Node product uses `command: npm ci` with
+`test: make test`; one whose dependencies come from a company tool uses that tool's bootstrap
+(see `examples/garden.work.yaml`). The runner runs `setup.command` once in a fresh worktree —
+again only when the command changes, tracked by a marker file beside the worktree — with
+`setup.env` added; a setup failure fails the run with the log attached, so it reads as an
+environment problem, not a worker fault. The brief tells the worker the environment is already
+prepared and gives it the exact `test` and `lint` commands. `setup` can be overridden in an
+environment overlay, and per host under `ssh.hosts[].setup`.
 
 ## Environments: home and work
 

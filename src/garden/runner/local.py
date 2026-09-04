@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
-from .base import Runner, RunnerError
+from .base import Runner, RunnerError, run_setup
 
 
 class LocalRunner(Runner):
@@ -34,6 +34,8 @@ class LocalRunner(Runner):
         if self.harness is None:
             raise RunnerError("local runner needs a harness")
         d = run.path
+        setup = dict(self.config.get("setup") or {})
+        run_setup(worktree, setup, log_path=d / "setup.log")  # prepare the env before the worker starts
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         final_path = d / "final.md"
@@ -48,6 +50,8 @@ class LocalRunner(Runner):
         )
         env = dict(os.environ)
         env.pop("CLAUDECODE", None)  # allow launching from inside another Claude Code session
+        for k, v in (setup.get("env") or {}).items():  # the prepared environment the worker runs in
+            env[str(k)] = str(v)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
         # Prevent the worker from finding and mutating the live garden: any `garden`
