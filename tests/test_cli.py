@@ -215,7 +215,7 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
-        assert "NOT LOGGED" in r.output
+        assert "NOT LOGGED" in " ".join(r.output.split())  # Rich wraps long lines; compare without line breaks
 
 
 def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
@@ -241,3 +241,14 @@ def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
         assert "missing user.name or user.email" in r.output
+
+
+def test_priority_and_difficulty_commands(garden):
+    from garden.store import Store
+
+    assert run(garden, "priority", "DM-001", "0").exit_code == 0
+    assert run(garden, "difficulty", "DM-001", "hard").exit_code == 0
+    assert run(garden, "difficulty", "DM-001", "extreme").exit_code == 1
+    t = Store(garden).task("DM-001")
+    assert t.priority == 0 and t.difficulty == "hard"
+    assert "difficulty medium -> hard" in t.body

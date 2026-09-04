@@ -34,6 +34,9 @@
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch"><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><button class="quiet">Set</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first"><label class="muted" for="priority">priority</label><input id="priority" name="note" type="number" value="{{ task.priority }}" style="width:64px"><button class="quiet">Set</button></form>
+
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if task.status.value in ('ready','draft','failed') and not task.pr %}<button class="quiet" data-toggle="trial-form">Model trial…</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button class="quiet">Mark done</button></form>{% endif %}

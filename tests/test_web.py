@@ -217,3 +217,19 @@ def test_pause_resume_web(garden):
     assert "dispatch paused" not in home
     config_page = c.get("/config").text
     assert "Pause dispatch" in config_page
+
+
+def test_priority_and_difficulty_from_the_task_page(garden):
+    from garden.store import Store
+
+    c = client(garden)
+    r = c.post("/tasks/DM-001/difficulty", data={"note": "hard"}, follow_redirects=False)
+    assert r.status_code == 303
+    r = c.post("/tasks/DM-001/priority", data={"note": "0"}, follow_redirects=False)
+    assert r.status_code == 303
+    t = Store(garden).task("DM-001")
+    assert t.difficulty == "hard" and t.priority == 0
+    assert "difficulty medium -> hard (web)" in t.body and "priority" in t.body
+    assert c.post("/tasks/DM-001/difficulty", data={"note": "extreme"}, follow_redirects=False).status_code == 400
+    page = c.get("/tasks/DM-001").text
+    assert 'name="note"' in page and 'value="hard" selected' in page
