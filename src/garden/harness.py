@@ -69,7 +69,37 @@ class Harness:
         return int(max_turns)
 
     # ---- command -----------------------------------------------------------
-    def command(self, model: str = "", final_path: Path | None = None, difficulty: str = "") -> list[str]:
+    def fence_settings(self, deny_paths: list[str] | None, worktree: Path | str | None) -> str:
+        """A `--settings` JSON payload that keeps a worker's writes inside its worktree.
+
+        `deny_paths` are directories a worker must never touch (the live garden, the product
+        clone): each becomes a `permissions.deny` rule for the file-editing tools and for the
+        obvious `Bash` escapes. Deny rules are evaluated before the `acceptEdits` mode, so an
+        edit inside the worktree still needs no prompt while an edit outside it is refused
+        (and in `-p` mode a refused edit simply fails). When the harness config sets
+        `sandbox: true` and a worktree is known, an OS-level sandbox confines every process's
+        writes to the worktree — belt to the deny rules' braces."""
+        deny: list[str] = []
+        for p in deny_paths or []:
+            ap = str(p).rstrip("/")
+            if not ap:
+                continue
+            rule_path = "//" + ap.lstrip("/")
+            for tool in ("Edit", "Write", "MultiEdit"):
+                deny.append(f"{tool}({rule_path}/**)")
+            deny.append(f"Bash(cd {ap}*)")
+            deny.append(f"Bash(git -C {ap}*)")
+        settings: dict[str, Any] = {}
+        if deny:
+            settings["permissions"] = {"deny": deny}
+        if worktree and self.cfg.get("sandbox"):
+            wt = str(worktree).rstrip("/")
+            settings["sandbox"] = {"enabled": True,
+                                   "filesystem": {"allowWrite": [wt, "$TMPDIR"], "denyWrite": ["//"]}}
+        return json.dumps(settings, separators=(",", ":")) if settings else ""
+
+    def command(self, model: str = "", final_path: Path | None = None, difficulty: str = "",
+                deny_paths: list[str] | None = None, worktree: Path | str | None = None) -> list[str]:
         """Argv for one headless run. The brief arrives on stdin; cwd is the worktree."""
         if self.cfg.get("command"):
             # fully custom: a list with {model} / {final} placeholders
@@ -100,6 +130,9 @@ class Harness:
                 tools = self.cfg.get("allowed_tools") or []
                 if tools:
                     cmd += ["--allowedTools", ",".join(tools)]
+                fence = self.fence_settings(deny_paths, worktree)
+                if fence:
+                    cmd += ["--settings", fence]
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]
             cmd.append("Carry out the brief that follows. It is the complete specification of your job.")
             return cmd
@@ -143,17 +176,18 @@ class Harness:
     def can_resume(self) -> bool:
         return bool(self.cfg.get("resume")) and (self.output in ("claude-json", "codex-jsonl") or bool(self.cfg.get("resume_command")))
 
-    def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None, difficulty: str = "") -> list[str]:
+    def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None, difficulty: str = "",
+                       deny_paths: list[str] | None = None, worktree: Path | str | None = None) -> list[str]:
         """Argv that continues a previous session; the follow-up prompt arrives on stdin."""
         if self.cfg.get("resume_command"):
             return [str(a).replace("{session}", session_id).replace("{model}", model).replace("{final}", str(final_path or ""))
                     for a in self.cfg["resume_command"] if str(a)]
         if self.output == "claude-json":
-            cmd = self.command(model, final_path, difficulty)
+            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree)
             cmd = cmd[:-1] + ["--resume", session_id, "Continue the task with the answer that follows."]
             return cmd
         if self.output == "codex-jsonl":
-            cmd = self.command(model, final_path, difficulty)
+            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree)
             # codex exec resume <id> [PROMPT]; keep the flags, prompt from stdin
             i = cmd.index("exec") + 1
             cmd = cmd[:i] + ["resume", session_id] + cmd[i:]

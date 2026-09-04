@@ -18,13 +18,18 @@ from .base import Runner, RunnerError, run_setup
 class LocalRunner(Runner):
     name = "local"
 
-    def harness_shell(self, run: Run, final_path: Path | None) -> str:
-        """Build the shell command with the harness binary resolved to its absolute path."""
+    def harness_shell(self, run: Run, worktree: Path, final_path: Path | None) -> str:
+        """Build the shell command with the harness binary resolved to its absolute path.
+
+        The worktree and `run.fence_paths` are handed to the harness so it can scope the
+        worker's writes to the worktree and deny edits to the live garden and the product
+        clone (see Harness.fence_settings); the runner's fence, not the brief's."""
         assert self.harness is not None
+        deny = list(run.fence_paths or [])
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(run.session_id, run.model, final_path)
+            cmd = self.harness.resume_command(run.session_id, run.model, final_path, deny_paths=deny, worktree=worktree)
         else:
-            cmd = self.harness.command(run.model, final_path)
+            cmd = self.harness.command(run.model, final_path, deny_paths=deny, worktree=worktree)
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
@@ -39,7 +44,7 @@ class LocalRunner(Runner):
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         final_path = d / "final.md"
-        inner = self.harness_shell(run, final_path)
+        inner = self.harness_shell(run, worktree, final_path)
         timeout_min = int(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
             inner = f"timeout {timeout_min * 60} {inner}"
