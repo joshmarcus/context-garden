@@ -19,9 +19,9 @@
   <p style="margin:6px 0 10px">Skim the PR{% if state.last_review %}; the automated review said <b>{{ state.last_review.verdict.replace('_',' ') }}</b>: {{ state.last_review.summary }}{% endif %}. Mark it ready for a full review, or send it back with what to change.</p>
   <div class="actions">
     <form class="inline" method="post" action="/tasks/{{ task.id }}/triage-ready"><button class="primary">Ready for review</button></form>
-    <form class="inline" method="post" action="/tasks/{{ task.id }}/triage-changes" style="display:inline-flex;gap:6px"><input type="text" name="note" placeholder="what to change" required style="width:280px"><button>Send back</button></form>
     <a class="btn quiet" href="{{ task.pr }}" target="_blank">Open PR ↗</a>
   </div>
+  <form method="post" action="/tasks/{{ task.id }}/triage-changes" style="margin-top:10px"><textarea name="note" placeholder="What to change: what is wrong, where, and what to do instead. This becomes the next revise brief." required></textarea><div class="actions" style="margin-top:8px"><button>Send back</button></div></form>
 </div>
 {% endif %}
 {% if state.needs_human %}<div class="warn"><b>Needs a decision:</b> {{ state.needs_human }}. Fix or decide, then continue the loop.</div>{% endif %}
