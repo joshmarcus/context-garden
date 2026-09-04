@@ -36,7 +36,7 @@ from .notify import notify, should_notify
 from .personas import parse_persona, phase_brief, pr_brief, report_markdown, report_path, valid_name
 from .review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from .runner import get_runner
-from .runner.base import Runner
+from .runner.base import Runner, RunnerError, run_setup
 from .runs import Run, RunStore
 from .store import Store
 from .trials import TrialLog, compare_brief, parse_compare, parse_contender, ranking_markdown
@@ -570,6 +570,15 @@ class Scheduler:
         specs = self._pre_pr_specs(task)
         if not specs or not worktree.exists():
             return []
+        # Prepare this worktree's environment before the checks run. For a local run setup
+        # already ran here (the marker short-circuits it); for a remote run the branch was just
+        # materialised into a fresh local worktree, so its setup artifacts (e.g. node_modules)
+        # are absent — run setup now so the default test/lint checks find the same prepared env.
+        setup = self.cfg.product_setup(task.product)
+        try:
+            run_setup(worktree, setup, log_path=worktree.parent / f".garden-setup-{worktree.name}.log")
+        except RunnerError as e:
+            return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
         results = run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
                              timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
         for r in results:
@@ -1166,7 +1175,13 @@ class Scheduler:
             wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
             run.worktree = str(wt)
         run.save()
-        runner.start(run, wt or self.store.root, text)
+        try:
+            runner.start(run, wt or self.store.root, text)
+        except Exception as e:  # setup/start failed: mark this run failed so it stops
+            run.status = "failed"    # counting against active() (a leaked slot) and re-raise
+            run.error = str(e)
+            run.save()
+            raise
         if not branch_override:
             task.branch = branch
         task.attempts += 1 if mode == "work" else 0
