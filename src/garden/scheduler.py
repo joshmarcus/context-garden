@@ -995,33 +995,46 @@ class Scheduler:
             st.pop("fence", None)
 
     @staticmethod
-    def _worker_named(transcript: str, repo: Path, rel: str) -> bool:
+    def _worker_named(transcript: str, repo: Path, rel: str, worktree: Path | None = None) -> bool:
         """True if the worker's transcript names this path, so the change is attributable to
         the worker rather than to a person editing the live garden or the scheduler's own git.
 
         `claude`'s output (a single result JSON, or stream-json tool events) carries the
         worker's `Edit`/`Write` `file_path`, the `Bash` commands it ran, and its final
         message — all as substrings of stdout. A path the worker touched appears there by its
-        absolute form; a path a person changed while the run was live does not."""
+        absolute form; a path a person changed while the run was live does not. We also match
+        the path as it would be written relative to the worktree or its parent (the worker's
+        likely cwd), so a fenced path named across tool calls as `../../../garden.yaml` is
+        still attributed. Matching is always by a full path — never a bare filename — so a
+        person's edit that merely shares a name is not swept up."""
         if not transcript:
             return False
-        candidates = {str(repo / rel)}
+        target = repo / rel
+        candidates = {str(target)}
         try:
-            candidates.add(str((repo / rel).resolve()))
+            candidates.add(str(target.resolve()))
         except OSError:
             pass
+        anchors = [worktree, worktree.parent] if worktree else []
+        for anchor in anchors:
+            try:
+                candidates.add(os.path.relpath(str(target), str(anchor)))
+            except (OSError, ValueError):
+                pass
         return any(c in transcript for c in candidates)
 
     def _fence_check(self, task: Task, run: Run | None = None) -> list[dict[str, Any]]:
         """Compare each guarded repo against its dispatch snapshot; revert and report only the
         writes the worker's own transcript names. Task files and .garden/ are the scheduler's
         own and are ignored; so is anything the worker did not name — a person editing the live
-        garden while a run is live, or a HEAD the scheduler's own `git fetch` advanced. Those
-        are reported on the card and left in place, never reverted (the reviewer's ask on #57)."""
+        garden while a run is live, or a HEAD the scheduler's own `git fetch` advanced. Only a
+        path the worker's transcript names is reverted; a moved HEAD alone is not an escape, so
+        an un-attributed change is reported on the card and left in place."""
         snap = self.state.get(task.id).pop("fence", None)
         if not snap:
             return []
         transcript = run.stdout_text() if run is not None else ""
+        worktree = self.worktree_for(task)
         violations: list[dict[str, Any]] = []
         for path_str, before in snap.items():
             path = Path(path_str)
@@ -1038,7 +1051,7 @@ class Scheduler:
                 # A HEAD move (or write) that only touched task files or .garden/ is the
                 # scheduler's own (e.g. `garden sync`): not a worker escape.
                 continue
-            attributed = [p for p in changed if self._worker_named(transcript, path, p)]
+            attributed = [p for p in changed if self._worker_named(transcript, path, p, worktree)]
             foreign = [p for p in changed if p not in attributed]
             if not attributed:
                 # Nothing here is the worker's: a person's edit to the live garden, or a HEAD

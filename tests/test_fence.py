@@ -5,6 +5,7 @@ through to the live garden or the product clone and fails the run with a card fo
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -154,7 +155,8 @@ def test_fence_ignores_scheduler_owned_commits(sched, tmp_path):
 def test_fence_leaves_changes_the_worker_did_not_make(sched, tmp_path):
     """A person edits the live garden (or a `git fetch` advances a clone) while a run is live.
     The worker's transcript never names those paths, so the fence must not revert them or fail
-    the run — only writes the worker itself named are the worker's (reviewer's ask on #57)."""
+    the run — only a path the worker's transcript names is reverted, and a moved HEAD alone is
+    not an escape."""
     clone = tmp_path / "repo"
     task = sched.store.task("DM-001")
 
@@ -187,6 +189,23 @@ def test_fence_reports_foreign_changes_alongside_the_reverted_ones(sched, tmp_pa
     assert violations[0]["foreign"] == ["person.txt"]    # reported, left in place
     assert not (clone / "worker.py").exists()             # the escape is undone
     assert (clone / "person.txt").read_text() == "a person's edit\n"  # left alone
+
+
+def test_fence_attributes_paths_named_relative_to_the_worktree(sched, tmp_path):
+    """A worker that names a fenced path relative to its worktree (its cwd) rather than by an
+    absolute path is still attributed and reverted; matching is not limited to absolute forms."""
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+    wt = sched.worktree_for(task)
+
+    sched._fence_snapshot(task)
+    (clone / "rogue.py").write_text("x = 1\n")
+    rel = os.path.relpath(str(clone / "rogue.py"), str(wt))  # e.g. ../../../repo/rogue.py
+    assert not os.path.isabs(rel)
+    run = _run_naming(sched, "DM-001", rel)
+    violations = sched._fence_check(task, run)
+    assert violations and "rogue.py" in violations[0]["files"]
+    assert not (clone / "rogue.py").exists()  # the escape is undone
 
 
 # ---- first line of defence: the harness deny rules ------------------------
