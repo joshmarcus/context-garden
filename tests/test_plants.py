@@ -1,7 +1,17 @@
 """The botanical system: plants per phase, growth-stage glyphs, goals frontmatter."""
 
 from garden.model import goals_text
-from garden.plants import DEFS, PLANTS, STAGE, assign_plant, plant_svg, roman, stage_svg, stage_word
+from garden.plants import (
+    DEFS,
+    PLANTS,
+    STAGE,
+    assign_plant,
+    plant_svg,
+    positional_plant,
+    roman,
+    stage_svg,
+    stage_word,
+)
 from garden.store import Store
 
 
@@ -9,6 +19,10 @@ def test_roman_and_assignment():
     assert [roman(n) for n in (1, 2, 4, 9, 12)] == ["I", "II", "IV", "IX", "XII"]
     assert assign_plant([]) == "pea" and assign_plant(["pea"]) == "bramble" and assign_plant(["pea", "bramble", "foxglove", "fern", "poppy"]) == "pea"
     assert len({p["key"] for p in PLANTS}) == len(PLANTS)
+    # a phase without a plant of its own keeps its positional plant whatever the others pin
+    assert positional_plant(1, ["poppy"]) == "bramble"
+    assert positional_plant(1, ["bramble"]) == "foxglove"  # pinned elsewhere: the next free one
+    assert positional_plant(5, ["pea", "bramble", "foxglove", "fern", "poppy"]) == "pea"  # wraps
 
 
 def test_drawings_cover_every_status_and_plant():
@@ -34,6 +48,11 @@ def test_phases_get_plants_by_position_or_frontmatter(garden):
     store.invalidate()
     p2 = store.phase("demo", "p2")
     assert p2.plant == "poppy" and p2.plate == "VII" and p2.common == "corn poppy"
+    # pinning p2 does not move p1, and a later phase without frontmatter stays positional
+    assert store.phase("demo", "p1").plant == "pea"
+    (garden / "demo" / "p3" / "tasks").mkdir(parents=True)
+    store.invalidate()
+    assert store.phase("demo", "p3").plant == "foxglove" and store.phase("demo", "p3").plate == "III"
     assert goals_text(p2.goals_path) == "# p2\n\nGoals."
     # frontmatter never reaches the brief or the planner
     from garden.brief import build_brief
@@ -57,6 +76,12 @@ def test_new_phase_assigns_next_plant(garden):
     new_phase(store, "demo", "p4", plant="fern")
     store.invalidate()
     assert store.phase("demo", "p4").plant == "fern"
+    # a mistyped plant is an error, and nothing is scaffolded
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown plant 'fernn'"):
+        new_phase(store, "demo", "p5", plant="fernn")
+    assert not (garden / "demo" / "p5").exists()
 
 
 def test_background_vine_is_generated_from_the_shared_symbols():

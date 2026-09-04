@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import Config, find_root
 from .model import Phase, Product, Task, now_iso, split_frontmatter
-from .plants import PLANT_BY_KEY, PLANTS, roman
+from .plants import PLANT_BY_KEY, positional_plant, roman
 
 SKIP_DIRS = {".git", ".garden", ".venv", "node_modules", "src", "tests", "principles", ".claude"}
 
@@ -71,13 +71,14 @@ class Store:
                         meta=meta,
                     )
                 )
-            # botanical emblems: explicit in goals.md frontmatter, else assigned by position
+            # botanical emblems: explicit in goals.md frontmatter, else by position (skipping a
+            # plant another phase has pinned, so one phase's choice never moves the others)
             taken = [ph.plant for ph in phases if ph.plant in PLANT_BY_KEY]
             for i, ph in enumerate(phases):
                 if not ph.plate:
                     ph.plate = roman(i + 1)
                 if ph.plant not in PLANT_BY_KEY:
-                    ph.plant = next((p["key"] for p in PLANTS if p["key"] not in taken), PLANTS[i % len(PLANTS)]["key"])
+                    ph.plant = positional_plant(i, taken)
                     taken.append(ph.plant)
             overview = d / "product.md"
             out.append(

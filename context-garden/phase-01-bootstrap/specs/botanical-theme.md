@@ -14,8 +14,9 @@ phase page (a mounted sheet with tape, a typed label of the phase's facts and an
 
 - `plant:` (and optional `latin:`, `plate:`) in the YAML frontmatter of `goals.md`;
   `garden new-phase` writes it, choosing the next unused plant in the product
-  (`--plant` overrides). Phases without frontmatter get plants by position, so existing
-  gardens need no edits. The frontmatter is stripped from briefs and planner prompts.
+  (`--plant` overrides; an unknown name is an error). Phases without frontmatter get plants
+  by position, skipping a plant another phase has pinned, so existing gardens need no edits
+  and pinning one phase's plant never moves the others'. The frontmatter is stripped from briefs and planner prompts.
 - The seed packet, in order: garden pea (*Pisum sativum*), bramble (*Rubus fruticosus*),
   foxglove (*Digitalis purpurea*), male fern (*Dryopteris filix-mas*), corn poppy
   (*Papaver rhoeas*). A product with more phases wraps around; the plate number still

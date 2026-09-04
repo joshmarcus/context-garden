@@ -99,7 +99,12 @@ def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Bota
     from .scaffold import new_phase as _nph
 
     store = _store()
-    for p in _nph(store, product, phase, plant=plant):
+    try:
+        created = _nph(store, product, phase, plant=plant)
+    except ValueError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    for p in created:
         console.print(f"created {p}")
     store.invalidate()
     try:
