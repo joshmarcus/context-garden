@@ -17,6 +17,21 @@ FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_garden_root(monkeypatch):
+    """Strip any GARDEN_ROOT inherited from the process environment before each test.
+
+    When this suite itself runs as the pre-PR `tests` check (see garden.checks.run_check),
+    the check runner sets GARDEN_ROOT in the subprocess environment to a non-existent
+    sentinel so a check command can't act on the live garden. That sentinel then leaks into
+    every test in this process, and find_root() raises on it regardless of cwd — breaking
+    any test that calls find_root() (directly, or via Store(root=None)) without first
+    managing GARDEN_ROOT itself. Tests that exercise the GARDEN_ROOT guard set it explicitly
+    via monkeypatch, which layers on top of this baseline.
+    """
+    monkeypatch.delenv("GARDEN_ROOT", raising=False)
+
+
 def git(*args, cwd):
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args], cwd=cwd, check=True,
                    capture_output=True, text=True)
