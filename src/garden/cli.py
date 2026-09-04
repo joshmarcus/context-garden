@@ -1447,11 +1447,13 @@ def runs(task_id: str | None = typer.Argument(None)):
 
     store = _store()
     rs = RunStore(store.config.garden_dir)
+    unreaped = _scheduler(store).unreaped_run_ids()
     table = Table()
     for c in ("task", "run", "mode", "status", "runner", "min", "brief tok", "in", "cache-read", "out", "cost"):
         table.add_column(c)
     for r in (rs.runs_for(task_id) if task_id else rs.all_runs()):
-        table.add_row(r.task_id, r.run_id, r.mode, r.status, r.runner, f"{r.elapsed_minutes():.0f}", str(r.brief_tokens),
+        status = "finished, not yet reaped" if r.run_id in unreaped else r.status
+        table.add_row(r.task_id, r.run_id, r.mode, status, r.runner, f"{r.elapsed_minutes():.0f}", str(r.brief_tokens),
                       str(r.usage.get("input_tokens", "")), str(r.usage.get("cache_read_input_tokens", "")),
                       str(r.usage.get("output_tokens", "")),
                       f"${r.cost_usd:.2f}" if r.cost_usd is not None else "")

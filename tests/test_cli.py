@@ -98,6 +98,30 @@ def test_plan_import(garden, tmp_path):
     assert r.exit_code == 0 and "Imported" in r.output
 
 
+def test_runs_shows_unreaped_finished_run(garden, monkeypatch):
+    """CG-083: a run whose record is done while its task is still `running` (an
+    interrupted reap) shows up as finished-but-unreaped, not as a plain `done`
+    row that looks identical to a properly reaped run."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    rs = RunStore(garden / ".garden")
+    r0 = rs.new_run("DM-001", "local", "work")
+    r0.status = "done"
+    r0.save()
+
+    store = Store(garden)
+    t = store.task("DM-001")
+    t.status = Status.RUNNING
+    store.save(t)
+
+    monkeypatch.setenv("COLUMNS", "200")  # wide enough that Rich doesn't wrap/truncate the status cell
+    r = run(garden, "runs")
+    assert r.exit_code == 0, r.output
+    assert "finished, not yet reaped" in " ".join(r.output.split())
+
+
 def test_friction(garden):
     from garden.runs import RunStore
 
