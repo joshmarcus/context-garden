@@ -21,6 +21,7 @@
   --body:"Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --mono:"Courier Prime", "Courier New", Courier, monospace;
   --radius:2px; --shadow:0 1px 0 #fff inset, 0 6px 18px -12px rgba(0,0,0,.4);
+  --vine-opacity:.17;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   color-scheme: dark;
@@ -32,6 +33,7 @@
   --sp-ink:#cfcfa8; --leaf:#8f8f5a; --leaf-tint:#8f8f5a; --hatch:#cfcfa8; --vein:#b3b385; --petal:#b8ab90; --petal-tint:#b8ab90; --petal2:#cbbfa6; --pea:#a9a97a;
   --berry:#5a4646; --berry-tint:#5a4646; --berry2:#8e5a4c; --poppy:#b0705f; --seed:#a08a63; --wilt:#a3957a; --pressed:#9a9a72; --pin:#e07a6e; --paper:#2a2e29;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
+  --vine-opacity:.13;
 }}
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -43,6 +45,7 @@
   --sp-ink:#cfcfa8; --leaf:#8f8f5a; --leaf-tint:#8f8f5a; --hatch:#cfcfa8; --vein:#b3b385; --petal:#b8ab90; --petal-tint:#b8ab90; --petal2:#cbbfa6; --pea:#a9a97a;
   --berry:#5a4646; --berry-tint:#5a4646; --berry2:#8e5a4c; --poppy:#b0705f; --seed:#a08a63; --wilt:#a3957a; --pressed:#9a9a72; --pin:#e07a6e; --paper:#2a2e29;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
+  --vine-opacity:.13;
 }
 * { box-sizing:border-box; }
 html { background:var(--ground); }
@@ -69,8 +72,13 @@ svg.stage { --ink:var(--sp-ink); vertical-align:middle; flex:none; }
 .state.s-draft{--c:var(--s-draft)} .state.s-blocked{--c:var(--s-blocked)} .state.s-ready{--c:var(--s-ready)} .state.s-running{--c:var(--s-running)} .state.s-waiting_human{--c:var(--s-waiting_human)} .state.s-awaiting_triage{--c:var(--s-awaiting_triage)} .state.s-in_review{--c:var(--s-in_review)} .state.s-changes_requested{--c:var(--s-changes_requested)} .state.s-done{--c:var(--s-done)} .state.s-failed{--c:var(--s-failed)} .state.s-cancelled{--c:var(--s-cancelled)}
 .state .stage-word { color:var(--muted); font-style:italic; font-family:var(--body); font-size:12.5px; }
 
+/* ---- the background vine: fixed to the bottom right, behind everything ------------- */
+svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw); height:auto; z-index:0; pointer-events:none; user-select:none;
+  opacity:var(--vine-opacity); --ink:var(--sp-ink); --leaf:var(--leaf-tint); --vein:var(--vein); --hatch:var(--hatch); }
+@media (max-width: 1000px), print { svg.bg-vine { display:none; } }
+
 /* ---- shell: rail + main ----------------------------------------------------------- */
-.shell { display:grid; grid-template-columns: 236px 1fr; min-height:100vh; }
+.shell { display:grid; grid-template-columns: 236px 1fr; min-height:100vh; position:relative; z-index:1; }
 .rail { position:sticky; top:0; height:100vh; overflow:auto; padding:22px 16px; border-right:1px solid var(--line); background:var(--surface-2); display:flex; flex-direction:column; gap:22px; }
 .wordmark { font:700 13px/1.4 var(--mono); letter-spacing:.14em; text-transform:uppercase; text-decoration:none; color:var(--ink); }
 .wordmark small { display:block; font-weight:400; letter-spacing:.08em; color:var(--muted); font-size:10.5px; text-transform:none; }
@@ -210,6 +218,7 @@ details[open] > summary::before { content:"▾ "; }
 </head>
 <body>
 {{ DEFS|safe }}
+{{ VINE }}
 <div class="shell">
 <aside class="rail">
   <a class="wordmark" href="/">{{ garden_name }}<small>context garden</small></a>

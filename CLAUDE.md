@@ -13,7 +13,8 @@ context files. This repo is also its own first product (`context-garden/`).
 
 ## Design docs
 
-`docs/design.md` (ideas, vocabulary, architecture, the loop) and `docs/roadmap.md`. Per-feature
+`docs/design.md` (ideas, vocabulary, the loop), `docs/architecture.md` (how the pieces fit),
+`docs/worker-protocol.md` (scheduler to worker, step by step) and `docs/roadmap.md`. Per-feature
 specs under `context-garden/phase-01-bootstrap/specs/`.
 
 ## Where things are

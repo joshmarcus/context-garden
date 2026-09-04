@@ -104,3 +104,4 @@ def test_drawings_render_unescaped(garden):
     phase = c.get("/phases/demo/p1").text
     assert '<use href="#pea"/>' in phase
     assert "Plate I" in phase
+    assert phase.count('class="bg-vine"') == 1  # the background vine, once per page

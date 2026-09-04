@@ -8,6 +8,7 @@ light and dark.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # Assigned to phases in this order, per product; a product with more phases than plants
@@ -171,3 +172,61 @@ def stage_word(status: str) -> str:
 def describe(plant: str, plate: str) -> dict[str, Any]:
     info = plant_info(plant)
     return {"key": info["key"], "latin": info["latin"], "common": info["common"], "note": info["note"], "plate": plate}
+
+
+# ---- the background vine ------------------------------------------------------------
+# One climbing stem drawn once per page behind the content: it enters from the bottom right
+# of the viewport and curves up and to the left. Leaves and tendrils reuse the pea's symbols,
+# placed along two cubic curves; opacity and colour come from the theme, so it stays faint.
+_VINE_SEGMENTS = [
+    ((292.0, 440.0), (312.0, 352.0), (228.0, 300.0), (246.0, 226.0)),
+    ((246.0, 226.0), (266.0, 152.0), (156.0, 44.0), (44.0, 58.0)),
+]
+
+
+def _bezier(seg: tuple, t: float) -> tuple[float, float]:
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = seg
+    u = 1 - t
+    return (u ** 3 * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t ** 3 * x3,
+            u ** 3 * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t ** 3 * y3)
+
+
+def _tangent(seg: tuple, t: float) -> float:
+    """Direction of travel along the curve at t, in degrees (SVG coordinates)."""
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = seg
+    u = 1 - t
+    dx = 3 * u * u * (x1 - x0) + 6 * u * t * (x2 - x1) + 3 * t * t * (x3 - x2)
+    dy = 3 * u * u * (y1 - y0) + 6 * u * t * (y2 - y1) + 3 * t * t * (y3 - y2)
+    return math.degrees(math.atan2(dy, dx))
+
+
+def _along(s: float) -> tuple[float, float, float]:
+    """A point and tangent for s in [0, 1] over both segments."""
+    seg, t = (_VINE_SEGMENTS[0], s * 2) if s < 0.5 else (_VINE_SEGMENTS[1], (s - 0.5) * 2)
+    x, y = _bezier(seg, t)
+    return x, y, _tangent(seg, t)
+
+
+def vine_svg(width: int = 500, cls: str = "bg-vine") -> str:
+    """The background vine as one inline SVG (viewBox 300 x 440, rendered `width` wide)."""
+    parts: list[str] = []
+    d = "M{:.0f} {:.0f}".format(*_VINE_SEGMENTS[0][0])
+    for seg in _VINE_SEGMENTS:
+        d += " C{:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f}".format(*seg[1], *seg[2], *seg[3])
+    parts.append(f'<path class="stem" d="{d}" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round"/>')
+    parts.append(f'<path d="{d}" fill="none" stroke="var(--hatch)" stroke-width="0.6" stroke-dasharray="1.5 2.5" transform="translate(-3 0)"/>')
+    n = 13
+    for i in range(n):
+        s = 0.06 + 0.86 * i / (n - 1)
+        x, y, ang = _along(s)
+        side = 1 if i % 2 else -1
+        scale = 1.55 - 1.0 * (i / (n - 1))
+        parts.append(f'<use href="#lf" transform="translate({x:.1f} {y:.1f}) rotate({ang + side * 62:.1f}) scale({scale:.2f})"/>')
+        if i in (3, 8):
+            parts.append(f'<use href="#tendril" transform="translate({x:.1f} {y:.1f}) rotate({ang - side * 40:.1f}) scale({scale * 0.8:.2f})"/>')
+    tx, ty, tang = _along(1.0)
+    parts.append(f'<use href="#tendril" transform="translate({tx:.1f} {ty:.1f}) rotate({tang - 20:.1f}) scale(1.1)"/>')
+    parts.append(f'<use href="#tendril" transform="translate({tx:.1f} {ty:.1f}) scale(-1 1) rotate({-tang - 150:.1f}) scale(0.8)"/>')
+    height = round(width * 440 / 300)
+    return (f'<svg class="{cls}" viewBox="0 0 300 440" width="{width}" height="{height}" aria-hidden="true" focusable="false">'
+            + "".join(parts) + "</svg>")

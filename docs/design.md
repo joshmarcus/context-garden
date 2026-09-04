@@ -1,7 +1,9 @@
 # context-garden: design
 
-This is the high-level design. Per-feature specs live under
-`context-garden/phase-01-bootstrap/specs/`; the roadmap is `docs/roadmap.md`.
+This is the high-level design: the idea and the loop. `docs/architecture.md` describes how
+the pieces fit and `docs/worker-protocol.md` how the scheduler and a worker communicate.
+Per-feature specs live under `context-garden/phase-01-bootstrap/specs/`; the roadmap is
+`docs/roadmap.md`.
 
 ## The idea
 

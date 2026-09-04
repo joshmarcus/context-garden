@@ -57,3 +57,14 @@ def test_new_phase_assigns_next_plant(garden):
     new_phase(store, "demo", "p4", plant="fern")
     store.invalidate()
     assert store.phase("demo", "p4").plant == "fern"
+
+
+def test_background_vine_is_generated_from_the_shared_symbols():
+    from garden.plants import vine_svg
+
+    svg = vine_svg()
+    assert svg.startswith('<svg class="bg-vine" viewBox="0 0 300 440"')
+    assert svg.count('<use href="#lf"') == 13
+    assert '<use href="#tendril"' in svg
+    assert 'aria-hidden="true"' in svg
+    assert vine_svg(300).count("<path") == 2

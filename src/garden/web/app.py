@@ -31,7 +31,7 @@ from ..graph import (
 )
 from ..inbox import build_inbox, running_now
 from ..model import STATUS_ORDER, Status, now_iso
-from ..plants import DEFS, plant_info, plant_svg, stage_svg, stage_word
+from ..plants import DEFS, plant_info, plant_svg, stage_svg, stage_word, vine_svg
 from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -97,6 +97,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["statuses"] = STATUS_ORDER
     templates.env.globals["DEFS"] = DEFS
+    templates.env.globals["VINE"] = Markup(vine_svg())
     # The drawings are trusted SVG built from fixed symbols; mark them safe so Jinja does not escape them.
     templates.env.globals["plant"] = lambda *a, **k: Markup(plant_svg(*a, **k))
     templates.env.globals["stage"] = lambda *a, **k: Markup(stage_svg(*a, **k))

@@ -42,3 +42,13 @@ direction without redrawing. No image files are involved.
 `graph.svg` draws the dependency graph as a lattice with the work climbing it: tasks are
 stage glyphs at lattice crossings, dependencies are vine between them, tasks without
 dependencies rise from the ground, and discovered work hangs from a dashed tendril.
+
+## The background vine
+
+Every web page carries one faint drawing behind its content: a climbing stem that enters
+from the bottom right of the viewport and curves up and to the left, with leaves and
+tendrils reusing the pea's symbols. `plants.vine_svg()` places them along two cubic
+curves, so the drawing is generated, not stored. It is fixed to the viewport, cannot be
+clicked, sits under every panel, takes its strength from `--vine-opacity` per theme, and is
+hidden on narrow screens and in print. It is the only decoration that is not tied to a
+phase or a state.
