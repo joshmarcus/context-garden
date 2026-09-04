@@ -55,8 +55,25 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   has to discover the half-finished work by itself.
 - **`in` tokens mislead.** `garden runs` shows 481 input tokens for a run whose cache reads
   were 3.4M; the column should show the total context read, or cache reads next to it.
-- **Result line.** none from attempt 1; attempt 2 pending.
-- **Push and draft PR.** pending.
+- **Worker run, attempt 2.** Started on attempt 1's commits, found the work mostly done,
+  added nothing, and reported `done` after 29 turns, 94 seconds and $0.28. Its final message
+  claimed "No lint/syntax errors".
+- **Result line.** Present and well formed on attempt 2 and on the revise run; `pr_title`
+  and `pr_body` were usable as written. Neither body carried the `## Friction` section the
+  principles digest asks for, so there was nothing for CG-008 to harvest.
+- **Pre-PR checks earned their keep.** Tests passed; ruff failed on one unsorted import the
+  worker had said was clean. No PR was opened; the task went to `changes_requested` and a
+  revise run started in the same tick with ruff's output in its brief. The fix took 23 turns,
+  76 seconds and $0.17 for a two-line import swap, which is what a revise round costs on
+  haiku even when the feedback is exact.
+- **The revise brief lied about the PR.** Its "Revision round" section opened with "This
+  branch already has an open pull request: (unknown). Reviewers left feedback", when no PR
+  existed and the feedback was a lint check. The wording needs a pre-PR variant.
+- **Push and draft PR.** After the revise run, both checks passed and the draft PR opened two
+  seconds later: title `CG-012: Brief cost report per phase`, body with Summary, Changes,
+  Verification, Review responses and the garden's footer. Readable, if boastful. The log line
+  reuses the worker's summary, so the task log now says "Addressed lint error by fixing
+  import sorting. All acceptance criteria met" as the description of the PR.
 - **Automated review.** pending.
 - **Triage.** pending.
 - **Merge and done.** pending.
