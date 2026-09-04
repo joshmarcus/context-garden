@@ -10,6 +10,15 @@ import yaml
 
 CONFIG_NAME = "garden.yaml"
 
+NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
+
+
+def no_live_garden_root(base: Path) -> str:
+    """A path under `base` guaranteed not to contain a garden.yaml, for GARDEN_ROOT in
+    worker and check subprocess environments (see find_root)."""
+    return str(base / NO_LIVE_GARDEN)
+
+
 DEFAULTS: dict[str, Any] = {
     "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
     "name": "garden",
@@ -182,10 +191,11 @@ def find_root(start: Path | None = None) -> Path:
                 f"GARDEN_ROOT={env_root!r} does not contain {CONFIG_NAME}; "
                 "workers must not run garden commands against the live garden"
             )
-        # GARDEN_ROOT points to a real garden (e.g. set by check_ctx so check commands can
-        # reference the live garden's venv via $GARDEN_ROOT).  Do NOT use it as the root:
-        # fall through to the normal cwd walk so that tests running inside a check subprocess
-        # find their own temp garden, not the live one.
+        # GARDEN_ROOT points to a real garden. It is not a supported way to redirect the
+        # root (workers and check subprocesses only ever see it set to a sentinel that
+        # does not exist; see no_live_garden_root). Do NOT use it as the root: fall through
+        # to the normal cwd walk so that tests running inside a subprocess find their own
+        # temp garden, not the live one.
 
     cur = (start or Path.cwd()).resolve()
     for candidate in [cur, *cur.parents]:

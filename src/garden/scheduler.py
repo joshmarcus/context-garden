@@ -235,8 +235,12 @@ class Scheduler:
         return self.cfg.worktree_path(task.id)
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
+        """Context passed to check commands as GARDEN_* env vars. `exec_root` (GARDEN_EXEC_ROOT)
+        is the live garden's own root, e.g. for `$GARDEN_EXEC_ROOT/.venv/bin/python` — distinct
+        from GARDEN_ROOT, which run_checks always sets to a non-existent sentinel so a check
+        command cannot use it to act on the live garden (see find_root)."""
         st = self.state.get(task.id)
-        return {"root": str(self.store.root), "task_id": task.id, "product": task.product, "phase": task.phase, "branch": branch, "base": base,
+        return {"exec_root": str(self.store.root), "task_id": task.id, "product": task.product, "phase": task.phase, "branch": branch, "base": base,
                 "repo_slug": self.slug_for(task) or "", "pr": task.pr, "pr_number": st.get("pr_number") or 0,
                 "head_sha": st.get("head_sha") or "", "failed_checks": st.get("failed_checks") or [],
                 "worktree": str(worktree or self.worktree_for(task))}

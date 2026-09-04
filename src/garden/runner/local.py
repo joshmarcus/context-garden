@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ..config import no_live_garden_root
 from ..runs import Run
 from .base import Runner, RunnerError
 
@@ -52,7 +53,7 @@ class LocalRunner(Runner):
         # Prevent the worker from finding and mutating the live garden: any `garden`
         # command run inside the worktree will hit find_root() which checks this variable
         # and fails loudly because the path below does not contain a garden.yaml.
-        env["GARDEN_ROOT"] = str(d / "no-live-garden")
+        env["GARDEN_ROOT"] = no_live_garden_root(d)
         proc = subprocess.Popen(
             ["sh", "-c", script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
