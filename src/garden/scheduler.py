@@ -881,8 +881,10 @@ class Scheduler:
     def _on_parent_closed(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):
             st = self.state.get(child.id)
-            st["needs_human"] = f"stack parent {task.id} was closed without merging"
-            self.events.emit("needs_human", child.id, reason=st["needs_human"])
+            reason = f"stack parent {task.id} was closed without merging"
+            st["needs_human"] = reason
+            self.events.emit("needs_human", child.id, reason=reason)
+            notify(self.cfg.data, child.id, "needs_human", reason, child.pr or "")
             child.log(f"stack parent {task.id} closed without merging; this PR targets a dead branch and needs a human")
             self.store.save(child)
             rep.transitions.append(f"{child.id} needs human (parent closed)")

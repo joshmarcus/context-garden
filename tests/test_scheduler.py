@@ -305,3 +305,31 @@ def test_no_notify_on_auto_revise_changes_requested(sched, fake_github, tmp_path
     # The notify file must not exist because changes_requested was auto-handled.
     assert statuses(sched)["DM-001"] in ("changes_requested", "running")
     assert not notify_file.exists()
+
+
+def test_notify_on_parent_closed(sched, fake_github, tmp_path):
+    """Closing a parent PR without merging must notify stacked children."""
+    notify_file = tmp_path / "notify.txt"
+    sched.cfg.data["notify"] = {
+        "command": f"bash -c 'echo \"task=$GARDEN_TASK_ID status=$GARDEN_STATUS\" >> {notify_file}'",
+        "timeout_seconds": 5,
+    }
+    # DM-001 dispatched and reaches in_review; DM-002 stacks on it
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 -> in_review; DM-002 stacks and dispatches
+    wait_for_runs(sched)
+    sched.tick()  # DM-002 -> in_review (stacked on DM-001's branch)
+    assert statuses(sched)["DM-002"] == "in_review"
+    assert sched.state.get("DM-002").get("stack_parent") == "DM-001"
+    # notify_file may have entries from awaiting_triage/in_review transitions already;
+    # clear it so we can isolate the parent-closed notification
+    notify_file.unlink(missing_ok=True)
+    # close the parent PR without merging
+    fake_github.prs["garden/dm-001-first-task"].state = "CLOSED"
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "failed"
+    # DM-002's stack parent closed -> notification must have fired for DM-002
+    assert notify_file.exists(), "notify hook must fire when a stack parent is closed"
+    content = notify_file.read_text()
+    assert "task=DM-002" in content and "status=needs_human" in content
