@@ -1,8 +1,10 @@
 import subprocess
+from unittest.mock import patch
 
 import yaml
 
 from garden.model import Status
+from garden.runner.local import LocalRunner
 from tests.conftest import wait_for_runs
 
 
@@ -62,6 +64,39 @@ def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path):
     assert "garden/dm-001-first-task" in out
     assert (sched.worktree_for(t) / "worker-output.txt").exists()
     assert fake_github.created[0]["head"] == "garden/dm-001-first-task"
+
+
+def test_local_runner_doctor_windows():
+    with patch("os.name", "nt"):
+        runner = LocalRunner({}, None)
+        errors = runner.doctor()
+    assert len(errors) == 1 and "WSL" in errors[0]
+
+
+def test_local_runner_harness_shell_resolves_bin(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+    h = Harness("claude", {})
+    runner = LocalRunner({}, h)
+    fake = tmp_path / "claude-resolved"
+    fake.touch()
+    fake.chmod(0o755)
+    run = Run(task_id="T-001", run_id="r1", dir=str(tmp_path), runner="local")
+    with patch("shutil.which", side_effect=lambda name: str(fake) if name == "claude" else None):
+        cmd = runner.harness_shell(run, None)
+    assert cmd.startswith(str(fake))
+
+
+def test_ssh_runner_uses_bare_bin(sched, fake_github):
+    t = sched.store.task("DM-001")
+    t.runner = "ssh"
+    sched.store.save(t)
+    with patch("shutil.which", return_value="/resolved/claude"):
+        sched.tick()
+    run = sched.runs.latest("DM-001")
+    remote_sh = (run.path / "remote.sh").read_text()
+    # SSH runner must not resolve the binary path: the remote host may have it elsewhere
+    assert "/resolved/claude" not in remote_sh
 
 
 def test_ssh_host_capacity(sched):

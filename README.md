@@ -70,6 +70,9 @@ uv venv && uv pip install -e ".[dev]"      # or: pip install -e ".[dev]"
 Requirements on the machine that runs the loop: `git`, the harness CLI (`claude` and/or
 `codex`), and either the `gh` CLI (logged in) or a `GITHUB_TOKEN`.
 
+**Windows:** the local runner requires a POSIX shell (`sh`). Run garden in WSL (Windows
+Subsystem for Linux) instead; `garden doctor` reports this if Windows is detected.
+
 ## Quick start
 
 ```bash
