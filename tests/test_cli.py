@@ -101,6 +101,13 @@ def test_budget_command(garden):
     assert run(garden, "budget", "noslash", "10").exit_code == 1
 
 
+def test_suggest_command(garden):
+    r = run(garden, "suggest", "DM-001", "acceptance should cover the empty case", "--by", "josh", "--applies-to", "acceptance")
+    assert r.exit_code == 0, r.output
+    r = run(garden, "show", "DM-001", "--raw")
+    assert "## Suggestions" in r.output and "acceptance should cover the empty case" in r.output
+
+
 def test_brief_stats(garden):
     r = run(garden, "brief", "DM-001", "--stats")
     assert r.exit_code == 0 and "tokens" in r.output
