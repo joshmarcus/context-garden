@@ -23,10 +23,21 @@ result; otherwise the last lines of output become the details. A `python` check 
 
     {"name": ..., "status": "pass" | "fail" | "flaky" | "error", "summary": "...",
      "details": "...", "retry_command": "..." (optional, for flaky)}
+
+Both kinds of check run with `GARDEN_<KEY>` env vars for every key in `ctx` (e.g.
+`GARDEN_TASK_ID`, `GARDEN_BRANCH`), plus `GARDEN_EXEC_ROOT` set to the live garden's own
+root — use `$GARDEN_EXEC_ROOT/.venv/bin/python` from a check that needs the garden's tools
+rather than the product's. `GARDEN_ROOT` is always overridden to a non-existent sentinel:
+a check command must not act on the live garden (see `garden.config.find_root`). For a
+`python:` check this is enforced by overriding `GARDEN_ROOT` in the *process* environment
+for the duration of the call (checks run sequentially, not concurrently), so any subprocess
+your callable launches inherits the guard even if it builds its own env from `os.environ`
+without going through `ctx`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -35,7 +46,25 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .config import no_live_garden_root
+
 MAX_DETAILS = 4000
+
+
+@contextlib.contextmanager
+def _guarded_process_env(cwd: Path | None):
+    """Force GARDEN_ROOT to a non-existent sentinel in the process environment for the
+    duration of a `python:` check, then restore it. Guards custom callables that spawn
+    subprocesses without routing through `ctx`'s GARDEN_ROOT override."""
+    prev = os.environ.get("GARDEN_ROOT")
+    os.environ["GARDEN_ROOT"] = no_live_garden_root(cwd or Path.cwd())
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("GARDEN_ROOT", None)
+        else:
+            os.environ["GARDEN_ROOT"] = prev
 
 
 def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600) -> dict[str, Any]:
@@ -44,7 +73,8 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
         if spec.get("python"):
             mod, _, fn = str(spec["python"]).partition(":")
             func = getattr(importlib.import_module(mod), fn or "check")
-            out = func(ctx, spec) or {}
+            with _guarded_process_env(cwd):
+                out = func(ctx, spec) or {}
             if not isinstance(out, dict):
                 raise TypeError("python check must return a dict")
             out.setdefault("name", name)
@@ -55,6 +85,8 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
             for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
                 env[str(k)] = str(v)
+            # The sentinel wins over any product env: a check must never act on the live garden.
+            env["GARDEN_ROOT"] = no_live_garden_root(Path(cwd) if cwd else Path.cwd())
             proc = subprocess.run(
                 str(spec["command"]), shell=True, cwd=str(cwd) if cwd else None, env=env,
                 capture_output=True, text=True, timeout=timeout, check=False,
@@ -131,8 +163,11 @@ def classify_log(log: str, flaky_patterns: list[str] | None = None) -> str:
 def local_command_check(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
     """Example `python:` analyser: run `spec['command']` (e.g. a script that queries your CI
     system) and turn its output into a result using the helpers above."""
+    worktree = ctx.get("worktree") or None
+    env = {**os.environ, **{f"GARDEN_{k.upper()}": str(v) for k, v in ctx.items()}}
+    env["GARDEN_ROOT"] = no_live_garden_root(Path(worktree) if worktree else Path.cwd())
     proc = subprocess.run(str(spec.get("command") or "true"), shell=True, capture_output=True, text=True, check=False,
-                          cwd=ctx.get("worktree") or None, env={**os.environ, **{f"GARDEN_{k.upper()}": str(v) for k, v in ctx.items()}})
+                          cwd=worktree, env=env)
     log = (proc.stdout or "") + "\n" + (proc.stderr or "")
     if proc.returncode == 0:
         return {"status": "pass", "summary": "ok", "details": ""}
