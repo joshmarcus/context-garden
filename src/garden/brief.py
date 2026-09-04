@@ -31,9 +31,9 @@ OPERATING_RULES = """\
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "pr_title": "<title>", "pr_body": "<markdown body>", "notes": "<anything the human should know>", "discovered": [{{"title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "notes": "<anything the human should know>", "discovered": [{{"title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
-  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `discovered` may be omitted or empty.
+  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty.
 """
 
 STACK_NOTE = """\
@@ -55,7 +55,7 @@ Continue the task from where you stopped, in the same worktree and branch. The s
 REVISE_RULES = """\
 ## Revision round
 
-This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain in the PR body why not. Do not start over; build on the existing commits. Reply to each review point in `pr_body` under a "Review responses" heading.
+This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain why not. Do not start over; build on the existing commits. If you need to explain a change or decline a suggestion, include a comment in your result JSON (see below) and the garden will post it on the PR.
 """
 
 PRE_PR_REVISE_RULES = """\

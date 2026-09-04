@@ -615,6 +615,9 @@ class Scheduler:
                 if run.mode in ("revise", "resume"):
                     try:
                         self.github.update_pr(slug, existing.number, title=title, body=body)
+                        pr_comment = str(result.get("pr_comment") or "").strip()
+                        if pr_comment:
+                            self.github.comment(slug, existing.number, mark_garden_comment(pr_comment, run.run_id))
                         comment_body = mark_garden_comment(f"Pushed a revision round: {summary}", run.run_id)
                         self.github.comment(slug, existing.number, comment_body)
                     except GitHubError as e:
