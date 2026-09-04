@@ -644,6 +644,40 @@ def pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason
 
 
 @app.command()
+def budget(
+    phase: str = typer.Argument(..., help="Phase key, e.g. context-garden/phase-02-friction"),
+    value: str = typer.Argument(..., help="USD cap, or 'none' to remove the cap"),
+):
+    """Set or clear a phase's budget cap. Overrides garden.yaml; the running scheduler picks it
+    up on the next tick and a paused phase resumes when the cap is raised or removed."""
+    store = _store()
+    if "/" not in phase:
+        console.print("[red]phase must be a product/phase key, e.g. context-garden/phase-02-friction[/red]")
+        raise typer.Exit(1)
+    prod, ph = phase.split("/", 1)
+    try:
+        store.phase(prod, ph)
+    except KeyError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    sched = _scheduler(store)
+    if value.strip().lower() in ("none", "off", "no", ""):
+        sched.set_budget(phase, None, by="cli")
+        console.print(f"{phase}: budget removed (no cap)")
+        return
+    try:
+        usd = float(value)
+    except ValueError:
+        console.print(f"[red]budget must be a number or 'none', got {value!r}[/red]")
+        raise typer.Exit(1) from None
+    if usd < 0:
+        console.print("[red]budget must not be negative[/red]")
+        raise typer.Exit(1)
+    sched.set_budget(phase, usd, by="cli")
+    console.print(f"{phase}: budget set to ${usd:.2f}")
+
+
+@app.command()
 def resume(task_id: str = typer.Argument("", help="Task id: nothing to fix, clear its needs-human stop and put it back where it was")):
     """Resume automatic dispatch after a pause; with a task id, clear that task's needs-human stop without starting a run."""
     store = _store()
