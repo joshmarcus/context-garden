@@ -151,7 +151,10 @@ def find_root(start: Path | None = None) -> Path:
                 f"GARDEN_ROOT={env_root!r} does not contain {CONFIG_NAME}; "
                 "workers must not run garden commands against the live garden"
             )
-        return p
+        # GARDEN_ROOT points to a real garden (e.g. set by check_ctx so check commands can
+        # reference the live garden's venv via $GARDEN_ROOT).  Do NOT use it as the root:
+        # fall through to the normal cwd walk so that tests running inside a check subprocess
+        # find their own temp garden, not the live one.
 
     cur = (start or Path.cwd()).resolve()
     for candidate in [cur, *cur.parents]:

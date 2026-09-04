@@ -52,10 +52,18 @@ def test_find_root_worktree_nested_garden_is_fine(tmp_path):
     assert find_root(sub) == wt
 
 
-def test_garden_root_env_valid(tmp_path, monkeypatch):
+def test_garden_root_env_valid_is_ignored(tmp_path, monkeypatch):
+    """GARDEN_ROOT pointing to a real garden is ignored; cwd walk finds the right root.
+
+    check_ctx sets GARDEN_ROOT to the live garden so check commands can use
+    $GARDEN_ROOT/.venv/bin/python, but find_root() must not use it as a redirect —
+    otherwise tests running inside a pre-PR check subprocess land on the live garden.
+    """
     root = _make_garden(tmp_path / "g")
-    monkeypatch.setenv("GARDEN_ROOT", str(root))
-    assert find_root() == root
+    other = _make_garden(tmp_path / "other")
+    monkeypatch.setenv("GARDEN_ROOT", str(other))
+    # GARDEN_ROOT=other is ignored; find_root(root) still finds root via the cwd walk
+    assert find_root(root) == root
 
 
 def test_garden_root_env_invalid(tmp_path, monkeypatch):
@@ -63,15 +71,6 @@ def test_garden_root_env_invalid(tmp_path, monkeypatch):
     monkeypatch.setenv("GARDEN_ROOT", str(tmp_path / "nonexistent"))
     with pytest.raises(FileNotFoundError, match="workers must not run garden"):
         find_root()
-
-
-def test_garden_root_env_overrides_cwd(tmp_path, monkeypatch):
-    """GARDEN_ROOT takes priority over the cwd-based walk."""
-    root = _make_garden(tmp_path / "g")
-    other = _make_garden(tmp_path / "other")
-    monkeypatch.setenv("GARDEN_ROOT", str(other))
-    # even when called from inside `root`, GARDEN_ROOT wins
-    assert find_root(root) == other
 
 
 def test_local_runner_sets_garden_root(sched, monkeypatch):
