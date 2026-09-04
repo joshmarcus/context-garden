@@ -343,6 +343,63 @@ def test_noresult_retries(sched, monkeypatch):
     assert "DM-001 -> ready (retry)" in rep.transitions
 
 
+def _wait_for_stdout(run, timeout=5.0):
+    import time
+    from pathlib import Path
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if (Path(run.dir) / "stdout.json").exists():
+            return
+        time.sleep(0.02)
+
+
+def _make_idle(run, minutes):
+    """Backdate every file the idle check looks at so the run appears silent for `minutes`."""
+    import time
+    from pathlib import Path
+    old = time.time() - minutes * 60
+    for base in (Path(run.dir), Path(run.worktree)):
+        for p in [base, *base.rglob("*")]:
+            try:
+                os.utime(p, (old, old))
+            except OSError:
+                pass
+
+
+def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "30")
+    sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["max_attempts"] = 1  # terminal on first failure: no second stall worker
+    sched.tick()  # dispatch DM-001; the worker starts sleeping
+    run = sched.runs.latest("DM-001")
+    assert run.status == "running" and run.pid
+    _wait_for_stdout(run)
+    # nothing has changed for 12 minutes, past idle_kill_minutes but well under timeout_minutes
+    _make_idle(run, 12)
+    rep = sched.tick()
+    assert "DM-001 -> failed" in rep.transitions
+    assert statuses(sched)["DM-001"] == "failed"
+    run = sched.runs.latest("DM-001")
+    assert run.status == "timeout" and "idle" in run.error
+
+
+def test_running_card_shows_idle_time(sched, monkeypatch):
+    from garden.inbox import running_now
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "30")
+    sched.cfg.data["idle_minutes"] = 5
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    _wait_for_stdout(run)
+    # a fresh worker is not flagged
+    assert all(r["idle"] is None for r in running_now(sched.store))
+    _make_idle(run, 8)
+    row = next(r for r in running_now(sched.store) if r["task"] == "DM-001")
+    assert row["idle"] is not None and row["idle"] >= 5
+    run.kill()
+
+
 def test_pr_closed_fails(sched, fake_github):
     sched.tick()
     wait_for_runs(sched)

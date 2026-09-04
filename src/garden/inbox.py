@@ -343,9 +343,12 @@ def counts(items: list[dict[str, Any]]) -> dict[str, int]:
 def running_now(store: Store) -> list[dict[str, Any]]:
     rs = RunStore(store.config.garden_dir)
     tasks = store.tasks()
+    warn = float(store.config.get("idle_minutes", 0) or 0)
     out = []
     for r in rs.active():
         t = tasks.get(r.task_id)
+        idle = round(r.idle_minutes())
         out.append({"task": r.task_id, "title": t.title if t else "", "mode": r.mode, "model": r.model,
-                    "minutes": round(r.elapsed_minutes()), "host": r.host})
+                    "minutes": round(r.elapsed_minutes()), "host": r.host,
+                    "idle": idle if warn and idle >= warn else None})
     return out
