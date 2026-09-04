@@ -23,6 +23,10 @@ def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
     """Workers can include pr_comment in the result to explain revisions."""
     from tests.conftest import wait_for_runs
 
+    # Focus on DM-001's review cycle: without this, DM-002 stacks on DM-001's open PR
+    # and runs its own review rounds concurrently, so the fixed per-tick assertions
+    # below become order-dependent on a loaded machine.
+    sched.cfg.data["stack"] = False
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "revise-with-comment")
@@ -49,6 +53,10 @@ def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
 def test_review_flow(sched, fake_github, monkeypatch):
     from tests.conftest import wait_for_runs
 
+    # Focus on DM-001's review cycle: without this, DM-002 stacks on DM-001's open PR
+    # and runs its own review rounds concurrently, so the fixed per-tick assertions
+    # below become order-dependent on a loaded machine.
+    sched.cfg.data["stack"] = False
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     sched.tick()
