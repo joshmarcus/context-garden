@@ -199,6 +199,29 @@ def test_repeated_review_finding_stalls(sched, fake_github, monkeypatch):
     assert stop["kind"] == "stall" and "repeated" in stop["reason"]
 
 
+def test_review_parallel_queues_and_drains(sched, fake_github):
+    """review_parallel=1 with two PRs pushed in the same tick: only one review starts, the
+    other is queued and dispatched once the first review run is reaped (not blocked by
+    max_parallel, which stays at the fixture's 2)."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.cfg.data["review_parallel"] = 1
+    for t in sched.store.tasks().values():
+        t.depends_on = []
+        sched.store.save(t)
+    sched.tick()  # dispatch DM-001 and DM-002 (work); max_parallel=2
+    wait_for_runs(sched)
+    rep = sched.tick()  # both work runs reap and push PRs; only one review slot is free
+    reviewed = [d.split("(")[0] for d in rep.dispatched if d.endswith("(review)")]
+    assert len(reviewed) == 1
+    deferred = "DM-002" if reviewed[0] == "DM-001" else "DM-001"
+    assert sched.state.get(deferred)["pending_reviews"] == [{"kind": "review"}]
+    assert sched.review_slots_free() == 0
+    wait_for_runs(sched)
+    rep = sched.tick()  # the first review is reaped, freeing the slot for the deferred one
+    assert f"{deferred}(review)" in rep.dispatched
+    assert not sched.state.get(deferred).get("pending_reviews")
+
+
 def test_phase_budget_pauses_dispatch(sched):
     sched.cfg.data["budgets"] = {"demo/p1": 0.04}
     for t in sched.store.tasks().values():

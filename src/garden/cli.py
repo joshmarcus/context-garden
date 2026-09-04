@@ -299,9 +299,10 @@ def status(
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
     mp_live = sched.overrides().get("max_parallel")
-    mp_line = f"max_parallel: {sched.effective_max_parallel()}"
+    mp_line = f"workers: {len(sched.worker_runs_active())}/{sched.effective_max_parallel()}"
     if mp_live is not None:
         mp_line += f" (live override; garden.yaml: {store.config.get('max_parallel')})"
+    mp_line += f"  reviews: {len(sched.review_runs_active())}/{sched.review_parallel_limit()}"
     console.print(mp_line)
     up = sched.upgrade_available()
     if up:
@@ -1640,8 +1641,10 @@ def doctor():
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     mp_live = (ctrl.get("overrides") or {}).get("max_parallel")
     mp = mp_live if mp_live is not None else store.config.get("max_parallel")
+    review_parallel = store.config.get("review_parallel") or store.config.get("max_parallel")
     console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={mp}"
-                 + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else ""))
+                 + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else "")
+                 + f"  review_parallel={review_parallel}")
     notify_cmd = store.config.get("notify.command")
     console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
     if ctrl.get("dispatch") == "paused":

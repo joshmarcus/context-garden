@@ -56,6 +56,9 @@ from .runs import Run, RunStore
 from .store import Store
 from .trials import TrialLog, compare_brief, parse_compare, parse_contender, ranking_markdown
 
+WORKER_MODES = frozenset({"work", "revise", "resume", "trial"})  # count against max_parallel
+REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
+
 
 @dataclass
 class TickReport:
@@ -303,8 +306,23 @@ class Scheduler:
     def active_runs(self) -> list[Run]:
         return [r for r in self.runs.active() if r.runner != "manual"]
 
+    def worker_runs_active(self) -> list[Run]:
+        """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
+        return [r for r in self.active_runs() if r.mode in WORKER_MODES]
+
+    def review_runs_active(self) -> list[Run]:
+        """Active runs that occupy a `review_parallel` slot: review, persona, comparison."""
+        return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
+
     def slots_free(self) -> int:
-        return max(0, self.effective_max_parallel() - len(self.active_runs()))
+        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
+
+    def review_parallel_limit(self) -> int:
+        limit = self.cfg.get("review_parallel")
+        return int(limit) if limit not in (None, "") else self.effective_max_parallel()
+
+    def review_slots_free(self) -> int:
+        return max(0, self.review_parallel_limit() - len(self.review_runs_active()))
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:
@@ -1207,17 +1225,11 @@ class Scheduler:
         if not task.pr:
             return
         st = self.state.get(task.id)
-        max_rounds = int(self.cfg.get("review.max_rounds", 2))
+        wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
+            max_rounds = int(self.cfg.get("review.max_rounds", 2))
             if int(st.get("review_rounds", 0)) < max_rounds:
-                try:
-                    run = self.dispatch_review(task, work_run)
-                    rep.dispatched.append(f"{task.id}(review)")
-                    self.log(f"{task.id}: review run {run.run_id} started")
-                except Exception as e:  # noqa: BLE001
-                    task.log(f"automated review could not start: {e}")
-                    self.store.save(task)
-                    rep.errors.append(f"{task.id}: review dispatch failed: {e}")
+                wanted.append({"kind": "review"})
             else:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
                 self._set_needs_human(task, "review_cap", reason)
@@ -1227,11 +1239,47 @@ class Scheduler:
                 notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
                 rep.transitions.append(f"{task.id} review cap reached")
         for name in list(self.cfg.get("review.personas", []) or []):
+            wanted.append({"kind": "persona", "name": str(name)})
+        self._dispatch_or_defer_reviews(task, wanted, rep, work_run=work_run)
+
+    def _dispatch_or_defer_reviews(self, task: Task, wanted: list[dict[str, Any]], rep: TickReport,
+                                   work_run: Run | None = None) -> None:
+        """Start each wanted review/persona run if a `review_parallel` slot is free; anything
+        left over is queued in state (`pending_reviews`) and picked up by `_drain_pending_reviews`
+        on a later tick, so a full review_parallel does not lose the round — it just waits its
+        turn, the same way a full max_parallel makes a work task wait in the ready queue."""
+        st = self.state.get(task.id)
+        deferred: list[dict[str, Any]] = []
+        for item in wanted:
+            if self.review_slots_free() <= 0:
+                deferred.append(item)
+                continue
+            kind = item["kind"]
             try:
-                self.dispatch_persona_pr(task, str(name))
-                rep.dispatched.append(f"{task.id}(persona:{name})")
+                if kind == "review":
+                    run = self.dispatch_review(task, work_run)
+                    rep.dispatched.append(f"{task.id}(review)")
+                    self.log(f"{task.id}: review run {run.run_id} started")
+                else:
+                    self.dispatch_persona_pr(task, item["name"])
+                    rep.dispatched.append(f"{task.id}(persona:{item['name']})")
             except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"{task.id}: persona {name} dispatch failed: {e}")
+                task.log(f"automated {kind} could not start: {e}")
+                self.store.save(task)
+                rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
+        if deferred:
+            st["pending_reviews"] = list(st.get("pending_reviews") or []) + deferred
+
+    def _drain_pending_reviews(self, tasks: dict[str, Task], rep: TickReport) -> None:
+        for task in tasks.values():
+            if self.review_slots_free() <= 0:
+                break
+            st = self.state.get(task.id)
+            pending = list(st.get("pending_reviews") or [])
+            if not pending:
+                continue
+            st["pending_reviews"] = []
+            self._dispatch_or_defer_reviews(task, pending, rep)
 
     def dispatch_review(self, task: Task, work_run: Run | None = None) -> Run:
         harness_name = str(self.cfg.get("review.harness") or "")
@@ -1905,6 +1953,7 @@ class Scheduler:
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
+        self._drain_pending_reviews(tasks, rep)
 
     def _audit_stuck(self, rep: TickReport) -> None:
         """Backstop: any non-terminal task with no active run and no dispatchable next

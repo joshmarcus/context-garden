@@ -550,6 +550,28 @@ def test_tick_uses_max_parallel_override(sched, garden):
     assert len(rep.dispatched) == 2
 
 
+def test_review_runs_do_not_consume_worker_slots(sched):
+    """max_parallel=2 (fixture). A review run must not count against it, and review_parallel
+    (defaulting to max_parallel) must be tracked independently."""
+    t = sched.store.task("DM-001")
+    review_run = sched.runs.new_run(t.id, "local", mode="review")
+    review_run.status = "running"
+    review_run.save()
+    assert sched.slots_free() == 2  # the review run holds a review slot, not a worker slot
+    assert sched.review_parallel_limit() == 2  # defaults to max_parallel
+    assert sched.review_slots_free() == 1
+
+    work_run = sched.runs.new_run(t.id, "local", mode="work")
+    work_run.status = "running"
+    work_run.save()
+    assert sched.slots_free() == 1
+    assert sched.review_slots_free() == 1  # unaffected by the work run
+
+    sched.cfg.data["review_parallel"] = 1
+    assert sched.review_parallel_limit() == 1
+    assert sched.review_slots_free() == 0
+
+
 def test_no_github_still_pushes(sched, fake_github):
     fake_github.available = False
     sched.tick()
