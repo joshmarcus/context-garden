@@ -37,6 +37,11 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
 
 DIFFICULTIES = ("easy", "medium", "hard")
 
+# Claude model aliases and the full model names in use today, offered alongside a claude
+# harness's own tier map when picking a trial contender (see Harness.known_models).
+CLAUDE_MODEL_ALIASES = ("sonnet", "opus", "haiku", "fable")
+CLAUDE_MODEL_NAMES = ("claude-sonnet-5", "claude-opus-4-8", "fable")
+
 
 class Harness:
     def __init__(self, name: str, cfg: dict[str, Any]):
@@ -58,6 +63,24 @@ class Harness:
             return override
         models = self.cfg.get("models") or {}
         return str(models.get(difficulty) or models.get("medium") or "")
+
+    def known_models(self) -> list[str]:
+        """Model choices to offer when picking this harness for a trial contender: its tier
+        map and review model from config, plus (for claude) the aliases and full model names
+        in use today. Order is stable and deduplicated."""
+        out: list[str] = []
+        for tier in DIFFICULTIES:
+            m = str((self.cfg.get("models") or {}).get(tier) or "")
+            if m and m not in out:
+                out.append(m)
+        review = str(self.cfg.get("review_model") or "")
+        if review and review not in out:
+            out.append(review)
+        if self.name == "claude":
+            for m in (*CLAUDE_MODEL_ALIASES, *CLAUDE_MODEL_NAMES):
+                if m not in out:
+                    out.append(m)
+        return out
 
     def max_turns_for(self, difficulty: str) -> int:
         """Get max_turns for a difficulty tier. Returns 0 if unset (no cap). Supports scalar or per-tier dict."""

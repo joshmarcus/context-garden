@@ -74,7 +74,14 @@
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
-<div id="trial-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/trial" class="actions"><span class="muted">Contenders (harness:model, at least two):</span><input type="text" name="note" placeholder="claude:sonnet, claude:opus" style="width:300px"><button class="primary">Start trial</button></form></div>
+<div id="trial-form" class="panel" hidden>
+  <div class="eyebrow">Start a model trial</div>
+  <form method="post" action="/tasks/{{ task.id }}/trial" class="trial-form" data-trial-form data-harnesses='{{ harness_choices|tojson }}' data-default-harness="{{ default_harness }}">
+    <input type="hidden" name="note">
+    <div class="trial-rows"></div>
+    <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">Start trial</button></div>
+  </form>
+</div>
 <div id="friction-form" class="panel" hidden>
   <div class="eyebrow">Report friction about this process</div>
   <form method="post" action="/friction-report" style="margin-top:8px">
