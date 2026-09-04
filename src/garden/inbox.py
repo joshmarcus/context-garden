@@ -53,6 +53,7 @@ def _age(iso: str) -> str:
 ATTENTION_KINDS = {
     "stall": ("The loop stalled", "A revise round changed nothing (or a review finding came back unchanged), so the garden stopped instead of spending more rounds."),
     "revision_cap": ("Revision cap reached", "The task used all its revision rounds; the garden will not spend more without your go-ahead."),
+    "review_cap": ("Automated review rounds used", "The automated reviewer has had its say on this PR; it's yours to review now."),
     "parent_closed": ("Stack parent closed", "The PR this branch is stacked on was closed without merging, so this PR targets a dead branch."),
     "worker_failed": ("A worker run failed", "The last run ended without a usable result and automatic retries are used up."),
     "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
@@ -122,6 +123,8 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         out.append("PR: " + " · ".join(bits))
     if st.get("revisions"):
         out.append(f"{st['revisions']} revision round(s) used")
+    if st.get("review_rounds"):
+        out.append(f"{st['review_rounds']} automated review round(s) used")
     return out
 
 
@@ -168,6 +171,11 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if can_resume:
         actions.append({"label": "Nothing to fix, resume", "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
+    if info["kind"] == "review_cap" and t.pr:
+        actions.append({"label": "One more automated review", "kind": "review-again", "command": f"garden review {t.id}",
+                        "detail": "raises this task's review cap by one round and dispatches an automated review now"})
+        actions.append({"label": "Send back with a note", "kind": "triage-changes", "command": f'garden triage {t.id} --changes "..."',
+                        "detail": "queues a revise run against your note instead of an automated review"})
     actions.append({"label": "Continue the loop" if can_resume else "Retry", "kind": "retry", "command": f"garden retry {t.id}",
                     "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",

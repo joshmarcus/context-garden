@@ -970,15 +970,25 @@ class Scheduler:
         if not task.pr:
             return
         st = self.state.get(task.id)
-        if bool(self.cfg.get("review.enabled", True)) and int(st.get("review_rounds", 0)) < int(self.cfg.get("review.max_rounds", 2)):
-            try:
-                run = self.dispatch_review(task, work_run)
-                rep.dispatched.append(f"{task.id}(review)")
-                self.log(f"{task.id}: review run {run.run_id} started")
-            except Exception as e:  # noqa: BLE001
-                task.log(f"automated review could not start: {e}")
+        max_rounds = int(self.cfg.get("review.max_rounds", 2))
+        if bool(self.cfg.get("review.enabled", True)):
+            if int(st.get("review_rounds", 0)) < max_rounds:
+                try:
+                    run = self.dispatch_review(task, work_run)
+                    rep.dispatched.append(f"{task.id}(review)")
+                    self.log(f"{task.id}: review run {run.run_id} started")
+                except Exception as e:  # noqa: BLE001
+                    task.log(f"automated review could not start: {e}")
+                    self.store.save(task)
+                    rep.errors.append(f"{task.id}: review dispatch failed: {e}")
+            else:
+                reason = f"{max_rounds} automated review round(s) used; this PR is yours"
+                self._set_needs_human(task, "review_cap", reason)
+                self.events.emit("needs_human", task.id, stop_kind="review_cap", reason=reason)
+                task.log(f"{reason} — run `garden review {task.id}` for one more round, or review on GitHub")
                 self.store.save(task)
-                rep.errors.append(f"{task.id}: review dispatch failed: {e}")
+                notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
+                rep.transitions.append(f"{task.id} review cap reached")
         for name in list(self.cfg.get("review.personas", []) or []):
             try:
                 self.dispatch_persona_pr(task, str(name))
@@ -1027,6 +1037,16 @@ class Scheduler:
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
+
+    def review_again(self, task: Task) -> Run:
+        """The person asked for one more automated review after the cap stopped it: raise
+        this task's review cap by one round, clear the stop, and dispatch immediately."""
+        if not task.pr:
+            raise RuntimeError(f"{task.id} has no PR to review")
+        st = self.state.get(task.id)
+        self._grant_one_more_review_round(st)
+        st.pop("needs_human", None)
+        return self.dispatch_review(task)
 
     def reap_review(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
@@ -2093,6 +2113,16 @@ class Scheduler:
             run.finished_at = now_iso()
             run.save()
         self._transition(task, Status.CANCELLED, note)
+
+    def _grant_one_more_review_round(self, st: _TaskState) -> bool:
+        """When a human asks for one more automated review after the review cap stopped it,
+        roll the counter back one so exactly one more review round is dispatchable. Returns
+        True if the cap was raised."""
+        max_rounds = int(self.cfg.get("review.max_rounds", 2))
+        if int(st.get("review_rounds", 0)) >= max_rounds:
+            st["review_rounds"] = max_rounds - 1
+            return True
+        return False
 
     def _grant_one_more_round(self, st: _TaskState) -> bool:
         """When a human resumes a task that hit the revision cap, roll the counter back one

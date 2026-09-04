@@ -109,3 +109,58 @@ def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     # no verdict posted and the task's own status is left alone
     assert sched.store.task("DM-001").status == Status.DONE
     assert not any("request_changes" in c or "approve" in c for c in fake_github.comments)
+
+
+def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round(sched, fake_github, monkeypatch):
+    """CG-117: once the cap stops the automated reviewer, the task says so instead of sitting
+    silently in review, and the Inbox offers one more round without a human editing state.json."""
+    from garden.inbox import build_inbox
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
+    wait_for_runs(sched)
+    sched.tick()  # reap review round 1: request_changes (description only) -> revise dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap revise -> pushed -> review dispatched (round 2)
+    assert "DM-001(review)" in rep.dispatched
+    assert sched.state.get("DM-001")["review_rounds"] == 2
+    wait_for_runs(sched)
+    sched.tick()  # reap review round 2: request_changes again -> revise dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap revise -> pushed -> cap already used; no third review dispatched
+    assert "DM-001(review)" not in rep.dispatched
+    assert "DM-001 review cap reached" in rep.transitions
+
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert "2 automated review round(s) used" in task.body
+    assert task.status == Status.IN_REVIEW  # still in review; the loop did not stall it
+
+    st = sched.state.get("DM-001")
+    assert st["needs_human"]["kind"] == "review_cap"
+    assert st["review_rounds"] == 2
+
+    items = [i for i in build_inbox(sched.store, sched) if i["group"] == "attention" and i["task"] == "DM-001"]
+    assert items, "reaching the review cap should raise an Inbox card under 'Needs a decision'"
+    it = items[0]
+    assert it["pr"] == task.pr
+    labels = [a["label"] for a in it["actions"]]
+    assert "One more automated review" in labels
+    assert "Send back with a note" in labels
+    assert "Open PR" in labels
+
+    # "one more review": raises the cap by one round and dispatches right away
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
+    run = sched.review_again(task)
+    assert run.mode == "review"
+    assert sched.state.get("DM-001")["review_rounds"] == 2  # rolled back one, then re-incremented
+    assert not sched.state.get("DM-001").get("needs_human")
+
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
+    assert "DM-001 review: approve" in rep.transitions
+    assert not sched.state.get("DM-001").get("needs_human")
