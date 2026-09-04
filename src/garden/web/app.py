@@ -151,6 +151,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,
             "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
+            "max_parallel": sched.effective_max_parallel(),
             **kw,
         }
 
@@ -502,8 +503,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     def config_page(request: Request):
         s = hub.fresh()
         cfg = s.config
+        sched = Scheduler(s, log=lambda m: None)
         effective = {
-            "max_parallel": cfg.get("max_parallel"),
             "auto_dispatch": cfg.get("auto_dispatch"),
             "auto_revise": cfg.get("auto_revise"),
             "tick_interval": cfg.get("tick_interval"),
@@ -522,7 +523,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         budgets.update(overrides)
         return templates.TemplateResponse(request, "config.html", ctx(
             request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
-            budget_overrides=sorted(overrides)))
+            budget_overrides=sorted(overrides),
+            max_parallel_file=cfg.get("max_parallel"), max_parallel_override=sched.overrides().get("max_parallel")))
 
     # ---- actions -----------------------------------------------------------
     @app.post("/tick")
@@ -546,6 +548,22 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             sched.resume(by="web")
         hub._log("dispatch resumed via web")
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+
+    @app.post("/config/max-parallel")
+    def web_set_max_parallel(request: Request, value: int = Form(...)):
+        with hub.lock:
+            sched = hub.scheduler()
+            sched.set_override("max_parallel", value, by="web")
+        hub._log(f"max_parallel set to {value} via web")
+        return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
+
+    @app.post("/config/max-parallel/clear")
+    def web_clear_max_parallel(request: Request):
+        with hub.lock:
+            sched = hub.scheduler()
+            sched.clear_override("max_parallel", by="web")
+        hub._log("max_parallel override cleared via web")
+        return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
 
     @app.post("/upgrade")
     def web_upgrade(request: Request):

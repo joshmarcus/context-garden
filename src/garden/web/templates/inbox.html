@@ -7,7 +7,7 @@
 </div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if items else '' }}"><div class="v">{{ items|length }}</div><div class="l">need you</div></div>
-  <div class="kpi"><div class="v">{{ running|length }}</div><div class="l">workers running</div></div>
+  <div class="kpi"><div class="v">{{ running|length }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
   <div class="kpi"><div class="v">{{ prs_open }}</div><div class="l">PRs open</div></div>
   <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
 </div>

@@ -2,7 +2,7 @@
 {% block title %}Configuration{% endblock %}
 {% block body %}
 <div class="page-head">
-  <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change values; this page is read-only except for the pause switch.</p></div>
+  <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Most values are read-only here — edit the underlying YAML files to change them — except the pause switch and max_parallel, which can be overridden live.</p></div>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
@@ -24,6 +24,25 @@
     <button>⏸ Pause dispatch</button>
   </form>
   {% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Dispatch</div>
+  <h3>Parallelism</h3>
+  <p style="color:var(--muted);margin:0 0 10px">
+    garden.yaml: <strong>{{ max_parallel_file }}</strong>
+    {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
+  </p>
+  <form method="post" action="/config/max-parallel" class="actions">
+    <input type="number" name="value" min="1" placeholder="new max_parallel" style="width:160px" required>
+    <button class="primary">Set</button>
+  </form>
+  {% if max_parallel_override is not none %}
+  <form method="post" action="/config/max-parallel/clear" class="actions" style="margin-top:6px">
+    <button>Clear override</button>
+  </form>
+  {% endif %}
+  <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it.</p>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
