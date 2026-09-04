@@ -15,6 +15,7 @@ from .store import Store
 GROUPS = [
     ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code."),
     ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer."),
+    ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note."),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back."),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents."),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker."),
@@ -196,7 +197,16 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
-        if t.status == Status.WAITING_HUMAN:
+        if t.status == Status.WAITING_HUMAN and st.get("decision"):
+            dec = st.get("decision") or {}
+            kind = str(dec.get("kind") or "")
+            reason = str(dec.get("reason") or "(no reason given)")
+            verb = "will not do this task" if kind == "wont_do" else "found nothing to change this round"
+            add("decision", t, f"the worker {verb}: {reason}", [
+                {"label": "Accept", "kind": "accept", "command": f"garden accept {t.id}"},
+                {"label": "Reject", "kind": "reject", "command": f'garden reject {t.id} "..."'},
+            ], decision_kind=kind, reason=reason, final=str(dec.get("final") or ""))
+        elif t.status == Status.WAITING_HUMAN:
             add("question", t, str(st.get("question") or "(no question recorded)"),
                 [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=st.get("question", ""))
         elif t.status == Status.AWAITING_TRIAGE:

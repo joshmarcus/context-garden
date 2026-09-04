@@ -128,8 +128,9 @@ edit `tasks/`, run the project's checks, and finish with the result line.
 The last line of the worker's final message is the contract:
 
 ```
-GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked",
+GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change",
                 "summary": "1-3 sentences", "question": "only for needs_input",
+                "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "notes": "...",
                 "discovered": [{"title", "body", "difficulty", "blocking"}]}
 ```
@@ -138,7 +139,20 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked",
 - `needs_input`: the worker committed what it had and stopped on a decision only a person
   can make; `question` is the one thing it needs.
 - `blocked`: it cannot proceed at all; the task fails with the reason in its log.
+- `wont_do`: the worker judges the task should not be done; `reason` says why. Not a failure:
+  the task moves to `waiting_human` and the person accepts (it ends in the terminal `wont_do`
+  status and any open PR is closed with the reason) or rejects (the reasoning goes back into a
+  revise round with the person's note).
+- `no_change`: a revise round found nothing to change (e.g. the failing check was the
+  environment, not the diff); `reason` says why. The task moves to `waiting_human`; the person
+  accepts (the round proceeds to the PR or the review as if it had pushed, with no new work
+  run) or rejects (as above).
 - `discovered`: work it noticed but did not do; each item becomes a task file.
+
+A `wont_do` or a `no_change` is a decision for the person, not a failure: the inbox card and
+the task page quote the `reason` and show the worker's final message in full, with Accept and
+Reject (plus a note). `garden accept ID` / `garden reject ID "note"` do the same from the CLI,
+and `garden set-status ID wont_do --reason "…"` records a `wont_do` directly.
 
 The harness wraps that message in its own format: `claude -p --output-format json` prints
 one JSON object with `result` (the final text), `usage`, `total_cost_usd`, `session_id`

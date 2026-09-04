@@ -33,14 +33,15 @@ class Status(str, Enum):
     AWAITING_TRIAGE = "awaiting_triage"  # draft PR open; a human's first look decides if it is ready for review
     IN_REVIEW = "in_review"  # PR marked ready, waiting on human review / CI
     CHANGES_REQUESTED = "changes_requested"  # review feedback waiting for a revise run
-    WAITING_HUMAN = "waiting_human"  # worker asked a question; resumes when answered
+    WAITING_HUMAN = "waiting_human"  # worker asked a question, or reported wont_do / no_change; resumes when the person decides
     DONE = "done"  # PR merged (or manually closed out)
     FAILED = "failed"  # worker failed / PR closed unmerged / needs a human
+    WONT_DO = "wont_do"  # a person accepted a worker's call that the task should not be done; terminal, neither done nor failed
     CANCELLED = "cancelled"
 
     @property
     def terminal(self) -> bool:
-        return self in (Status.DONE, Status.CANCELLED)
+        return self in (Status.DONE, Status.CANCELLED, Status.WONT_DO)
 
     @property
     def active(self) -> bool:

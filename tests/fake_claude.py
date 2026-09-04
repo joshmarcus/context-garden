@@ -7,6 +7,8 @@ FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
+       | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
+       | no_change (first run finishes normally; a revise round reports no_change)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -95,10 +97,20 @@ if mode == "nochange" and "Revision round" in brief:
     final = 'Nothing to change.\nGARDEN_RESULT: {"status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b"}'
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": final, "usage": {}, "total_cost_usd": 0.01}))
     sys.exit(0)
+if mode == "wont_do" and "Revision round" not in brief:
+    # the worker judges the task should not be done; it commits nothing
+    final = 'I do not think this should be done.\nGARDEN_RESULT: {"status": "wont_do", "reason": "This duplicates DM-002; doing it would create a conflicting second path.", "summary": "should not be done"}'
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": final, "usage": {"input_tokens": 200, "output_tokens": 15}, "total_cost_usd": 0.01}))
+    sys.exit(0)
+if mode == "no_change" and "Revision round" in brief:
+    # a revise round with nothing to change: the failing check was the environment, not the diff
+    final = 'The code is already correct.\nGARDEN_RESULT: {"status": "no_change", "reason": "The failing check is an environment mismatch, not this diff; the code is right."}'
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": final, "usage": {"input_tokens": 210, "output_tokens": 18}, "total_cost_usd": 0.01}))
+    sys.exit(0)
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
-if mode in ("done", "noresult", "needs_input", "discover", "nochange", "revise-with-comment", "conflict"):
+if mode in ("done", "noresult", "needs_input", "discover", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")

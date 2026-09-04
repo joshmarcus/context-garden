@@ -45,12 +45,12 @@ def plate_filename(key: str, thumb: bool = False) -> str:
 STAGE: dict[str, str] = {
     "draft": "st-seed", "ready": "st-sprout", "running": "st-leaf", "waiting_human": "st-tag", "awaiting_triage": "st-bud",
     "in_review": "st-flower", "changes_requested": "st-cut", "done": "st-fruit", "failed": "st-wilt", "cancelled": "st-pressed",
-    "blocked": "st-seed",
+    "wont_do": "st-fallow", "blocked": "st-seed",
 }
 STAGE_WORD: dict[str, str] = {
     "draft": "seed", "ready": "sprout", "running": "in leaf", "waiting_human": "bud, tagged", "awaiting_triage": "in bud",
     "in_review": "in flower", "changes_requested": "pruned", "done": "in fruit", "failed": "wilted", "cancelled": "pressed",
-    "blocked": "seed, waiting",
+    "wont_do": "set aside", "blocked": "seed, waiting",
 }
 
 DEFS = r'''
@@ -155,6 +155,8 @@ DEFS = r'''
 <g id="st-wilt"><path d="M8 22 C8 14 10 10 14 8 C18 6 18 10 14 12" stroke="var(--ink)" stroke-width="1.2" fill="none"/><path d="M14 12 C18 10 21 14 17 17 C14 18 13 15 14 12 Z" fill="var(--wilt)" stroke="var(--ink)" stroke-width=".9"/><path d="M5 22 H12" stroke="var(--ink)" stroke-width="1"/></g>
 <g id="st-pressed"><path d="M5 19 C5 9 13 5 19 5 C19 13 13 19 5 19 Z" fill="var(--pressed)" stroke="var(--ink)" stroke-width="1"/><path d="M6 18 L17 7" stroke="var(--ink)" stroke-width=".6"/><circle cx="18.5" cy="5.5" r="2.2" fill="var(--pin)" stroke="var(--ink)" stroke-width=".6"/></g>
 <g id="st-tag"><path d="M10 22 V13" stroke="var(--ink)" stroke-width="1.2"/><path d="M10 13 C6 13 6 6 10 4 C14 6 14 13 10 13 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><path d="M12 8 l9 -3.5 v6 l-9 3.5 z" fill="var(--paper)" stroke="var(--ink)" stroke-width=".9" stroke-linejoin="round"/><text x="14.6" y="10.6" font-size="5" font-family="serif" font-weight="700" fill="var(--ink)">?</text></g>
+<!-- wont_do: seeds saved back into a labelled packet, set aside rather than sown -->
+<g id="st-fallow"><rect x="5" y="6.5" width="14" height="12" rx="1" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.1"/><path d="M5 10 H19" stroke="var(--ink)" stroke-width=".8"/><path d="M8 13 H16 M8 15.5 H13" stroke="var(--ink)" stroke-width=".7"/><ellipse cx="15.5" cy="15.5" rx="1.4" ry="2" transform="rotate(-25 15.5 15.5)" fill="var(--seed)" stroke="var(--ink)" stroke-width=".5"/></g>
 </defs></svg>
 '''
 

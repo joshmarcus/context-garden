@@ -124,6 +124,7 @@ MERMAID_CLASS = {
     "awaiting_triage": "fill:#e8dff8,stroke:#5b3fa8,color:#333",
     "done": "fill:#d4edda,stroke:#155724,color:#333",
     "failed": "fill:#f8d7da,stroke:#721c24,color:#333",
+    "wont_do": "fill:#efe7dd,stroke:#8a6d3b,color:#333",
     "cancelled": "fill:#e9ecef,stroke:#6c757d,color:#999",
 }
 
@@ -162,6 +163,7 @@ SVG_FILL = {
     "awaiting_triage": ("#e8dff8", "#5b3fa8"),
     "done": ("#d4edda", "#155724"),
     "failed": ("#f8d7da", "#721c24"),
+    "wont_do": ("#efe7dd", "#8a6d3b"),
     "cancelled": ("#e9ecef", "#6c757d"),
 }
 
