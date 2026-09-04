@@ -103,7 +103,14 @@ if mode in ("done", "noresult", "needs_input", "discover", "nochange", "revise-w
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
     subprocess.run(["git", "add", "-A"], check=True)
-    subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake", "commit", "-q", "-m", f"fake change {n}"], check=True)
+    # A stacked task's worktree can branch from the exact tree+parent another task's run
+    # produces (both start from the same commit and write the same counter value), and
+    # commits made in the same wall-clock second are otherwise byte-identical: git then
+    # dedupes them to one object, and the stacked task's "own" commit silently vanishes
+    # (its branch is already at that commit, so it looks like it made no commits at all).
+    # Mixing the run identity into the message keeps every run's commit object distinct.
+    tag = f"{os.environ.get('GARDEN_TASK_ID', '')}/{os.environ.get('GARDEN_RUN_ID', '')}"
+    subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake", "commit", "-q", "-m", f"fake change {n} ({tag})"], check=True)
 
 if mode == "noresult":
     final = "I did some things but forgot the result line."

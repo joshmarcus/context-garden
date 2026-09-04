@@ -1,10 +1,12 @@
 import os
+import shutil
 import subprocess
+import sys
 
 from garden.github import Feedback
 from garden.model import Status
 from garden.runner.manual import ManualRunner
-from tests.conftest import wait_for_runs
+from tests.conftest import FAKE_CLAUDE, git, wait_for_runs
 
 
 def statuses(sched):
@@ -60,9 +62,48 @@ def test_feedback_triggers_revise_round(sched, fake_github):
     fake_github.feedback.clear()
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
-    assert len(fake_github.created) == 1  # same PR, no second one
+    # DM-002 stacks on DM-001's open PR and gets its own PR once its work run lands (see
+    # test_happy_path_dispatch_reap_pr_merge) -- that is unrelated to this test, so scope
+    # the "no duplicate PR" check to DM-001's own branch rather than the whole fake.
+    dm001_prs = [c for c in fake_github.created if c["head"] == "garden/dm-001-first-task"]
+    assert len(dm001_prs) == 1  # same PR, no second one
     assert fake_github.comments and "revised per feedback" in fake_github.comments[0]
     assert sched.state.get("DM-001")["revisions"] == 1
+
+
+def _run_fake_claude(cwd, task_id, run_id, when):
+    env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    env.pop("FAKE_CLAUDE_MODE", None)
+    subprocess.run([sys.executable, str(FAKE_CLAUDE)], cwd=cwd, input="brief", capture_output=True, text=True, env=env, check=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_stacked_runs_never_collide_into_the_same_commit(tmp_path):
+    """A stack child's own work run and its parent's revise round both branch from the
+    parent's tip, write the same counter value to the same file, and can finish in the
+    same wall-clock second. If the fake worker's commit is otherwise identical (same
+    tree, parent, author, message and timestamp), git dedupes the two into one object:
+    the child's branch ends up pointing at the parent's revise commit, its own commit
+    silently vanishes, and `commits_ahead()` reports 0 -- the scheduler then discards the
+    child's real work as "worker finished with no commits" (this is what actually caused
+    the intermittent DM-002 PR seen in test_feedback_triggers_revise_round, not a race in
+    finalize()'s PR lookup). Mixing task/run identity into the commit message keeps every
+    run's commit distinct even when timestamps and content otherwise collide."""
+    base = tmp_path / "base"
+    base.mkdir()
+    git("init", "-q", "-b", "main", cwd=base)
+    (base / "worker-output.txt").write_text("1\n")
+    git("add", "-A", cwd=base)
+    git("commit", "-q", "-m", "parent work", cwd=base)
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    shutil.copytree(base, a)
+    shutil.copytree(base, b)
+    same_instant = "2024-01-01T00:00:00"
+
+    sha_a = _run_fake_claude(a, "DM-001", "20260101T000000Z-revise", same_instant)
+    sha_b = _run_fake_claude(b, "DM-002", "20260101T000000Z-work", same_instant)
+    assert sha_a != sha_b
 
 
 def test_revision_cap(sched, fake_github):
