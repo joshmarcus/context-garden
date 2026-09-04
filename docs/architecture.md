@@ -77,6 +77,24 @@ Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the tas
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
+### Committing task state
+
+The scheduler edits task files in place (status transitions, attempt counters, log lines).
+Those edits accumulate in the main checkout and are not committed automatically, because
+committing on the user's behalf would interfere with their own git workflow. Workers branch
+from `origin/main`, so state must be committed and pushed to be visible to them across
+machines.
+
+Run `garden commit` after each session (or whenever the scheduler has made edits) to stage
+every modified task file and create one commit on the current branch:
+
+```
+garden commit
+```
+
+The commit message is always `garden: update task state`. `garden status` warns when task
+files have uncommitted changes.
+
 ### What `state.json` remembers per task
 
 | group | keys | meaning |

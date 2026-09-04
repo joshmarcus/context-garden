@@ -214,6 +214,12 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     console.print(table)
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
+    from .gitops import is_repo, uncommitted_task_files
+    if is_repo(store.root):
+        dirty = uncommitted_task_files(store.root)
+        if dirty:
+            n = len(dirty)
+            console.print(f"[yellow]{n} task file{'s' if n != 1 else ''} with uncommitted changes — run `garden commit` to save them[/yellow]")
 
 
 def _count(n: int, s: str) -> str:
@@ -464,6 +470,29 @@ def retry(task_id: str):
     """Reset attempts and mark ready."""
     store = _store()
     _scheduler(store).retry(_task(store, task_id))
+
+
+@app.command("commit")
+def commit_tasks():
+    """Commit task-file state changes (status, log lines) to the garden's git history."""
+    from .gitops import GitError, commit_task_files, is_repo
+
+    store = _store()
+    if not is_repo(store.root):
+        err.print("[red]garden root is not a git repository[/red]")
+        raise typer.Exit(1) from None
+    try:
+        committed = commit_task_files(store.root, "garden: update task state")
+    except GitError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    if not committed:
+        console.print("[dim]nothing to commit (task files are clean)[/dim]")
+    else:
+        for f in committed:
+            console.print(f"committed {f}")
+        n = len(committed)
+        console.print(f"[green]committed {n} task file{'s' if n != 1 else ''}[/green]")
 
 
 @app.command()
