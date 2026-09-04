@@ -381,8 +381,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         for pname, pdata in (cfg.data.get("products") or {}).items():
             if isinstance(pdata, dict) and pdata.get("budget_usd"):
                 budgets.setdefault(pname, pdata["budget_usd"])
+        # runtime overrides from state.json (set via the phase page or `garden budget`) win
+        overrides = dict(State(cfg.garden_dir / "state.json").get("_budgets"))
+        budgets.update(overrides)
         return templates.TemplateResponse(request, "config.html", ctx(
-            request, page="config", sources=cfg.sources, effective=effective, budgets=budgets))
+            request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
+            budget_overrides=sorted(overrides)))
 
     # ---- actions -----------------------------------------------------------
     @app.post("/tick")
@@ -507,6 +511,23 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 t.status = Status.READY
                 t.log("approved (web)")
                 s.save(t)
+        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+
+    @app.post("/phases/{product}/{phase}/budget")
+    def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
+        key = f"{product}/{phase}"
+        with hub.lock:
+            sched = hub.scheduler()
+            if no_budget or not amount.strip():
+                sched.set_budget(key, None, by="web")
+            else:
+                try:
+                    usd = float(amount)
+                except ValueError:
+                    raise HTTPException(400, "budget must be a number") from None
+                if usd < 0:
+                    raise HTTPException(400, "budget must not be negative")
+                sched.set_budget(key, usd, by="web")
         return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
 
     @app.post("/phases/{product}/{phase}/persona")
