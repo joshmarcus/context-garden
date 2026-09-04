@@ -324,8 +324,17 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
     if t.status == Status.WAITING_HUMAN and st.get("question"):
         console.print(f"[bold deep_pink3]question:[/bold deep_pink3] {st['question']}\n  answer with: garden answer {t.id} \"...\"")
-    if st.get("needs_human"):
-        console.print(f"[bold red]needs a human:[/bold red] {st['needs_human']}  (garden retry {t.id} to resume)")
+    if st.get("needs_human") or t.status == Status.FAILED:
+        from .inbox import attention_view
+
+        view = attention_view(t, st, RunStore(store.config.garden_dir))
+        if view:
+            console.print(f"[bold red]needs a decision — {view['kind_title'].lower()}:[/bold red] {view['reason']}")
+            for line in view["evidence"]:
+                console.print(f"  [dim]{line}[/dim]")
+            for a in view["actions"]:
+                if a.get("command"):
+                    console.print(f"  [cyan]{a['command']}[/cyan]  [dim]{a['detail']}[/dim]")
     u = RunStore(store.config.garden_dir).usage_for(t.id)
     if u["runs"]:
         console.print(f"usage: {u['runs']} run(s), in {u['input_tokens']:,} / out {u['output_tokens']:,} / cache-read {u['cache_read_input_tokens']:,} tokens, ${u['cost_usd']:.2f}")
@@ -515,9 +524,26 @@ def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
 
 @app.command()
 def retry(task_id: str):
-    """Reset attempts and mark ready."""
+    """Continue the loop: with an open PR, queue a revise run on the branch; otherwise reset attempts and start over."""
     store = _store()
     _scheduler(store).retry(_task(store, task_id))
+
+
+@app.command()
+def discuss(task_id: str):
+    """Print a ready-made prompt about a stopped task (the task, the reason, the PR, the runs), for a chat session or `garden take`."""
+    from .inbox import attention_view
+    from .runs import RunStore
+    from .scheduler import State
+
+    store = _store()
+    t = _task(store, task_id)
+    st = State(store.config.garden_dir / "state.json").get(t.id)
+    view = attention_view(t, st, RunStore(store.config.garden_dir))
+    if view is None:
+        console.print(f"{t.id} is {t.status.value}; nothing is waiting on a decision")
+        raise typer.Exit(1)
+    print(view["discuss"])
 
 
 @app.command("commit")
@@ -570,10 +596,15 @@ def pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason
 
 
 @app.command()
-def resume():
-    """Resume automatic dispatch after a pause."""
+def resume(task_id: str = typer.Argument("", help="Task id: nothing to fix, clear its needs-human stop and put it back where it was")):
+    """Resume automatic dispatch after a pause; with a task id, clear that task's needs-human stop without starting a run."""
     store = _store()
     sched = _scheduler(store)
+    if task_id:
+        t = _task(store, task_id)
+        sched.resume_task(t)
+        console.print(f"{t.id}: nothing to fix; resumed as {t.status.value}")
+        return
     sched.resume(by="cli")
     console.print("[green]dispatch resumed[/green]")
 
@@ -941,7 +972,8 @@ def inbox():
         console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
         for a in it["actions"]:
             if a.get("command"):
-                console.print(f"           [cyan]{a['command']}[/cyan]")
+                detail = f"  [dim]{a['detail']}[/dim]" if a.get("detail") else ""
+                console.print(f"           [cyan]{a['command']}[/cyan]{detail}")
 
 
 # --------------------------------------------------------------------------- planning

@@ -30,7 +30,7 @@ from ..graph import (
     svg,
     validate,
 )
-from ..inbox import build_inbox, running_now
+from ..inbox import attention_view, build_inbox, needs_human_info, running_now
 from ..model import STATUS_ORDER, Status, now_iso
 from ..plants import (
     DEFS,
@@ -172,7 +172,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 continue
             st = state.get(t.id)
             cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
-                              "stack": st.get("stack_parent", ""), "needs_human": st.get("needs_human", ""),
+                              "stack": st.get("stack_parent", ""),
+                              "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
                               "question": st.get("question", "") if eff == "waiting_human" else ""})
         runs = RunStore(s.config.garden_dir)
         active = {r.task_id: r for r in runs.active()}
@@ -236,6 +237,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
             friction_text=friction_text,
             initial_stdout=initial_stdout,
+            attention=attention_view(t, st, rs),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -458,6 +460,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 sched.cancel(t, note or "cancelled (web)")
             elif action == "retry":
                 sched.retry(t)
+            elif action == "resume":
+                sched.resume_task(t)
             elif action == "done":
                 t.status = Status.DONE
                 t.log(note or "marked done (web)")

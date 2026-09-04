@@ -22,6 +22,7 @@ from textual.widgets import (
 )
 
 from ..graph import blockers, effective_status
+from ..inbox import attention_view
 from ..model import Status
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -293,8 +294,12 @@ class GardenTUI(App):
             head.append(f"discovered by: {t.discovered_from}")
         if st.get("question"):
             head.append(f"\n## Waiting for your answer\n\n{st['question']}\n\n(press `w` to answer)")
-        if st.get("needs_human"):
-            head.append(f"\n**Needs a human:** {st['needs_human']} (press `e` to continue)")
+        att = attention_view(t, st, RunStore(self.store.config.garden_dir))
+        if att:
+            head.append(f"\n**Needs a decision — {att['kind_title'].lower()}:** {att['reason']} (press `e` to continue)")
+            for a in att["actions"]:
+                if a.get("command"):
+                    head.append(f"- `{a['command']}` — {a['detail']}")
         if st.get("pending_feedback"):
             head.append("\n## Pending feedback\n\n" + st["pending_feedback"])
         detail.update("\n\n".join(head) + "\n\n---\n\n" + t.body)

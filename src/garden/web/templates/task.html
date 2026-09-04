@@ -24,7 +24,28 @@
   <form method="post" action="/tasks/{{ task.id }}/triage-changes" style="margin-top:10px"><textarea name="note" placeholder="What to change: what is wrong, where, and what to do instead. This becomes the next revise brief." required></textarea><div class="actions" style="margin-top:8px"><button>Send back</button></div></form>
 </div>
 {% endif %}
-{% if state.needs_human %}<div class="warn"><b>Needs a decision:</b> {{ state.needs_human }}. Fix or decide, then continue the loop.</div>{% endif %}
+{% if attention %}
+<div class="panel" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--bad)">Needs a decision: {{ attention.kind_title }}</div>
+  <p style="margin:6px 0 2px"><b>{{ attention.reason }}</b></p>
+  {% if attention.kind_blurb %}<p class="muted" style="margin:2px 0 8px">{{ attention.kind_blurb }}</p>{% endif %}
+  {% if attention.evidence %}<ul style="margin:0 0 10px;padding-left:18px">{% for line in attention.evidence %}<li class="muted">{{ line }}</li>{% endfor %}</ul>{% endif %}
+  {% for a in attention.actions %}
+  <div class="actions" style="align-items:center;margin-top:6px">
+    {% if a.kind == 'resume' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/resume"><button class="primary">{{ a.label }}</button></form>
+    {% elif a.kind == 'retry' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ a.label }}</button></form>
+    {% elif a.kind == 'discuss' %}<button class="quiet" data-toggle="discuss-panel">{{ a.label }}…</button>
+    {% elif a.kind == 'cancel' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">{{ a.label }}</button></form>
+    {% elif a.kind == 'link' %}<a class="btn quiet" href="{{ a.href }}" target="_blank">{{ a.label }} ↗</a>{% endif %}
+    <span class="faint">{{ a.detail }}</span>
+  </div>
+  {% endfor %}
+  <div id="discuss-panel" hidden style="margin-top:10px">
+    <textarea id="discuss-text" readonly style="width:100%;box-sizing:border-box;min-height:150px">{{ attention.discuss }}</textarea>
+    <div class="actions" style="margin-top:6px"><button data-copy="discuss-text">Copy prompt</button><span class="faint">paste it into a chat session or <code>garden take {{ task.id }}</code></span></div>
+  </div>
+</div>
+{% endif %}
 
 <div class="actions" style="margin-bottom:14px">
   {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary">Approve</button></form>{% endif %}
