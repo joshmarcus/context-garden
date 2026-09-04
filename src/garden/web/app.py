@@ -314,12 +314,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         specs = [(s.rel(p), p.read_text()) for p in ph.specs]
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
+        fixed_tokens = fixed.fixed_tokens if fixed else 0
         state = State(s.config.garden_dir / "state.json")
         stack = bool(s.config.get("stack", True))
         sched = hub.scheduler()
         phase_tasks = {t.id: t for t in ph.tasks}
         m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
         from ..personas import DEFAULT_PERSONAS, list_personas
+        from ..brief import estimate_brief_tokens
 
         reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
         phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
@@ -335,7 +337,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
-            rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {})) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
         ))
 

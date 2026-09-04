@@ -73,6 +73,20 @@ class Brief:
     def tokens(self) -> int:
         return estimate_tokens(self.text)
 
+    @property
+    def fixed_tokens(self) -> int:
+        """Fixed cost: head + rules + principles + product + goals (+ optional stack/revise)."""
+        fixed_sections = {"head", "rules", "principles", "product", "goals", "stack", "revise", "qa"}
+        chars = sum(v for k, v in self.sections.items() if k in fixed_sections)
+        return estimate_tokens(" " * chars) if chars else 0
+
+    @property
+    def reading_tokens(self) -> int:
+        """Reading list cost: inlined and referenced content."""
+        reading_sections = {"reading", "reading_refs", "feedback"}
+        chars = sum(v for k, v in self.sections.items() if k in reading_sections)
+        return estimate_tokens(" " * chars) if chars else 0
+
 
 def _read(p: Path) -> str:
     try:
@@ -212,6 +226,12 @@ def build_brief(
         referenced=referenced,
         missing=missing,
     )
+
+
+def estimate_brief_tokens(store: Store, task: Task) -> tuple[int, int]:
+    """Estimate brief cost: (fixed_tokens, reading_tokens)."""
+    brief = build_brief(store, task)
+    return (brief.fixed_tokens, brief.reading_tokens)
 
 
 def parse_result(output_text: str) -> dict:
