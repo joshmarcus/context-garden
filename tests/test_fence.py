@@ -116,9 +116,18 @@ def test_scheduler_task_file_edits_do_not_trip_the_fence(sched, garden, monkeypa
     assert not _attention_card(sched, "DM-001")
 
 
+def _run_naming(sched, task_id: str, *paths: str):
+    """A fake run whose stdout.json names the given paths, as a real worker's transcript
+    (Edit/Write file_path, Bash commands, final message) would."""
+    run = sched.runs.new_run(task_id, "local")
+    result = {"type": "result", "result": "I edited " + " and ".join(paths) + "."}
+    (run.path / "stdout.json").write_text(json.dumps(result))
+    return run
+
+
 def test_fence_ignores_scheduler_owned_commits(sched, tmp_path):
     """A commit touching only task files or .garden/ (e.g. `garden sync`) is the scheduler's
-    own and must not be reverted; a commit touching other files is an escape."""
+    own and must not be reverted; a commit touching other files the worker named is an escape."""
     clone = tmp_path / "repo"
     task = sched.store.task("DM-001")
 
@@ -136,9 +145,48 @@ def test_fence_ignores_scheduler_owned_commits(sched, tmp_path):
     (clone / "code.py").write_text("x = 1\n")
     _git("add", "-A", cwd=clone)
     _git("commit", "-q", "-m", "rogue", cwd=clone)
-    violations = sched._fence_check(task)
+    run = _run_naming(sched, "DM-001", str(clone / "code.py"))
+    violations = sched._fence_check(task, run)
     assert violations and "code.py" in violations[0]["files"]
     assert head_sha(clone) == head_after_sync    # the rogue commit is dropped
+
+
+def test_fence_leaves_changes_the_worker_did_not_make(sched, tmp_path):
+    """A person edits the live garden (or a `git fetch` advances a clone) while a run is live.
+    The worker's transcript never names those paths, so the fence must not revert them or fail
+    the run — only writes the worker itself named are the worker's (reviewer's ask on #57)."""
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+
+    sched._fence_snapshot(task)
+    # a human edits and commits a config file by hand during the run
+    (clone / "config.yaml").write_text("changed by a person\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "-m", "human edit", cwd=clone)
+    head_after_human = head_sha(clone)
+
+    run = _run_naming(sched, "DM-001", str(clone / "unrelated.py"))  # names something else
+    assert sched._fence_check(task, run) == []     # not attributed to the worker: left alone
+    assert head_sha(clone) == head_after_human      # the human's commit survives
+    assert (clone / "config.yaml").read_text() == "changed by a person\n"
+
+
+def test_fence_reports_foreign_changes_alongside_the_reverted_ones(sched, tmp_path):
+    """When the worker did escape, an interleaved human/other change in the same repo is
+    reported on the card but left in place, not swept away with the worker's revert."""
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+
+    sched._fence_snapshot(task)
+    (clone / "worker.py").write_text("escaped\n")       # the worker's own write
+    (clone / "person.txt").write_text("a person's edit\n")  # not the worker's
+    run = _run_naming(sched, "DM-001", str(clone / "worker.py"))
+    violations = sched._fence_check(task, run)
+    assert violations
+    assert violations[0]["files"] == ["worker.py"]       # reverted
+    assert violations[0]["foreign"] == ["person.txt"]    # reported, left in place
+    assert not (clone / "worker.py").exists()             # the escape is undone
+    assert (clone / "person.txt").read_text() == "a person's edit\n"  # left alone
 
 
 # ---- first line of defence: the harness deny rules ------------------------

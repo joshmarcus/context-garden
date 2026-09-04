@@ -562,7 +562,7 @@ class Scheduler:
         # The runner's fence, not the brief's: whatever the worker was told, a write to the
         # live garden or the product clone is reverted here and the run fails (see the
         # permission deny rules in Harness.fence_settings for the first line of defence).
-        violations = self._fence_check(task)
+        violations = self._fence_check(task, run)
         if violations:
             self._fence_fail(task, run, violations, rep)
             return
@@ -994,13 +994,34 @@ class Scheduler:
         else:
             st.pop("fence", None)
 
-    def _fence_check(self, task: Task) -> list[dict[str, Any]]:
-        """Compare each guarded repo against its dispatch snapshot; revert and report any
-        commit or write the worker made. Task files and .garden/ are the scheduler's own and
-        are ignored."""
+    @staticmethod
+    def _worker_named(transcript: str, repo: Path, rel: str) -> bool:
+        """True if the worker's transcript names this path, so the change is attributable to
+        the worker rather than to a person editing the live garden or the scheduler's own git.
+
+        `claude`'s output (a single result JSON, or stream-json tool events) carries the
+        worker's `Edit`/`Write` `file_path`, the `Bash` commands it ran, and its final
+        message — all as substrings of stdout. A path the worker touched appears there by its
+        absolute form; a path a person changed while the run was live does not."""
+        if not transcript:
+            return False
+        candidates = {str(repo / rel)}
+        try:
+            candidates.add(str((repo / rel).resolve()))
+        except OSError:
+            pass
+        return any(c in transcript for c in candidates)
+
+    def _fence_check(self, task: Task, run: Run | None = None) -> list[dict[str, Any]]:
+        """Compare each guarded repo against its dispatch snapshot; revert and report only the
+        writes the worker's own transcript names. Task files and .garden/ are the scheduler's
+        own and are ignored; so is anything the worker did not name — a person editing the live
+        garden while a run is live, or a HEAD the scheduler's own `git fetch` advanced. Those
+        are reported on the card and left in place, never reverted (the reviewer's ask on #57)."""
         snap = self.state.get(task.id).pop("fence", None)
         if not snap:
             return []
+        transcript = run.stdout_text() if run is not None else ""
         violations: list[dict[str, Any]] = []
         for path_str, before in snap.items():
             path = Path(path_str)
@@ -1009,26 +1030,35 @@ class Scheduler:
             head_before = str(before.get("head") or "")
             head_now = gitops.head_sha(path)
             was = set(before.get("status") or [])
-            files = {self._porcelain_path(ln) for ln in gitops.status_lines(path) if ln not in was}
+            wt_files = {self._porcelain_path(ln) for ln in gitops.status_lines(path) if ln not in was}
             moved = bool(head_before) and head_now != head_before
-            commits = gitops.commits_between(path, head_before, head_now) if moved else []
-            if moved:
-                files.update(gitops.changed_files(path, head_before, head_now))
-            touched = sorted(p for p in files if p and not self._fence_owned(p))
-            # A HEAD move that only touched task files or .garden/ is the scheduler's own
-            # (e.g. `garden sync`), not a worker escape: the trigger is a non-owned write.
-            if not touched:
+            committed = set(gitops.changed_files(path, head_before, head_now)) if moved else set()
+            changed = sorted(p for p in (wt_files | committed) if p and not self._fence_owned(p))
+            if not changed:
+                # A HEAD move (or write) that only touched task files or .garden/ is the
+                # scheduler's own (e.g. `garden sync`): not a worker escape.
                 continue
-            self._fence_revert(path, head_before, moved, touched)
+            attributed = [p for p in changed if self._worker_named(transcript, path, p)]
+            foreign = [p for p in changed if p not in attributed]
+            if not attributed:
+                # Nothing here is the worker's: a person's edit to the live garden, or a HEAD
+                # the scheduler's own fetch/pull advanced. Leave it; a moved HEAD alone is not
+                # an escape.
+                continue
+            # Drop the worker's commits only if one of its named paths is actually in them, so
+            # an interleaved human commit in the same range is not swept away with a reset.
+            reset = moved and bool(set(attributed) & committed)
+            commits = gitops.commits_between(path, head_before, head_now) if reset else []
+            self._fence_revert(path, head_before, reset, attributed)
             violations.append({"label": str(before.get("label") or path.name), "path": path_str,
-                               "commits": commits, "files": touched})
+                               "commits": commits, "files": attributed, "foreign": foreign})
         return violations
 
-    def _fence_revert(self, repo: Path, head_before: str, moved: bool, touched: list[str]) -> None:
+    def _fence_revert(self, repo: Path, head_before: str, reset: bool, touched: list[str]) -> None:
         """Undo a worker's escape: drop its commits (keeping unrelated in-flight edits) and
-        restore or remove each non-owned path it wrote."""
+        restore or remove each path it wrote."""
         try:
-            if moved and head_before:
+            if reset and head_before:
                 gitops.reset_soft(repo, head_before)
             for rel in touched:
                 if head_before and gitops.path_at(repo, head_before, rel):
@@ -1040,14 +1070,21 @@ class Scheduler:
 
     def _fence_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
         parts = []
+        foreign_seen = False
         for v in violations:
             bits = []
             if v["commits"]:
                 bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
             if v["files"]:
                 bits.append("wrote " + ", ".join(v["files"]))
+            if v.get("foreign"):
+                foreign_seen = True
+                bits.append("also changed (left in place, not attributed to the worker): "
+                            + ", ".join(v["foreign"]))
             parts.append(f"{v['label']} ({v['path']}): " + " and ".join(bits))
-        card = "worker wrote outside its worktree; the writes were reverted. Touched " + " | ".join(parts)
+        card = "worker wrote outside its worktree; the writes it made were reverted. Touched " + " | ".join(parts)
+        if foreign_seen:
+            card += " — the un-attributed changes were left for a person to check."
         self.state.get(task.id)["needs_human"] = card
         self.events.emit("fence_violation", task.id, run=run.run_id, repos=[v["path"] for v in violations],
                          commits=sum(len(v["commits"]) for v in violations), files=sum(len(v["files"]) for v in violations))

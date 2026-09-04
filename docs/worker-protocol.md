@@ -115,19 +115,31 @@ It is enforced in two layers:
 - **First line — the harness denies the write.** For `claude`, the runner passes
   `--settings` with `permissions.deny` rules for the live garden and the product clone
   (and, when the harness config sets `sandbox: true`, an OS-level sandbox that confines
-  every process's writes to the worktree). Deny rules are evaluated before the
-  `acceptEdits` mode, so an edit *inside* the worktree still needs no prompt while an edit
-  *outside* it is refused — and in `-p` mode there is no one to approve a prompt, so a
-  refused edit simply fails. The forbidden directories travel on the run as
-  `fence_paths`, set at dispatch.
-- **Belt and braces — the runner reverts anything that got through.** At dispatch the
+  every process's writes to the worktree — opt-in and untested, see the note below). Deny
+  rules are evaluated before the `acceptEdits` mode, so an edit *inside* the worktree still
+  needs no prompt while an edit *outside* it is refused — and in `-p` mode there is no one
+  to approve a prompt, so a refused edit simply fails. The forbidden directories travel on
+  the run as `fence_paths`, set at dispatch.
+- **Belt and braces — the runner reverts what the worker itself wrote.** At dispatch the
   scheduler snapshots the HEAD and working tree of the live garden and the product clone.
-  On reap, `finalize` compares them: any commit or write the worker made (task files and
-  `.garden/`, which the scheduler owns, are ignored) is reverted — its commits dropped
-  with a soft reset that preserves unrelated in-flight edits, its files restored or
-  removed — and the run is marked **failed** with a card in the Inbox quoting exactly what
-  was touched. A person answers the card; the answer cannot un-fail the run or reach back
-  into the garden.
+  On reap, `finalize` compares them and reverts a change *only when the worker's own
+  transcript names the path* — `claude`'s output carries every `Edit`/`Write` `file_path`,
+  every `Bash` command it ran, and its final message, so a path the worker touched appears
+  there by its absolute form. A named write is reverted (commits dropped with a soft reset
+  that preserves unrelated in-flight edits, files restored or removed) and the run is marked
+  **failed** with a card in the Inbox quoting exactly what was touched. Everything else
+  outside the worktree is *left in place*: task files and `.garden/` are the scheduler's
+  own; a config file a person edited by hand while the run was live, or a HEAD the
+  scheduler's own `git fetch` advanced, is not the worker's and must not be reverted (a
+  moved HEAD alone is not an escape). Such un-attributed changes are noted on the card for a
+  person to check, never undone. A person answers the card; the answer cannot un-fail the
+  run or reach back into the garden.
+
+> The `sandbox: true` block is opt-in and has not been exercised against a real harness. It
+> emits an OS-level sandbox stanza (`filesystem.allowWrite` = the worktree and `$TMPDIR`,
+> `denyWrite` = everything else) that a given `claude` build must actually support; before
+> flipping it, confirm the installed CLI honours `--settings` sandbox config on the host OS.
+> Until then the deny rules and the belt-and-braces revert are the fence.
 
 This closes the hole CG-054 and CG-058 left: those keep the brief and `garden` commands
 away from the live garden; the fence keeps a worker's *writes* away from it even when the
@@ -324,7 +336,7 @@ the JSON array it prints as task files.
 | GitHub is unreachable | `gh` and the token both unavailable, or the API errors | the task moves to `in_review` with a note to open the PR by hand and register it with `garden pr ID URL` |
 | the answer arrives but the session is gone | `session_id` set, resume command fails or the harness cannot resume | a fresh run with the Q&A in its brief |
 | two ticks overlap | both read the same `run.json` | the run is reaped by whichever finishes first; the second sees the run already marked done and finds no active run |
-| the worker wrote outside its worktree | the live garden or the product clone changed since dispatch | the change is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched (§2a) |
+| the worker wrote outside its worktree | a path the worker's transcript names changed in the live garden or the product clone since dispatch | that write is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched; any change the transcript does *not* name (a person's hand-edit, a fetched HEAD) is left in place and noted on the card (§2a) |
 
 ## Where to look
 

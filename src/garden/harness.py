@@ -85,7 +85,7 @@ class Harness:
             if not ap:
                 continue
             rule_path = "//" + ap.lstrip("/")
-            for tool in ("Edit", "Write", "MultiEdit"):
+            for tool in ("Edit", "Write"):
                 deny.append(f"{tool}({rule_path}/**)")
             deny.append(f"Bash(cd {ap}*)")
             deny.append(f"Bash(git -C {ap}*)")

@@ -150,12 +150,14 @@ if mode == "no_change" and "Revision round" in brief:
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
+escaped_path = ""
 if mode == "escape":
     # Do what CG-092's worker did: leave the worktree and write/commit in another repo
     # (the live garden or the product clone), whatever the brief said.
     escape_dir = os.environ["FAKE_CLAUDE_ESCAPE_DIR"]
     escape_file = os.environ.get("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
     fp = Path(escape_dir) / escape_file
+    escaped_path = str(fp)  # a real worker names the path it wrote (Edit file_path / Bash / final msg)
     fp.write_text((fp.read_text() if fp.exists() else "") + "\n# edited by a runaway worker\n")
     if os.environ.get("FAKE_CLAUDE_ESCAPE_COMMIT", "1") == "1":
         subprocess.run(["git", "add", "-A"], cwd=escape_dir, check=True)
@@ -212,6 +214,8 @@ else:
         # a revise round that only reworded things: no description change, so pr_body is omitted
         result.pop("pr_body")
         result["summary"] = "reworded; description unchanged"
+    if mode == "escape" and escaped_path:
+        result["notes"] = f"I stepped out of the worktree and edited {escaped_path}."
     final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
 result_obj = {
     "type": "result", "subtype": "success", "is_error": False, "result": final,
