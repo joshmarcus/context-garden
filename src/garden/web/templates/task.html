@@ -4,7 +4,7 @@
 <div class="page-head">
   <div><span class="eyebrow">{{ task.product }} / {{ task.phase }} · <a href="/tasks/{{ task.id }}" class="id">{{ task.id }}</a></span><h1>{{ task.title }}</h1>
     <p style="display:flex;align-items:center;gap:10px">{{ stage(eff, 24) }}<span class="state s-{{ eff }}">{{ eff.replace('_',' ') }} <span class="stage-word">{{ stage_word(eff) }}</span></span><span class="muted">priority {{ task.priority }} · {{ task.difficulty }}{% if task.estimate %} · {{ task.estimate }}{% endif %}{% if task.pr %} · <a href="{{ task.pr }}" target="_blank">PR ↗</a>{% endif %}</span></p></div>
-  <div class="tools"><a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">Brief</a>{% if runs %}<a class="btn" href="/tasks/{{ task.id }}/log" target="_blank">Latest log</a>{% endif %}</div>
+  <div class="tools"><a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">Brief</a>{% if latest_run %}<a class="btn" href="/runs/{{ task.id }}/{{ latest_run.run_id }}">Latest run</a>{% endif %}</div>
 </div>
 
 {% if task.status.value == 'waiting_human' and state.decision %}

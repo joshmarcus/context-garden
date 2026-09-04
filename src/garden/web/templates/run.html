@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ run.run_id }}{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">{% if task %}<a href="/tasks/{{ task.id }}" class="id">{{ task.id }}</a>{% else %}{{ task_id }}{% endif %} · run</span>
+    <h1>{{ run.run_id }}</h1>
+    <p style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="pill s-{{ 'running' if run.status == 'running' else ('done' if run.status == 'done' else ('waiting_human' if run.status == 'waiting' else 'failed')) }}">{{ run.status }}</span>
+      <span class="muted">{{ run.mode }} · {{ run.harness or 'harness' }}{% if run.model %}:{{ run.model }}{% endif %}{% if run.host %} @{{ run.host }}{% endif %} · {{ '%.0f' % run.elapsed_minutes() }} min{% if run.cost_usd is not none %} · ${{ '%.2f' % run.cost_usd }}{% endif %}</span>
+    </p>
+  </div>
+  <div class="tools"><a class="btn" href="/tasks/{{ task_id }}">Back to task</a>{% if run.branch %}<span class="badge" title="branch">{{ run.branch }}</span>{% endif %}</div>
+</div>
+
+{% if run.error %}<div class="warn"><b>Error:</b> {{ run.error }}</div>{% endif %}
+
+<div class="tabs">
+  <input type="radio" name="runtab" id="tab-transcript" checked>
+  <input type="radio" name="runtab" id="tab-brief">
+  <input type="radio" name="runtab" id="tab-final">
+  <input type="radio" name="runtab" id="tab-stderr">
+  <div class="tab-labels">
+    <label for="tab-transcript">Transcript</label>
+    <label for="tab-brief">Brief</label>
+    <label for="tab-final">Final message</label>
+    <label for="tab-stderr">stderr</label>
+  </div>
+  <div class="tab-panel" data-tab="transcript">
+    {% if is_stream %}
+    <div id="run-stdout"{% if run.status == 'running' %} data-poll="/partials/runs/{{ task_id }}/{{ run.run_id }}/stdout" data-every="3000"{% endif %}>
+      {% include "_stdout.html" %}
+    </div>
+    {% else %}
+    <p class="muted">This run recorded a single <span class="mono">claude-json</span> result rather than a streamed transcript. Its final message is below.</p>
+    <pre class="log">{{ final_text or '(no final message)' }}</pre>
+    {% endif %}
+  </div>
+  <div class="tab-panel" data-tab="brief"><pre class="log">{{ brief_text or '(no brief recorded)' }}</pre></div>
+  <div class="tab-panel" data-tab="final"><pre class="log">{{ final_text or '(no final message)' }}</pre></div>
+  <div class="tab-panel" data-tab="stderr"><pre class="log">{{ stderr_text or '(stderr was empty)' }}</pre></div>
+</div>
+{% endblock %}

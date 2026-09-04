@@ -165,6 +165,90 @@ def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
     assert "abc1234 fake change" in r.text and "working" in r.text
 
 
+def _record_run(garden, *, status="done", harness="claude", stdout="", brief="", final="", stderr=""):
+    """Write a run directory on disk with the given recorded files and return the Run."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    rs = RunStore(Store(garden).config.garden_dir)
+    run = rs.new_run("DM-001", "local", "work")
+    run.status = status
+    run.harness = harness
+    run.model = "sonnet"
+    run.save()
+    if stdout:
+        (run.path / "stdout.json").write_text(stdout)
+    if brief:
+        (run.path / "brief.md").write_text(brief)
+    if final:
+        (run.path / "final.md").write_text(final)
+    if stderr:
+        (run.path / "stderr.log").write_text(stderr)
+    return run
+
+
+def test_run_page_stream_json(garden):
+    """A stream-json run page renders the transcript (assistant text, tool calls with their
+    command, tool results and the result), plus brief, final message and stderr tabs. The
+    task page lists the run and links to its page."""
+    import json
+
+    stdout = "\n".join([
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task"}]}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "pytest -q"}}]}}),
+        json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "3 passed"}]}]}}),
+        json.dumps({"type": "result", "subtype": "success", "result": "All finished."}),
+    ]) + "\n"
+    run = _record_run(garden, stdout=stdout, brief="# The brief\n\nDo the first thing.",
+                      final="All finished.\nGARDEN_RESULT: {\"status\": \"done\"}", stderr="a warning line")
+
+    c = client(garden)
+    task_page = c.get("/tasks/DM-001").text
+    assert f"/runs/DM-001/{run.run_id}" in task_page  # the Runs section links to the run page
+
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "Working on the task" in body                 # assistant text
+    assert "Bash" in body and "pytest -q" in body        # tool call with its command
+    assert "3 passed" in body                            # tool result
+    assert "The brief" in body                           # brief tab
+    assert "All finished." in body                       # final message tab
+    assert "a warning line" in body                      # stderr tab
+    assert "/partials/runs/DM-001/" not in body          # a finished run does not tail
+
+
+def test_run_page_claude_json_shows_final_text(garden):
+    """A claude-json run is a single result object with no transcript; the page falls back to
+    the final text."""
+    import json
+
+    stdout = json.dumps({"type": "result", "subtype": "success",
+                         "result": "Implemented the thing.\nGARDEN_RESULT: {\"status\": \"done\"}",
+                         "usage": {"input_tokens": 10}, "total_cost_usd": 0.01}) + "\n"
+    run = _record_run(garden, stdout=stdout)  # no brief/final/stderr files on disk
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Implemented the thing." in body   # final text, recovered from the result object
+    assert "claude-json" in body              # the fallback note names the format
+    assert "no brief recorded" in body        # missing files render gracefully
+    assert "stderr was empty" in body
+
+
+def test_run_page_running_tails_the_same_view(garden):
+    """A running run opens the same page and keeps tailing via the poll hook; a 404 for an
+    unknown run."""
+    import json
+
+    stdout = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "starting"}]}}) + "\n"
+    run = _record_run(garden, status="running", stdout=stdout)
+
+    c = client(garden)
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "starting" in body
+    assert f"data-poll=\"/partials/runs/DM-001/{run.run_id}/stdout\"" in body
+    assert c.get(f"/partials/runs/DM-001/{run.run_id}/stdout").status_code == 200
+    assert c.get("/runs/DM-001/nope").status_code == 404
+
+
 def test_drawings_render_unescaped(garden, tmp_path):
     """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
     c = TestClient(create_app(Store(garden), watch=False, plates_dir=tmp_path / "plates"))
