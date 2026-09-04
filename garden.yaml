@@ -21,7 +21,8 @@ discovered:
   auto_approve_blocking: true   # work a worker reports as blocking is created `ready`, not `draft`
 stall:
   enabled: true             # stop revise loops that don't change the diff / repeat a review finding
-budgets: {}                 # "context-garden/phase-02-friction": 25.0   (usd cap per phase; see products.*.budget_usd)
+budgets:                    # usd cap per phase; see also products.*.budget_usd
+  context-garden/phase-02-friction: 25.0
 
 review:
   enabled: true             # automated first review of every PR round (acceptance criteria,
