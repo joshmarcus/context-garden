@@ -413,6 +413,10 @@ class Scheduler:
             dispatch = False
         if dispatch:
             self.dispatch_ready(rep)
+        try:
+            self._audit_stuck(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"stuck audit failed: {e}")
         self.state.save()
         self.maybe_auto_upgrade(rep)
         return rep
@@ -605,8 +609,28 @@ class Scheduler:
                     stalled = True
         failed = check_failures(self._pre_pr_checks(task, worktree, branch, base))
         if failed and not stalled:
-            st["pending_feedback"] = to_feedback(failed, "pre-PR check")
             names = ", ".join(str(f.get("name")) for f in failed)
+            feedback = to_feedback(failed, "pre-PR check")
+            max_rev = int(self.cfg.get("max_revisions", 3))
+            if not feedback.strip():
+                # A killed or empty check leaves nothing to revise against; storing it as
+                # empty feedback would make dispatch skip the task forever. Flag it instead.
+                reason = f"pre-PR check did not finish ({names}); no output to revise against"
+                st["needs_human"] = reason
+                self.events.emit("needs_human", task.id, reason=reason)
+                self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
+                rep.transitions.append(f"{task.id} -> changes_requested (check did not finish)")
+                return
+            st["pending_feedback"] = feedback
+            if int(st.get("revisions", 0)) >= max_rev:
+                # Cap reached: hand it to a human like the review path, rather than leaving a
+                # task in changes_requested that the dispatch queue skips forever.
+                reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"
+                st["needs_human"] = reason
+                self.events.emit("needs_human", task.id, reason=reason)
+                self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
+                rep.transitions.append(f"{task.id} -> changes_requested (checks, cap)")
+                return
             if task.pr:
                 self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); revise run will fix before the PR is updated{cost}")
             else:
@@ -1257,6 +1281,47 @@ class Scheduler:
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
 
+    def _audit_stuck(self, rep: TickReport) -> None:
+        """Backstop: any non-terminal task with no active run and no dispatchable next
+        round is stuck — a hand edit, a killed check, or a future bug left it with nothing
+        scheduled and nothing on the Inbox. Flag it `needs_human` so it surfaces as a card
+        (resume with one more round, or send it back) instead of sitting silent."""
+        tasks = self.store.tasks()
+        active = {r.task_id for r in self.runs.active()}
+        ready_ids = {t.id for t in ready(tasks, stack=self.stack_enabled)}
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        for t in tasks.values():
+            if t.status.terminal or t.status == Status.RUNNING:
+                continue  # running/terminal tasks are accounted for (reap handles a lost run)
+            st = self.state.get(t.id)
+            if st.get("needs_human"):
+                continue  # already a card
+            if (t.id in active or st.get("review_run")
+                    or st.get("trial", {}).get("status") in ("running", "comparing")):
+                continue  # a run is on it
+            # These statuses wait on a human or GitHub and have their own Inbox handling.
+            if t.status in (Status.WAITING_HUMAN, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.FAILED, Status.DRAFT, Status.READY):
+                continue  # (a ready task not in the ready set is blocked by deps, i.e. waiting)
+            if t.id in ready_ids:
+                continue  # a work run is dispatchable (slots/pause aside)
+            if t.status == Status.CHANGES_REQUESTED:
+                has_fb = bool(str(st.get("pending_feedback") or "").strip())
+                under_cap = int(st.get("revisions", 0)) < max_rev
+                if has_fb and under_cap:
+                    continue  # a revise run is dispatchable
+                reason = ("no feedback recorded to revise against" if not has_fb
+                          else f"{max_rev} revision rounds already used")
+            else:
+                reason = f"nothing to dispatch from status {t.status.value}"
+            note = f"stuck: {reason}"
+            st["needs_human"] = note
+            self.events.emit("needs_human", t.id, reason=note, stuck=True)
+            notify(self.cfg.data, t.id, "needs_human", note, t.pr or "")
+            t.log(f"{note}; resume with one more round (`garden retry {t.id}`) "
+                  f'or send it back (`garden triage {t.id} --changes "..."`)')
+            self.store.save(t)
+            rep.transitions.append(f"{t.id} stuck ({reason})")
+
     def _stack_for(self, task: Task) -> dict[str, Any] | None:
         """Decide the base for a fresh run: a stack parent's branch, or the product base."""
         st = self.state.get(task.id)
@@ -1696,6 +1761,7 @@ class Scheduler:
         if changes:
             st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
             st.pop("needs_human", None)
+            self._grant_one_more_round(st)
             self.events.emit("triaged", task.id, pr=task.pr, by="human", decision="changes", note=changes[:200])
             self._transition(task, Status.CHANGES_REQUESTED, f"triage: changes requested by hand: {changes[:120]}")
             self.state.save()
@@ -1724,14 +1790,28 @@ class Scheduler:
             run.save()
         self._transition(task, Status.CANCELLED, note)
 
+    def _grant_one_more_round(self, st: _TaskState) -> bool:
+        """When a human resumes a task that hit the revision cap, roll the counter back one
+        so exactly one more revise round is dispatchable. Returns True if the cap was raised."""
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        if int(st.get("revisions", 0)) >= max_rev:
+            st["revisions"] = max_rev - 1
+            return True
+        return False
+
     def retry(self, task: Task) -> None:
         st = self.state.get(task.id)
         st.pop("needs_human", None)
-        if task.pr and task.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED):
-            # keep the PR; let the revise loop continue
+        if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):
+            # let the revise loop continue: keep any PR and dispatch a revise run against the
+            # pending feedback. A pre-PR check that failed at the cap has no PR yet, but it is
+            # still a revise round — a fresh work run would drop the feedback and the counter.
+            note = "re-enabled by hand; revise run will follow"
+            if self._grant_one_more_round(st):
+                note = "re-enabled by hand with one more round past the revision cap; revise run will follow"
             if not st.get("pending_feedback"):
                 st["pending_feedback"] = "- **human**: please re-check the open review comments and CI on this PR and address what is still outstanding."
-            self._transition(task, Status.CHANGES_REQUESTED, "re-enabled by hand; revise run will follow")
+            self._transition(task, Status.CHANGES_REQUESTED, note)
             self.state.save()
             return
         task.attempts = 0
