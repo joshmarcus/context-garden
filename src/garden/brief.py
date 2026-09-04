@@ -113,6 +113,36 @@ def resume_prompt(question: str, answer: str) -> str:
     return RESUME_PROMPT.format(question=question.strip(), answer=answer.strip(), marker=RESULT_MARKER)
 
 
+def product_dirs(store: Store, task: Task) -> list[Path]:
+    """Where the product's own files may be read from, in order: the task's worktree if one
+    exists, then the product checkout (a local path, or the clone made under .garden/repos).
+    No network: a clone that does not exist yet is simply not a candidate."""
+    dirs: list[Path] = []
+    wt = store.config.garden_dir / "worktrees" / task.id
+    if wt.is_dir():
+        dirs.append(wt)
+    repo = store.config.product_repo(task.product)
+    if isinstance(repo, Path):
+        if repo.is_dir() and repo.resolve() != store.root.resolve():
+            dirs.append(repo)
+    else:
+        name = str(repo).rstrip("/").split("/")[-1].removesuffix(".git")
+        clone = store.config.garden_dir / "repos" / name
+        if clone.is_dir():
+            dirs.append(clone)
+    return dirs
+
+
+def resolve_reading(store: Store, task: Task, rel: str) -> tuple[Path | None, Path | None]:
+    """Find a reading-list entry: first in the garden, then in the product's checkout.
+    Returns (path, base) or (None, None)."""
+    for base in [store.root, *product_dirs(store, task)]:
+        p = (base / rel).resolve()
+        if p.exists():
+            return p, base
+    return None, None
+
+
 def build_brief(
     store: Store,
     task: Task,
@@ -181,16 +211,17 @@ def build_brief(
         if rel in seen:
             continue
         seen.add(rel)
-        p = (root / rel).resolve()
-        if not p.exists():
+        p, base = resolve_reading(store, task, rel)
+        if p is None or base is None:
             missing.append(rel)
+            to_read.append(rel)  # still named for the worker: paths are relative to its checkout
             continue
         if p.is_dir():
             files = sorted(f for f in p.rglob("*") if f.is_file() and not f.name.startswith("."))
         else:
             files = [p]
         for f in files:
-            frel = store.rel(f)
+            frel = str(f.resolve().relative_to(base.resolve()))
             if frel in inlined:
                 continue
             content = _read(f)
@@ -208,11 +239,10 @@ def build_brief(
         sections.append(
             (
                 "reading_refs",
-                "## Reading list (read these)\n\nThese files are relevant but too large to inline. "
-                "Read them (paths relative to the context garden root `"
-                + str(root)
-                + "`) before starting:\n\n"
-                + "\n".join(f"- `{r}`" for r in to_read)
+                "## Reading list (read these)\n\nThese files are relevant but too large to inline, "
+                "or were not found where the brief was built. "
+                "Read them (paths relative to your current directory) before starting:\n\n"
+                + "\n".join(f"- `{r}`" + (" (not found when the brief was built)" if r in missing else "") for r in to_read)
                 + "\n",
             )
         )

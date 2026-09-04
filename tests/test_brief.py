@@ -91,3 +91,25 @@ def test_brief_commits_ahead(garden):
     assert "Second commit" in b.text
     assert "Third commit" in b.text
     assert "- abc1234 First commit" in b.text
+
+
+def test_reading_list_resolves_against_the_product_checkout(garden):
+    from pathlib import Path
+
+    from garden.brief import build_brief, product_dirs, resolve_reading
+    from garden.store import Store
+
+    store = Store(garden)
+    task = next(iter(store.tasks().values()))
+    repo = store.config.product_repo(task.product)
+    assert isinstance(repo, Path) and repo.resolve() != garden.resolve()
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "thing.py").write_text("VALUE = 1\n")
+    task.reading = ["src/thing.py", "src/nowhere.py"]
+    assert repo in product_dirs(store, task)
+    assert resolve_reading(store, task, "src/thing.py")[1] == repo
+    b = build_brief(store, task)
+    assert "### src/thing.py" in b.text and "VALUE = 1" in b.text
+    assert "src/nowhere.py" in b.missing
+    assert "- `src/nowhere.py` (not found when the brief was built)" in b.text
+    assert str(garden) not in b.text
