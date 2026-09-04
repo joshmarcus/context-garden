@@ -61,6 +61,8 @@ class Feedback:
         for i in self.items:
             where = f" (`{i['path']}`" + (f":{i['line']}" if i.get("line") else "") + ")" if i.get("path") else ""
             kind = i.get("kind", "comment")
+            if str(i.get("author", "")).endswith("[bot]"):
+                kind = f"{kind} from a bot"
             state = f" [{i['state']}]" if i.get("state") else ""
             out.append(f"- **{i.get('author', '?')}** {kind}{state}{where}:\n\n  " + i.get("body", "").strip().replace("\n", "\n  "))
         return "\n\n".join(out)
@@ -238,13 +240,15 @@ class GitHub:
         """Reviews, review (line) comments and issue comments newer than `since_iso`."""
         # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
         # driving the garden usually is the login `gh` uses, and their comments must count.
+        # Bots count too (a review app is a reviewer the person installed); `bot_logins` from
+        # `github.bot_logins` in config is the list of accounts to ignore.
         exclude = set(exclude_logins or set()) | self.bot_logins
         items: list[dict[str, Any]] = []
 
         def keep(author: str, created: str, body: str) -> bool:
             if not body.strip() or GARDEN_MARKER in body:
                 return False
-            if author in exclude or author.endswith("[bot]"):
+            if author in exclude:
                 return False
             return created > since_iso if since_iso else True
 
