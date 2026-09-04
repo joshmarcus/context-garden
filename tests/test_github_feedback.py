@@ -2,7 +2,7 @@
 
 import json
 
-from garden.github import GARDEN_MARKER, GitHub
+from garden.github import GARDEN_MARKER, GitHub, mark_garden_comment
 
 
 def _stub(monkeypatch, gh: GitHub, reviews, comments, issue_comments, login="josh"):
@@ -53,6 +53,21 @@ def test_exclude_logins_and_since_still_apply(monkeypatch):
     )
     fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z", exclude_logins={"someone-else"})
     assert [i["body"] for i in fb.items] == ["new and mine"]
+
+
+def test_mark_garden_comment_prepends_visible_marker():
+    result = mark_garden_comment("Some automated body.")
+    lines = result.splitlines()
+    assert lines[0].startswith("> **") and "context-garden" in lines[0]
+    assert "Some automated body." in result
+    assert result.index(lines[0]) < result.index("Some automated body.")
+
+
+def test_mark_garden_comment_includes_run_id():
+    result = mark_garden_comment("Body text.", run_id="20260904T120000Z-work")
+    assert "20260904T120000Z-work" in result
+    lines = result.splitlines()
+    assert "context-garden" in lines[0] and "20260904T120000Z-work" in lines[0]
 
 
 def test_comment_appends_marker_once(monkeypatch):
