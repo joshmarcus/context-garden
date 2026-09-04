@@ -72,3 +72,21 @@ def test_actions_analyser_needs_gh_context(monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")
     out = github_actions_failures({"repo_slug": "a/b", "branch": "x"}, {})
     assert out["status"] == "error" and "gh" in out["summary"]
+
+
+def test_work_dir_moves_clones_and_worktrees_out_of_the_garden(garden, tmp_path):
+    from garden.store import Store
+
+    outside = tmp_path / "elsewhere"
+    cfg_path = garden / "garden.yaml"
+    cfg_path.write_text(cfg_path.read_text() + f"\nwork_dir: {outside}\n")
+    cfg = Store(garden).config
+    assert cfg.work_dir == outside.resolve()
+    assert cfg.repos_dir == outside.resolve() / "repos"
+    assert cfg.worktree_path("X-1") == outside.resolve() / "worktrees" / "X-1"
+    # a worktree that already exists at the old location keeps being used
+    old = garden / ".garden" / "worktrees" / "X-2"
+    old.mkdir(parents=True)
+    assert cfg.worktree_path("X-2") == old
+    # the garden's own state never moves
+    assert cfg.garden_dir == garden / ".garden"

@@ -136,14 +136,14 @@ class Scheduler:
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
         if isinstance(repo, str) and ("://" in repo or repo.startswith("git@")):
-            return gitops.ensure_repo(repo, self.cfg.garden_dir / "repos")
-        return gitops.ensure_repo(Path(repo), self.cfg.garden_dir / "repos")
+            return gitops.ensure_repo(repo, self.cfg.repos_dir)
+        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir)
 
     def worktree_for(self, task: Task) -> Path:
         override = self.state.get(task.id).get("worktree")
         if override:
             return Path(override)
-        return self.cfg.garden_dir / "worktrees" / task.id
+        return self.cfg.worktree_path(task.id)
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
         st = self.state.get(task.id)
@@ -1083,7 +1083,7 @@ class Scheduler:
             label, harness, model = parse_contender(spec, default_h)
             suffix = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
             branch = f"{base_branch}-trial-{suffix}"
-            wt = self.cfg.garden_dir / "worktrees" / f"{task.id}-trial-{suffix}"
+            wt = self.cfg.worktree_path(f"{task.id}-trial-{suffix}")
             runner = self.runner_for(task, "local", harness)
             run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
             trial["contenders"].append({"label": label, "harness": harness, "model": model, "branch": branch, "worktree": str(wt),
@@ -1273,7 +1273,7 @@ class Scheduler:
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
         repo = self.repo_for(probe)
         base = self.final_base_for(probe)
-        wt = self.cfg.garden_dir / "worktrees" / f"_phase-{product}-{phase.name}"
+        wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
         gitops.fetch(repo)
         if wt.exists():
             gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)

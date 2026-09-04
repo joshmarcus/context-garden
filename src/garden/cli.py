@@ -1141,6 +1141,9 @@ def doctor():
     store = _store()
     ok = True
     console.print(f"root: {store.root}")
+    wd = store.config.work_dir
+    inside = wd == store.config.garden_dir or store.root in wd.parents
+    console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"

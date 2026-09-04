@@ -119,7 +119,7 @@ def product_dirs(store: Store, task: Task) -> list[Path]:
     exists, then the product checkout (a local path, or the clone made under .garden/repos).
     No network: a clone that does not exist yet is simply not a candidate."""
     dirs: list[Path] = []
-    wt = store.config.garden_dir / "worktrees" / task.id
+    wt = store.config.worktree_path(task.id)
     if wt.is_dir():
         dirs.append(wt)
     repo = store.config.product_repo(task.product)
@@ -128,7 +128,7 @@ def product_dirs(store: Store, task: Task) -> list[Path]:
             dirs.append(repo)
     else:
         name = str(repo).rstrip("/").split("/")[-1].removesuffix(".git")
-        clone = store.config.garden_dir / "repos" / name
+        clone = store.config.repos_dir / name
         if clone.is_dir():
             dirs.append(clone)
     return dirs

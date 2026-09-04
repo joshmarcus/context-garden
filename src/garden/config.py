@@ -11,6 +11,7 @@ import yaml
 CONFIG_NAME = "garden.yaml"
 
 DEFAULTS: dict[str, Any] = {
+    "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
     "name": "garden",
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
@@ -119,7 +120,37 @@ class Config:
 
     @property
     def garden_dir(self) -> Path:
+        """The garden's own state: state.json, events.jsonl, runs/, trials.jsonl."""
         return self.root / ".garden"
+
+    @property
+    def work_dir(self) -> Path:
+        """Where product clones and per-task worktrees live. `work_dir` in config (absolute, or
+        relative to the garden root); default `.garden`, the historical location. Putting it
+        outside the garden keeps a worker that walks up from its checkout away from the garden,
+        its venv and its state."""
+        wd = self.get("work_dir")
+        if not wd:
+            return self.garden_dir
+        return (self.root / str(wd)).resolve()
+
+    @property
+    def repos_dir(self) -> Path:
+        return self.work_dir / "repos"
+
+    @property
+    def worktrees_dir(self) -> Path:
+        return self.work_dir / "worktrees"
+
+    def worktree_path(self, name: str) -> Path:
+        """The worktree for `name` (a task id or a trial/phase name): the work dir, unless one
+        already exists at the old location under .garden, which keeps running workers valid
+        when work_dir changes."""
+        new = self.worktrees_dir / name
+        old = self.garden_dir / "worktrees" / name
+        if new != old and old.exists() and not new.exists():
+            return old
+        return new
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
