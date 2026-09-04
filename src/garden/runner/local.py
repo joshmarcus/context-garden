@@ -49,6 +49,10 @@ class LocalRunner(Runner):
         env.pop("CLAUDECODE", None)  # allow launching from inside another Claude Code session
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
+        # Prevent the worker from finding and mutating the live garden: any `garden`
+        # command run inside the worktree will hit find_root() which checks this variable
+        # and fails loudly because the path below does not contain a garden.yaml.
+        env["GARDEN_ROOT"] = str(d / "no-live-garden")
         proc = subprocess.Popen(
             ["sh", "-c", script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

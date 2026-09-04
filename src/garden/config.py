@@ -133,11 +133,39 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 
 def find_root(start: Path | None = None) -> Path:
-    """Walk up from `start` (default cwd) until a garden.yaml is found."""
+    """Walk up from `start` (default cwd) until a garden.yaml is found.
+
+    Refuses to return a root whose .garden/ directory contains the starting path,
+    so code running inside a worktree (.garden/worktrees/<id>) cannot act on the
+    enclosing live garden.  The GARDEN_ROOT environment variable overrides the
+    search entirely; if it points to a non-existent garden, the function raises
+    with a message explaining that workers must not run garden commands.
+    """
+    import os
+
+    env_root = os.environ.get("GARDEN_ROOT")
+    if env_root:
+        p = Path(env_root).resolve()
+        if not (p / CONFIG_NAME).exists():
+            raise FileNotFoundError(
+                f"GARDEN_ROOT={env_root!r} does not contain {CONFIG_NAME}; "
+                "workers must not run garden commands against the live garden"
+            )
+        return p
+
     cur = (start or Path.cwd()).resolve()
     for candidate in [cur, *cur.parents]:
         if (candidate / CONFIG_NAME).exists():
-            return candidate
+            # Refuse if the starting path is inside this candidate's .garden/ tree.
+            try:
+                cur.relative_to(candidate / ".garden")
+                raise FileNotFoundError(
+                    f"refusing to use {candidate} as the garden root: "
+                    f"{cur} is inside its .garden/ directory — "
+                    "workers must not act on the enclosing live garden"
+                )
+            except ValueError:
+                return candidate
     raise FileNotFoundError(
         f"no {CONFIG_NAME} found in {cur} or its parents (run `garden init` to create one)"
     )
