@@ -213,9 +213,13 @@ def diff(worktree: Path, base: str) -> str:
 
 
 def uncommitted_task_files(repo: Path) -> list[str]:
-    """Return relative paths of task files (under tasks/) with uncommitted changes."""
+    """Return relative paths of task files (under tasks/) with uncommitted changes.
+
+    Uses --untracked-files=all so a task file inside a wholly untracked directory (e.g. a
+    new phase) is listed individually rather than collapsed into one `?? dir/` entry.
+    """
     try:
-        out = git("status", "--porcelain", cwd=repo)
+        out = git("status", "--porcelain", "--untracked-files=all", cwd=repo)
     except GitError:
         return []
     files = []
@@ -231,11 +235,16 @@ def uncommitted_task_files(repo: Path) -> list[str]:
 
 
 def commit_task_files(repo: Path, message: str) -> list[str]:
-    """Stage and commit task files with uncommitted changes. Returns committed paths."""
+    """Commit task files with uncommitted changes. Returns committed paths.
+
+    Stages only the task paths (so a brand-new untracked file is known to git), then
+    commits with those same paths as a pathspec, so any unrelated change the operator
+    already had staged is left staged rather than swept into the commit.
+    """
     files = uncommitted_task_files(repo)
     if not files:
         return []
     for f in files:
         git("add", "--", f, cwd=repo)
-    git("commit", "-q", "-m", message, cwd=repo)
+    git("commit", "-q", "-m", message, "--", *files, cwd=repo)
     return files
