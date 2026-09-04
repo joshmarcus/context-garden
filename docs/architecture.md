@@ -168,6 +168,7 @@ output. Details of the transport are in `docs/worker-protocol.md`; the decisions
 | output without a `GARDEN_RESULT` line | same | same |
 | `status: blocked` | records the reason in the task log | `failed` |
 | `status: needs_input` | stores the question, session id, host and harness | `waiting_human` (holds no slot) |
+| `status: wont_do` or `no_change` | stores the reason and the worker's final message as a decision for the person | `waiting_human`; Accept ends a `wont_do` in the terminal `wont_do` status (closing any PR) or resumes a `no_change` to the PR/review; Reject sends it back to a revise run with the person's note |
 | `status: done` but no commits ahead of the base | marks the run failed | `ready` or `failed`, as above |
 | `status: done` with commits | files discovered work as tasks, commits leftovers, pushes, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
 | still running after `timeout_minutes` + 5 | kills the process group | `ready` or `failed` |
@@ -221,8 +222,11 @@ stateDiagram-v2
   ready --> running: dispatch
   running --> awaiting_triage: done, draft PR opened
   running --> in_review: done, PR opened ready (draft_pr off)
-  running --> waiting_human: needs_input
+  running --> waiting_human: needs_input, wont_do, no_change
   waiting_human --> running: garden answer, session resumes
+  waiting_human --> wont_do: accept a wont_do call
+  waiting_human --> changes_requested: reject a wont_do / no_change call
+  waiting_human --> in_review: accept a no_change call
   running --> ready: crash or no result, attempts left
   running --> failed: blocked, attempts used, push failed
   running --> changes_requested: pre-PR check failed
@@ -238,8 +242,10 @@ stateDiagram-v2
 ```
 
 `blocked` is never stored; it is computed from `depends_on` for display. `cancelled` is
-reachable from anywhere with `garden cancel`. Only the scheduler writes `status` (the CLI
-and UIs go through it), which is why task files under `tasks/` must not be hand-edited.
+reachable from anywhere with `garden cancel`. `wont_do` is terminal, counted as neither done
+nor failed (nor in the inbox): a person accepted a worker's call that the task should not be
+done. Only the scheduler writes `status` (the CLI and UIs go through it), which is why task
+files under `tasks/` must not be hand-edited.
 
 ## Git and the pull request
 
