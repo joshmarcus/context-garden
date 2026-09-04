@@ -121,6 +121,9 @@ class FakeGitHub:
     def me(self):
         return "garden-bot"
 
+    def is_authenticated(self):
+        return True
+
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
