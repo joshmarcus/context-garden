@@ -53,6 +53,28 @@ def test_events_page_and_answer_flow(garden, monkeypatch):
     assert "Questions and answers" in page and "SQLite" in page and "Timeline" in page
 
 
+def test_budget_form_and_route(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub
+
+    c = client(garden)
+    page = c.get("/phases/demo/p1").text
+    assert "/phases/demo/p1/budget" in page and "no budget" in page
+    # Set a cap.
+    r = c.post("/phases/demo/p1/budget", data={"amount": "42"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 42.0
+    assert "of $42" in c.get("/phases/demo/p1").text
+    assert "set at runtime" in c.get("/config").text
+    # Switch it off with the "no budget" checkbox.
+    r = c.post("/phases/demo/p1/budget", data={"no_budget": "1", "amount": "42"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
+    # A non-numeric amount is rejected.
+    assert c.post("/phases/demo/p1/budget", data={"amount": "abc"}).status_code == 400
+
+
 def test_trials_page_and_persona_form(garden):
     c = client(garden)
     r = c.get("/trials")

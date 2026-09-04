@@ -203,6 +203,44 @@ def test_phase_budget_pauses_dispatch(sched):
     assert len(rep.dispatched) == 2
 
 
+def test_set_budget_override_reloads_without_restart(sched):
+    # A cap in config pauses dispatch once spend passes it.
+    sched.cfg.data["budgets"] = {"demo/p1": 0.04}
+    for t in sched.store.tasks().values():
+        t.depends_on = []
+        sched.store.save(t)
+    rep = sched.tick()
+    assert len(rep.dispatched) == 2
+    wait_for_runs(sched)
+    sched.tick()  # each run cost 0.05 -> exceeded, dispatch paused
+    for t in sched.store.tasks().values():
+        sched.retry(t)
+    assert sched.tick().dispatched == []
+    assert sched.state.get("_phase:demo/p1").get("budget_hit")
+    # Raise the cap through the shared code path (what the web route and CLI call). No config
+    # edit and no restart: the next tick re-reads state and resumes.
+    sched.set_budget("demo/p1", 100.0)
+    assert sched.budget_for("demo/p1") == 100.0
+    assert not sched.state.get("_phase:demo/p1").get("budget_hit")  # pause marker cleared
+    assert len(sched.tick().dispatched) == 2
+
+
+def test_set_budget_none_removes_cap(sched):
+    sched.cfg.data["budgets"] = {"demo/p1": 0.04}
+    # "no budget" overrides a configured cap: budget_for reports no cap and it never pauses.
+    sched.set_budget("demo/p1", None)
+    assert sched.budget_for("demo/p1") == 0.0
+    for t in sched.store.tasks().values():
+        t.depends_on = []
+        sched.store.save(t)
+    rep = sched.tick()
+    assert len(rep.dispatched) == 2
+    wait_for_runs(sched)
+    for t in sched.store.tasks().values():
+        sched.retry(t)
+    assert len(sched.tick().dispatched) == 2  # still dispatching despite the config cap
+
+
 # ---- 1. stacked dependencies -------------------------------------------------
 def test_stacked_dispatch_and_restack_on_merge(sched, fake_github, tmp_path):
     sched.tick()
