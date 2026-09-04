@@ -22,14 +22,14 @@ discovered:
 stall:
   enabled: true             # stop revise loops that don't change the diff / repeat a review finding
 budgets:                    # usd cap per phase; see also products.*.budget_usd
-  context-garden/phase-02-friction: 25.0
+  context-garden/phase-02-friction: 100.0
 
 review:
   enabled: true             # automated first review of every PR round (acceptance criteria,
   max_rounds: 2             # correctness, scope, PR description quality / no scar tissue)
   max_diff_chars: 60000     # larger diffs are read by the reviewer from git instead of inlined
   harness: ""               # empty = the default harness
-  difficulty: ""            # empty = the task's tier; or easy | medium | hard for the reviewer model
+  difficulty: "medium"      # reviews on the medium tier (sonnet); empty = the task's tier
   personas: []              # persona reviews on every new PR round, e.g. [security]; see personas/
 
 # Token-free checks. pre_pr runs in the worktree before a PR is opened or updated (failures
@@ -62,10 +62,11 @@ brief:
 harnesses:
   claude:
     bin: claude
-    max_turns: 60
+    # max_turns: 60                # optional hard cap on agent turns; off by default (a run that
+                                   # hits it ends with no result line, so prefer timeout_minutes)
     permission_mode: acceptEdits   # or bypass (== --dangerously-skip-permissions)
     allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
-    models: {easy: haiku, medium: sonnet, hard: opus}
+    models: {easy: sonnet, medium: sonnet, hard: fable}
     resume: true                   # continue the same session after `garden answer`
   codex:
     bin: codex
