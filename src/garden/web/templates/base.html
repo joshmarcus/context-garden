@@ -160,6 +160,22 @@ details > summary { cursor:pointer; color:var(--muted); list-style:none; font-fa
 details > summary::before { content:"▸ "; color:var(--faint); }
 details[open] > summary::before { content:"▾ "; }
 .log { font:12px/1.55 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
+pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2); padding:12px 14px; border:1px solid var(--line); }
+
+/* ---- tabs (radio-driven, no JS): a run's brief / transcript / final / stderr ---------- */
+.tabs > input[type=radio] { position:absolute; opacity:0; pointer-events:none; }
+.tab-labels { display:flex; gap:4px; border-bottom:2px solid var(--ink); margin-bottom:14px; flex-wrap:wrap; }
+.tab-labels label { padding:8px 14px; cursor:pointer; font:12.5px/1 var(--mono); color:var(--muted); border:1px solid var(--line); border-bottom:none; background:var(--surface-2); margin-bottom:-2px; }
+.tab-labels label:hover { color:var(--ink); }
+.tab-panel { display:none; }
+#tab-transcript:checked ~ .tab-labels label[for=tab-transcript],
+#tab-brief:checked ~ .tab-labels label[for=tab-brief],
+#tab-final:checked ~ .tab-labels label[for=tab-final],
+#tab-stderr:checked ~ .tab-labels label[for=tab-stderr] { color:var(--ink); background:var(--label); border-bottom:2px solid var(--label); }
+#tab-transcript:checked ~ .tab-panel[data-tab=transcript],
+#tab-brief:checked ~ .tab-panel[data-tab=brief],
+#tab-final:checked ~ .tab-panel[data-tab=final],
+#tab-stderr:checked ~ .tab-panel[data-tab=stderr] { display:block; }
 .tl { list-style:none; padding:0; margin:0; font-size:12.5px; }
 .tl li { display:grid; grid-template-columns: 78px 118px 1fr; gap:10px; padding:5px 0; border-bottom:1px dashed var(--line); }
 .tl .k { font:11.5px/1.6 var(--mono); color:var(--muted); }

@@ -96,8 +96,8 @@ class Run:
         p = self.path / "stdout.json"
         return p.read_text() if p.exists() else ""
 
-    def stdout_events(self, n: int = 50) -> list[dict[str, Any]]:
-        """Parse stdout.json as JSONL and return the last n event dicts."""
+    def stdout_events(self, n: int | None = 50) -> list[dict[str, Any]]:
+        """Parse stdout.json as JSONL and return event dicts (the last n, or all when n is None)."""
         out: list[dict[str, Any]] = []
         for line in self.stdout_text().splitlines():
             line = line.strip()
@@ -109,7 +109,7 @@ class Run:
                     out.append(ev)
             except json.JSONDecodeError:
                 continue
-        return out[-n:]
+        return out if n is None else out[-n:]
 
     def stderr_text(self) -> str:
         p = self.path / "stderr.log"

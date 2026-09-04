@@ -7,7 +7,7 @@
   <td class="mono">{{ r.harness }}{% if r.model %}:{{ r.model }}{% endif %}{% if r.host %} @{{ r.host }}{% endif %}</td><td>{{ '%.0f' % r.elapsed_minutes() }}</td><td>{{ '{:,}'.format(r.brief_tokens) }}</td>
   <td>{{ r.usage.get('input_tokens', '') }}</td><td>{{ r.usage.get('cache_read_input_tokens', '') }}</td><td>{{ r.usage.get('output_tokens', '') }}</td>
   <td>{% if r.cost_usd is not none %}${{ '%.2f' % r.cost_usd }}{% endif %}</td>
-  <td><a href="/tasks/{{ task.id }}/log?run_id={{ r.run_id }}" target="_blank">log</a>{% if r.error %} · <span class="muted" title="{{ r.error }}">error</span>{% endif %}</td>
+  <td><a href="/runs/{{ task.id }}/{{ r.run_id }}">open run</a>{% if r.error %} · <span class="muted" title="{{ r.error }}">error</span>{% endif %}</td>
 </tr>
 {% endfor %}
 </table></div>
