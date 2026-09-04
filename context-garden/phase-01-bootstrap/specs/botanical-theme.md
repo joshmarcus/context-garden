@@ -2,8 +2,9 @@
 
 Chosen direction: **the herbarium**. Pressed specimens on mount cards, typed specimen labels,
 small rubber stamps for decisions; Newsreader for text, Courier Prime for ids, labels and
-controls; a light palette of mount-card greys and label paper, and a separately tuned dark
-palette. Titles, headers and copy are the app's plain wording; only the visual layer is
+controls; the colour palette from before the theme (a cool light-green ground, white
+panels, a moss accent, and its own dark palette), with the drawings coloured in moss greens
+so they sit on it. Titles, headers and copy are the app's plain wording; only the visual layer is
 botanical, so the tool reads as professional.
 
 ## Plants per phase

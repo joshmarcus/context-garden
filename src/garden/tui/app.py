@@ -36,22 +36,22 @@ STATUS_COLOR = {
 class GardenTUI(App):
     TITLE = "context-garden"
     CSS = """
-    Screen { background: #151714; }
-    Header { background: #1d201c; color: #e9e9e0; }
-    Footer { background: #1d201c; }
+    Screen { background: #121614; }
+    Header { background: #1a201c; color: #e6ece7; }
+    Footer { background: #1a201c; }
     #left { width: 60%; }
-    #right { width: 40%; border-left: solid #3a3f38; padding: 0 1; }
+    #right { width: 40%; border-left: solid #2c3630; padding: 0 1; }
     #detail { height: 1fr; }
-    #status { height: 1; color: #a6a99e; padding: 0 1; }
+    #status { height: 1; color: #98a59e; padding: 0 1; }
     #answer, #note { display: none; }
     #answer.visible, #note.visible { display: block; }
-    DataTable { height: 1fr; background: #151714; }
-    DataTable > .datatable--cursor { background: #33382f; color: #e9e9e0; }
-    DataTable > .datatable--header { background: #1d201c; color: #a6a99e; text-style: bold; }
+    DataTable { height: 1fr; background: #121614; }
+    DataTable > .datatable--cursor { background: #1f3a2c; color: #e6ece7; }
+    DataTable > .datatable--header { background: #1a201c; color: #98a59e; text-style: bold; }
     TabbedContent { height: 1fr; }
     TabPane { padding: 0; }
-    Tabs { background: #1d201c; }
-    Tab.-active { color: #e07a6e; }
+    Tabs { background: #1a201c; }
+    Tab.-active { color: #5cc493; }
     """
     BINDINGS = [
         Binding("r", "refresh", "Refresh"),

@@ -9,14 +9,14 @@
 <style>
 :root {
   color-scheme: light;
-  --ground:#e4e3dc; --surface:#efeee8; --surface-2:#e7e6df; --label:#fbfaf5; --line:#cbcdc4; --line-strong:#a9aba2;
-  --ink:#1e1f1c; --muted:#6f7368; --faint:#999c92; --accent:#1e1f1c; --accent-ink:#fbfaf5; --accent-soft:#e2e1d5; --stamp:#b3362b; --tape:rgba(224,214,178,.8);
-  --s-draft:#8a8d83; --s-blocked:#b8860b; --s-ready:#3f7d6f; --s-running:#3a5c8f; --s-waiting_human:#a13d70; --s-awaiting_triage:#6a4f9e; --s-in_review:#2e6f80; --s-changes_requested:#b55a1f; --s-done:#4d6b2f; --s-failed:#b3362b; --s-cancelled:#9a9d93;
-  --good:#4d6b2f; --warn:#b8860b; --bad:#b3362b;
-  --viz-1:#1e1f1c; --viz-2:#8f8f5f; --viz-ord-1:#a9a97a; --viz-ord-2:#6b6b3f; --viz-ord-3:#3d3d22;
-  /* pressed-specimen palette used by the plant and stage drawings */
-  --sp-ink:#4a4a34; --leaf:#6b6b3f; --leaf-tint:#6b6b3f; --hatch:#4a4a34; --vein:#8f8f5f; --petal:#9c8f78; --petal-tint:#9c8f78; --petal2:#b3a790; --pea:#8e8e5c;
-  --berry:#3b2f2f; --berry-tint:#3b2f2f; --berry2:#6e4a44; --poppy:#8e5a4c; --seed:#7a6a4e; --wilt:#8a7d63; --pressed:#8a8a62; --pin:#b3362b; --paper:#fbfaf5;
+  --ground:#f2f5f0; --surface:#ffffff; --surface-2:#e9eee7; --label:#ffffff; --line:#d6ded4; --line-strong:#b9c5bb;
+  --ink:#17201b; --muted:#5f6b64; --faint:#8b968f; --accent:#2b7a57; --accent-ink:#ffffff; --accent-soft:#dcefe4; --stamp:#c23b3b; --tape:rgba(224,214,178,.8);
+  --s-draft:#7f8a83; --s-blocked:#b5850f; --s-ready:#1c9c8c; --s-running:#3b62d9; --s-waiting_human:#c2417f; --s-awaiting_triage:#7c5cd6; --s-in_review:#2a8fa3; --s-changes_requested:#d0702a; --s-done:#2f8a4f; --s-failed:#c23b3b; --s-cancelled:#9aa39d;
+  --good:#2f8a4f; --warn:#b5850f; --bad:#c23b3b;
+  --viz-1:#2a78d6; --viz-2:#eb6834; --viz-ord-1:#6fbf98; --viz-ord-2:#3f9a6f; --viz-ord-3:#22664a;
+  /* pressed-specimen palette used by the plant and stage drawings: moss greens on the old ground */
+  --sp-ink:#24352b; --leaf:#4f9a72; --leaf-tint:#4f9a72; --hatch:#22664a; --vein:#a8d4bd; --petal:#cfa3b9; --petal-tint:#cfa3b9; --petal2:#e6c6d2; --pea:#7fcaa2;
+  --berry:#4a2f45; --berry-tint:#4a2f45; --berry2:#7a4a63; --poppy:#d95f4a; --seed:#8a6d4e; --wilt:#9c8b6b; --pressed:#6f9a80; --pin:#c23b3b; --paper:#ffffff;
   --display:"Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --body:"Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --mono:"Courier Prime", "Courier New", Courier, monospace;
@@ -25,25 +25,25 @@
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   color-scheme: dark;
-  --ground:#151714; --surface:#1d201c; --surface-2:#252925; --label:#2a2e29; --line:#3a3f38; --line-strong:#535a50;
-  --ink:#e9e9e0; --muted:#a6a99e; --faint:#777c71; --accent:#e9e9e0; --accent-ink:#1d201c; --accent-soft:#33382f; --stamp:#e07a6e; --tape:rgba(224,214,178,.28);
-  --s-draft:#9a9d93; --s-blocked:#d3a02a; --s-ready:#6fb8a4; --s-running:#8aa8dc; --s-waiting_human:#e08bb7; --s-awaiting_triage:#b19ce6; --s-in_review:#79bccb; --s-changes_requested:#e69a5c; --s-done:#9cc26f; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
-  --good:#9cc26f; --warn:#d3a02a; --bad:#ef6b6b;
-  --viz-1:#e9e9e0; --viz-2:#a9a97a; --viz-ord-1:#8f8f5f; --viz-ord-2:#b3b385; --viz-ord-3:#d7d7b0;
-  --sp-ink:#cfcfa8; --leaf:#8f8f5a; --leaf-tint:#8f8f5a; --hatch:#cfcfa8; --vein:#b3b385; --petal:#b8ab90; --petal-tint:#b8ab90; --petal2:#cbbfa6; --pea:#a9a97a;
-  --berry:#5a4646; --berry-tint:#5a4646; --berry2:#8e5a4c; --poppy:#b0705f; --seed:#a08a63; --wilt:#a3957a; --pressed:#9a9a72; --pin:#e07a6e; --paper:#2a2e29;
+  --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
+  --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
+  --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
+  --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
+  --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
   --vine-opacity:.13;
 }}
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --ground:#151714; --surface:#1d201c; --surface-2:#252925; --label:#2a2e29; --line:#3a3f38; --line-strong:#535a50;
-  --ink:#e9e9e0; --muted:#a6a99e; --faint:#777c71; --accent:#e9e9e0; --accent-ink:#1d201c; --accent-soft:#33382f; --stamp:#e07a6e; --tape:rgba(224,214,178,.28);
-  --s-draft:#9a9d93; --s-blocked:#d3a02a; --s-ready:#6fb8a4; --s-running:#8aa8dc; --s-waiting_human:#e08bb7; --s-awaiting_triage:#b19ce6; --s-in_review:#79bccb; --s-changes_requested:#e69a5c; --s-done:#9cc26f; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
-  --good:#9cc26f; --warn:#d3a02a; --bad:#ef6b6b;
-  --viz-1:#e9e9e0; --viz-2:#a9a97a; --viz-ord-1:#8f8f5f; --viz-ord-2:#b3b385; --viz-ord-3:#d7d7b0;
-  --sp-ink:#cfcfa8; --leaf:#8f8f5a; --leaf-tint:#8f8f5a; --hatch:#cfcfa8; --vein:#b3b385; --petal:#b8ab90; --petal-tint:#b8ab90; --petal2:#cbbfa6; --pea:#a9a97a;
-  --berry:#5a4646; --berry-tint:#5a4646; --berry2:#8e5a4c; --poppy:#b0705f; --seed:#a08a63; --wilt:#a3957a; --pressed:#9a9a72; --pin:#e07a6e; --paper:#2a2e29;
+  --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
+  --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
+  --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
+  --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
+  --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
   --vine-opacity:.13;
 }
