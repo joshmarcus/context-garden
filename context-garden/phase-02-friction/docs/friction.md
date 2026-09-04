@@ -36,8 +36,26 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   tokens, worktree cut from `origin/main`. The Inbox answered at once. Nothing to note,
   except that the doctor line for github now shows `as joshmarcus`, which is the only visible
   difference between logged in and not.
-- **Worker run.** pending.
-- **Result line.** pending.
+- **Worker run, attempt 1.** haiku ran 4.4 minutes, 61 turns, $0.58, and hit
+  `max_turns: 60`. Exit code 1, `subtype: error_max_turns`, and the final text is empty,
+  so there was no result line at all. It had made three real commits in the worktree
+  (usage column, phase header, a refactor). The turn cap is the harness default for every
+  tier; an easy task on the cheapest model burned through it on exploration.
+- **Nothing shows a running worker's progress.** `stdout.json` stayed at zero bytes for the
+  whole run. "Running now · 2 min" on the Inbox was the only signal; a hung worker would
+  look the same until the 95-minute kill. The only checks on a worker happen inside a
+  tick (exit_code file, then a pid probe, then the timeout); nothing else reaches out.
+- **The first failure is invisible.** The tick that reaped attempt 1 dispatched attempt 2
+  in the same second, with the task back through `ready`. The Inbox lists CG-012 nowhere,
+  and `garden digest` printed "nothing notable" next to "$0.58 spent". A person watching
+  the Inbox learns about a failed attempt only when the second one fails too.
+- **Attempt 2 starts on attempt 1's commits and is not told.** The worktree is reused, so
+  the three commits are on the branch, but the brief differs from the first one only by
+  the two new log lines, and the dispatch note says "fresh session, base main". The worker
+  has to discover the half-finished work by itself.
+- **`in` tokens mislead.** `garden runs` shows 481 input tokens for a run whose cache reads
+  were 3.4M; the column should show the total context read, or cache reads next to it.
+- **Result line.** none from attempt 1; attempt 2 pending.
 - **Push and draft PR.** pending.
 - **Automated review.** pending.
 - **Triage.** pending.
