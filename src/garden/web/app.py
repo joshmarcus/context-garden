@@ -420,6 +420,24 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                     t.status = Status.READY
                     t.log("approved (web)")
                     s.save(t)
+            elif action == "priority":
+                old = t.priority
+                try:
+                    t.priority = int(note.strip())
+                except ValueError:
+                    raise HTTPException(400, "priority must be an integer") from None
+                t.log(f"priority {old} -> {t.priority} (web)")
+                s.save(t)
+            elif action == "difficulty":
+                from ..harness import DIFFICULTIES
+
+                tier = note.strip()
+                if tier not in DIFFICULTIES:
+                    raise HTTPException(400, f"difficulty must be one of {', '.join(DIFFICULTIES)}")
+                old = t.difficulty
+                t.difficulty = tier
+                t.log(f"difficulty {old} -> {tier} (web)")
+                s.save(t)
             elif action == "unapprove":
                 if t.status == Status.READY:
                     t.status = Status.DRAFT

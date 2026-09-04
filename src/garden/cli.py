@@ -453,6 +453,35 @@ def approve(
         console.print(f"{t.id} -> ready")
 
 
+@app.command()
+def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatches first; ties by id")):
+    """Set a task's priority (the queue order)."""
+    store = _store()
+    t = _task(store, task_id)
+    old = t.priority
+    t.priority = int(value)
+    t.log(f"priority {old} -> {t.priority}")
+    store.save(t)
+    console.print(f"{t.id} priority {old} -> {t.priority}")
+
+
+@app.command()
+def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium | hard (picks the model tier at dispatch)")):
+    """Set a task's difficulty tier."""
+    from .harness import DIFFICULTIES
+
+    store = _store()
+    t = _task(store, task_id)
+    if tier not in DIFFICULTIES:
+        err.print(f"[red]unknown tier; one of {', '.join(DIFFICULTIES)}[/red]")
+        raise typer.Exit(1) from None
+    old = t.difficulty
+    t.difficulty = tier
+    t.log(f"difficulty {old} -> {tier}")
+    store.save(t)
+    console.print(f"{t.id} difficulty {old} -> {tier}")
+
+
 @app.command("set-status")
 def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note")):
     """Escape hatch: force a task's status."""
