@@ -146,6 +146,7 @@ td.title { min-width:200px; }
 .faint { color:var(--faint); }
 .empty { color:var(--faint); padding:18px 0; text-align:center; font-family:var(--mono); font-size:12.5px; }
 .warn { background:color-mix(in srgb, var(--warn) 14%, var(--label)); border:1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); padding:10px 14px; margin-bottom:14px; }
+.flash { background:color-mix(in srgb, var(--bad) 14%, var(--label)); border-color:color-mix(in srgb, var(--bad) 45%, var(--line)); }
 .prose { max-width:70ch; }
 .prose h1,.prose h2,.prose h3 { font-family:var(--display); font-weight:500; margin:1.2em 0 .4em; }
 .prose h2 { font-size:18px; } .prose h3 { font-size:15.5px; }
@@ -255,7 +256,20 @@ details[open] > summary::before { content:"▾ "; }
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
-<main>{% block body %}{% endblock %}</main>
+<main>
+{% if flash %}
+<div class="warn flash">
+  <b>{{ flash }}</b>
+  {% if flash_note %}
+  <div style="margin-top:6px">
+    <textarea id="flash-note-text" readonly style="width:100%;box-sizing:border-box" rows="3">{{ flash_note }}</textarea>
+    <button type="button" class="quiet" data-copy="flash-note-text">Copy your text</button>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% block body %}{% endblock %}
+</main>
 </div>
 <script>
 document.querySelectorAll("[data-poll]").forEach(el => {

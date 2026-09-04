@@ -21,7 +21,7 @@
 <div class="panel" style="border-color:var(--s-waiting_human)">
   <div class="eyebrow" style="color:var(--s-waiting_human)">The worker is waiting for you</div>
   <p style="margin:6px 0 10px"><b>{{ state.question }}</b></p>
-  <form method="post" action="/tasks/{{ task.id }}/answer"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><div class="actions" style="margin-top:8px"><button class="primary">Answer and resume</button></div></form>
+  <form method="post" action="/tasks/{{ task.id }}/answer"><textarea name="note" placeholder="Your answer. The worker resumes with it.">{{ flash_note }}</textarea><div class="actions" style="margin-top:8px"><button class="primary">Answer and resume</button></div></form>
 </div>
 {% elif task.status.value == 'awaiting_triage' %}
 <div class="panel" style="border-color:var(--s-awaiting_triage)">
@@ -74,7 +74,7 @@
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
-<div id="trial-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/trial" class="actions"><span class="muted">Contenders (harness:model):</span><input type="text" name="note" placeholder="claude:sonnet, claude:opus" style="width:300px"><button class="primary">Start trial</button></form></div>
+<div id="trial-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/trial" class="actions"><span class="muted">Contenders (harness:model, at least two):</span><input type="text" name="note" placeholder="claude:sonnet, claude:opus" style="width:300px"><button class="primary">Start trial</button></form></div>
 <div id="friction-form" class="panel" hidden>
   <div class="eyebrow">Report friction about this process</div>
   <form method="post" action="/friction-report" style="margin-top:8px">

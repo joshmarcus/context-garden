@@ -31,6 +31,43 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
+def test_trial_with_one_contender_shows_a_message_not_a_500(garden):
+    c = client(garden)
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "a trial needs at least two contenders, e.g. claude:sonnet, claude:opus" in page
+
+
+def test_scheduler_errors_flash_a_message_instead_of_500(garden):
+    """CG-092: a task whose precondition changed underneath the person (here: DM-001 is
+    'ready', not 'waiting_human') must say so on the page, not 500 or silently drop the
+    submitted text."""
+    c = client(garden)
+    r = c.post("/tasks/DM-001/answer", data={"note": "SQLite, please"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "no longer waiting for you" in page
+    assert "SQLite, please" in page  # the typed answer is preserved, not lost
+
+    r = c.post("/tasks/DM-001/reject", data={"note": "no"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "has no pending worker decision to reject" in c.get(r.headers["location"]).text
+
+
+def test_unexpected_action_exception_shows_a_generic_message(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+
+    def boom(self, task, note="cancelled"):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(Scheduler, "cancel", boom)
+    c = client(garden)
+    r = c.post("/tasks/DM-001/cancel", follow_redirects=False)
+    assert r.status_code == 303
+    assert "something failed; see the log" in c.get(r.headers["location"]).text
+
+
 def test_events_page_and_answer_flow(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store
