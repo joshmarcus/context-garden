@@ -37,6 +37,8 @@
       {% elif it.group == 'attention' %}
         <form method="post" action="/tasks/{{ it.task }}/retry"><button class="primary">Continue the loop</button></form>
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel task</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">PR ↗</a>{% endif %}</form>
+      {% elif it.group == 'retrying' %}
+        <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
       {% elif it.group == 'approve' %}
         <form method="post" action="/tasks/{{ it.task }}/approve"><button class="primary">Approve</button></form>
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
