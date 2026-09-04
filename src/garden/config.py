@@ -59,6 +59,10 @@ DEFAULTS: dict[str, Any] = {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
+        "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
+        "automerge_method": "squash",           # squash | merge | rebase
+        "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
+        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge; hard waits for a person
     },
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled

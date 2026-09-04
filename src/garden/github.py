@@ -375,6 +375,27 @@ class GitHub:
         else:
             self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "closed"})
 
+    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True) -> None:
+        """Merge an open PR. `method` is squash | merge | rebase. Raises GitHubError if GitHub
+        refuses the merge (not mergeable, failing required checks, blocked by a review)."""
+        if method not in ("squash", "merge", "rebase"):
+            method = "squash"
+        if self.gh:
+            args = ["pr", "merge", str(number), "-R", slug, f"--{method}"]
+            if delete_branch:
+                args.append("--delete-branch")
+            self._gh(*args)
+            return
+        self._rest("PUT", f"/repos/{slug}/pulls/{number}/merge", json={"merge_method": method})
+        if delete_branch:
+            try:
+                pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")
+                ref = (pr.get("head") or {}).get("ref", "")
+                if ref:
+                    self._rest("DELETE", f"/repos/{slug}/git/refs/heads/{ref}")
+            except GitHubError:
+                pass
+
     def comment(self, slug: str, number: int, body: str) -> None:
         if GARDEN_MARKER not in body:
             body = body.rstrip() + "\n\n" + GARDEN_MARKER

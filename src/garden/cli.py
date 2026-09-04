@@ -952,9 +952,12 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
         for ev in d["reviews"]:
             console.print(f"  {ev['task']:<8} {ev.get('verdict', ''):<16} {ev.get('summary', '')[:70]}")
     if d["merged"]:
-        console.print("\n[bold green]Merged[/bold green]")
+        by_garden = {ev.get("task") for ev in d["automerged"]}
+        console.print("\n[bold green]Merged[/bold green]"
+                      + (f" [dim]({len(by_garden)} by the garden)[/dim]" if by_garden else ""))
         for ev in d["merged"]:
-            console.print(f"  {ev['task']:<8} {title(ev['task'])}")
+            tag = " [dim](by the garden)[/dim]" if ev["task"] in by_garden else ""
+            console.print(f"  {ev['task']:<8} {title(ev['task'])}{tag}")
     if d["discovered"]:
         console.print("\n[bold cyan]Discovered work[/bold cyan]")
         for ev in d["discovered"]:

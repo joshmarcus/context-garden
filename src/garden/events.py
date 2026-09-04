@@ -70,7 +70,7 @@ HUMAN_KINDS = {"waiting_human", "needs_human", "stall", "budget", "pr_closed", "
 def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Group a window of events into what a human wants to know."""
     out: dict[str, Any] = {
-        "prs_opened": [], "merged": [], "needs_human": [], "reviews": [], "discovered": [],
+        "prs_opened": [], "merged": [], "automerged": [], "needs_human": [], "reviews": [], "discovered": [],
         "failures": [],
         "dispatched": 0, "cost_usd": 0.0, "tasks": defaultdict(list),
     }
@@ -83,6 +83,8 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
             out["prs_opened"].append(ev)
         elif k == "transition" and ev.get("to") == "done":
             out["merged"].append(ev)
+        elif k == "automerged":
+            out["automerged"].append(ev)
         elif k in HUMAN_KINDS or (k == "transition" and ev.get("to") in ("failed", "waiting_human")):
             out["needs_human"].append(ev)
         elif k == "review":
