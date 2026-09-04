@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,21 @@ class Harness:
 
     def shell_command(self, model: str = "", final_path: Path | None = None) -> str:
         return " ".join(shlex.quote(c) for c in self.command(model, final_path))
+
+    def is_authenticated(self) -> bool:
+        if self.name == "claude":
+            try:
+                subprocess.run([self.bin, "auth", "status", "--json"], capture_output=True, text=True, check=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                return False
+        elif self.name == "codex":
+            try:
+                subprocess.run([self.bin, "exec", "auth", "status"], capture_output=True, text=True, check=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                return False
+        return True
 
     @property
     def can_resume(self) -> bool:

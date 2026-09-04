@@ -1132,6 +1132,8 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
 @app.command()
 def doctor():
     """Check config, tools (claude, gh/token), repos and the task graph."""
+    import subprocess
+
     from .github import GitHub
     from .graph import validate as _validate
     from .runner import get_runner
@@ -1141,8 +1143,17 @@ def doctor():
     console.print(f"root: {store.root}")
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
-    console.print(f"github: {gh.describe()}" + (f" as {gh.me()}" if gh.available and gh.me() else ""))
-    if not gh.available:
+    gh_line = f"github: {gh.describe()}"
+    if gh.available:
+        if gh.is_authenticated():
+            login = gh.me()
+            gh_line += f" as {login}" if login else ""
+            console.print(gh_line)
+        else:
+            console.print(f"[red]{gh_line} [NOT LOGGED IN][/red]")
+            ok = False
+    else:
+        console.print(f"[red]{gh_line}[/red]")
         ok = False
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
@@ -1151,9 +1162,30 @@ def doctor():
     for hn in sorted(harness_names):
         h = store.config.harness(hn)
         found = shutil.which(h.bin)
-        console.print(f"harness {hn}: " + (f"[green]{found}[/green]" if found else f"[red]{h.bin!r} not on PATH[/red]")
-                      + f"  models={h.cfg.get('models') or 'cli default'}")
-        ok = ok and bool(found)
+        if found:
+            if h.is_authenticated():
+                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
+            else:
+                console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}")
+                ok = False
+        else:
+            console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}")
+            ok = False
+    git_email = ""
+    git_name = ""
+    try:
+        git_email = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True, check=True).stdout.strip()
+    except subprocess.CalledProcessError:
+        pass
+    try:
+        git_name = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=True).stdout.strip()
+    except subprocess.CalledProcessError:
+        pass
+    if git_email and git_name:
+        console.print(f"git identity: [green]{git_name} <{git_email}>[/green]")
+    else:
+        console.print("[red]git identity: missing user.name or user.email[/red]")
+        ok = False
     for name in sorted(runner_names):
         try:
             cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}

@@ -140,6 +140,17 @@ class GitHub:
                 self._me = ""
         return self._me
 
+    def is_authenticated(self) -> bool:
+        if self.gh:
+            try:
+                subprocess.run([self.gh, "auth", "status"], capture_output=True, text=True, check=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                return False
+        elif self.token:
+            return True
+        return False
+
     # ---- PRs ---------------------------------------------------------------
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None:
         if self.gh:
