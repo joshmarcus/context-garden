@@ -956,6 +956,7 @@ class Scheduler:
         run = self.runs.new_run(task.id, runner.name, mode=mode)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.model = model_override if model_override is not None else self.model_for(task, runner)
+        run.difficulty = task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
         if session_id and st.get("session_host"):
@@ -1012,6 +1013,7 @@ class Scheduler:
         run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
+        run.difficulty = difficulty or "hard"
         run.brief_tokens = max(1, len(brief_text) // 4)
         run.save()
         runner.start(run, worktree, brief_text)
