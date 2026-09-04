@@ -17,9 +17,18 @@ GROUPS = [
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back."),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents."),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker."),
+    ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel."),
     ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go."),
     ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused."),
 ]
+
+
+def _last_log_line(t: Task) -> str:
+    """Return the message portion of the last log entry in the task body, or ''."""
+    for ln in reversed(t.body.splitlines()):
+        if ln.startswith("- "):
+            return ln[2:].split(" ", 1)[-1]
+    return ""
 
 
 def _age(iso: str) -> str:
@@ -79,11 +88,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"},
             ] + ([{"label": "Open PR", "kind": "link", "href": t.pr}] if t.pr else []))
         elif t.status == Status.FAILED:
-            last = ""
-            for ln in reversed(t.body.splitlines()):
-                if ln.startswith("- "):
-                    last = ln[2:].split(" ", 1)[-1]
-                    break
+            last = _last_log_line(t)
             add("attention", t, last[:140] or "failed", [
                 {"label": "Retry", "kind": "retry", "command": f"garden retry {t.id}"},
                 {"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"},
@@ -93,8 +98,19 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             why = "discovered by " + t.discovered_from if t.discovered_from else "planned, not yet approved"
             if eff == "blocked":
                 why += " · blocked until deps merge"
+            last = _last_log_line(t)
+            if t.attempts:
+                why += f" · {t.attempts} attempt{'s' if t.attempts != 1 else ''}"
+            if last:
+                why += f" · {last}"
             add("approve", t, why, [{"label": "Approve", "kind": "approve", "command": f"garden approve {t.id}"},
-                                    {"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"}])
+                                    {"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"}],
+                attempts=t.attempts, last_log=last)
+        if t.attempts > 0 and not st.get("needs_human") and not t.status.terminal and t.status in (Status.READY, Status.RUNNING) and not (t.status == Status.RUNNING and t.attempts <= 1):
+            last = _last_log_line(t)
+            why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
+            add("retrying", t, why, [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
+                attempts=t.attempts, last_log=last)
 
     for key in sorted({t.key for t in tasks.values()}):
         budget = sched.budget_for(key)

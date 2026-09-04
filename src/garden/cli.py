@@ -638,7 +638,16 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
         console.print("\n[bold cyan]Discovered work[/bold cyan]")
         for ev in d["discovered"]:
             console.print(f"  {ev.get('new_task', ''):<8} {ev.get('title', '')[:50]:<50} by {ev['task']}" + (" [blocking]" if ev.get("blocking") else ""))
-    if not any([d["needs_human"], d["prs_opened"], d["reviews"], d["merged"], d["discovered"]]):
+    if d["failures"]:
+        console.print("\n[bold yellow]Failed runs (auto-retried or gave up)[/bold yellow]")
+        seen: set[str] = set()
+        for ev in d["failures"]:
+            key = (ev["task"], ev.get("status"), ev.get("mode"))
+            if key in seen:
+                continue
+            seen.add(key)
+            console.print(f"  {ev['task']:<8} {title(ev['task'])[:40]:<40} {ev.get('status', '')} ({ev.get('mode', '')})")
+    if not any([d["needs_human"], d["prs_opened"], d["reviews"], d["merged"], d["discovered"], d["failures"]]):
         console.print("[dim]nothing notable[/dim]")
 
 

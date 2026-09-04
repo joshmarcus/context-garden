@@ -71,6 +71,7 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Group a window of events into what a human wants to know."""
     out: dict[str, Any] = {
         "prs_opened": [], "merged": [], "needs_human": [], "reviews": [], "discovered": [],
+        "failures": [],
         "dispatched": 0, "cost_usd": 0.0, "tasks": defaultdict(list),
     }
     for ev in events:
@@ -92,6 +93,8 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
             out["dispatched"] += 1
         if k == "run_finished":
             out["cost_usd"] += float(ev.get("cost_usd") or 0.0)
+            if ev.get("mode") in ("work", "revise") and ev.get("status") not in ("done", "needs_input"):
+                out["failures"].append(ev)
     out["tasks"] = dict(out["tasks"])
     return out
 
