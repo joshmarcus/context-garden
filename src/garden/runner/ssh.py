@@ -58,7 +58,10 @@ mkdir -p .garden-run
 cat > .garden-run/brief.md <<'GARDEN_BRIEF_EOF'
 {brief}
 GARDEN_BRIEF_EOF
-export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id}
+# Prevent the worker from finding and mutating a live garden: if the remote product repo is
+# itself a garden, find_root() walking up from the worktree would otherwise accept its
+# garden.yaml. GARDEN_ROOT points at a path with no garden.yaml, so any `garden` command refuses.
+export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 set +e
 {harness} < .garden-run/brief.md
 RC=$?

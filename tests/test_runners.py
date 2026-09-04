@@ -99,6 +99,18 @@ def test_ssh_runner_uses_bare_bin(sched, fake_github):
     assert "/resolved/claude" not in remote_sh
 
 
+def test_ssh_runner_sets_garden_root(sched, fake_github):
+    """The ssh remote script must export GARDEN_ROOT at a non-garden path, so a worker on a
+    remote clone that is itself a garden cannot run garden commands against it."""
+    t = sched.store.task("DM-001")
+    t.runner = "ssh"
+    sched.store.save(t)
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    remote_sh = (run.path / "remote.sh").read_text()
+    assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
+
+
 def test_ssh_host_capacity(sched):
     for tid in ("DM-001", "DM-002"):
         t = sched.store.task(tid)
