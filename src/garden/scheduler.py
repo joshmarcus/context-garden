@@ -1314,7 +1314,10 @@ class Scheduler:
             and int(self.state.get(t.id).get("revisions", 0)) < max_rev
         ]
         queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled)]
+        closed = {ph.key for p in self.store.products() for ph in p.phases if ph.closed}
         for task, mode in queue:
+            if task.key in closed:
+                continue  # the phase is closed; nothing dispatches into it (garden reopen-phase to resume)
             if self.slots_free() <= 0:
                 break
             if self.budget_exceeded(task):

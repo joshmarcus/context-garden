@@ -260,6 +260,12 @@ class Phase:
 
         return str(self.meta.get("common") or plant_info(self.plant)["common"])
 
+    @property
+    def closed(self) -> str:
+        """Close date from `closed:` in goals.md frontmatter; empty while the phase is open."""
+        v = self.meta.get("closed")
+        return str(v) if v else ""
+
 
 def goals_text(path: Path | None) -> str:
     """goals.md without its frontmatter (the frontmatter carries the plant assignment)."""

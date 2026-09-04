@@ -162,15 +162,82 @@ def new_task(
     priority: int = typer.Option(3),
     difficulty: str = typer.Option("medium", help="easy|medium|hard (picks the model tier)"),
     ready: bool = typer.Option(False, help="Create as ready instead of draft"),
+    reopen: bool = typer.Option(False, "--reopen", help="Reopen a closed phase to take this task"),
 ):
     """Create a task file from a template."""
     from .scaffold import TASK_TEMPLATE
 
     store = _store()
     product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    if ph.closed:
+        if not reopen:
+            err.print(f"[red]{ph.key} is closed ({ph.closed}); pass --reopen or run `garden reopen-phase {ph.key}` first[/red]")
+            raise typer.Exit(1) from None
+        _set_phase_closed(store, ph, "")
+        console.print(f"{ph.key} reopened")
     t = store.create_task(product, phase, title, TASK_TEMPLATE, depends_on=depends_on, reading=reading,
                           priority=priority, status="ready" if ready else "draft", difficulty=difficulty)
     console.print(f"created {t.id} at {store.rel(t.path)}")
+
+
+def _phase(store, product: str, phase: str):
+    try:
+        return store.phase(product, phase)
+    except KeyError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+
+def _set_phase_closed(store, ph, closed: str) -> None:
+    """Write or clear `closed:` in goals.md and record the event."""
+    from .events import EventLog
+
+    store.set_phase_closed(ph, closed)
+    log = EventLog(store.config.garden_dir / "events.jsonl")
+    if closed:
+        log.emit("phase_closed", "", phase=ph.key, closed=closed)
+    else:
+        log.emit("phase_reopened", "", phase=ph.key)
+
+
+@app.command("close-phase")
+def close_phase(
+    target: str = typer.Argument(..., help="product/phase"),
+    force: bool = typer.Option(False, "--force", help="Close even with open tasks"),
+):
+    """Close a phase once every task is done or cancelled: it leaves the rail and joins the herbarium."""
+    import datetime as _dt
+
+    store = _store()
+    product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    if ph.closed:
+        console.print(f"{ph.key} is already closed ({ph.closed})")
+        return
+    open_tasks = [t for t in ph.tasks if not t.status.terminal]
+    if open_tasks and not force:
+        err.print(f"[red]{ph.key} still has {len(open_tasks)} open task(s):[/red]")
+        for t in open_tasks:
+            err.print(f"  {t.id}  {_style(t.status.value)}  {t.title}")
+        err.print("finish or cancel them, or close anyway with --force")
+        raise typer.Exit(1) from None
+    date = _dt.date.today().isoformat()
+    _set_phase_closed(store, ph, date)
+    console.print(f"{ph.key} closed ({date}); it now appears in the herbarium")
+
+
+@app.command("reopen-phase")
+def reopen_phase(target: str = typer.Argument(..., help="product/phase")):
+    """Reopen a closed phase: it returns to the rail and can take work again."""
+    store = _store()
+    product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    if not ph.closed:
+        err.print(f"[yellow]{ph.key} is not closed[/yellow]")
+        raise typer.Exit(1) from None
+    _set_phase_closed(store, ph, "")
+    console.print(f"{ph.key} reopened")
 
 
 def _split_target(target: str) -> tuple[str, str]:
@@ -183,7 +250,10 @@ def _split_target(target: str) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------- read-only views
 @app.command()
-def status(product: str | None = typer.Option(None, "--product", "-p")):
+def status(
+    product: str | None = typer.Option(None, "--product", "-p"),
+    all_: bool = typer.Option(False, "--all", help="One row per closed phase too, instead of a summary line"),
+):
     """Overview per phase, plus cost totals."""
     from .graph import effective_status
     from .runs import RunStore
@@ -200,10 +270,14 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
     stack = bool(store.config.get("stack", True))
+    closed_phases = []
     for prod in store.products():
         if product and prod.name != product:
             continue
         for ph in prod.phases:
+            if ph.closed and not all_:
+                closed_phases.append(ph)
+                continue
             counts = {s: 0 for s in STATUS_ORDER + ["blocked"]}
             attn = 0
             for t in ph.tasks:
@@ -218,6 +292,10 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
             attn_cell = f"[bold red]{attn}[/bold red]" if attn else "[dim]·[/dim]"
             table.add_row(ph.key, *[_count(counts[s], s) for s in cols], attn_cell, money)
     console.print(table)
+    if closed_phases:
+        n = len(closed_phases)
+        listing = ", ".join(f"{ph.key} (closed {ph.closed})" for ph in closed_phases)
+        console.print(f"[dim]{n} closed phase{'s' if n != 1 else ''}: {listing} — `garden status --all` for rows, /herbarium in the web UI[/dim]")
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
     up = sched.upgrade_available()
