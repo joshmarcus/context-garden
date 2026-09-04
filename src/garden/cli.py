@@ -594,6 +594,26 @@ def discuss(task_id: str):
     print(view["discuss"])
 
 
+@app.command()
+def decide(
+    decision_id: str,
+    accept: bool = typer.Option(False, "--accept", help="Cancel the named task"),
+    reject: bool = typer.Option(False, "--reject", help="Dismiss the card; log the disagreement"),
+):
+    """Resolve a worker's decision card (a duplicate/cancel discovery)."""
+    if accept == reject:
+        err.print("[red]choose exactly one of --accept / --reject[/red]")
+        raise typer.Exit(1) from None
+    store = _store()
+    try:
+        d = _scheduler(store).resolve_decision(decision_id, accept=accept)
+    except KeyError:
+        err.print(f"[red]no pending decision {decision_id!r}[/red]")
+        raise typer.Exit(1) from None
+    verb = "accepted" if accept else "rejected"
+    console.print(f"decision {decision_id} {verb} (target {d.get('target', '')})")
+
+
 @app.command("commit")
 def commit_tasks():
     """Commit task-file state changes (status, log lines) to the garden's git history."""

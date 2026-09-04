@@ -263,6 +263,31 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                       "actions": [{"label": "Upgrade", "kind": "upgrade", "command": "garden upgrade"}],
                       "age": _age(str(up.get("at") or "")), "difficulty": ""})
 
+    for d in getattr(sched, "pending_decisions", list)():
+        target = str(d.get("target", ""))
+        tgt = tasks.get(target)
+        reason = str(d.get("reason") or "").strip()
+        proposer = str(d.get("proposed_by") or "a worker")
+        if d.get("kind") == "duplicate":
+            why = f"{proposer} says this duplicates {d.get('of') or 'another task'}"
+        else:
+            why = f"{proposer} says this task is now obsolete"
+        if reason:
+            why += f': "{reason}"'
+        items.append({
+            "group": "attention", "group_title": titles["attention"], "task": target,
+            "title": (tgt.title if tgt else str(d.get("target_title") or "")) or target,
+            "phase": str(d.get("phase") or ""), "status": tgt.status.value if tgt else "",
+            "pr": tgt.pr if tgt else "", "why": why,
+            "actions": [
+                {"label": "Accept", "kind": "decision-accept", "command": f"garden decide {d['id']} --accept"},
+                {"label": "Reject", "kind": "decision-reject", "command": f"garden decide {d['id']} --reject"},
+            ],
+            "age": _age(tgt.updated if tgt else str(d.get("at") or "")),
+            "difficulty": tgt.difficulty if tgt else "",
+            "decision": str(d.get("id") or ""), "decision_kind": str(d.get("kind") or ""),
+        })
+
     for key in sorted({t.key for t in tasks.values()}):
         budget = sched.budget_for(key)
         if budget and sched.spent_for(key) >= budget:

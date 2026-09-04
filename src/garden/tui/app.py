@@ -146,7 +146,8 @@ class GardenTUI(App):
                 "approve": "a approve · x drop", "budget": "garden.yaml"}
         for it in items:
             color = STATUS_COLOR.get(it["status"], "white")
-            inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], keys.get(it["group"], ""), key=it["task"] or it["title"])
+            row_key = it.get("decision") or it["task"] or it["title"]
+            inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], keys.get(it["group"], ""), key=row_key)
         if selected:
             try:
                 inbox.move_cursor(row=inbox.get_row_index(selected))
