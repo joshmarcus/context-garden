@@ -55,3 +55,39 @@ def test_parse_result():
     assert parse_result('blah\nGARDEN_RESULT: {"status": "done", "summary": "s"}\n') == {"status": "done", "summary": "s"}
     assert parse_result("GARDEN_RESULT: ```{\"status\": \"done\"}```")["status"] == "done"
     assert parse_result("nothing") == {}
+
+
+def test_brief_pre_pr_revision(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.pr = None  # no PR yet
+    b = build_brief(store, task, branch="garden/x", base="main", review_feedback="ruff failed")
+    assert "## Revision round" in b.text
+    assert "pre-PR check failed" in b.text
+    assert "This branch already has an open pull request" not in b.text
+    assert "Review feedback to address" in b.text
+
+
+def test_brief_pr_revision(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.pr = "https://github.com/example/repo/pull/123"
+    b = build_brief(store, task, branch="garden/x", base="main", review_feedback="update docstring")
+    assert "## Revision round" in b.text
+    assert "This branch already has an open pull request" in b.text
+    assert "https://github.com/example/repo/pull/123" in b.text
+
+
+def test_brief_commits_ahead(garden):
+    store = Store(garden)
+    commits = [
+        "abc1234 First commit",
+        "def5678 Second commit",
+        "ghi9012 Third commit",
+    ]
+    b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main", commits_ahead=commits)
+    assert "## Already on this branch" in b.text
+    assert "First commit" in b.text
+    assert "Second commit" in b.text
+    assert "Third commit" in b.text
+    assert "- abc1234 First commit" in b.text
