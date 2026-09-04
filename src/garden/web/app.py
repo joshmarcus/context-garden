@@ -320,8 +320,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         sched = hub.scheduler()
         phase_tasks = {t.id: t for t in ph.tasks}
         m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
-        from ..personas import DEFAULT_PERSONAS, list_personas
         from ..brief import estimate_brief_tokens
+        from ..personas import DEFAULT_PERSONAS, list_personas
 
         reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
         phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
