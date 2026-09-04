@@ -86,5 +86,18 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   "Send back" note. Sending back through the form worked (303 to the task page), the note
   became `pending_feedback` word for word, and the task went to `changes_requested`. The
   log line truncates the note; the full text is only in `state.json` and the next brief.
+- **Revise round from triage.** The tick after the send-back dispatched a revise run
+  (haiku, 2 minutes, $0.18). It made the one-line fix, added the `## Friction` section and
+  answered the note under "Review responses" as the revise template tells it to. Checks
+  passed, the push updated the PR body and left a comment. The person marked the PR ready
+  on GitHub by hand and the next poll moved the task to `in_review` within a second, which
+  is the right way round: marking ready stays a human step.
+- **The garden argued with itself.** Review round two (haiku, $0.07) requested changes with
+  one blocking finding: the "Review responses" section is scar tissue. The revise template
+  in `brief.py` says "Reply to each review point in `pr_body` under a Review responses
+  heading"; the review prompt in `review.py` says the description must have "no references
+  to earlier review rounds". Every revised PR will fail its next review on this until one
+  of the two changes. A third revise run started at once to delete the section, so a
+  contradiction between two prompts costs a worker run and a review run per PR.
 - **Merge and done.** pending.
 - **Cost.** pending (`garden usage CG-012`).
