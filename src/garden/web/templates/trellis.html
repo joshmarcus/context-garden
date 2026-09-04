@@ -3,10 +3,11 @@
 {% block body %}
 <div class="page-head"><div><h1>Trellis</h1><p>The structure the work climbs: dependencies left to right, dashed edges for discovered work. A task with one open dependency stacks on its PR instead of waiting.</p></div></div>
 <div class="filters">
-  <a href="/trellis" class="{{ 'on' if not product else '' }}">all</a>
-  {% for p in products %}{% for ph in p.phases %}
-    <a href="/trellis?product={{ p.name }}&phase={{ ph.name }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+  <a href="/trellis{{ '?closed=1' if closed else '' }}" class="{{ 'on' if not product else '' }}">all</a>
+  {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
+    <a href="/trellis?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
   {% endfor %}{% endfor %}
+  {% if closed_count %}<a href="/trellis?{% if product %}product={{ product }}&phase={{ phase }}&{% endif %}{{ '' if closed else 'closed=1' }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the trellis by default">include closed</a>{% endif %}
 </div>
 {% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
 <div class="panel" style="margin-bottom:14px">

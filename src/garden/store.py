@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from .config import Config, find_root
-from .model import Phase, Product, Task, now_iso, split_frontmatter
+from .model import Phase, Product, Task, join_frontmatter, now_iso, split_frontmatter
 from .plants import PLANT_BY_KEY, positional_plant, roman
 
 SKIP_DIRS = {".git", ".garden", ".venv", "node_modules", "src", "tests", "principles", ".claude"}
@@ -193,6 +193,20 @@ class Store:
         self.save(t)
         self.invalidate()
         return t
+
+    def set_phase_closed(self, phase: Phase, closed: str) -> None:
+        """Write (or, with an empty string, clear) `closed:` in the phase's goals.md frontmatter."""
+        goals = phase.goals_path or (phase.path / "goals.md")
+        meta: dict = {}
+        body = ""
+        if goals.exists():
+            meta, body = split_frontmatter(goals.read_text())
+        if closed:
+            meta["closed"] = closed
+        else:
+            meta.pop("closed", None)
+        _atomic_write(goals, join_frontmatter(meta, body) if meta else body)
+        self.invalidate()
 
     def rel(self, path: Path) -> str:
         try:

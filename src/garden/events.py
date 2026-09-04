@@ -160,5 +160,33 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     return {"tasks": per_task, "by_difficulty": by_diff}
 
 
+def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
+    """The figures a closed phase is remembered by: dates, tasks done, merged PRs, lead
+    time, revise rounds, first-pass rate and cost. `tasks` is id -> Task for the phase."""
+    m = metrics(events, tasks)
+    dispatches = [ev["at"] for ev in events if ev.get("kind") == "dispatch" and ev.get("task") in tasks]
+    done_at = {ev["task"]: ev["at"] for ev in events
+               if ev.get("kind") == "transition" and ev.get("to") == "done" and ev.get("task") in tasks}
+    leads = [r["lead_hours"] for r in m["tasks"] if r["lead_hours"] is not None]
+    reviewed = [r for r in m["tasks"] if r["first_review"]]
+
+    def status_of(t: Any) -> str:
+        s = getattr(t, "status", "")
+        return getattr(s, "value", str(s))
+
+    return {
+        "metrics": m,
+        "first_dispatch": min(dispatches)[:10] if dispatches else "",
+        "done_at": done_at,
+        "tasks_done": sum(1 for t in tasks.values() if status_of(t) == "done"),
+        "tasks_total": len(tasks),
+        "prs_merged": sum(1 for t in tasks.values() if getattr(t, "pr", "") and status_of(t) == "done"),
+        "revisions": sum(r["revisions"] for r in m["tasks"]),
+        "avg_lead_hours": round(sum(leads) / len(leads), 1) if leads else None,
+        "first_pass_rate": round(sum(1 for r in reviewed if r["first_review"] == "approve") / len(reviewed), 2) if reviewed else None,
+        "cost_usd": round(sum(r["cost_usd"] for r in m["tasks"]), 2),
+    }
+
+
 def _ts(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s)

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · {{ phase.key }}{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><span class="eyebrow">{{ phase.key }}</span><h1>{{ name }}</h1></div>
+  <div class="tools"><a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}">Phase page</a>{% if phase.closed %}<a class="btn" href="/herbarium">Herbarium</a>{% endif %}</div>
+</div>
+<div class="panel prose">{{ doc_html|safe }}</div>
+{% endblock %}

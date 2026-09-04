@@ -3,13 +3,14 @@
 {% block body %}
 <div class="page-head"><div><h1>Board</h1><p>Every task by state. Blocked and stacked tasks show what they wait on; running ones show elapsed time.</p></div></div>
 <div class="filters">
-  <a href="/board" class="{{ 'on' if not product else '' }}">all</a>
-  {% for p in products %}{% for ph in p.phases %}
-    <a href="/board?product={{ p.name }}&phase={{ ph.name }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+  <a href="/board{{ '?closed=1' if closed else '' }}" class="{{ 'on' if not product else '' }}">all</a>
+  {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
+    <a href="/board?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
   {% endfor %}{% endfor %}
+  {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase }}&{% endif %}{{ '' if closed else 'closed=1' }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
 </div>
 {% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
-<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}" data-every="5000">
+<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}" data-every="5000">
   {% include "_board.html" %}
 </div>
 {% endblock %}

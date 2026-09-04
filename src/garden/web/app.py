@@ -6,6 +6,7 @@ The scheduler loop runs in a background thread when `watch=True` (the `garden se
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from markupsafe import Markup
 
 from ..brief import build_brief
 from ..charts import burnup_svg, tier_bars_svg
-from ..events import EventLog, digest, metrics, parse_since
+from ..events import EventLog, digest, metrics, parse_since, phase_summary
 from ..graph import (
     blockers,
     critical_path,
@@ -149,6 +150,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "totals": RunStore(s.config.garden_dir).totals(),
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,
+            "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
             **kw,
         }
 
@@ -156,16 +158,23 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)
         return [{"tier": t, **m["by_difficulty"][t]} for t in ("easy", "medium", "hard") if m["by_difficulty"].get(t)]
 
-    def board_data(product: str | None, phase: str | None) -> dict[str, Any]:
+    def closed_phase_keys(s: Store) -> set[str]:
+        return {ph.key for p in s.products() for ph in p.phases if ph.closed}
+
+    def board_data(product: str | None, phase: str | None, include_closed: bool = False) -> dict[str, Any]:
         s = hub.fresh()
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
         state = State(s.config.garden_dir / "state.json")
+        closed_keys = closed_phase_keys(s)
         cols: dict[str, list] = {c: [] for c in COLUMNS}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
             if product and t.product != product:
                 continue
             if phase and t.phase != phase:
+                continue
+            # closed phases stay off the board unless asked for (or picked explicitly)
+            if t.key in closed_keys and not include_closed and (t.product, t.phase) != (product, phase):
                 continue
             eff = effective_status(t, tasks, stack)
             if eff == "cancelled":
@@ -178,7 +187,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         runs = RunStore(s.config.garden_dir)
         active = {r.task_id: r for r in runs.active()}
         return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
-                "problems": validate(tasks)}
+                "closed": include_closed, "problems": validate(tasks)}
 
     # ---- pages -------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
@@ -199,12 +208,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/board", response_class=HTMLResponse)
-    def board(request: Request, product: str | None = None, phase: str | None = None):
-        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", **board_data(product, phase)))
+    def board(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
+        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", **board_data(product, phase, closed)))
 
     @app.get("/partials/board", response_class=HTMLResponse)
-    def board_partial(request: Request, product: str | None = None, phase: str | None = None):
-        return templates.TemplateResponse(request, "_board.html", ctx(request, **board_data(product, phase)))
+    def board_partial(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
+        return templates.TemplateResponse(request, "_board.html", ctx(request, **board_data(product, phase, closed)))
 
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
     def task_page(request: Request, task_id: str):
@@ -284,17 +293,19 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.get("/trellis", response_class=HTMLResponse)
     @app.get("/graph", response_class=HTMLResponse, include_in_schema=False)
-    def trellis_page(request: Request, product: str | None = None, phase: str | None = None):
+    def trellis_page(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
         s = hub.fresh()
+        closed_keys = closed_phase_keys(s)
         tasks = {k: v for k, v in s.tasks().items()
-                 if (not product or v.product == product) and (not phase or v.phase == phase)}
+                 if (not product or v.product == product) and (not phase or v.phase == phase)
+                 and (closed or v.key not in closed_keys or (v.product, v.phase) == (product, phase))}
         try:
             cp = critical_path(tasks)
         except Exception:  # noqa: BLE001
             cp = []
         return templates.TemplateResponse(request, "trellis.html", ctx(
             request, page="trellis", svg=svg(tasks, stack=bool(s.config.get("stack", True))), mermaid=mermaid(tasks), product=product, phase=phase,
-            critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
+            closed=closed, critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs_page(request: Request):
@@ -334,33 +345,115 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         goals = goals_text(ph.goals_path)
         specs = [(s.rel(p), p.read_text()) for p in ph.specs]
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
-        fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
-        fixed_tokens = fixed.fixed_tokens if fixed else 0
         state = State(s.config.garden_dir / "state.json")
         stack = bool(s.config.get("stack", True))
         sched = hub.scheduler()
         phase_tasks = {t.id: t for t in ph.tasks}
-        m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
+        all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        m = metrics(all_events, phase_tasks)
+        reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
+        usage = RunStore(s.config.garden_dir).usage_by_task()
+        in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
+        merged = sum(1 for t in in_scope if t.status.value == "done")
+        prs_open = sum(1 for t in in_scope if t.pr and t.status.value != "done")
+        complete = bool(in_scope) and merged == len(in_scope)
+        sheet = {"merged": merged, "total": len(in_scope), "prs_open": prs_open, "complete": complete, "info": plant_info(ph.plant)}
+        spent = sched.spent_for(ph.key)
+
+        if ph.closed:
+            # the closing header: the record of what the phase did, no working controls
+            summary = phase_summary(all_events, phase_tasks)
+
+            def doc_url(p: Path) -> str:
+                return f"/phases/{ph.product}/{ph.name}/doc/{p.relative_to(ph.path)}"
+
+            merged_rows = [{"t": t, "number": t.pr.rsplit("/", 1)[-1], "merged": (summary["done_at"].get(t.id) or "")[:10]}
+                           for t in ph.tasks if t.pr and t.status.value == "done"]
+            unmerged_rows = [{"t": t, "why": (_split_log(t.body)[1] or ["closed unmerged"])[-1]}
+                             for t in ph.tasks if t.pr and t.status.value != "done"]
+            review_heads = []
+            for p in reviews:
+                head = _review_head(p)
+                head["url"] = doc_url(p)
+                head["tasks"] = [t for t in ph.tasks if t.discovered_from == f"persona:{head['persona']}"]
+                review_heads.append(head)
+            closing = next((p for p in ph.docs if "closing" in p.name and p.suffix == ".md"), None)
+            friction = ph.path / "docs" / "friction.md"
+            artifacts = [("closing document", doc_url(closing))] if closing else []
+            if friction.exists():
+                artifacts.append(("friction report (docs/friction.md)", doc_url(friction)))
+            artifacts += [(s.rel(p), doc_url(p)) for p in ph.specs]
+            artifacts += [(s.rel(p), doc_url(p)) for p in ph.docs
+                          if p.suffix == ".md" and p != closing and p != friction and "reviews" not in p.parts]
+            trials_n = sum(1 for tr in TrialLog(s.config.garden_dir / "trials.jsonl").read() if tr.get("task") in phase_tasks)
+            return templates.TemplateResponse(request, "phase_closed.html", ctx(
+                request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), sheet=sheet,
+                summary=summary, metrics=m, spent=spent, review_heads=review_heads, artifacts=artifacts,
+                trials_n=trials_n, merged_rows=merged_rows, unmerged_rows=unmerged_rows,
+                rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}))
+                      for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            ))
+
+        fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
+        fixed_tokens = fixed.fixed_tokens if fixed else 0
         from ..brief import estimate_brief_tokens
         from ..personas import DEFAULT_PERSONAS, list_personas
 
-        reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
-        phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
-        usage = RunStore(s.config.garden_dir).usage_by_task()
-        in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
-        open_tasks = [t for t in ph.tasks if t.status.value != "cancelled"]
-        merged = sum(1 for t in open_tasks if t.status.value == "done")
-        prs_open = sum(1 for t in open_tasks if t.pr and t.status.value != "done")
-        complete = bool(open_tasks) and merged == len(open_tasks)
+        phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
-            sheet={"merged": merged, "total": len(open_tasks), "prs_open": prs_open, "complete": complete, "info": plant_info(ph.plant)},
+            sheet=sheet,
             burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
-            budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
+            budget=sched.budget_for(ph.key), spent=spent, metrics=m,
             rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
-            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.fixed_tokens if fixed else 0,
+            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
         ))
+
+    @app.get("/herbarium", response_class=HTMLResponse)
+    def herbarium(request: Request):
+        s = hub.fresh()
+        all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        sched = Scheduler(s, log=lambda m: None)
+        entries = []
+        for p in s.products():
+            for ph in p.phases:
+                if not ph.closed:
+                    continue
+                phase_tasks = {t.id: t for t in ph.tasks}
+                friction = ph.path / "docs" / "friction.md"
+                closing = next((f for f in ph.docs if "closing" in f.name and f.suffix == ".md"), None)
+                entries.append({
+                    "phase": ph, "info": plant_info(ph.plant),
+                    "summary": phase_summary(all_events, phase_tasks),
+                    "spent": sched.spent_for(ph.key),
+                    "friction_url": f"/phases/{ph.product}/{ph.name}/doc/docs/friction.md" if friction.exists() else "",
+                    "closing_url": f"/phases/{ph.product}/{ph.name}/doc/{closing.relative_to(ph.path)}" if closing else "",
+                })
+        entries.sort(key=lambda e: str(e["phase"].closed), reverse=True)
+        groups: list[tuple[str, list]] = []
+        if len({e["phase"].product for e in entries}) > 1:
+            for e in entries:
+                if not groups or groups[-1][0] != e["phase"].product:
+                    groups.append((e["phase"].product, []))
+                groups[-1][1].append(e)
+        else:
+            groups = [("", entries)]
+        return templates.TemplateResponse(request, "herbarium.html", ctx(request, page="herbarium", groups=groups, n=len(entries)))
+
+    @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
+    def phase_doc(request: Request, product: str, phase: str, name: str):
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        target = (ph.path / name).resolve()
+        allowed = {p.resolve() for p in [*ph.docs, *ph.specs]}
+        if target not in allowed or target.suffix != ".md":
+            raise HTTPException(404)
+        return templates.TemplateResponse(request, "doc.html", ctx(
+            request, page="phase", phase_key=ph.key, phase=ph, name=name, doc_html=render_md(target.read_text())))
 
     @app.get("/config", response_class=HTMLResponse)
     def config_page(request: Request):
@@ -582,6 +675,33 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         return JSONResponse(hub.events[-50:])
 
     return app
+
+
+def _review_head(path: Path) -> dict[str, Any]:
+    """Persona, date, score, headline and high findings of a docs/reviews report
+    (written by personas.report_markdown as <persona>-<date>[-n].md)."""
+    m = re.match(r"(.+?)-(\d{4}-\d{2}-\d{2})(?:-\d+)?$", path.stem)
+    persona, date = (m.group(1), m.group(2)) if m else (path.stem, "")
+    score = ""
+    overall = ""
+    highs: list[str] = []
+    section = ""
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            section = stripped[3:].lower()
+            continue
+        if "**Score:**" in stripped:
+            sm = re.search(r"\*\*Score:\*\*\s*([^·]+)", stripped)
+            score = sm.group(1).strip() if sm else ""
+            continue
+        if not stripped or stripped.startswith("#") or stripped.startswith("_"):
+            continue
+        if not section and not overall:
+            overall = stripped
+        elif section == "high" and stripped.startswith("- "):
+            highs.append(stripped[2:])
+    return {"persona": persona, "date": date, "score": score, "overall": overall, "highs": highs}
 
 
 def _split_log(body: str) -> tuple[str, list[str]]:

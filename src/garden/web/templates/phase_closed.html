@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ phase.key }}{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}</h1>
+    <p>closed {{ phase.closed }}{% if summary.first_dispatch %} · worked {{ summary.first_dispatch }} → {{ phase.closed }}{% endif %} · {{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done · {{ summary.prs_merged }} PR(s) merged · spent ${{ '%.2f' % spent }}</p></div>
+  <div class="tools"><a class="btn" href="/herbarium">Herbarium</a><a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
+</div>
+<div class="grid2">
+  <div class="stack">
+    <div class="panel"><div class="eyebrow">Persona reviews</div>
+      {% for r in review_heads %}
+      <div style="padding:10px 0; border-bottom:1px dashed var(--line)">
+        <div><b>{{ r.persona }}</b>{% if r.score %} <span class="badge">score {{ r.score }}</span>{% endif %} <span class="muted mono" style="font-size:11.5px">{{ r.date }}</span> · <a href="{{ r.url }}" class="mono" style="font-size:12px">full report</a></div>
+        {% if r.overall %}<p style="margin:6px 0 0; max-width:70ch">{{ r.overall }}</p>{% endif %}
+        {% if r.highs %}<ul style="margin:6px 0 0; padding-left:18px; font-size:13px">{% for h in r.highs %}<li>{{ h }}</li>{% endfor %}</ul>{% endif %}
+        {% if r.tasks %}<div class="mono muted" style="margin-top:6px; font-size:12px">filed: {% for t in r.tasks %}<a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a> {% endfor %}</div>{% endif %}
+      </div>
+      {% else %}<div class="empty">no persona reviews were run in this phase</div>{% endfor %}
+    </div>
+    <div class="panel"><div class="eyebrow">Outcomes</div>
+      <div class="prose">{{ goals_html|safe }}</div>
+      <table style="margin-top:14px; font-size:13px">
+        <tr><th>tasks done</th><th>PRs merged</th><th>revise rounds</th><th>avg lead</th><th>first pass</th><th>cost</th><th>dates</th></tr>
+        <tr><td>{{ summary.tasks_done }} / {{ summary.tasks_total }}</td><td>{{ summary.prs_merged }}</td><td>{{ summary.revisions }}</td>
+          <td>{% if summary.avg_lead_hours is not none %}{{ summary.avg_lead_hours }} h{% endif %}</td>
+          <td>{% if summary.first_pass_rate is not none %}{{ (summary.first_pass_rate * 100)|round|int }}%{% endif %}</td>
+          <td>${{ '%.2f' % spent }}</td>
+          <td class="mono">{% if summary.first_dispatch %}{{ summary.first_dispatch }} → {% endif %}{{ phase.closed }}</td></tr>
+      </table>
+      {% if metrics.by_difficulty %}<table style="margin-top:10px; font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
+      {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}<tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.done }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td><td>${{ '%.2f' % d.cost_usd }}</td></tr>{% endif %}{% endfor %}</table>{% endif %}
+    </div>
+    <div class="panel"><div class="eyebrow">Pull requests</div>
+      <div class="scroll"><table>
+        <tr><th>pr</th><th>task</th><th>title</th><th>tier</th><th>merged</th></tr>
+        {% for row in merged_rows %}<tr><td><a href="{{ row.t.pr }}" target="_blank">#{{ row.number }}</a></td><td><a class="id" href="/tasks/{{ row.t.id }}">{{ row.t.id }}</a></td><td class="title">{{ row.t.title }}</td><td>{{ row.t.difficulty }}</td><td class="mono">{{ row.merged }}</td></tr>
+        {% else %}<tr><td colspan="5" class="faint">no merged PRs recorded</td></tr>{% endfor %}
+      </table></div>
+      {% if unmerged_rows %}<div class="eyebrow" style="margin-top:12px">Closed unmerged</div>
+      <table style="font-size:13px">{% for row in unmerged_rows %}<tr><td><a href="{{ row.t.pr }}" target="_blank">#{{ row.t.pr.rsplit('/', 1)[-1] }}</a></td><td><a class="id" href="/tasks/{{ row.t.id }}">{{ row.t.id }}</a></td><td><span class="state s-{{ row.t.status.value }}">{{ stage(row.t.status.value, 18) }}{{ row.t.status.value.replace('_',' ') }}</span></td><td class="muted">{{ row.why }}</td></tr>{% endfor %}</table>{% endif %}
+    </div>
+    <div class="panel"><div class="eyebrow">Tasks</div>
+      <div class="scroll"><table>
+        <tr><th>id</th><th>status</th><th>tier</th><th>title</th><th>pr</th><th>cost</th></tr>
+        {% for t, eff, st, u in rows %}
+        <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="state s-{{ eff }}" title="{{ stage_word(eff) }}">{{ stage(eff, 18) }}{{ eff.replace('_',' ') }}</span></td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td>
+          <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% endif %}</td>
+          <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
+        {% else %}<tr><td colspan="6" class="faint">no tasks</td></tr>{% endfor %}
+      </table></div>
+    </div>
+  </div>
+  <div class="stack">
+    <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
+      <span class="tape" style="left:46%; top:150px; transform:rotate(-8deg)"></span>
+      {% set plate_src = plate(phase.plant) %}
+      {% if plate_src %}<div class="plate-mount"><img class="plate" src="{{ plate_src }}" alt="{{ sheet.info.latin }}, plate from {{ PLATE_CREDIT }}" width="300" height="420"></div>
+      {% else %}<div style="display:flex; justify-content:center">{{ plant(phase.plant, 240, 360) }}</div>{% endif %}
+      <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
+      <div class="lbl" style="right:16px; bottom:16px"><b>{{ phase.product }} · plate {{ phase.plate }}</b><br>{{ phase.name }}<br><i>{{ sheet.info.latin }}</i> — {{ sheet.info.common }}<br>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done · {{ summary.prs_merged }} merged<br>closed {{ phase.closed }} · spent ${{ '%.2f' % spent }}{% if plate_src %}<br><span class="muted">plate: {{ PLATE_CREDIT }}</span>{% endif %}</div>
+      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
+    </div>
+    <div class="panel"><div class="eyebrow">Artifacts</div>
+      <ul style="margin:8px 0 0; padding-left:18px; font-size:13px">
+        {% for label, url in artifacts %}<li><a href="{{ url }}">{{ label }}</a></li>{% else %}<li class="faint" style="list-style:none; margin-left:-18px">nothing filed</li>{% endfor %}
+        {% for r in review_heads %}<li><a href="{{ r.url }}">persona review · {{ r.persona }} ({{ r.date }})</a></li>{% endfor %}
+        {% if trials_n %}<li><a href="/trials">{{ trials_n }} model trial{{ 's' if trials_n != 1 else '' }}</a></li>{% endif %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
