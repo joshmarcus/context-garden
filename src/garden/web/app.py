@@ -597,19 +597,39 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.post("/pause")
     def web_pause(request: Request, reason: str = Form("")):
-        with hub.lock:
-            sched = hub.scheduler()
-            sched.pause(by="web", reason=reason.strip())
-        hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                sched.pause(by="web", reason=reason.strip())
+            hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"pause failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("pause failed")
+            hub._log("pause failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/resume")
     def web_resume(request: Request):
-        with hub.lock:
-            sched = hub.scheduler()
-            sched.resume(by="web")
-        hub._log("dispatch resumed via web")
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                sched.resume(by="web")
+            hub._log("dispatch resumed via web")
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"resume failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("resume failed")
+            hub._log("resume failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/config/max-parallel")
     def web_set_max_parallel(request: Request, value: int = Form(...)):
@@ -629,12 +649,25 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.post("/upgrade")
     def web_upgrade(request: Request):
-        with hub.lock:
-            sched = hub.scheduler()
-            result = sched.upgrade(restart=True)
-        hub._log("tool upgrade: " + ("restarting" if result.get("ok") else f"failed ({result.get('reason')})"))
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                result = sched.upgrade(restart=True)
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"tool upgrade failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("tool upgrade failed")
+            hub._log("tool upgrade failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         # On success the process re-execs and never reaches here; a failure falls through.
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        reason = result.get("reason") or "see the log"
+        hub._log("tool upgrade: " + ("restarting" if result.get("ok") else f"failed ({reason})"))
+        if not result.get("ok"):
+            return RedirectResponse(_flash_url(back, f"upgrade failed: {reason}"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form("")):
@@ -763,12 +796,22 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.post("/phases/{product}/{phase}/approve-all")
     def approve_all(product: str, phase: str):
         s = hub.fresh()
-        for t in s.tasks().values():
-            if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
-                t.status = Status.READY
-                t.log("approved (web)")
-                s.save(t)
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        back = f"/phases/{product}/{phase}"
+        try:
+            for t in s.tasks().values():
+                if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
+                    t.status = Status.READY
+                    t.log("approved (web)")
+                    s.save(t)
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"approve-all {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("approve-all %s/%s failed", product, phase)
+            hub._log(f"approve-all {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/phases/{product}/{phase}/budget")
     def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
@@ -790,23 +833,39 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.post("/phases/{product}/{phase}/persona")
     def persona_phase(product: str, phase: str, personas: str = Form(""), file_tasks: str = Form("")):
         s = hub.fresh()
-        ph = s.phase(product, phase)
-        with hub.lock:
-            sched = hub.scheduler()
-            for name in [n.strip() for n in personas.split(",") if n.strip()]:
-                sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        back = f"/phases/{product}/{phase}"
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                for name in [n.strip() for n in personas.split(",") if n.strip()]:
+                    sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"persona review {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("persona review %s/%s failed", product, phase)
+            hub._log(f"persona review {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/phases/{product}/{phase}/plan")
     def plan_phase(product: str, phase: str, background: BackgroundTasks, guidance: str = Form("")):
         key = f"{product}/{phase}"
+        back = f"/phases/{product}/{phase}"
         if hub.planning.get(key, "").startswith("running"):
-            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
-        s = hub.fresh()
-        ph = s.phase(product, phase)
+            return RedirectResponse(back, status_code=303)
+        try:
+            ph = hub.fresh().phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
         if ph.closed:
             hub.planning[key] = f"failed {now_iso()}: {ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)"
-            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+            return RedirectResponse(back, status_code=303)
         hub.planning[key] = f"running since {now_iso()}"
 
         def job() -> None:
@@ -821,7 +880,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 hub.planning[key] = f"failed {now_iso()}: {e}"
 
         background.add_task(job)
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/friction-report")
     def friction_report_web(
@@ -837,19 +896,28 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         from ..friction import append_friction_report, create_friction_draft_task
 
         s = hub.fresh()
+        back = request.headers.get("referer", "/")
         try:
             ph = s.phase(product, phase)
         except KeyError:
             raise HTTPException(404) from None
-        doc = ph.path / "docs" / "friction.md"
-        provenance = page or "web"
-        if task_id:
-            provenance = f"{page} ({task_id})" if page else task_id
-        date = _dt.date.today().isoformat()
-        append_friction_report(doc, text, provenance, date)
-        create_friction_draft_task(s, product, phase, text, provenance, date)
-        s.invalidate()
-        back = request.headers.get("referer", "/")
+        try:
+            doc = ph.path / "docs" / "friction.md"
+            provenance = page or "web"
+            if task_id:
+                provenance = f"{page} ({task_id})" if page else task_id
+            date = _dt.date.today().isoformat()
+            append_friction_report(doc, text, provenance, date)
+            create_friction_draft_task(s, product, phase, text, provenance, date)
+            s.invalidate()
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"friction report {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("friction report %s/%s failed", product, phase)
+            hub._log(f"friction report {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 
     # ---- json --------------------------------------------------------------
