@@ -1,5 +1,7 @@
 import subprocess
 
+import yaml
+
 from garden.model import Status
 from tests.conftest import wait_for_runs
 
@@ -71,3 +73,29 @@ def test_ssh_host_capacity(sched):
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(work)"]  # boxA max_parallel 1
     assert any("max_parallel" in e for e in rep.errors)
+
+
+def test_stream_json_harness_end_to_end(garden, fake_github, monkeypatch):
+    """output_format: stream-json produces JSONL stdout and is correctly reaped."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["harnesses"]["claude"]["output_format"] = "stream-json"
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    store = Store(garden)
+    sc = Scheduler(store, github=fake_github, log=print)
+    sc.tick()
+    wait_for_runs(sc)
+    run = sc.runs.latest("DM-001")
+    assert run is not None
+    evs = run.stdout_events()
+    assert any(ev.get("type") == "tool_use" for ev in evs)
+    assert any(ev.get("type") == "result" for ev in evs)
+    sc.tick()
+    sc.store.invalidate()
+    assert sc.store.task("DM-001").status == Status.IN_REVIEW
+    run = sc.runs.latest("DM-001")
+    assert run.result.get("status") == "done"
+    assert run.usage.get("input_tokens") == 1234

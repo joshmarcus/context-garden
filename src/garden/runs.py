@@ -95,6 +95,21 @@ class Run:
         p = self.path / "stdout.json"
         return p.read_text() if p.exists() else ""
 
+    def stdout_events(self, n: int = 50) -> list[dict[str, Any]]:
+        """Parse stdout.json as JSONL and return the last n event dicts."""
+        out: list[dict[str, Any]] = []
+        for line in self.stdout_text().splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+                if isinstance(ev, dict):
+                    out.append(ev)
+            except json.JSONDecodeError:
+                continue
+        return out[-n:]
+
     def stderr_text(self) -> str:
         p = self.path / "stderr.log"
         return p.read_text() if p.exists() else ""

@@ -70,6 +70,13 @@
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
     {% if discovered %}<div class="panel"><div class="eyebrow">Discovered work</div><ul style="margin:6px 0 0;padding-left:18px">{% for d in discovered %}<li><a href="/tasks/{{ d.id }}" class="id">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
     {% if usage.by_mode %}<div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr>{% for mode, m in usage.by_mode.items()|sort %}<tr><td>{{ mode }}</td><td>{{ m.runs }}</td><td>{{ '{:,}'.format(m.input_tokens) }}</td><td>{{ '{:,}'.format(m.cache_read_input_tokens) }}</td><td>{{ '{:,}'.format(m.output_tokens) }}</td><td>${{ '%.2f' % m.cost_usd }}</td></tr>{% endfor %}</table></div>{% endif %}
+    {% if task.status.value == 'running' %}
+    <div class="panel"><div class="eyebrow">Live output</div>
+      <div id="live-output" data-poll="/partials/tasks/{{ task.id }}/stdout" data-every="3000" style="margin-top:6px">
+        {% with events=initial_stdout %}{% include "_stdout.html" %}{% endwith %}
+      </div>
+    </div>
+    {% endif %}
     <div class="panel"><div class="eyebrow">Runs</div>
       <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000" style="margin-top:6px">{% include "_runs.html" %}</div>
     </div>
