@@ -1,8 +1,14 @@
-"""Tests for friction.py: extraction, pr_body_for, harvest, write_friction_doc."""
+"""Tests for friction.py: extraction, pr_body_for, harvest, write_friction_doc, reported friction."""
 
 from __future__ import annotations
 
-from garden.friction import extract_friction, harvest, pr_body_for, write_friction_doc
+from garden.friction import (
+    append_friction_report,
+    extract_friction,
+    harvest,
+    pr_body_for,
+    write_friction_doc,
+)
 
 # --------------------------------------------------------------------------- extract_friction
 
@@ -194,3 +200,63 @@ def test_write_friction_doc_no_pr_url(tmp_path):
     assert "T-001" in text
     assert "PR:" not in text
     assert "Had issues." in text
+
+
+def test_write_friction_doc_preserves_reported_section(tmp_path):
+    task = _FakeTask("T-001")
+    task.title = "A task"
+    doc = tmp_path / "docs" / "friction.md"
+    # Pre-populate with a Reported section
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n\n## Reported\n\n### 2026-01-01 · cli\n\nSome friction.\n")
+    write_friction_doc(doc, [(task, "https://example.com/pull/1", "PR friction.")])
+    text = doc.read_text()
+    assert "PR friction." in text
+    assert "## Reported" in text
+    assert "Some friction." in text
+
+
+def test_write_friction_doc_idempotent_with_reported(tmp_path):
+    task = _FakeTask("T-001")
+    task.title = "A task"
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n\n## Reported\n\n### 2026-01-01 · cli\n\nSome friction.\n")
+    write_friction_doc(doc, [])
+    first = doc.read_text()
+    write_friction_doc(doc, [])
+    assert doc.read_text() == first
+
+
+# --------------------------------------------------------------------------- append_friction_report
+
+
+def test_append_friction_report_creates_reported_section(tmp_path):
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n")
+    append_friction_report(doc, "Widget X is confusing.", "/inbox", "2026-09-04")
+    text = doc.read_text()
+    assert "## Reported" in text
+    assert "Widget X is confusing." in text
+    assert "2026-09-04" in text
+    assert "/inbox" in text
+
+
+def test_append_friction_report_appends_to_existing_section(tmp_path):
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n\n## Reported\n\n### 2026-01-01 · cli\n\nFirst report.\n")
+    append_friction_report(doc, "Second report.", "/inbox", "2026-09-04")
+    text = doc.read_text()
+    assert text.count("## Reported") == 1
+    assert "First report." in text
+    assert "Second report." in text
+
+
+def test_append_friction_report_creates_file(tmp_path):
+    doc = tmp_path / "docs" / "friction.md"
+    append_friction_report(doc, "Brand new report.", "cli", "2026-09-04")
+    text = doc.read_text()
+    assert "Brand new report." in text
+    assert "## Reported" in text

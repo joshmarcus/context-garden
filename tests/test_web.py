@@ -122,3 +122,44 @@ def test_scanned_plates_replace_the_drawing_when_present(garden, tmp_path):
     assert 'src="/static/plates/pea.webp" alt="" width="38"' in html
     (plates / "pea-thumb.webp").write_bytes(b"RIFF....WEBP")
     assert 'src="/static/plates/pea-thumb.webp"' in c.get("/").text
+
+
+def test_friction_report_web(garden):
+    c = client(garden)
+    r = c.post(
+        "/friction-report",
+        data={"product": "demo", "phase": "p1", "text": "The form is confusing.", "page": "/inbox"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    assert doc.exists()
+    text = doc.read_text()
+    assert "## Reported" in text
+    assert "The form is confusing." in text
+    # A draft task was created
+    from garden.store import Store
+    tasks = Store(garden).tasks()
+    friction_tasks = [t for t in tasks.values() if "confusing" in t.title]
+    assert friction_tasks, "expected a draft task for the friction report"
+    assert friction_tasks[0].status.value == "draft"
+
+
+def test_friction_report_web_with_task_id(garden):
+    c = client(garden)
+    r = c.post(
+        "/friction-report",
+        data={"product": "demo", "phase": "p1", "text": "Brief is too long.", "page": "/tasks/DM-001", "task_id": "DM-001"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    text = doc.read_text()
+    assert "DM-001" in text
+    assert "Brief is too long." in text
+
+
+def test_friction_form_in_inbox_and_task(garden):
+    c = client(garden)
+    assert "Report friction" in c.get("/").text
+    assert "Report friction" in c.get("/tasks/DM-001").text

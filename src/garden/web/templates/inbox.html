@@ -54,4 +54,21 @@
   <div class="panel"><div class="eyebrow">Progress</div><h3>Merged work against scope, all phases</h3>{{ burnup|safe }}</div>
   <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3>{{ tiers|safe }}<p class="muted" style="margin:8px 0 0;font-size:12px">If a tier's revisions climb, its model is too cheap for the work; see <a href="/events">metrics</a>.</p></div>
 </div>
+<div class="panel" style="margin-top:8px">
+  <button class="quiet" data-toggle="friction-form" style="margin-bottom:0">Report friction…</button>
+  <div id="friction-form" hidden style="margin-top:10px">
+    <div class="eyebrow">Report friction about this process</div>
+    <form method="post" action="/friction-report" style="margin-top:8px">
+      <input type="hidden" name="page" value="/inbox">
+      <select name="product" style="margin-bottom:6px">
+        {% for p in products %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+      </select>
+      <select name="phase" style="margin-bottom:6px">
+        {% for p in products %}{% for ph in p.phases %}<option value="{{ ph.name }}">{{ p.name }}/{{ ph.name }}</option>{% endfor %}{% endfor %}
+      </select>
+      <textarea name="text" placeholder="What felt slow, unclear, or missing?" required style="width:100%;box-sizing:border-box"></textarea>
+      <div class="actions" style="margin-top:6px"><button class="primary">File report</button></div>
+    </form>
+  </div>
+</div>
 {% endblock %}

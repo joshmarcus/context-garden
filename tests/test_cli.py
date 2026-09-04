@@ -86,6 +86,42 @@ def test_friction_no_github_fallback_needed(garden):
     assert "No friction reported yet." in doc.read_text()
 
 
+def test_friction_report_cli(garden):
+    r = run(garden, "friction-report", "demo/p1", "The new-task flow is too many steps.")
+    assert r.exit_code == 0, r.output
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    assert doc.exists()
+    text = doc.read_text()
+    assert "## Reported" in text
+    assert "The new-task flow is too many steps." in text
+    # A draft task should have been created
+    assert "DM-003" in r.output or "created draft task" in r.output
+
+
+def test_friction_report_preserves_harvested(garden):
+    """friction (harvester) run after friction-report keeps the Reported section."""
+    from garden.runs import RunStore
+
+    rs = RunStore(garden / ".garden")
+    r0 = rs.new_run("DM-001", "manual", "work")
+    r0.status = "done"
+    r0.result = {"status": "done", "pr_body": "## Friction\n\nHard to find logs."}
+    r0.save()
+
+    # File a report
+    run(garden, "friction-report", "demo/p1", "Provenance is missing from error messages.")
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    assert "## Reported" in doc.read_text()
+
+    # Now run the harvester
+    r = run(garden, "friction", "demo/p1")
+    assert r.exit_code == 0, r.output
+    text = doc.read_text()
+    assert "Hard to find logs." in text          # harvested friction preserved
+    assert "## Reported" in text                  # reported section preserved
+    assert "Provenance is missing" in text         # report preserved
+
+
 def test_init_scaffold(tmp_path):
     r = runner.invoke(app, ["init", str(tmp_path / "g"), "--name", "x"])
     assert r.exit_code == 0 and (tmp_path / "g" / "garden.yaml").exists()
