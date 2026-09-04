@@ -30,6 +30,29 @@ def test_status_ls_graph_validate(garden):
     assert run(garden, "validate").exit_code == 0
 
 
+def test_set_and_clear_max_parallel(garden):
+    r = run(garden, "status")
+    assert r.exit_code == 0 and "max_parallel: 2" in r.output and "live override" not in r.output
+
+    r = run(garden, "set", "max_parallel", "5")
+    assert r.exit_code == 0 and "max_parallel = 5" in r.output
+
+    r = run(garden, "status")
+    assert r.exit_code == 0 and "max_parallel: 5 (live override; garden.yaml: 2)" in r.output
+
+    r = run(garden, "clear", "max_parallel")
+    assert r.exit_code == 0 and "max_parallel override cleared" in r.output
+
+    r = run(garden, "status")
+    assert r.exit_code == 0 and "max_parallel: 2" in r.output and "live override" not in r.output
+
+
+def test_set_rejects_unknown_key(garden):
+    r = run(garden, "set", "auto_dispatch", "false")
+    assert r.exit_code != 0
+    assert "can't be set live" in r.output
+
+
 def test_new_task_and_approve(garden):
     r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
     assert r.exit_code == 0 and "DM-003" in r.output
