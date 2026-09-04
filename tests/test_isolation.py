@@ -62,6 +62,44 @@ def test_find_root_worktree_nested_garden_is_fine(tmp_path):
     assert find_root(sub) == wt
 
 
+def test_conftest_fixture_clears_ambient_env(tmp_path):
+    """The autouse `_no_ambient_garden_root` fixture in tests/conftest.py must strip both
+    GARDEN_ROOT and GARDEN_EXEC_ROOT before every test, so this suite behaves the same in a
+    developer's shell, in CI and under the check runner (see garden.checks module docstring:
+    a product's tests must not depend on the garden's environment variables).
+
+    By the time a test body runs, the autouse fixture has already executed, so we can't
+    plant the ambient vars from inside a test and observe the fixture clear them. Instead
+    run a throwaway test *inside tests/* (so it picks up the real tests/conftest.py) in a
+    subprocess with both vars set ambiently (as the check runner does), and assert the
+    fixture cleared them there.
+    """
+    import os
+    import subprocess
+    import sys
+
+    tests_dir = Path(__file__).parent
+    probe = tests_dir / "test_ambient_env_probe.py"
+    probe.write_text(
+        "import os\n"
+        "def test_probe():\n"
+        "    assert 'GARDEN_ROOT' not in os.environ\n"
+        "    assert 'GARDEN_EXEC_ROOT' not in os.environ\n"
+    )
+    try:
+        env = dict(os.environ)
+        env.pop("PYTEST_ADDOPTS", None)  # don't let the outer run's flags reselect/deselect the probe
+        env["GARDEN_ROOT"] = str(tmp_path / "nonexistent")
+        env["GARDEN_EXEC_ROOT"] = str(tmp_path)
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(probe)],
+            cwd=tests_dir.parent, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    finally:
+        probe.unlink()
+
+
 def test_garden_root_env_valid_is_ignored(tmp_path, monkeypatch):
     """GARDEN_ROOT pointing to a real garden is ignored; cwd walk finds the right root.
 

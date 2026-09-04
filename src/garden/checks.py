@@ -33,6 +33,13 @@ a check command must not act on the live garden (see `garden.config.find_root`).
 for the duration of the call (checks run sequentially, not concurrently), so any subprocess
 your callable launches inherits the guard even if it builds its own env from `os.environ`
 without going through `ctx`.
+
+A product's tests must not depend on `GARDEN_ROOT` or `GARDEN_EXEC_ROOT`: the pre_pr
+`tests` check runs them with these variables set (as above), so a suite that reads them
+directly, or that calls into garden internals that do (e.g. `find_root`), passes or fails
+depending on who invoked it rather than on the code under test. A product's own test suite
+should clear both in an autouse fixture (see this repo's own `tests/conftest.py` for the
+pattern) so it behaves the same in a developer's shell, in CI, and under this check runner.
 """
 
 from __future__ import annotations
