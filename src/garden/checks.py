@@ -4,11 +4,11 @@ red CI run and return structured findings. No model is involved.
 garden.yaml:
 
     checks:
-      pre_pr:                       # run in the worktree before a PR is opened / updated
-        - name: tests
-          command: ".venv/bin/pytest -q -x"
+      pre_pr:                       # run in the worktree before a PR is opened / updated;
+        - name: tests               # if omitted, defaults to the product's setup.test / setup.lint
+          command: "make test"      # (run with setup.env) — nothing here assumes a venv
         - name: lint
-          command: ".venv/bin/ruff check src"
+          command: "make lint"
       ci:                           # run when a PR's CI goes red; results feed the revise brief
         - name: ci-log
           python: "garden.checks:local_command_check"
@@ -53,6 +53,8 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
         if spec.get("command"):
             env = dict(os.environ)
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
+            for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
+                env[str(k)] = str(v)
             proc = subprocess.run(
                 str(spec["command"]), shell=True, cwd=str(cwd) if cwd else None, env=env,
                 capture_output=True, text=True, timeout=timeout, check=False,
