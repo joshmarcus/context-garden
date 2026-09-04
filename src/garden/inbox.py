@@ -225,8 +225,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             why = (st.get("review_decision") or "no review yet").lower().replace("_", " ")
             if st.get("checks"):
                 why += f" · CI {st['checks'].lower()}"
+            if st.get("automerge_blocked"):
+                why += f" · automerge held: {st['automerge_blocked']}"
             add("review", t, why, [{"label": "Open PR", "kind": "link", "href": t.pr},
-                                   {"label": "Mark done", "kind": "done", "command": f"garden set-status {t.id} done"}])
+                                   {"label": "Mark done", "kind": "done", "command": f"garden set-status {t.id} done"}],
+                automerge_blocked=str(st.get("automerge_blocked") or ""))
         if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
             att = attention_view(t, st, runs)
             if att:

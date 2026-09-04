@@ -134,6 +134,7 @@ class FakeGitHub:
         self.updated: list[dict] = []
         self.closed: list[int] = []
         self.readied: list[int] = []
+        self.merged: list[dict] = []
         self.feedback: dict[int, Feedback] = {}
         self._n = 100
 
@@ -179,6 +180,14 @@ class FakeGitHub:
             if pr.number == number:
                 pr.state = "CLOSED"
                 self.closed.append(number)
+
+    def merge_pr(self, slug, number, method="squash", delete_branch=True):
+        for pr in self.prs.values():
+            if pr.number == number:
+                pr.state = "MERGED"
+                self.merged.append({"number": number, "method": method, "delete_branch": delete_branch})
+                return
+        raise KeyError(number)
 
     def update_pr(self, slug, number, title="", body="", base=""):
         for pr in self.prs.values():

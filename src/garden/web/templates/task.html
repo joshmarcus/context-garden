@@ -132,6 +132,8 @@
         <dt>PR</dt><dd>{% if task.pr %}<a href="{{ task.pr }}" target="_blank">{{ task.pr }}</a>{% if state.pr_draft %} <span class="badge">draft</span>{% endif %}{% else %}<span class="faint">—</span>{% endif %}</dd>
         {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}{% if state.failed_checks %} ({{ state.failed_checks|join(', ') }}){% endif %}</dd>{% endif %}
         {% if state.last_review %}<dt>auto review</dt><dd>{{ state.last_review.verdict.replace('_',' ') }} ({{ state.review_rounds }} round{{ 's' if state.review_rounds != 1 else '' }}){% if state.review_run %} · running{% endif %}</dd>{% endif %}
+        {% if state.automerge_blocked %}<dt>automerge</dt><dd>held: {{ state.automerge_blocked }}</dd>{% endif %}
+        {% if state.automerged %}<dt>automerge</dt><dd>merged by the garden ({{ state.automerged.method }}, {{ state.automerged.review_rounds }} review round{{ 's' if state.automerged.review_rounds != 1 else '' }})</dd>{% endif %}
         <dt>attempts</dt><dd>{{ task.attempts }}{% if state.revisions %} · {{ state.revisions }} revision(s){% endif %}</dd>
         <dt>runner</dt><dd>{{ task.runner or 'default' }} / {{ task.harness or 'default harness' }}{% if task.model %} / {{ task.model }}{% endif %}</dd>
         <dt>updated</dt><dd class="mono">{{ task.updated[:16] }}</dd>

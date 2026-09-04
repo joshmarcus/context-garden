@@ -217,6 +217,18 @@ Borrowed from graph-based agent systems; all deterministic:
 - **Stall detection and budgets.** A revise round that changes nothing, or a review
   finding that repeats, stops the loop and flags the task for you. Per-phase dollar
   budgets pause dispatch.
+- **Automerge (off by default).** With `github.automerge: true`, the scheduler merges a
+  PR it opened once every gate the loop already has is green: the automated review's last
+  verdict is `approve`, at least `automerge_min_review_rounds` review rounds ran, no
+  feedback is pending and no revise run is in flight, the PR's checks rollup is green,
+  GitHub reports it `MERGEABLE`, no human review requests changes, the task's difficulty
+  is in `automerge_tiers` (so `hard` still waits for a person), and the phase is under
+  budget. It merges with `automerge_method`, deletes the branch, comments on the PR, and
+  lets the next poll move the task to `done` and restack children; the digest counts
+  garden merges. Any failing gate leaves the PR in review with the reason on the task
+  page. A task-level `automerge: false` in its frontmatter opts one task out; all these
+  keys take a per-product override under `products.<name>`. PRs you opened by hand are
+  never touched.
 - **Event log, digest, metrics.** `.garden/events.jsonl` feeds `garden digest --since
   24h` (what needs you, PRs opened/merged, cost), `garden metrics` (lead time, revise
   rounds, first-pass approval and cost per difficulty tier), and the Timeline page.
@@ -351,6 +363,10 @@ github:
   use_gh: true              # gh CLI first, REST with GITHUB_TOKEN otherwise
   draft_pr: true            # PRs open as drafts; your triage marks them ready
   reviewers: []
+  automerge: false          # let the scheduler merge a PR once every loop gate is green (off by default)
+  automerge_method: squash  # squash | merge | rebase
+  automerge_min_review_rounds: 1   # require at least this many automated review rounds
+  automerge_tiers: [easy, medium]  # only these difficulty tiers automerge; hard waits for a person
   bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
                             # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
                             # To post garden comments (reviews, verdicts, persona reviews)

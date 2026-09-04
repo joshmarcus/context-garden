@@ -29,7 +29,7 @@ from .brief import build_brief, resume_prompt
 from .checks import failures as check_failures
 from .checks import run_checks, to_feedback
 from .events import EventLog
-from .github import GitHub, GitHubError, mark_garden_comment
+from .github import GitHub, GitHubError, PRInfo, mark_garden_comment
 from .graph import blockers, ready, stack_parents
 from .harness import DIFFICULTIES
 from .model import Phase, Status, Task, now_iso
@@ -925,6 +925,7 @@ class Scheduler:
             rep.transitions.append(f"{task.id} review failed")
             return True
         st["last_review"] = review
+        st["last_review_run"] = run.run_id
         verdict = str(review.get("verdict", ""))
         self.events.emit("review", task.id, run=run.run_id, verdict=verdict, summary=str(review.get("summary", "")),
                          blocking=sum(1 for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"),
@@ -1010,7 +1011,8 @@ class Scheduler:
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
-            self._transition(task, Status.DONE, f"PR merged: {task.pr}")
+            by_garden = bool(st.get("automerged"))
+            self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}")
             rep.transitions.append(f"{task.id} -> done")
             self._on_merged(task, rep)
             self._cleanup(task)
@@ -1036,7 +1038,11 @@ class Scheduler:
             self._handle_pr_conflict(task, rep)
             return
         if pr.updated_at and pr.updated_at == st.get("pr_updated_at"):
-            return  # nothing new on GitHub since last look
+            # Nothing new on GitHub since last look, so any feedback is already processed:
+            # a stable point to consider merging on the garden's own gates (a check rollup
+            # can flip to green without bumping updated_at, so re-evaluate every poll).
+            self._maybe_automerge(task, pr, rep)
+            return
         st["pr_updated_at"] = pr.updated_at
         since = task.last_dispatched_at
         fb = self.github.feedback_since(slug, number, since)
@@ -1068,6 +1074,8 @@ class Scheduler:
                 elif check_failures(results):
                     ci_note += "\n\n" + to_feedback(results, "CI check")
         if not fb and not ci_note:
+            # Feedback processed, nothing actionable: another stable point to consider merging.
+            self._maybe_automerge(task, pr, rep)
             return
         pending = fb.to_markdown() + ("\n\n" + ci_note if ci_note else "")
         st["pending_feedback"] = pending
@@ -1090,6 +1098,92 @@ class Scheduler:
             return
         self._transition(task, Status.CHANGES_REQUESTED, note)
         rep.transitions.append(f"{task.id} -> changes_requested")
+
+    # ---- automerge ---------------------------------------------------------
+    def _github_cfg(self, key: str, product: str, default: Any) -> Any:
+        """A `github.<key>` setting, with a per-product override under `products.<product>.<key>`."""
+        prod = self.cfg.product(product)
+        if key in prod:
+            return prod[key]
+        return self.cfg.get(f"github.{key}", default)
+
+    def _automerge_enabled(self, task: Task) -> bool:
+        if task.extra.get("automerge") is False:
+            return False  # a task-level opt-out
+        return bool(self._github_cfg("automerge", task.product, False))
+
+    def _automerge_gate(self, task: Task, pr: PRInfo) -> tuple[bool, str]:
+        """Whether every gate the loop already has is green, and the first reason it is not.
+        The task must be `in_review` before this is called (a draft, a stall or a pending
+        revise round have already taken it elsewhere)."""
+        st = self.state.get(task.id)
+        tiers = [str(x) for x in (self._github_cfg("automerge_tiers", task.product, ["easy", "medium"]) or [])]
+        if task.difficulty not in tiers:
+            return False, f"tier `{task.difficulty}` is not in automerge_tiers ({', '.join(tiers) or 'none'})"
+        rev = st.get("last_review") or {}
+        if str(rev.get("verdict") or "") != "approve":
+            return False, f"the automated review verdict is {rev.get('verdict') or 'not in yet'}, not approve"
+        min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
+        if int(st.get("review_rounds", 0)) < min_rounds:
+            return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
+        if str(st.get("pending_feedback") or "").strip():
+            return False, "feedback is pending a revise run"
+        if st.get("review_run") or any(r.task_id == task.id for r in self.active_runs()):
+            return False, "a run is in flight"
+        if pr.checks not in ("SUCCESS", ""):
+            return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+        if pr.mergeable != "MERGEABLE":
+            return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
+        if pr.review_decision == "CHANGES_REQUESTED":
+            return False, "a human review requests changes"
+        budget = self.budget_for(task)
+        if budget and self.spent_for(task.key) >= budget:
+            return False, f"phase {task.key} is over budget"
+        return True, ""
+
+    def _maybe_automerge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
+        """When automerge is on and every gate is green, merge the PR the garden opened.
+        The next poll sees it MERGED and moves the task to `done`, restacking children."""
+        if task.status != Status.IN_REVIEW:
+            return  # drafts, changes_requested, etc. are not the garden's to merge
+        st = self.state.get(task.id)
+        if not self._automerge_enabled(task):
+            st.pop("automerge_blocked", None)
+            return
+        ok, reason = self._automerge_gate(task, pr)
+        if not ok:
+            if st.get("automerge_blocked") != reason:
+                st["automerge_blocked"] = reason
+                self.log(f"{task.id}: automerge held: {reason}")
+            return
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not slug or not number:
+            return
+        method = str(self._github_cfg("automerge_method", task.product, "squash"))
+        review_run = str(st.get("last_review_run") or "")
+        try:
+            self.github.merge_pr(slug, number, method=method, delete_branch=True)
+        except GitHubError as e:
+            st["automerge_blocked"] = f"merge call failed: {e}"
+            self.log(f"{task.id}: automerge call failed: {e}")
+            rep.errors.append(f"{task.id}: automerge failed: {e}")
+            return
+        rounds = int(st.get("review_rounds", 0))
+        st.pop("automerge_blocked", None)
+        st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
+                            "verdict": "approve", "review_rounds": rounds}
+        self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,
+                         verdict="approve", review_rounds=rounds)
+        self.log(f"{task.id}: merged by the garden ({method}); all gates green")
+        try:
+            body = ("Merged by the garden: every gate is green — automated review approved"
+                    + (f" (run `{review_run}`)" if review_run else "")
+                    + f", checks passing, mergeable, {rounds} review round(s), under budget.")
+            self.github.comment(slug, number, mark_garden_comment(body, review_run))
+        except GitHubError as e:
+            self.log(f"{task.id}: could not post automerge comment: {e}")
+        rep.transitions.append(f"{task.id} automerged")
 
     def _cleanup(self, task: Task) -> None:
         try:
