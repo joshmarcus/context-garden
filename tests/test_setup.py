@@ -114,6 +114,49 @@ def test_setup_failure_fails_the_run(garden, fake_github, monkeypatch):
     assert "could-not-prepare" in (run.path / "setup.log").read_text()
 
 
+def test_setup_failure_marks_run_failed_not_leaked(garden, fake_github, monkeypatch):
+    """A setup failure must mark its run failed, not leave it 'running' forever: a leaked run
+    counts against active() and would permanently consume a max_parallel slot."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    store = _garden_with_setup(garden, {"command": "exit 5"})
+    sc = Scheduler(store, github=fake_github, log=print)
+    sc.tick()
+    run = sc.runs.latest("DM-001")
+    assert run.status == "failed" and run.error
+    assert sc.runs.active() == []  # slot freed, not leaked
+
+
+def test_pre_pr_checks_prepare_the_local_worktree(garden, fake_github):
+    """The pre-PR checks run setup in the worktree first, so a remote run whose branch was just
+    materialised locally (setup only ran on the host) still finds its prepared artifacts."""
+    from garden import gitops
+
+    store = _garden_with_setup(garden, {
+        "command": "echo ready > .prepared",  # a fresh worktree has no .prepared until setup runs
+        "test": "cat .prepared",
+    })
+    sc = Scheduler(store, github=fake_github, log=print)
+    t = sc.store.task("DM-001")
+    branch, base = "garden/dm-001-first-task", "main"
+    wt = gitops.prepare_worktree(sc.repo_for(t), sc.worktree_for(t), branch, base)
+    results = sc._pre_pr_checks(t, wt, branch, base)
+    assert [(r["name"], r["status"]) for r in results] == [("test", "pass")]
+
+
+def test_pre_pr_checks_report_setup_failure(garden, fake_github):
+    from garden import gitops
+
+    store = _garden_with_setup(garden, {"command": "echo boom >&2; exit 3", "test": "true"})
+    sc = Scheduler(store, github=fake_github, log=print)
+    t = sc.store.task("DM-001")
+    branch, base = "garden/dm-001-first-task", "main"
+    wt = gitops.prepare_worktree(sc.repo_for(t), sc.worktree_for(t), branch, base)
+    results = sc._pre_pr_checks(t, wt, branch, base)
+    assert results == [{"name": "setup", "status": "fail", "summary": "setup command failed",
+                        "details": results[0]["details"]}]
+    assert "setup command failed" in results[0]["details"]
+
+
 def test_pre_pr_defaults_to_test_and_lint(garden, fake_github):
     store = _garden_with_setup(garden, {
         "test": "make test", "lint": "make lint", "env": {"WIDGET_HOME": "/opt/widget"},
@@ -133,6 +176,30 @@ def test_pre_pr_explicit_checks_still_win_and_get_env(garden, fake_github):
     specs = sc._pre_pr_specs(sc.store.task("DM-001"))
     assert [s["name"] for s in specs] == ["custom"]  # explicit list is not replaced by test/lint
     assert specs[0]["env"] == {"WIDGET_HOME": "/opt/widget"}
+
+
+def test_check_cli_pre_pr_uses_the_resolver(garden):
+    """`garden check ID` for pre_pr goes through the same resolver as the automated gate:
+    it falls back to setup.test/setup.lint (no more 'no checks configured') and merges setup.env,
+    so the manual command agrees with what the scheduler runs."""
+    import os
+
+    from typer.testing import CliRunner
+
+    from garden.cli import app
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["products"]["demo"]["setup"] = {"test": "true", "lint": "true"}  # no explicit checks.pre_pr
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    cwd = os.getcwd()
+    os.chdir(garden)
+    try:
+        r = CliRunner().invoke(app, ["check", "DM-001"])
+    finally:
+        os.chdir(cwd)
+    assert r.exit_code == 0, r.output
+    assert "no checks configured" not in r.output
+    assert "test" in r.output and "lint" in r.output
 
 
 def test_brief_states_test_and_lint_and_never_names_a_venv(garden):
@@ -162,6 +229,22 @@ def test_ssh_runner_runs_setup_on_host(garden, fake_github):
     assert "export WIDGET_HOME=/opt/widget" in remote_sh
     assert "GARDEN_SETUP_CMD='npm ci'" in remote_sh
     assert "GARDEN_SETUP_MARKER=" in remote_sh
+
+
+def test_ssh_setup_honors_timeout(garden, fake_github):
+    """The remote setup command is wrapped with the configured setup timeout (when `timeout` is
+    on the host), not left to run until the much larger whole-run limit."""
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["products"]["demo"]["setup"] = {"command": "npm ci", "timeout_seconds": 123}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    t = sc.store.task("DM-001")
+    t.runner = "ssh"
+    sc.store.save(t)
+    sc.tick()
+    remote_sh = (sc.runs.latest("DM-001").path / "remote.sh").read_text()
+    assert "GARDEN_SETUP_TIMEOUT=123" in remote_sh
+    assert 'timeout $GARDEN_SETUP_TIMEOUT sh -c' in remote_sh
 
 
 def test_ssh_host_setup_override(garden, fake_github):
