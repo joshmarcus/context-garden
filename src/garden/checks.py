@@ -28,11 +28,16 @@ Both kinds of check run with `GARDEN_<KEY>` env vars for every key in `ctx` (e.g
 `GARDEN_TASK_ID`, `GARDEN_BRANCH`), plus `GARDEN_EXEC_ROOT` set to the live garden's own
 root — use `$GARDEN_EXEC_ROOT/.venv/bin/python` from a check that needs the garden's tools
 rather than the product's. `GARDEN_ROOT` is always overridden to a non-existent sentinel:
-a check command must not act on the live garden (see `garden.config.find_root`).
+a check command must not act on the live garden (see `garden.config.find_root`). For a
+`python:` check this is enforced by overriding `GARDEN_ROOT` in the *process* environment
+for the duration of the call (checks run sequentially, not concurrently), so any subprocess
+your callable launches inherits the guard even if it builds its own env from `os.environ`
+without going through `ctx`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -46,13 +51,30 @@ from .config import no_live_garden_root
 MAX_DETAILS = 4000
 
 
+@contextlib.contextmanager
+def _guarded_process_env(cwd: Path | None):
+    """Force GARDEN_ROOT to a non-existent sentinel in the process environment for the
+    duration of a `python:` check, then restore it. Guards custom callables that spawn
+    subprocesses without routing through `ctx`'s GARDEN_ROOT override."""
+    prev = os.environ.get("GARDEN_ROOT")
+    os.environ["GARDEN_ROOT"] = no_live_garden_root(cwd or Path.cwd())
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("GARDEN_ROOT", None)
+        else:
+            os.environ["GARDEN_ROOT"] = prev
+
+
 def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600) -> dict[str, Any]:
     name = str(spec.get("name") or spec.get("command") or spec.get("python") or "check")
     try:
         if spec.get("python"):
             mod, _, fn = str(spec["python"]).partition(":")
             func = getattr(importlib.import_module(mod), fn or "check")
-            out = func(ctx, spec) or {}
+            with _guarded_process_env(cwd):
+                out = func(ctx, spec) or {}
             if not isinstance(out, dict):
                 raise TypeError("python check must return a dict")
             out.setdefault("name", name)

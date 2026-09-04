@@ -17,6 +17,16 @@ def _make_garden(path: Path) -> Path:
     return path
 
 
+def _probe_garden_root_env(ctx, spec):
+    """A custom `python:` check that spawns a subprocess without building its own env,
+    used by test_run_check_guards_custom_python_checks_too below."""
+    proc = subprocess.run(
+        ["python3", "-c", "import os; print(os.environ.get('GARDEN_ROOT', ''))"],
+        capture_output=True, text=True, check=False,
+    )
+    return {"status": "pass", "summary": proc.stdout.strip(), "details": ""}
+
+
 def test_find_root_normal(tmp_path):
     root = _make_garden(tmp_path / "g")
     sub = root / "some" / "sub"
@@ -135,3 +145,24 @@ def test_run_check_forces_garden_root_sentinel(sched, tmp_path):
     assert garden_exec_root == str(sched.store.root)
     assert garden_root != str(sched.store.root)
     assert not (Path(garden_root) / "garden.yaml").exists()
+
+
+def test_run_check_guards_custom_python_checks_too(sched, tmp_path, monkeypatch):
+    """A custom `python:` callable that spawns a subprocess without building its own env
+    must still see the GARDEN_ROOT sentinel, not the scheduler's own environment —
+    CG-082 review feedback: guard every python check, not only the built-in helper."""
+    import os
+
+    from garden.checks import run_check
+
+    monkeypatch.setenv("GARDEN_ROOT", str(sched.store.root))  # simulate an unguarded caller
+    ctx = sched.check_ctx(sched.store.task("DM-001"), "b", "main")
+    result = run_check(
+        {"name": "custom-probe", "python": "tests.test_isolation:_probe_garden_root_env"}, ctx, cwd=tmp_path
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"] != str(sched.store.root)
+    assert not (Path(result["summary"]) / "garden.yaml").exists()
+    # the guard is scoped to the call: the caller's own env is restored afterwards
+    assert os.environ["GARDEN_ROOT"] == str(sched.store.root)
