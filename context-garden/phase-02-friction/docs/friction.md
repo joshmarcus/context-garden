@@ -108,5 +108,13 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   the description should be judged on the description, not the diff. Meanwhile the PR on
   GitHub is mergeable, CI is green, and a merge is still noticed from `changes_requested`
   because the poll checks for merged before it returns early.
-- **Merge and done.** pending.
-- **Cost.** pending (`garden usage CG-012`).
+- **Merge and done.** The person merged on GitHub at 17:02; the next poll saw it, moved the
+  task from `changes_requested` straight to `done`, removed the worktree and cleared the
+  stall flag with it. So the false stall cost nothing but confusion. Approve to merge took
+  24 minutes of wall clock and needed two human touches (the send-back and the merge).
+- **Cost.** `garden usage CG-012`: 7 runs, 17.1 minutes, $1.46. Work $0.86 (attempt 1
+  $0.58 wasted on the turn cap, attempt 2 $0.28), revise $0.46 over three rounds (lint,
+  triage note, scar tissue), review $0.14 over two rounds. Fresh input tokens 1,207; cache
+  reads 7.3M; output 61k. Everything ran on haiku. The lint round and the scar-tissue round,
+  $0.27 plus a review, were the garden's own doing: the worker's false claim slipped past
+  it, and the two prompts disagree.
