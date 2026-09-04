@@ -127,6 +127,38 @@ def test_no_dirty_keys_skips_write(tmp_path):
     assert not path.exists()
 
 
+def test_save_clears_dirty_keys(tmp_path):
+    """After a successful save(), previously-dirty keys are no longer dirty."""
+    path = tmp_path / "state.json"
+    s = State(path)
+    s.get("CG-001")["pr_number"] = 42
+    s.save()
+    assert not s.get("CG-001").dirty
+
+
+def test_second_save_does_not_reclobber_concurrent_update(tmp_path):
+    """A second save() from the same State must not re-write a key that a concurrent
+    writer changed in between, since it should no longer be considered dirty."""
+    path = tmp_path / "state.json"
+
+    state_a = State(path)
+    state_a.get("CG-001")["pr_number"] = 1
+    state_a.save()  # pr_number's dirty flag must clear here
+
+    state_b = State(path)
+    state_b.get("CG-001")["pr_number"] = 2
+    state_b.save()
+
+    # state_a saves again for an unrelated reason; it must not re-write the stale
+    # in-memory pr_number=1 over state_b's pr_number=2.
+    state_a.get("CG-001")["pending_feedback"] = "fix this"
+    state_a.save()
+
+    final = State(path)
+    assert final.get("CG-001")["pr_number"] == 2
+    assert final.get("CG-001")["pending_feedback"] == "fix this"
+
+
 def test_read_only_access_does_not_write(tmp_path):
     """Reading a key via .get() without writing doesn't mark it dirty."""
     path = tmp_path / "state.json"

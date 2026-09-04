@@ -178,6 +178,11 @@ class State:
             tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))
             os.replace(tmp_path, self.path)
+            # Clear dirty keys now that they are safely on disk, so a later save() only
+            # re-writes keys touched since this write and can't clobber a concurrent
+            # writer's newer update to a key we already flushed.
+            for dirty_keys in dirty_by_tid.values():
+                dirty_keys.clear()
 
 
 class Scheduler:
