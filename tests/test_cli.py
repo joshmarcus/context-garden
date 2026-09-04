@@ -51,6 +51,41 @@ def test_plan_import(garden, tmp_path):
     assert r.exit_code == 0 and "Imported" in r.output
 
 
+def test_friction(garden):
+    from garden.runs import RunStore
+
+    rs = RunStore(garden / ".garden")
+    r0 = rs.new_run("DM-001", "manual", "work")
+    r0.status = "done"
+    r0.result = {
+        "status": "done",
+        "pr_body": "## Summary\n\nDid the thing.\n\n## Friction\n\nNo docs for the X module.\n\n## Notes\n\nAll good.",
+    }
+    r0.save()
+
+    r = run(garden, "friction", "demo/p1")
+    assert r.exit_code == 0, r.output
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    assert doc.exists()
+    text = doc.read_text()
+    assert "DM-001" in text
+    assert "No docs for the X module." in text
+
+    # Running again produces identical output (idempotent)
+    r2 = run(garden, "friction", "demo/p1")
+    assert r2.exit_code == 0
+    assert doc.read_text() == text
+
+
+def test_friction_no_github_fallback_needed(garden):
+    """Tasks without runs produce an empty friction file."""
+    r = run(garden, "friction", "demo/p1")
+    assert r.exit_code == 0, r.output
+    doc = garden / "demo" / "p1" / "docs" / "friction.md"
+    assert doc.exists()
+    assert "No friction reported yet." in doc.read_text()
+
+
 def test_init_scaffold(tmp_path):
     r = runner.invoke(app, ["init", str(tmp_path / "g"), "--name", "x"])
     assert r.exit_code == 0 and (tmp_path / "g" / "garden.yaml").exists()

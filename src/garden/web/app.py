@@ -211,12 +211,16 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             raise HTTPException(404) from None
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
-        runs = RunStore(s.config.garden_dir).runs_for(t.id)
+        rs = RunStore(s.config.garden_dir)
+        runs = rs.runs_for(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
         body, log = _split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
-        usage = RunStore(s.config.garden_dir).usage_for(t.id)
+        usage = rs.usage_for(t.id)
+        from ..friction import extract_friction, pr_body_for
         from ..personas import DEFAULT_PERSONAS, list_personas
+
+        friction_text = extract_friction(pr_body_for(t, rs))
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
@@ -225,6 +229,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
             discovered=[x for x in tasks.values() if x.discovered_from == t.id],
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
+            friction_text=friction_text,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

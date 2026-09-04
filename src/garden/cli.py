@@ -909,6 +909,42 @@ def prs(target: str | None = typer.Argument(None, help="product/phase (default: 
 
 
 @app.command()
+def friction(target: str = typer.Argument(..., help="product/phase")):
+    """Collect ## Friction sections from task PR bodies and write <phase>/docs/friction.md."""
+    from .friction import harvest, write_friction_doc
+    from .github import GitHub
+    from .runs import RunStore
+
+    store = _store()
+    product, phase_name = _split_target(target)
+    try:
+        ph = store.phase(product, phase_name)
+    except KeyError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    rs = RunStore(store.config.garden_dir)
+    cfg = store.config
+
+    github_slug = str(cfg.product(product).get("github") or "")
+    if not github_slug:
+        try:
+            from .gitops import slug as _git_slug
+            repo = cfg.product_repo(product)
+            github_slug = _git_slug(repo) or ""
+        except Exception:
+            github_slug = ""
+
+    gh = GitHub(use_gh=bool(cfg.get("github.use_gh", True))) if github_slug else None
+
+    entries = harvest(ph, rs, github=gh, slug=github_slug or None)
+    doc = ph.path / "docs" / "friction.md"
+    write_friction_doc(doc, entries)
+    n = len(entries)
+    console.print(f"wrote {doc} ({n} task{'s' if n != 1 else ''} with friction)")
+
+
+@app.command()
 def usage(
     target: str | None = typer.Argument(None, help="task id, product/phase, or nothing for everything"),
     by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
