@@ -66,6 +66,35 @@ def test_accept_cancels_named_task_with_provenance(sched, fake_github, monkeypat
     assert [d["kind"] for d in remaining] == ["cancel"]
 
 
+def test_accepting_a_duplicate_repoints_its_dependents(sched, fake_github, monkeypatch):
+    """DM-002 is a duplicate of DM-001; a task that depends on DM-002 must move onto DM-001 when
+    the duplicate is cancelled, or it would sit blocked forever behind a cancelled dep."""
+    from garden.graph import blockers
+
+    sched.store.create_task("demo", "p1", "Depends on the duplicate", "## Goal\n\nLater.\n",
+                            status="ready", task_id="DM-004", depends_on=["DM-002"])
+    _reap_with_decisions(sched, monkeypatch)
+    did = next(d["id"] for d in sched.pending_decisions() if d["kind"] == "duplicate")
+
+    sched.resolve_decision(did, accept=True)
+    sched.store.invalidate()
+    dm004 = sched.store.task("DM-004")
+    assert dm004.depends_on == ["DM-001"]  # repointed off the now-cancelled DM-002
+    assert "repointed" in dm004.body
+    assert "DM-002" not in blockers(dm004, sched.store.tasks())
+
+
+def test_rejecting_a_duplicate_leaves_dependents_untouched(sched, fake_github, monkeypatch):
+    sched.store.create_task("demo", "p1", "Depends on the duplicate", "## Goal\n\nLater.\n",
+                            status="ready", task_id="DM-004", depends_on=["DM-002"])
+    _reap_with_decisions(sched, monkeypatch)
+    did = next(d["id"] for d in sched.pending_decisions() if d["kind"] == "duplicate")
+
+    sched.resolve_decision(did, accept=False)
+    sched.store.invalidate()
+    assert sched.store.task("DM-004").depends_on == ["DM-002"]  # nothing repointed
+
+
 def test_reject_keeps_task_and_logs_disagreement(sched, fake_github, monkeypatch):
     _reap_with_decisions(sched, monkeypatch)
     did = next(d["id"] for d in sched.pending_decisions() if d["kind"] == "cancel")

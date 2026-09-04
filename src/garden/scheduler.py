@@ -895,13 +895,19 @@ class Scheduler:
             raise KeyError(decision_id)
         target, kind = str(d.get("target", "")), str(d.get("kind", ""))
         proposer, run_id, reason = str(d.get("proposed_by", "")), str(d.get("run", "")), str(d.get("reason", ""))
+        of = str(d.get("of") or "")
         tgt = self.store.tasks().get(target)
         if accept:
             if tgt is not None and not tgt.status.terminal:
                 prov = f"proposed by {proposer}"
-                if kind == "duplicate" and d.get("of"):
-                    prov = f"duplicate of {d['of']}, {prov}"
+                if kind == "duplicate" and of:
+                    prov = f"duplicate of {of}, {prov}"
                 note = f"cancelled by decision: {prov} (run {run_id})" + (f"; reason: {reason}" if reason else "")
+                # A duplicate names the task to keep (`of`); move any dependents onto it before
+                # cancelling, so they are not left permanently blocked (blockers() treats a
+                # cancelled dep as unsatisfied, only DONE as satisfied).
+                if kind == "duplicate" and of:
+                    self._repoint_dependents(target, of)
                 self.cancel(tgt, note)
         else:
             if tgt is not None:
@@ -913,6 +919,28 @@ class Scheduler:
         decisions.pop(decision_id, None)
         self.state.save()
         return d
+
+    def _repoint_dependents(self, old: str, new: str) -> None:
+        """Move every task that depends on `old` onto `new` (the retained duplicate), dropping
+        the swap if it would self-reference or duplicate an existing dep. Called before a
+        duplicate is cancelled so its dependents keep an unmet-until-merged edge to the task
+        that is actually being done, instead of a cancelled one that never clears."""
+        if not new or old == new:
+            return
+        tasks = self.store.tasks()
+        if new not in tasks:
+            return
+        for t in tasks.values():
+            if old not in t.depends_on or t.id == new:
+                continue
+            deps: list[str] = []
+            for dep in t.depends_on:
+                dep = new if dep == old else dep
+                if dep != t.id and dep not in deps:
+                    deps.append(dep)
+            t.depends_on = deps
+            t.log(f"dependency {old} repointed to {new} ({old} cancelled as a duplicate of {new})")
+            self.store.save(t)
 
     # ---- stall detection ---------------------------------------------------
     def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
