@@ -175,6 +175,10 @@ class Scheduler:
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
 
+    def _pr_status(self, task: Task) -> Status:
+        """Where an open PR sits: awaiting a human's triage while it is a draft, else in review."""
+        return Status.AWAITING_TRIAGE if self.state.get(task.id).get("pr_draft") else Status.IN_REVIEW
+
     def _pr_number(self, task: Task) -> int | None:
         st = self.state.get(task.id)
         if st.get("pr_number"):
@@ -216,6 +220,7 @@ class Scheduler:
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         self.store.invalidate()
+        self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         try:
             self.reap_aux(rep)
         except Exception as e:  # noqa: BLE001
@@ -229,7 +234,7 @@ class Scheduler:
                     continue
                 if t.status == Status.RUNNING and self.reap(t, rep):
                     rep.reaped.append(t.id)
-                elif t.status in (Status.IN_REVIEW, Status.CHANGES_REQUESTED) and self.reap_review(t, rep):
+                elif t.status.pr_open and self.reap_review(t, rep):
                     rep.reaped.append(t.id)
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 rep.errors.append(f"{t.id}: reap failed: {e}")
@@ -237,7 +242,7 @@ class Scheduler:
         self.store.invalidate()
         tasks = self.store.tasks()
         for t in list(tasks.values()):
-            if t.status in (Status.IN_REVIEW, Status.CHANGES_REQUESTED) and t.pr:
+            if t.status.pr_open and t.pr:
                 try:
                     self.poll(t, rep)
                     rep.polled.append(t.id)
@@ -437,7 +442,7 @@ class Scheduler:
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
             self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff")
-        if st.pop("restack_pending", False) and task.status == Status.IN_REVIEW:
+        if st.pop("restack_pending", False) and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             self._restack(task, rep)
 
     def _open_or_update_pr(self, task: Task, run: Run, branch: str, base: str, result: dict[str, Any],
@@ -457,14 +462,16 @@ class Scheduler:
                 st["pr_number"] = existing.number
                 body = str(result.get("pr_body") or "")
                 title = str(result.get("pr_title") or "")
+                st["pr_draft"] = bool(existing.is_draft)
                 if run.mode in ("revise", "resume"):
                     try:
                         self.github.update_pr(slug, existing.number, title=title, body=body)
                         self.github.comment(slug, existing.number, f"Pushed a revision round: {summary}\n\n_garden run {run.run_id}_")
                     except GitHubError as e:
                         self.log(f"{task.id}: could not update PR: {e}")
-                self._transition(task, Status.IN_REVIEW, f"pushed revision to {existing.url}: {summary}{cost}")
-                rep.transitions.append(f"{task.id} -> in_review (revised)")
+                nxt = self._pr_status(task)
+                self._transition(task, nxt, f"pushed revision to {existing.url}: {summary}{cost}")
+                rep.transitions.append(f"{task.id} -> {nxt.value} (revised)")
             else:
                 title = str(result.get("pr_title") or f"{task.id}: {task.title}")
                 body = str(result.get("pr_body") or summary or task.body)
@@ -482,9 +489,11 @@ class Scheduler:
                 st["pr_number"] = pr.number
                 st["revisions"] = 0
                 st["review_rounds"] = 0
-                self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""))
-                self._transition(task, Status.IN_REVIEW, f"opened {pr.url} (base {base}): {summary}{cost}")
-                rep.transitions.append(f"{task.id} -> in_review ({pr.url})")
+                st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
+                self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
+                nxt = self._pr_status(task)
+                self._transition(task, nxt, f"opened {'draft ' if st['pr_draft'] else ''}{pr.url} (base {base}): {summary}{cost}")
+                rep.transitions.append(f"{task.id} -> {nxt.value} ({pr.url})")
         except GitHubError as e:
             self._transition(task, Status.IN_REVIEW, f"branch pushed but PR failed ({e}); open it by hand and run `garden pr {task.id} <url>`{cost}")
             rep.transitions.append(f"{task.id} -> in_review (PR failed)")
@@ -663,7 +672,7 @@ class Scheduler:
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         st["last_findings"] = keys
-        if verdict == "request_changes" and task.status == Status.IN_REVIEW:
+        if verdict == "request_changes" and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             if repeated and bool(self.cfg.get("stall.enabled", True)):
                 self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                 return True
@@ -707,6 +716,15 @@ class Scheduler:
             rep.transitions.append(f"{task.id} -> failed (PR closed)")
             self._on_parent_closed(task, rep)
             return
+        was_draft = bool(st.get("pr_draft"))
+        st["pr_draft"] = bool(pr.is_draft)
+        if task.status == Status.AWAITING_TRIAGE and not pr.is_draft:
+            self.events.emit("triaged", task.id, pr=task.pr, by="github")
+            self._transition(task, Status.IN_REVIEW, "marked ready for review on GitHub; triage done")
+            rep.transitions.append(f"{task.id} -> in_review (triaged)")
+        elif task.status == Status.IN_REVIEW and pr.is_draft and not was_draft:
+            self._transition(task, Status.AWAITING_TRIAGE, "converted back to draft on GitHub")
+            rep.transitions.append(f"{task.id} -> awaiting_triage")
         if task.status == Status.CHANGES_REQUESTED:
             return  # already waiting for a revise slot (or a human)
         if pr.updated_at and pr.updated_at == st.get("pr_updated_at"):
@@ -825,7 +843,7 @@ class Scheduler:
         )
         st["force_push"] = True
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
-        if child.status in (Status.IN_REVIEW, Status.CHANGES_REQUESTED):
+        if child.status.pr_open:
             self._transition(child, Status.CHANGES_REQUESTED, f"parent {parent_id} merged; rebase onto {new_base} conflicts ({', '.join(files)}); revise run will resolve")
             rep.transitions.append(f"{child.id} -> changes_requested (rebase)")
         else:
@@ -1172,9 +1190,10 @@ class Scheduler:
         st["review_rounds"] = int(self.cfg.get("review.max_rounds", 2))  # the comparison stands in for the review pass
         self.events.emit("trial_done", task.id, winner=winner["label"],
                          scores={c["label"]: c.get("score") for c in trial["contenders"]})
-        self._transition(task, Status.IN_REVIEW, f"trial won by {winner['label']} (scores: " +
+        st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True)) and bool(winner.get("pr"))
+        self._transition(task, self._pr_status(task), f"trial won by {winner['label']} (scores: " +
                          ", ".join(f"{c['label']}={c.get('score') if c.get('score') is not None else '–'}" for c in trial["contenders"]) + f"): {task.pr or 'no PR'}")
-        rep.transitions.append(f"{task.id} -> in_review (trial winner {winner['label']})")
+        rep.transitions.append(f"{task.id} -> {task.status.value} (trial winner {winner['label']})")
 
     # ---- persona reviews ---------------------------------------------------
     def phase_prs(self, phase: Phase) -> list[dict[str, Any]]:
@@ -1273,11 +1292,41 @@ class Scheduler:
         self.store.save(task)
         rep.transitions.append(f"{task.id} persona {name}: {rev.get('score', '–')}/10")
         highs = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"]
-        if entry.get("request_changes") and highs and task.status == Status.IN_REVIEW and bool(self.cfg.get("auto_revise", True)):
+        if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.cfg.get("auto_revise", True)):
             st = self.state.get(task.id)
             st["pending_feedback"] = "\n".join(f"- **{name} persona** ({f.get('area', '')}): {f.get('summary', '')} — {f.get('suggestion', '')}" for f in highs)
             self._transition(task, Status.CHANGES_REQUESTED, f"{name} persona review raised {len(highs)} high finding(s)")
             rep.transitions.append(f"{task.id} -> changes_requested (persona {name})")
+
+    # ---- triage: the human's first look at a draft PR ----------------------
+    def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "") -> None:
+        """Record the human's initial review of a draft PR: mark it ready for review, or send
+        it back with feedback (a revise run follows)."""
+        if not task.pr:
+            raise RuntimeError(f"{task.id} has no PR to triage")
+        st = self.state.get(task.id)
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if changes:
+            st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
+            st.pop("needs_human", None)
+            self.events.emit("triaged", task.id, pr=task.pr, by="human", decision="changes", note=changes[:200])
+            self._transition(task, Status.CHANGES_REQUESTED, f"triage: changes requested by hand: {changes[:120]}")
+            self.state.save()
+            return
+        if ready:
+            if st.get("pr_draft") and slug and number and self.github.available:
+                try:
+                    self.github.mark_ready(slug, number)
+                except GitHubError as e:
+                    self.log(f"{task.id}: could not mark PR ready on GitHub: {e}")
+            st["pr_draft"] = False
+            st.pop("needs_human", None)
+            self.events.emit("triaged", task.id, pr=task.pr, by="human", decision="ready", note=note[:200])
+            self._transition(task, Status.IN_REVIEW, "triage: marked ready for review" + (f" ({note[:100]})" if note else ""))
+            self.state.save()
+            return
+        raise RuntimeError("triage needs --ready or --changes")
 
     # ---- manual controls ---------------------------------------------------
     def cancel(self, task: Task, note: str = "cancelled") -> None:
@@ -1292,7 +1341,7 @@ class Scheduler:
     def retry(self, task: Task) -> None:
         st = self.state.get(task.id)
         st.pop("needs_human", None)
-        if task.pr and task.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.FAILED):
+        if task.pr and task.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED):
             # keep the PR; let the revise loop continue
             if not st.get("pending_feedback"):
                 st["pending_feedback"] = "- **human**: please re-check the open review comments and CI on this PR and address what is still outstanding."

@@ -10,10 +10,11 @@ def client(garden):
 
 def test_pages_render(garden):
     c = client(garden)
-    for url in ["/", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks"]:
+    for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials"]:
         r = c.get(url)
         assert r.status_code == 200, url
-    assert "DM-002" in c.get("/").text
+    assert "DM-002" in c.get("/board").text
+    assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
 
 
@@ -58,3 +59,34 @@ def test_trials_page_and_persona_form(garden):
     assert r.status_code == 200 and "No trials yet" in r.text
     assert "Persona review of the body of work" in c.get("/phases/demo/p1").text
     assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200
+
+
+def test_inbox_triage_flow(garden, monkeypatch):
+    import yaml
+
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub, wait_for_runs
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["github"] = {"draft_pr": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    store = Store(garden)
+    gh = FakeGitHub()
+    sched = Scheduler(store, github=gh)
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    c = TestClient(create_app(store, watch=False))
+    home = c.get("/").text
+    assert "Triage a draft PR" in home and "DM-001" in home and "Ready for review" in home
+    r = c.post("/tasks/DM-001/triage-changes", data={"note": "tighten the tests"}, headers={"referer": "http://t/"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].endswith("/")
+    assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "changes_requested"
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    assert "awaiting_triage" in next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"]
+    c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
+    assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "in_review"
+    assert "Review and merge" in c.get("/").text

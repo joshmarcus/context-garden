@@ -30,7 +30,8 @@ class Status(str, Enum):
     DRAFT = "draft"  # planner output; needs human approval
     READY = "ready"  # approved; dispatch when deps are done and a slot is free
     RUNNING = "running"  # a worker is on it
-    IN_REVIEW = "in_review"  # PR open, waiting on humans / CI
+    AWAITING_TRIAGE = "awaiting_triage"  # draft PR open; a human's first look decides if it is ready for review
+    IN_REVIEW = "in_review"  # PR marked ready, waiting on human review / CI
     CHANGES_REQUESTED = "changes_requested"  # review feedback waiting for a revise run
     WAITING_HUMAN = "waiting_human"  # worker asked a question; resumes when answered
     DONE = "done"  # PR merged (or manually closed out)
@@ -43,12 +44,16 @@ class Status(str, Enum):
 
     @property
     def active(self) -> bool:
-        return self in (Status.RUNNING, Status.IN_REVIEW, Status.CHANGES_REQUESTED, Status.WAITING_HUMAN)
+        return self in (Status.RUNNING, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.CHANGES_REQUESTED, Status.WAITING_HUMAN)
 
     @property
     def has_branch(self) -> bool:
         """The task's branch is pushed and a PR is open (stackable)."""
-        return self in (Status.IN_REVIEW, Status.CHANGES_REQUESTED)
+        return self in (Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.CHANGES_REQUESTED)
+
+    @property
+    def pr_open(self) -> bool:
+        return self in (Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.CHANGES_REQUESTED)
 
 
 STATUS_ORDER = [s.value for s in Status]

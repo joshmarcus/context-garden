@@ -45,7 +45,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "github": {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
-        "draft_pr": False,
+        "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
     },
     "products": {},

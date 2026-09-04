@@ -7,7 +7,7 @@ YAML frontmatter carries state; the body carries the brief-facing content.
 ---
 id: CG-007
 title: Add an automated review pass
-status: draft            # draft | ready | running | waiting_human | in_review | changes_requested | done | failed | cancelled
+status: draft            # draft | ready | running | waiting_human | awaiting_triage | in_review | changes_requested | done | failed | cancelled
 product: context-garden
 phase: phase-02-friction
 depends_on: [CG-003]     # task ids; `blocked` is derived, never stored
@@ -42,7 +42,9 @@ and the `## Log` section are written by the scheduler; humans edit everything el
 ## Status machine
 
 ```
-draft --approve--> ready --dispatch--> running --worker done, PR opened--> in_review
+draft --approve--> ready --dispatch--> running --worker done, draft PR opened--> awaiting_triage
+awaiting_triage --human: garden triage --ready (or "Ready for review" on GitHub)--> in_review
+awaiting_triage --human: garden triage --changes "..."--> changes_requested
 running --worker asks a question--> waiting_human --garden answer--> running (resume)
 in_review --feedback / CI red--> changes_requested --dispatch(revise)--> running
 in_review --PR merged--> done

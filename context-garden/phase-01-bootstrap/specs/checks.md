@@ -20,7 +20,9 @@ id, product, phase, branch, base, repo slug, PR number, head sha, failed check n
 the worktree path (as `GARDEN_*` env vars for commands). Result:
 `{"status": pass|fail|flaky|error, "summary", "details", "retry_command"?}`.
 
-Built in: `garden.checks:github_actions_failures` uses the `gh` CLI to fetch failed job
-logs for the PR head, keeps only error-looking lines, matches `flaky_patterns`, and with
-`rerun: true` returns a `gh run rerun --failed` command. `garden check ID [--stage ci]`
-runs the checks by hand.
+Built in helpers for writing analysers: `garden.checks:local_command_check` runs a
+command of yours (e.g. a script that fetches the failing job log from your CI system)
+and turns its output into a result using `interesting_lines` (keeps error-looking lines)
+and `classify_log` (`flaky` when `flaky_patterns` match), returning `retry_command` when
+configured. The garden does not depend on GitHub Actions or any particular CI system.
+`garden check ID [--stage ci]` runs the checks by hand.

@@ -53,6 +53,7 @@ def garden(tmp_path: Path) -> Path:
         "max_parallel": 2,
         "timeout_minutes": 1,
         "review": {"enabled": False},
+        "github": {"draft_pr": False},  # most tests exercise the non-draft flow; test_triage covers drafts
         "harnesses": {
             "claude": {"bin": str(FAKE_CLAUDE), "max_turns": 5},
             "codex": {"bin": str(FAKE_CODEX), "models": {"easy": "gpt-mini", "medium": "gpt-std", "hard": "gpt-max"}},
@@ -110,6 +111,7 @@ class FakeGitHub:
         self.comments: list[str] = []
         self.updated: list[dict] = []
         self.closed: list[int] = []
+        self.readied: list[int] = []
         self.feedback: dict[int, Feedback] = {}
         self._n = 100
 
@@ -130,7 +132,7 @@ class FakeGitHub:
 
     def create_pr(self, slug, head, base, title, body, draft=False, reviewers=None):
         self._n += 1
-        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, updated_at="t1")
+        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, updated_at="t1", is_draft=draft)
         self.prs[head] = pr
         self.created.append({"head": head, "base": base, "title": title, "body": body})
         return pr
@@ -140,6 +142,12 @@ class FakeGitHub:
 
     def comment(self, slug, number, body):
         self.comments.append(body)
+
+    def mark_ready(self, slug, number):
+        for pr in self.prs.values():
+            if pr.number == number:
+                pr.is_draft = False
+                self.readied.append(number)
 
     def close_pr(self, slug, number):
         for pr in self.prs.values():

@@ -8,7 +8,7 @@ context files. This repo is also its own first product (`context-garden/`).
 - Install: `uv venv && uv pip install -e ".[dev]"`
 - Tests: `.venv/bin/pytest -q` (uses `tests/fake_claude.py` instead of the real `claude`)
 - Lint: `.venv/bin/ruff check src tests`
-- Try it: `.venv/bin/garden status`, `garden graph`, `garden brief CG-008 --stats`, `garden prs`, `garden digest`, `garden serve`
+- Try it: `.venv/bin/garden status`, `garden graph`, `garden brief CG-008 --stats`, `garden inbox`, `garden prs`, `garden digest`, `garden serve`
 
 ## Design docs
 

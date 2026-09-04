@@ -3,11 +3,11 @@
   <div class="col s-{{ c }}">
     <h3><span>{{ c.replace('_', ' ') }}</span><span class="n">{{ cols[c]|length }}</span></h3>
     {% for row in cols[c] %}{% set t = row.task %}
-      <a class="card s-{{ c }}" href="/tasks/{{ t.id }}">
-        <span class="id">{{ t.id }} · p{{ t.priority }}</span>
-        <span class="t">{{ t.title }}{% if t.discovered_from %}<span class="badge" title="discovered by {{ t.discovered_from }}">discovered</span>{% endif %}{% if row.stack %}<span class="badge" title="stacked on {{ row.stack }}">stack</span>{% endif %}{% if row.needs_human %}<span class="badge" style="color:var(--failed)" title="{{ row.needs_human }}">needs you</span>{% endif %}</span>
+      <a class="card" href="/tasks/{{ t.id }}">
+        <span class="id">{{ t.id }} · p{{ t.priority }} · {{ t.difficulty[:1] }}</span>
+        <span class="t">{{ t.title }}{% if t.discovered_from %}<span class="badge" title="discovered by {{ t.discovered_from }}">found</span>{% endif %}{% if row.stack %}<span class="badge" title="stacked on {{ row.stack }}">stack</span>{% endif %}{% if row.needs_human %}<span class="badge hot" title="{{ row.needs_human }}">needs you</span>{% endif %}</span>
         <span class="meta">{{ t.phase }}{% if row.blockers %} · waits on {{ row.blockers|join(', ') }}{% endif %}{% if t.id in active %} · {{ '%.0f' % active[t.id].elapsed_minutes() }} min{% endif %}{% if t.pr %} · PR{% endif %}</span>
-        {% if row.question %}<span class="meta" style="color:#b0306f">Q: {{ row.question[:120] }}</span>{% endif %}
+        {% if row.question %}<span class="q">Q: {{ row.question[:110] }}</span>{% endif %}
       </a>
     {% endfor %}
   </div>

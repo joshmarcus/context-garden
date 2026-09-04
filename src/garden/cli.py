@@ -51,6 +51,7 @@ STATUS_STYLE = {
     "blocked": "yellow",
     "ready": "cyan",
     "running": "blue",
+    "awaiting_triage": "purple",
     "in_review": "magenta",
     "changes_requested": "dark_orange",
     "waiting_human": "deep_pink3",
@@ -141,8 +142,8 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     tasks = store.tasks()
     table = Table(title=f"garden: {store.config.get('name')}  ({store.root})", show_lines=False)
     table.add_column("product/phase")
-    cols = ["draft", "blocked", "ready", "running", "waiting_human", "in_review", "changes_requested", "done", "failed"]
-    short = {"blocked": "blkd", "running": "run", "waiting_human": "wait", "in_review": "review", "changes_requested": "chg", "failed": "fail"}
+    cols = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
+    short = {"blocked": "blkd", "running": "run", "waiting_human": "wait", "awaiting_triage": "triage", "in_review": "review", "changes_requested": "chg", "failed": "fail"}
     for s in cols:
         table.add_column(short.get(s, s), justify="right")
     table.add_column("spent", justify="right")
@@ -739,6 +740,45 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
             print(r["details"])
         bad += r.get("status") in ("fail", "error")
     raise typer.Exit(1 if bad else 0)
+
+
+@app.command()
+def triage(
+    task_id: str,
+    ready: bool = typer.Option(False, help="The draft PR is good enough for review: mark it ready"),
+    changes: str = typer.Option("", help="Send it back with this feedback (a revise run follows)"),
+    note: str = typer.Option("", help="Optional note for the log"),
+):
+    """Your first look at a draft PR: mark it ready for review, or send it back."""
+    store = _store()
+    t = _task(store, task_id)
+    try:
+        _scheduler(store).triage(t, ready=ready, changes=changes, note=note)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: {'ready for review' if ready else 'sent back for changes'}")
+
+
+@app.command()
+def inbox():
+    """Everything that needs a human, with the command that resolves it."""
+    from .inbox import build_inbox
+
+    store = _store()
+    items = build_inbox(store, _scheduler(store))
+    if not items:
+        console.print("[green]inbox zero[/green] — nothing needs you")
+        return
+    current = ""
+    for it in items:
+        if it["group"] != current:
+            current = it["group"]
+            console.print(f"\n[bold]{it['group_title']}[/bold]")
+        console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
+        for a in it["actions"]:
+            if a.get("command"):
+                console.print(f"           [cyan]{a['command']}[/cyan]")
 
 
 # --------------------------------------------------------------------------- planning

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Inbox{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><h1>What needs you</h1><p>Every item here is a decision only a person can make. Everything else, the garden is doing.</p></div>
+  <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
+</div>
+<div class="kpis">
+  <div class="kpi {{ 'hot' if items else '' }}"><div class="v">{{ items|length }}</div><div class="l">need you</div></div>
+  <div class="kpi"><div class="v">{{ running|length }}</div><div class="l">workers running</div></div>
+  <div class="kpi"><div class="v">{{ prs_open }}</div><div class="l">PRs open</div></div>
+  <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
+</div>
+{% if not items %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
+{% for group, gtitle, gdesc in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
+<section class="group">
+  <header><h2>{{ gtitle }}</h2><p>{{ gdesc }}</p></header>
+  {% for it in gitems %}
+  <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
+    <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}<span class="pill s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span><span class="age">{{ it.age }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %}</span></div>
+    <div class="what">
+      <div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>
+      <div class="why">{{ it.why }}</div>
+      {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
+      {% if it.review %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
+    </div>
+    <div class="do">
+      {% if it.group == 'question' %}
+        <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
+      {% elif it.group == 'triage' %}
+        <form method="post" action="/tasks/{{ it.task }}/triage-ready"><button class="primary">Ready for review</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">Open PR ↗</a>{% endif %}</form>
+        <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
+      {% elif it.group == 'review' %}
+        {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
+        <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
+      {% elif it.group == 'attention' %}
+        <form method="post" action="/tasks/{{ it.task }}/retry"><button class="primary">Continue the loop</button></form>
+        <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel task</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">PR ↗</a>{% endif %}</form>
+      {% elif it.group == 'approve' %}
+        <form method="post" action="/tasks/{{ it.task }}/approve"><button class="primary">Approve</button></form>
+        <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
+      {% elif it.group == 'budget' %}
+        <span class="muted mono">{{ it.actions[0].command }}</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}{% endfor %}
+<div class="grid2" style="margin-top:8px">
+  <div class="panel"><div class="eyebrow">Progress</div><h3>Merged work against scope, all phases</h3>{{ burnup|safe }}</div>
+  <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3>{{ tiers|safe }}<p class="muted" style="margin:8px 0 0;font-size:12px">If a tier's revisions climb, its model is too cheap for the work; see <a href="/events">metrics</a>.</p></div>
+</div>
+{% endblock %}

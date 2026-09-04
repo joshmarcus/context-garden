@@ -39,6 +39,8 @@ class PRInfo:
     updated_at: str = ""
     body: str = ""
     head_sha: str = ""
+    is_draft: bool = False
+    node_id: str = ""
 
 
 @dataclass
@@ -124,7 +126,7 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "list", "-R", slug, "--head", head_branch, "--state", "all",
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt",
+                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
                 "--limit", "5",
             )
             prs = json.loads(out or "[]")
@@ -136,7 +138,7 @@ class GitHub:
                 number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                updated_at=p.get("updatedAt", ""),
+                updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
             )
         owner = slug.split("/")[0]
         prs = self._rest("GET", f"/repos/{slug}/pulls", params={"head": f"{owner}:{head_branch}", "state": "all", "per_page": 5})
@@ -149,7 +151,7 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", slug,
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             rollup = p.get("statusCheckRollup") or []
@@ -158,7 +160,7 @@ class GitHub:
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
                 checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
-                body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
+                body=p.get("body") or "", head_sha=p.get("headRefOid") or "", is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
@@ -193,7 +195,7 @@ class GitHub:
             number=p["number"], url=p["html_url"], state=state, title=p.get("title", ""),
             head=p.get("head", {}).get("ref", ""), base=p.get("base", {}).get("ref", ""),
             mergeable=("MERGEABLE" if p.get("mergeable") else "") if p.get("mergeable") is not None else "",
-            updated_at=p.get("updated_at", ""),
+            updated_at=p.get("updated_at", ""), is_draft=bool(p.get("draft")), node_id=str(p.get("node_id") or ""),
         )
 
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str, draft: bool = False,
@@ -206,7 +208,7 @@ class GitHub:
                 args += ["--reviewer", r]
             url = self._gh(*args, input_=body).strip().splitlines()[-1]
             m = re.search(r"/pull/(\d+)", url)
-            return PRInfo(number=int(m.group(1)) if m else 0, url=url, state="OPEN", title=title, head=head, base=base)
+            return PRInfo(number=int(m.group(1)) if m else 0, url=url, state="OPEN", title=title, head=head, base=base, is_draft=draft)
         p = self._rest("POST", f"/repos/{slug}/pulls", json={"title": title, "body": body, "head": head, "base": base, "draft": draft})
         if reviewers:
             try:
@@ -279,6 +281,20 @@ class GitHub:
         if base:
             payload["base"] = base
         self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json=payload)
+
+    def mark_ready(self, slug: str, number: int) -> None:
+        """Convert a draft PR to ready for review (the human's triage step)."""
+        if self.gh:
+            self._gh("pr", "ready", str(number), "-R", slug)
+            return
+        pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")
+        node = pr.get("node_id")
+        if not node:
+            raise GitHubError("PR has no node id")
+        q = "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+        out = self._rest("POST", "/graphql", json={"query": q, "variables": {"id": node}})
+        if out and out.get("errors"):
+            raise GitHubError(str(out["errors"])[:300])
 
     def close_pr(self, slug: str, number: int) -> None:
         if self.gh:

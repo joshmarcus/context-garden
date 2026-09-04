@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.templating import Jinja2Templates
 
 from ..brief import build_brief
+from ..charts import burnup_svg, tier_bars_svg
 from ..events import EventLog, digest, metrics, parse_since
 from ..graph import (
     blockers,
@@ -27,6 +28,7 @@ from ..graph import (
     svg,
     validate,
 )
+from ..inbox import build_inbox, running_now
 from ..model import STATUS_ORDER, Status, now_iso
 from ..review import review_to_markdown
 from ..runs import RunStore
@@ -35,7 +37,7 @@ from ..store import Store
 from ..trials import TrialLog, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
-COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "in_review", "changes_requested", "done", "failed"]
+COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
 
 
 class Hub:
@@ -93,17 +95,27 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["statuses"] = STATUS_ORDER
 
-    def ctx(request: Request, **kw: Any) -> dict[str, Any]:
+    def ctx(request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
         s = hub.fresh()
+        sched = Scheduler(s, log=lambda m: None)
+        items = build_inbox(s, sched)
         return {
             "request": request,
+            "page": page,
             "garden_name": s.config.get("name"),
             "root": str(s.root),
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "products": s.products(),
+            "inbox_count": len(items),
+            "running": running_now(s),
+            "totals": RunStore(s.config.garden_dir).totals(),
             **kw,
         }
+
+    def tier_rows(s: Store, tasks: dict[str, Any]) -> list[dict[str, Any]]:
+        m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)
+        return [{"tier": t, **m["by_difficulty"][t]} for t in ("easy", "medium", "hard") if m["by_difficulty"].get(t)]
 
     def board_data(product: str | None, phase: str | None) -> dict[str, Any]:
         s = hub.fresh()
@@ -130,8 +142,25 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
 
     # ---- pages -------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
+    @app.get("/inbox", response_class=HTMLResponse, include_in_schema=False)
+    def inbox_page(request: Request):
+        from ..inbox import GROUPS
+
+        s = hub.fresh()
+        sched = Scheduler(s, log=lambda m: None)
+        items = build_inbox(s, sched)
+        tasks = s.tasks()
+        evs = EventLog(s.config.garden_dir / "events.jsonl")
+        open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
+        in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
+        spent_24h = digest(evs.read(since=parse_since("24h")))["cost_usd"]
+        return templates.TemplateResponse(request, "inbox.html", ctx(
+            request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
+            spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope)), tiers=tier_bars_svg(tier_rows(s, tasks))))
+
+    @app.get("/board", response_class=HTMLResponse)
     def board(request: Request, product: str | None = None, phase: str | None = None):
-        return templates.TemplateResponse(request, "board.html", ctx(request, **board_data(product, phase)))
+        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", **board_data(product, phase)))
 
     @app.get("/partials/board", response_class=HTMLResponse)
     def board_partial(request: Request, product: str | None = None, phase: str | None = None):
@@ -150,8 +179,11 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         st = State(s.config.garden_dir / "state.json").get(t.id)
         body, log = _split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
+        from ..personas import DEFAULT_PERSONAS, list_personas
+
         return templates.TemplateResponse(request, "task.html", ctx(
-            request, task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack),
+            request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
+            task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), state=st, body_html=render_md(body),
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
             discovered=[x for x in tasks.values() if x.discovered_from == t.id],
@@ -203,7 +235,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             cp = []
         return templates.TemplateResponse(request, "trellis.html", ctx(
-            request, svg=svg(tasks), mermaid=mermaid(tasks), product=product, phase=phase,
+            request, page="trellis", svg=svg(tasks), mermaid=mermaid(tasks), product=product, phase=phase,
             critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
 
     @app.get("/runs", response_class=HTMLResponse)
@@ -211,14 +243,14 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         s = hub.fresh()
         rs = RunStore(s.config.garden_dir)
         return templates.TemplateResponse(request, "runs.html", ctx(
-            request, runs=list(reversed(rs.all_runs())), totals=rs.totals(), events=list(reversed(hub.events))[:100]))
+            request, page="runs", runs=list(reversed(rs.all_runs())), events=list(reversed(hub.events))[:100]))
 
     @app.get("/trials", response_class=HTMLResponse)
     def trials_page(request: Request):
         s = hub.fresh()
         log = TrialLog(s.config.garden_dir / "trials.jsonl")
         return templates.TemplateResponse(request, "trials.html", ctx(
-            request, rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
+            request, page="trials", rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
 
     @app.get("/events", response_class=HTMLResponse)
     def events_page(request: Request, since: str = "24h"):
@@ -228,8 +260,8 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         d = digest(evs)
         tasks = s.tasks()
         return templates.TemplateResponse(request, "events.html", ctx(
-            request, events=list(reversed(evs))[:300], digest=d, since=since, tasks=tasks,
-            metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)))
+            request, page="events", events=list(reversed(evs))[:300], digest=d, since=since, tasks=tasks,
+            metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
     def phase_page(request: Request, product: str, phase: str):
@@ -251,8 +283,11 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         from ..personas import DEFAULT_PERSONAS, list_personas
 
         reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
+        phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
+        in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
         return templates.TemplateResponse(request, "phase.html", ctx(
-            request, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
+            request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
+            burnup=burnup_svg(phase_events, len(in_scope)), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
             rows=[(t, effective_status(t, tasks, stack), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
@@ -302,6 +337,10 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             elif action == "answer":
                 if t.status == Status.WAITING_HUMAN and note.strip():
                     sched.answer(t, note.strip())
+            elif action == "triage-ready":
+                sched.triage(t, ready=True)
+            elif action == "triage-changes":
+                sched.triage(t, changes=note.strip() or "please revisit; see the PR")
             elif action == "persona":
                 for name in [n.strip() for n in note.split(",") if n.strip()]:
                     sched.dispatch_persona_pr(t, name)
@@ -316,7 +355,8 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
                 s.save(t)
             else:
                 raise HTTPException(400, f"unknown action {action}")
-        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+        back = request.headers.get("referer", "")
+        return RedirectResponse(back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}", status_code=303)
 
     @app.post("/phases/{product}/{phase}/approve-all")
     def approve_all(product: str, phase: str):

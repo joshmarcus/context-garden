@@ -11,8 +11,10 @@ def test_tui_mounts_and_lists_tasks(garden, tmp_path):
         app = GardenTUI(Store(garden))
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
-            table = app.query_one(DataTable)
+            table = app.query_one("#table", DataTable)
             assert table.row_count == 2
+            await pilot.press("i")  # switch to the tasks tab
+            await pilot.pause()
             await pilot.press("a")  # approve is a no-op on a ready task
             await pilot.press("b")
             await pilot.pause()

@@ -36,6 +36,8 @@ attention and tokens. So:
 | **tick** | one deterministic scheduler pass: reap, poll, dispatch |
 | **persona** | a named reviewer viewpoint applied to a PR or a phase's body of work |
 | **trial** | one task run by several models, compared, winner kept, scores recorded |
+| **triage** | the human's first look at a draft PR: ready for review, or send back |
+| **inbox** | the one list of everything that needs a person, with the action for each |
 
 ## Architecture
 
@@ -70,14 +72,15 @@ token-free scripts; `events` records history; `store` and `model` read and write
    discovered work.
 4. **Gate.** Token-free pre-PR checks (tests, lint) run in the worktree. Failures become
    a revise round before a PR exists.
-5. **PR.** The runner pushes and opens the PR (stacked on the parent branch when needed).
-   An automated review checks acceptance criteria, correctness, scope and the PR
+5. **PR.** The runner pushes and opens a draft PR (stacked on the parent branch when
+   needed). An automated review checks acceptance criteria, correctness, scope and the PR
    description; configured personas add their view. Findings route into the revise loop.
-6. **Humans.** Review on GitHub. Comments and red CI (analysed by token-free checkers,
+6. **Triage.** The human's first look, from the Inbox: ready for review, or send it back.
+7. **Humans.** Review on GitHub. Comments and red CI (analysed by token-free checkers,
    with flaky reruns) become revise runs. Stall detection stops loops that do not
    converge; questions pause the task until answered.
-7. **Merge.** The task is done, dependents unblock or restack, the worktree is removed.
-8. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each
+8. **Merge.** The task is done, dependents unblock or restack, the worktree is removed.
+9. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each
    difficulty tier really cost; persona reviews of the phase and the friction log feed
    the next plan.
 

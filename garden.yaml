@@ -37,11 +37,12 @@ checks:
       command: 'PYTHONPATH=src "$GARDEN_ROOT/.venv/bin/python" -m pytest -q -x'
     - name: lint
       command: '"$GARDEN_ROOT/.venv/bin/ruff" check src tests'
-  ci:
-    - name: actions
-      python: "garden.checks:github_actions_failures"
-      flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "rate limit", "Resource temporarily unavailable"]
-      rerun: true
+  ci: []                    # analysers for your CI system, e.g.
+    # - name: ci-log
+    #   python: "garden.checks:local_command_check"   # or your own module:function
+    #   command: "scripts/ci_failures.sh"             # fetches the failing log; exit != 0 on failure
+    #   flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "rate limit"]
+    #   retry_command: "scripts/ci_rerun.sh"          # run once instead of a revise round when flaky
   timeout_seconds: 600
 
 brief:
@@ -75,7 +76,7 @@ ssh:
 
 github:
   use_gh: true              # prefer the gh CLI; falls back to REST with GITHUB_TOKEN
-  draft_pr: false
+  draft_pr: true            # PRs open as drafts; a human's triage (garden triage ID --ready) marks them ready
   reviewers: []
 
 products:

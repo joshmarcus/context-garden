@@ -10,7 +10,16 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Header, Input, Markdown, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Markdown,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from ..graph import blockers, effective_status
 from ..model import Status
@@ -20,20 +29,29 @@ from ..store import Store
 
 STATUS_COLOR = {
     "draft": "grey70", "blocked": "yellow", "ready": "cyan", "running": "blue", "in_review": "magenta",
-    "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "done": "green", "failed": "red", "cancelled": "grey50",
+    "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "awaiting_triage": "medium_purple", "done": "green", "failed": "red", "cancelled": "grey50",
 }
 
 
 class GardenTUI(App):
     TITLE = "context-garden"
     CSS = """
+    Screen { background: #121614; }
+    Header { background: #1a201c; color: #e6ece7; }
+    Footer { background: #1a201c; }
     #left { width: 60%; }
-    #right { width: 40%; border-left: solid $panel; padding: 0 1; }
+    #right { width: 40%; border-left: solid #2c3630; padding: 0 1; }
     #detail { height: 1fr; }
-    #status { height: 1; color: $text-muted; padding: 0 1; }
-    #answer { display: none; }
-    #answer.visible { display: block; }
-    DataTable { height: 1fr; }
+    #status { height: 1; color: #98a59e; padding: 0 1; }
+    #answer, #note { display: none; }
+    #answer.visible, #note.visible { display: block; }
+    DataTable { height: 1fr; background: #121614; }
+    DataTable > .datatable--cursor { background: #1f3a2c; color: #e6ece7; }
+    DataTable > .datatable--header { background: #1a201c; color: #98a59e; text-style: bold; }
+    TabbedContent { height: 1fr; }
+    TabPane { padding: 0; }
+    Tabs { background: #1a201c; }
+    Tab.-active { color: #5cc493; }
     """
     BINDINGS = [
         Binding("r", "refresh", "Refresh"),
@@ -45,7 +63,10 @@ class GardenTUI(App):
         Binding("b", "brief", "Brief size"),
         Binding("l", "log", "Log"),
         Binding("f", "filter", "Filter open/all"),
-        Binding("w", "answer", "Answer question"),
+        Binding("w", "answer", "Answer"),
+        Binding("y", "triage_ready", "Ready for review"),
+        Binding("n", "triage_changes", "Send back"),
+        Binding("i", "inbox_tab", "Inbox/Tasks"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -59,18 +80,49 @@ class GardenTUI(App):
         yield Header(show_clock=True)
         with Horizontal():
             with Vertical(id="left"):
-                yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
-                yield Input(placeholder="answer for the waiting worker, enter to send, esc to cancel", id="answer")
+                with TabbedContent(initial="inbox-pane"):
+                    with TabPane("Inbox", id="inbox-pane"):
+                        yield DataTable(id="inbox", cursor_type="row", zebra_stripes=True)
+                    with TabPane("Tasks", id="tasks-pane"):
+                        yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+                yield Input(placeholder="answer for the waiting worker · enter to send · esc to cancel", id="answer")
+                yield Input(placeholder="what to change (send back) · enter to send · esc to cancel", id="note")
                 yield Static("", id="status")
             with Vertical(id="right"):
                 yield Markdown("", id="detail")
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one(DataTable)
+        self.title = "context garden"
+        self.sub_title = self.store.config.get("name") or ""
+        table = self.query_one("#table", DataTable)
         table.add_columns("id", "status", "p", "title", "phase", "deps/pr")
+        inbox = self.query_one("#inbox", DataTable)
+        inbox.add_columns("id", "needs you", "title", "why", "do")
         self.action_refresh()
         self.set_interval(5, self.action_refresh)
+
+    def _refresh_inbox(self) -> None:
+        from ..inbox import build_inbox
+
+        inbox = self.query_one("#inbox", DataTable)
+        selected = self._selected_id()
+        inbox.clear()
+        try:
+            items = build_inbox(self.store, self._sched())
+        except Exception as e:  # noqa: BLE001
+            self._msg = f"inbox error: {e}"
+            return
+        keys = {"question": "w answer", "triage": "y ready · n send back", "review": "open PR", "attention": "e continue · x cancel",
+                "approve": "a approve · x drop", "budget": "garden.yaml"}
+        for it in items:
+            color = STATUS_COLOR.get(it["status"], "white")
+            inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], keys.get(it["group"], ""), key=it["task"] or it["title"])
+        if selected:
+            try:
+                inbox.move_cursor(row=inbox.get_row_index(selected))
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- data --------------------------------------------------------------
     def action_refresh(self) -> None:
@@ -80,7 +132,8 @@ class GardenTUI(App):
         except Exception as e:  # noqa: BLE001
             self._set_status(f"error: {e}")
             return
-        table = self.query_one(DataTable)
+        self._refresh_inbox()
+        table = self.query_one("#table", DataTable)
         selected = self._selected_id()
         table.clear()
         rs = RunStore(self.store.config.garden_dir)
@@ -118,14 +171,53 @@ class GardenTUI(App):
         self._set_status(f"{summary}   runs {tot['runs']} ${tot['cost_usd']:.2f}   {self._msg}")
         self._show_detail()
 
+    def _active_table(self) -> DataTable:
+        try:
+            active = self.query_one(TabbedContent).active
+        except Exception:  # noqa: BLE001
+            active = "tasks-pane"
+        return self.query_one("#inbox" if active == "inbox-pane" else "#table", DataTable)
+
     def _selected_id(self) -> str | None:
-        table = self.query_one(DataTable)
+        table = self._active_table()
         if table.row_count == 0 or table.cursor_row is None:
             return None
         try:
-            return str(table.get_row_at(table.cursor_row)[0])
+            tid = str(table.get_row_at(table.cursor_row)[0])
+            return tid if tid != "—" else None
         except Exception:  # noqa: BLE001
             return None
+
+    def action_inbox_tab(self) -> None:
+        tc = self.query_one(TabbedContent)
+        tc.active = "tasks-pane" if tc.active == "inbox-pane" else "inbox-pane"
+        self._show_detail()
+
+    def on_tabbed_content_tab_activated(self, _event) -> None:
+        self._show_detail()
+
+    def action_triage_ready(self) -> None:
+        t = self._current()
+        if not t or t.status != Status.AWAITING_TRIAGE:
+            self._msg = "select an awaiting_triage task first"
+            self.action_refresh()
+            return
+        try:
+            self._sched().triage(t, ready=True)
+            self._msg = f"{t.id}: ready for review"
+        except Exception as e:  # noqa: BLE001
+            self._msg = f"triage failed: {e}"
+        self.action_refresh()
+
+    def action_triage_changes(self) -> None:
+        t = self._current()
+        if not t or not t.pr:
+            self._msg = "select a task with a PR first"
+            self.action_refresh()
+            return
+        box = self.query_one("#note", Input)
+        box.add_class("visible")
+        box.focus()
 
     def _set_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
@@ -256,28 +348,33 @@ class GardenTUI(App):
         box.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        box = self.query_one("#answer", Input)
+        box = event.input
         text = event.value.strip()
         box.value = ""
         box.remove_class("visible")
-        self.query_one(DataTable).focus()
+        self._active_table().focus()
         t = self._current()
         if not text or not t:
             return
         try:
-            run = self._sched().answer(t, text)
-            self._msg = f"{t.id}: {'resumed' if run.session_id else 'fresh run with answer'}"
+            if box.id == "note":
+                self._sched().triage(t, changes=text)
+                self._msg = f"{t.id}: sent back"
+            else:
+                run = self._sched().answer(t, text)
+                self._msg = f"{t.id}: {'resumed' if run.session_id else 'fresh run with answer'}"
         except Exception as e:  # noqa: BLE001
-            self._msg = f"answer failed: {e}"
+            self._msg = f"failed: {e}"
         self.action_refresh()
 
     def on_key(self, event) -> None:
         if event.key == "escape":
-            box = self.query_one("#answer", Input)
-            if box.has_class("visible"):
-                box.remove_class("visible")
-                box.value = ""
-                self.query_one(DataTable).focus()
+            for bid in ("#answer", "#note"):
+                box = self.query_one(bid, Input)
+                if box.has_class("visible"):
+                    box.remove_class("visible")
+                    box.value = ""
+                    self._active_table().focus()
 
     def action_filter(self) -> None:
         self.only_open = not self.only_open

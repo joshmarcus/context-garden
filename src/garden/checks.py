@@ -10,10 +10,11 @@ garden.yaml:
         - name: lint
           command: ".venv/bin/ruff check src"
       ci:                           # run when a PR's CI goes red; results feed the revise brief
-        - name: actions
-          python: "garden.checks:github_actions_failures"
+        - name: ci-log
+          python: "garden.checks:local_command_check"
+          command: "scripts/ci_failures.sh"   # your script: fetch the failing job log from your CI
           flaky_patterns: ["ETIMEDOUT", "rate limit"]
-          rerun: true               # rerun flaky jobs instead of dispatching a revise run
+          retry_command: "scripts/ci_rerun.sh" # run instead of a revise round when the log looks flaky
       timeout_seconds: 600
 
 A `command` check passes on exit 0. If its stdout is a JSON object it is used as the
@@ -30,7 +31,6 @@ import importlib
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -106,43 +106,36 @@ def _trim(r: dict[str, Any]) -> dict[str, Any]:
     return r
 
 
-# ---- built-in: GitHub Actions failure analyser (needs the gh CLI) ------------------
+# ---- built-in helpers for writing CI analysers ------------------------------------
 ERROR_RE = re.compile(r"(error|fail|traceback|exception|assert|panic|✗|✖|FAILED)", re.IGNORECASE)
-NOISE_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*)?(##\[|\[command\]|Post job|Cleaning up)")
 
 
-def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
-    """Pull the failed job logs for the PR's head branch and extract the lines that matter.
-    Flags runs as flaky when the log matches `flaky_patterns`; with `rerun: true` returns a
-    `retry_command` the scheduler runs instead of spending a revise round."""
-    gh = shutil.which("gh")
-    slug, branch = ctx.get("repo_slug", ""), ctx.get("branch", "")
-    if not gh or not slug or not branch:
-        return {"status": "error", "summary": "gh CLI or repo/branch context missing", "details": ""}
-    proc = subprocess.run([gh, "run", "list", "-R", slug, "--branch", branch, "--limit", "10",
-                           "--json", "databaseId,name,conclusion,headSha,status"], capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        return {"status": "error", "summary": proc.stderr.strip()[-300:], "details": ""}
-    runs = json.loads(proc.stdout or "[]")
-    head = ctx.get("head_sha", "")
-    failed = [r for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled") and (not head or r.get("headSha") == head)]
-    if not failed:
-        return {"status": "pass", "summary": "no failed workflow runs on this head", "details": ""}
-    patterns = [re.compile(p, re.IGNORECASE) for p in (spec.get("flaky_patterns") or [])]
-    details: list[str] = []
-    flaky_ids: list[int] = []
-    for r in failed:
-        log = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", slug, "--log-failed"], capture_output=True, text=True, check=False).stdout
-        lines = [ln for ln in log.splitlines() if not NOISE_RE.match(ln)]
-        hits = [ln[-240:] for ln in lines if ERROR_RE.search(ln)]
-        picked = hits[-int(spec.get("max_lines", 40)):] if hits else lines[-20:]
-        details.append(f"### {r.get('name')} (run {r['databaseId']})\n" + "\n".join(picked))
-        if patterns and any(p.search(log) for p in patterns):
-            flaky_ids.append(int(r["databaseId"]))
-    if flaky_ids and len(flaky_ids) == len(failed):
-        out: dict[str, Any] = {"status": "flaky", "summary": f"{len(flaky_ids)} run(s) matched flaky patterns", "details": "\n\n".join(details)}
-        if spec.get("rerun"):
-            out["retry_command"] = " && ".join(f"{gh} run rerun {i} -R {slug} --failed" for i in flaky_ids)
-        return out
-    return {"status": "fail", "summary": f"{len(failed)} failed workflow run(s): " + ", ".join(str(r.get("name")) for r in failed),
-            "details": "\n\n".join(details)}
+def interesting_lines(log: str, max_lines: int = 40, tail: int = 20) -> list[str]:
+    """Keep the lines of a CI log that look like failures (or the tail when none match).
+    Use from your own `python:` analyser after fetching the log from whatever CI you run."""
+    lines = [ln.rstrip() for ln in log.splitlines() if ln.strip()]
+    hits = [ln[-240:] for ln in lines if ERROR_RE.search(ln)]
+    return hits[-max_lines:] if hits else lines[-tail:]
+
+
+def classify_log(log: str, flaky_patterns: list[str] | None = None) -> str:
+    """'flaky' when the log matches any pattern, else 'fail'."""
+    for p in flaky_patterns or []:
+        if re.search(p, log, re.IGNORECASE):
+            return "flaky"
+    return "fail"
+
+
+def local_command_check(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Example `python:` analyser: run `spec['command']` (e.g. a script that queries your CI
+    system) and turn its output into a result using the helpers above."""
+    proc = subprocess.run(str(spec.get("command") or "true"), shell=True, capture_output=True, text=True, check=False,
+                          cwd=ctx.get("worktree") or None, env={**os.environ, **{f"GARDEN_{k.upper()}": str(v) for k, v in ctx.items()}})
+    log = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if proc.returncode == 0:
+        return {"status": "pass", "summary": "ok", "details": ""}
+    status = classify_log(log, spec.get("flaky_patterns"))
+    out: dict[str, Any] = {"status": status, "summary": f"exit {proc.returncode}", "details": "\n".join(interesting_lines(log))}
+    if status == "flaky" and spec.get("retry_command"):
+        out["retry_command"] = str(spec["retry_command"])
+    return out

@@ -22,7 +22,7 @@ Pluggable scripts / Python callables that gate PR creation and analyse red CI wi
 
 - [x] `checks.pre_pr` failures become a revise round before the PR exists.
 - [x] `checks.ci` results feed the revise brief; flaky verdicts rerun jobs once instead of revising.
-- [x] Built-in GitHub Actions analyser; `garden check ID`.
+- [x] Helpers for writing analysers against any CI system; `garden check ID`. (No dependency on GitHub Actions.)
 
 ## Log
 

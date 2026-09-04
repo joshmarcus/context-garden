@@ -57,10 +57,13 @@ garden serve                            # web UI at http://127.0.0.1:8765 + the 
 # or: garden tick                       # one pass, e.g. from cron
 ```
 
-Each PR gets an automated first review (acceptance criteria, correctness, scope, and a
-PR description that gives broader context with no scar tissue). Then review on GitHub as
-usual. Comments you leave become the next revise run's brief; merging marks the task done
-and unblocks its dependents. `garden prs` lists every tracked PR.
+PRs open as drafts. Each gets an automated first review (acceptance criteria,
+correctness, scope, and a PR description that gives broader context with no scar
+tissue) while it waits for your first look. The **Inbox** (`garden serve` home page,
+`garden inbox`, the TUI's Inbox tab) lists everything that needs you: draft PRs to
+triage (ready for review, or send back), questions from workers, PRs ready to review and
+merge, stalled tasks, work to approve. Comments you leave become the next revise run's
+brief; merging marks the task done and unblocks its dependents.
 
 This repository is itself a garden (`garden.yaml` at the root, product
 `context-garden/`). `garden status` here shows the bootstrap phase (done) and a
@@ -134,6 +137,8 @@ push; the runner does.
 | `garden approve ID... ` / `--all product/phase` | draft -> ready |
 | `garden prs [product/phase]` | every tracked PR: review decision, CI, failed checks, revisions |
 | `garden review ID` | start an automated review round now |
+| `garden inbox` | everything that needs you, with the command that resolves it |
+| `garden triage ID --ready` / `--changes "..."` | your first look at a draft PR |
 | `garden answer ID "..."` | answer a `waiting_human` task; the worker resumes |
 | `garden trial ID -c h:m -c h:m` / `trials` | run a task with several models; leaderboard |
 | `garden persona-review TARGET -p name` / `personas` | persona review of a PR or a phase |
@@ -201,8 +206,8 @@ Borrowed from graph-based agent systems; all deterministic (details in
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.
 - **Checks without tokens.** `checks.pre_pr` commands (tests, lint) gate PR creation in
   the worktree; `checks.ci` scripts or Python callables analyse red CI, feed the revise
-  brief with the lines that matter, and rerun flaky jobs instead of spending a round. The
-  built-in `garden.checks:github_actions_failures` covers GitHub Actions via `gh`.
+  brief with the lines that matter, and rerun flaky jobs instead of spending a round.
+  Nothing depends on GitHub Actions: plug in whatever CI you run.
 
 ## Harnesses and models
 
@@ -249,16 +254,17 @@ it in `garden/runner/__init__.py`.
 
 ## Web UI and TUI
 
-`garden serve` (default port 8765, localhost only): board by status with polling, task
-pages with actions (approve, dispatch, review, cancel, retry, mark done, reset revisions),
-the brief, run logs and the last automated review, the dependency graph as inline SVG
-with clickable nodes, a phase page with goals, specs, every tracked PR (review decision,
-CI, failed checks, revisions), a one-click planner, and run/cost history. No build step,
-no CDN.
+`garden serve` (default port 8765, localhost only). The home page is the **Inbox**: the
+human's desk, one row per decision with its action inline (answer, ready for review, send
+back, approve, continue, cancel), plus a burn-up of merged work against scope and cost by
+difficulty tier. Then the Board, the Trellis (dependencies and stacks as an inline SVG),
+task pages with every action and a timeline, phase pages with goals, specs, tracked PRs,
+persona reports and charts, the Timeline, Trials and Runs. Light and dark themes; no build
+step; fonts fall back to system faces when the font host is unreachable.
 
-`garden tui`: the same data in the terminal. Keys: `a` approve, `d` dispatch, `t` tick,
-`w` answer a waiting worker, `x` cancel, `e` reset/continue, `b` brief size, `l` last log,
-`f` toggle done/cancelled, `r` refresh, `q` quit.
+`garden tui`: an Inbox tab and a Tasks tab (`i` switches). Keys: `w` answer, `y` ready
+for review, `n` send back, `a` approve, `d` dispatch, `e` continue, `x` cancel, `t` tick,
+`b` brief size, `l` last log, `f` toggle done/cancelled, `r` refresh, `q` quit.
 
 ## Configuration (`garden.yaml`)
 
@@ -288,7 +294,7 @@ review:
   personas: [security]      # persona reviews on every new PR round
 checks:
   pre_pr: [{name: tests, command: "pytest -q -x"}]
-  ci: [{name: actions, python: "garden.checks:github_actions_failures", rerun: true}]
+  ci: [{name: ci-log, python: "garden.checks:local_command_check", command: "scripts/ci_failures.sh"}]
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
@@ -308,7 +314,7 @@ ssh:
     - {name: box1, host: user@box1, repos: {widget: /srv/repos/widget}, max_parallel: 4}
 github:
   use_gh: true              # gh CLI first, REST with GITHUB_TOKEN otherwise
-  draft_pr: false
+  draft_pr: true            # PRs open as drafts; your triage marks them ready
   reviewers: []
 products:
   widget:
