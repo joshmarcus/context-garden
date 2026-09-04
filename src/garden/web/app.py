@@ -50,7 +50,7 @@ from ..trials import TrialLog, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
 PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
-COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
+COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed", "wont_do"]
 
 
 class Hub:
@@ -468,6 +468,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             elif action == "answer":
                 if t.status == Status.WAITING_HUMAN and note.strip():
                     sched.answer(t, note.strip())
+            elif action == "accept":
+                if sched.pending_decision(t):
+                    sched.accept_decision(t, note.strip())
+            elif action == "reject":
+                if sched.pending_decision(t):
+                    sched.reject_decision(t, note.strip() or "please carry out the task as originally asked")
             elif action == "triage-ready":
                 sched.triage(t, ready=True)
             elif action == "triage-changes":

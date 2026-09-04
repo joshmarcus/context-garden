@@ -57,6 +57,7 @@ STATUS_STYLE = {
     "waiting_human": "deep_pink3",
     "done": "green",
     "failed": "red",
+    "wont_do": "tan",
     "cancelled": "dim strike",
 }
 
@@ -322,7 +323,13 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     st = State(store.config.garden_dir / "state.json").get(t.id)
     if st.get("stack_parent"):
         console.print(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
-    if t.status == Status.WAITING_HUMAN and st.get("question"):
+    if t.status == Status.WAITING_HUMAN and st.get("decision"):
+        dec = st["decision"]
+        console.print(f"[bold deep_pink3]worker decision ({dec.get('kind')}):[/bold deep_pink3] {dec.get('reason', '')}")
+        if dec.get("final"):
+            console.print(f"[dim]{dec['final']}[/dim]")
+        console.print(f"  accept with: garden accept {t.id}   ·   reject with: garden reject {t.id} \"...\"")
+    elif t.status == Status.WAITING_HUMAN and st.get("question"):
         console.print(f"[bold deep_pink3]question:[/bold deep_pink3] {st['question']}\n  answer with: garden answer {t.id} \"...\"")
     if st.get("needs_human"):
         console.print(f"[bold red]needs a human:[/bold red] {st['needs_human']}  (garden retry {t.id} to resume)")
@@ -491,8 +498,9 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
 
 
 @app.command("set-status")
-def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note")):
-    """Escape hatch: force a task's status."""
+def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note"),
+               reason: str = typer.Option("", "--reason", help="Reason (for wont_do): recorded and posted when the PR is closed")):
+    """Escape hatch: force a task's status. `wont_do` closes any open PR with the reason and records it."""
     store = _store()
     t = _task(store, task_id)
     try:
@@ -500,10 +508,45 @@ def set_status(task_id: str, new_status: str, note: str = typer.Option("", help=
     except ValueError:
         err.print(f"[red]unknown status; one of {', '.join(STATUS_ORDER)}[/red]")
         raise typer.Exit(1) from None
+    if s == Status.WONT_DO:
+        _scheduler(store).mark_wont_do(t, reason=reason or note)
+        console.print(f"{t.id} -> wont_do")
+        return
     t.status = s
     t.log(note or f"status forced to {s.value}")
     store.save(t)
     console.print(f"{t.id} -> {s.value}")
+
+
+@app.command()
+def accept(task_id: str, note: str = typer.Option("", help="Optional note recorded with your decision")):
+    """Accept a worker's wont_do / no_change call: wont_do ends the task, no_change resumes the round."""
+    store = _store()
+    t = _task(store, task_id)
+    sched = _scheduler(store)
+    dec = sched.pending_decision(t)
+    if not dec:
+        err.print(f"[red]{t.id} has no pending worker decision to accept[/red]")
+        raise typer.Exit(1) from None
+    try:
+        sched.accept_decision(t, note)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: accepted {dec['kind']} -> {sched.store.task(task_id).status.value}")
+
+
+@app.command()
+def reject(task_id: str, note: str = typer.Argument(..., help="Why you disagree; carried into the next revise round")):
+    """Reject a worker's wont_do / no_change call: its reasoning goes back with your note for a revise run."""
+    store = _store()
+    t = _task(store, task_id)
+    try:
+        _scheduler(store).reject_decision(t, note)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: rejected; revise run will follow")
 
 
 @app.command()
@@ -685,11 +728,21 @@ def finish(
 
 @app.command()
 def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to the worker's question")):
-    """Answer a waiting_human task; the worker resumes (same session when the harness supports it)."""
+    """Answer a waiting_human task; the worker resumes (same session when the harness supports it).
+    If the worker reported wont_do / no_change, this rejects that call and sends your note back."""
     store = _store()
     t = _task(store, task_id)
+    sched = _scheduler(store)
+    if sched.pending_decision(t):
+        try:
+            sched.reject_decision(t, text)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        console.print(f"{t.id}: rejected; revise run will follow")
+        return
     try:
-        run = _scheduler(store).answer(t, text)
+        run = sched.answer(t, text)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None

@@ -56,7 +56,7 @@ def _fmt_tui_event(ev: dict) -> str:
 
 STATUS_COLOR = {
     "draft": "grey70", "blocked": "yellow", "ready": "cyan", "running": "blue", "in_review": "magenta",
-    "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "awaiting_triage": "medium_purple", "done": "green", "failed": "red", "cancelled": "grey50",
+    "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "awaiting_triage": "medium_purple", "done": "green", "failed": "red", "wont_do": "tan", "cancelled": "grey50",
 }
 
 
@@ -91,6 +91,7 @@ class GardenTUI(App):
         Binding("l", "log", "Log"),
         Binding("f", "filter", "Filter open/all"),
         Binding("w", "answer", "Answer"),
+        Binding("c", "accept", "Accept call"),
         Binding("y", "triage_ready", "Ready for review"),
         Binding("n", "triage_changes", "Send back"),
         Binding("i", "inbox_tab", "Inbox/Tasks"),
@@ -140,7 +141,7 @@ class GardenTUI(App):
         except Exception as e:  # noqa: BLE001
             self._msg = f"inbox error: {e}"
             return
-        keys = {"question": "w answer", "triage": "y ready · n send back", "review": "open PR", "attention": "e continue · x cancel",
+        keys = {"question": "w answer", "decision": "c accept · w reject", "triage": "y ready · n send back", "review": "open PR", "attention": "e continue · x cancel",
                 "approve": "a approve · x drop", "budget": "garden.yaml"}
         for it in items:
             color = STATUS_COLOR.get(it["status"], "white")
@@ -174,7 +175,9 @@ class GardenTUI(App):
             if eff == "blocked":
                 extra = "waits " + ",".join(blockers(t, tasks, stack))
             elif eff == "waiting_human":
-                extra = "Q: " + str(State(self.store.config.garden_dir / "state.json").get(t.id).get("question", ""))[:40]
+                _st = State(self.store.config.garden_dir / "state.json").get(t.id)
+                dec = _st.get("decision")
+                extra = (f"{dec.get('kind')}: {dec.get('reason', '')}" if dec else "Q: " + str(_st.get("question", "")))[:40]
             elif eff == "running" and t.id in active:
                 extra = f"{active[t.id].elapsed_minutes():.0f} min"
             elif t.pr:
@@ -291,7 +294,12 @@ class GardenTUI(App):
             head.append(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
         if t.discovered_from:
             head.append(f"discovered by: {t.discovered_from}")
-        if st.get("question"):
+        if st.get("decision"):
+            dec = st["decision"]
+            head.append(f"\n## The worker asks you to decide ({dec.get('kind')})\n\n{dec.get('reason', '')}\n\n(press `c` to accept, `w` to reject with a note)")
+            if dec.get("final"):
+                head.append("### The worker's full message\n\n" + str(dec["final"]))
+        elif st.get("question"):
             head.append(f"\n## Waiting for your answer\n\n{st['question']}\n\n(press `w` to answer)")
         if st.get("needs_human"):
             head.append(f"\n**Needs a human:** {st['needs_human']} (press `e` to continue)")
@@ -379,8 +387,23 @@ class GardenTUI(App):
             self.action_refresh()
             return
         box = self.query_one("#answer", Input)
+        if self._sched().pending_decision(t):
+            box.placeholder = "why you disagree · enter to send back · esc to cancel"
         box.add_class("visible")
         box.focus()
+
+    def action_accept(self) -> None:
+        t = self._current()
+        if not t or not self._sched().pending_decision(t):
+            self._msg = "select a task with a pending worker decision first"
+            self.action_refresh()
+            return
+        try:
+            self._sched().accept_decision(t)
+            self._msg = f"{t.id}: accepted"
+        except Exception as e:  # noqa: BLE001
+            self._msg = f"failed: {e}"
+        self.action_refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         box = event.input
@@ -395,6 +418,9 @@ class GardenTUI(App):
             if box.id == "note":
                 self._sched().triage(t, changes=text)
                 self._msg = f"{t.id}: sent back"
+            elif self._sched().pending_decision(t):
+                self._sched().reject_decision(t, text)
+                self._msg = f"{t.id}: rejected; revise run will follow"
             else:
                 run = self._sched().answer(t, text)
                 self._msg = f"{t.id}: {'resumed' if run.session_id else 'fresh run with answer'}"

@@ -11,7 +11,7 @@
   color-scheme: light;
   --ground:#f2f5f0; --surface:#ffffff; --surface-2:#e9eee7; --label:#ffffff; --line:#d6ded4; --line-strong:#b9c5bb;
   --ink:#17201b; --muted:#5f6b64; --faint:#8b968f; --accent:#2b7a57; --accent-ink:#ffffff; --accent-soft:#dcefe4; --stamp:#c23b3b; --tape:rgba(224,214,178,.8);
-  --s-draft:#7f8a83; --s-blocked:#b5850f; --s-ready:#1c9c8c; --s-running:#3b62d9; --s-waiting_human:#c2417f; --s-awaiting_triage:#7c5cd6; --s-in_review:#2a8fa3; --s-changes_requested:#d0702a; --s-done:#2f8a4f; --s-failed:#c23b3b; --s-cancelled:#9aa39d;
+  --s-draft:#7f8a83; --s-blocked:#b5850f; --s-ready:#1c9c8c; --s-running:#3b62d9; --s-waiting_human:#c2417f; --s-awaiting_triage:#7c5cd6; --s-in_review:#2a8fa3; --s-changes_requested:#d0702a; --s-done:#2f8a4f; --s-failed:#c23b3b; --s-wont_do:#8a6d3b; --s-cancelled:#9aa39d;
   --good:#2f8a4f; --warn:#b5850f; --bad:#c23b3b;
   --viz-1:#2a78d6; --viz-2:#eb6834; --viz-ord-1:#6fbf98; --viz-ord-2:#3f9a6f; --viz-ord-3:#22664a;
   /* pressed-specimen palette used by the plant and stage drawings: moss greens on the old ground */
@@ -27,7 +27,7 @@
   color-scheme: dark;
   --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
   --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
-  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
   --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
   --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
   --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
@@ -39,7 +39,7 @@
   color-scheme: dark;
   --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
   --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
-  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-cancelled:#7f8a83;
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
   --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
   --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
   --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
@@ -71,7 +71,7 @@ svg.stage { --ink:var(--sp-ink); vertical-align:middle; flex:none; }
 .stamp.ink { color:var(--ink); border-color:var(--ink); }
 .state { display:inline-flex; align-items:center; gap:6px; font:12px/1.4 var(--mono); color:var(--ink); white-space:nowrap; }
 .state::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--c, var(--faint)); flex:none; }
-.state.s-draft{--c:var(--s-draft)} .state.s-blocked{--c:var(--s-blocked)} .state.s-ready{--c:var(--s-ready)} .state.s-running{--c:var(--s-running)} .state.s-waiting_human{--c:var(--s-waiting_human)} .state.s-awaiting_triage{--c:var(--s-awaiting_triage)} .state.s-in_review{--c:var(--s-in_review)} .state.s-changes_requested{--c:var(--s-changes_requested)} .state.s-done{--c:var(--s-done)} .state.s-failed{--c:var(--s-failed)} .state.s-cancelled{--c:var(--s-cancelled)}
+.state.s-draft{--c:var(--s-draft)} .state.s-blocked{--c:var(--s-blocked)} .state.s-ready{--c:var(--s-ready)} .state.s-running{--c:var(--s-running)} .state.s-waiting_human{--c:var(--s-waiting_human)} .state.s-awaiting_triage{--c:var(--s-awaiting_triage)} .state.s-in_review{--c:var(--s-in_review)} .state.s-changes_requested{--c:var(--s-changes_requested)} .state.s-done{--c:var(--s-done)} .state.s-failed{--c:var(--s-failed)} .state.s-wont_do{--c:var(--s-wont_do)} .state.s-cancelled{--c:var(--s-cancelled)}
 .state .stage-word { color:var(--muted); font-style:italic; font-family:var(--body); font-size:12.5px; }
 
 /* ---- the background vine: fixed to the bottom right, behind everything ------------- */
@@ -173,10 +173,10 @@ details[open] > summary::before { content:"▾ "; }
 .badge.hot { border-color:var(--stamp); color:var(--stamp); }
 .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px 2px 6px; font:12px/1.6 var(--mono); color:var(--ink); background:var(--surface-2); white-space:nowrap; }
 .pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--c, var(--faint)); }
-.s-draft{--c:var(--s-draft)} .s-blocked{--c:var(--s-blocked)} .s-ready{--c:var(--s-ready)} .s-running{--c:var(--s-running)} .s-waiting_human{--c:var(--s-waiting_human)} .s-awaiting_triage{--c:var(--s-awaiting_triage)} .s-in_review{--c:var(--s-in_review)} .s-changes_requested{--c:var(--s-changes_requested)} .s-done{--c:var(--s-done)} .s-failed{--c:var(--s-failed)} .s-cancelled{--c:var(--s-cancelled)}
+.s-draft{--c:var(--s-draft)} .s-blocked{--c:var(--s-blocked)} .s-ready{--c:var(--s-ready)} .s-running{--c:var(--s-running)} .s-waiting_human{--c:var(--s-waiting_human)} .s-awaiting_triage{--c:var(--s-awaiting_triage)} .s-in_review{--c:var(--s-in_review)} .s-changes_requested{--c:var(--s-changes_requested)} .s-done{--c:var(--s-done)} .s-failed{--c:var(--s-failed)} .s-wont_do{--c:var(--s-wont_do)} .s-cancelled{--c:var(--s-cancelled)}
 
 /* ---- board ------------------------------------------------------------------------ */
-.board { display:grid; grid-template-columns: repeat(10, minmax(150px, 1fr)); gap:10px; overflow-x:auto; padding-bottom:8px; }
+.board { display:grid; grid-template-columns: repeat(11, minmax(150px, 1fr)); gap:10px; overflow-x:auto; padding-bottom:8px; }
 .col { background:var(--surface); border:1px solid var(--line); min-height:140px; padding:10px; }
 .col h3 { margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; gap:6px; font:700 10.5px/1 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink); }
 .col h3 .n { color:var(--muted); font-weight:400; }
