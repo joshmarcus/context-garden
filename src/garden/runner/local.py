@@ -17,6 +17,18 @@ from .base import Runner, RunnerError
 class LocalRunner(Runner):
     name = "local"
 
+    def harness_shell(self, run: Run, final_path: Path | None) -> str:
+        """Build the shell command with the harness binary resolved to its absolute path."""
+        assert self.harness is not None
+        if run.mode == "resume" and run.session_id:
+            cmd = self.harness.resume_command(run.session_id, run.model, final_path)
+        else:
+            cmd = self.harness.command(run.model, final_path)
+        resolved = shutil.which(self.harness.bin) or self.harness.bin
+        if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
+            cmd = [resolved] + cmd[1:]
+        return " ".join(shlex.quote(c) for c in cmd)
+
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         if self.harness is None:
             raise RunnerError("local runner needs a harness")
@@ -52,6 +64,8 @@ class LocalRunner(Runner):
         return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md")
 
     def doctor(self) -> list[str]:
+        if os.name == "nt":
+            return ["local runner: Windows is not supported; run garden in WSL (Windows Subsystem for Linux) instead"]
         if self.harness and not shutil.which(self.harness.bin):
             return [f"harness {self.harness.name}: binary {self.harness.bin!r} not found on PATH"]
         return []
