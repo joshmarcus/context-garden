@@ -44,6 +44,15 @@ def test_run_check_killed_or_empty_did_not_finish(tmp_path):
     assert to_feedback([killed], "pre-PR check").strip()
 
 
+def test_run_check_signalled_json_output_is_not_a_pass(tmp_path):
+    # A check that prints a valid JSON verdict and is then killed did not run to that
+    # verdict: the signal is classified before the JSON is trusted, so it is "did not
+    # finish", not the pass the JSON claims.
+    killed = run_check({"name": "tests", "command": "printf '{\"status\":\"pass\",\"summary\":\"done\"}'; kill -TERM $$"}, {}, cwd=tmp_path)
+    assert killed["status"] == "error" and "check did not finish" in killed["summary"]
+    assert "SIGTERM" in killed["summary"]
+
+
 def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     marker = garden / "checked"
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; test -f worker-output.txt && grep -q 2 worker-output.txt"}], "ci": []}

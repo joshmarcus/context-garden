@@ -1686,8 +1686,10 @@ class Scheduler:
     def retry(self, task: Task) -> None:
         st = self.state.get(task.id)
         st.pop("needs_human", None)
-        if task.pr and task.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED):
-            # keep the PR; let the revise loop continue
+        if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):
+            # let the revise loop continue: keep any PR and dispatch a revise run against the
+            # pending feedback. A pre-PR check that failed at the cap has no PR yet, but it is
+            # still a revise round — a fresh work run would drop the feedback and the counter.
             note = "re-enabled by hand; revise run will follow"
             if self._grant_one_more_round(st):
                 note = "re-enabled by hand with one more round past the revision cap; revise run will follow"
