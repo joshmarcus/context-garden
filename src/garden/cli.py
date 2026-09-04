@@ -214,6 +214,14 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     console.print(table)
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
+    up = sched.upgrade_available()
+    if up:
+        sha = str(up.get("sha") or "")[:12]
+        count = up.get("count")
+        line = f"tool update available: {sha}"
+        if count is not None:
+            line += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
+        console.print(f"[cyan]{line}[/cyan] — run `garden upgrade`")
     from .scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     if ctrl.get("dispatch") == "paused":
@@ -1312,7 +1320,49 @@ def tui():
 
 @app.command()
 def version():
-    print(__version__)
+    """The tool version and, for a pinned git install, the installed commit."""
+    from .upgrade import installed_commit
+
+    sha = installed_commit()
+    print(f"{__version__} ({sha[:12]})" if sha else __version__)
+
+
+@app.command()
+def upgrade(
+    restart: bool = typer.Option(False, "--restart", help="Re-exec `garden serve` on success (usually the running loop does this)"),
+    force: bool = typer.Option(False, "--force", help="Reinstall even if no upgrade is recorded, using the tool product's base sha"),
+):
+    """Move the pinned tool install forward onto a merged commit (see `garden status`)."""
+    store = _store()
+    sched = _scheduler(store)
+    if force and not sched.upgrade_available():
+        product = store.config.tool_product()
+        if not product:
+            err.print("[red]no product has provides_tool: true[/red]")
+            raise typer.Exit(1) from None
+        from .model import Task
+
+        probe = Task(path=store.root, id=f"_{product}", title="", product=product, phase="")
+        try:
+            sched._note_tool_upgrade(probe)
+            sched.state.save()
+        except Exception as e:  # noqa: BLE001
+            err.print(f"[red]could not resolve the tool sha: {e}[/red]")
+            raise typer.Exit(1) from None
+    if not sched.upgrade_available():
+        console.print("[green]up to date[/green] — no tool upgrade recorded")
+        return
+    info = sched.upgrade_available()
+    console.print(f"upgrading to {str(info['sha'])[:12]} ...")
+    result = sched.upgrade(restart=restart)
+    if result.get("ok"):
+        console.print(f"[green]installed {str(info['sha'])[:12]}[/green]"
+                      + ("; restarting" if result.get("restarted") else "; restart `garden serve` to run the new code"))
+    else:
+        err.print(f"[red]upgrade failed: {result.get('reason')}[/red]; the current install is unchanged")
+        if result.get("output"):
+            print(str(result["output"])[-2000:])
+        raise typer.Exit(1) from None
 
 
 def main() -> None:

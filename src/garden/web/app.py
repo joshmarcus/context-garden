@@ -405,6 +405,15 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         hub._log("dispatch resumed via web")
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
 
+    @app.post("/upgrade")
+    def web_upgrade(request: Request):
+        with hub.lock:
+            sched = hub.scheduler()
+            result = sched.upgrade(restart=True)
+        hub._log("tool upgrade: " + ("restarting" if result.get("ok") else f"failed ({result.get('reason')})"))
+        # On success the process re-execs and never reaches here; a failure falls through.
+        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form("")):
         s = hub.fresh()
