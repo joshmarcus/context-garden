@@ -237,7 +237,10 @@ Borrowed from graph-based agent systems; all deterministic:
   the worktree; `checks.ci` scripts or Python callables analyse red CI, feed the revise
   brief with the lines that matter, and rerun flaky jobs instead of spending a round. A
   GitHub Actions analyser ships as an optional plugin; per-environment overlays swap it
-  for whatever CI you run elsewhere.
+  for whatever CI you run elsewhere. Checks run with `GARDEN_EXEC_ROOT` set to the live
+  garden's root (e.g. for `$GARDEN_EXEC_ROOT/.venv/bin/python`); `GARDEN_ROOT` is always
+  a non-existent sentinel, same as for workers, so a check command cannot act on the live
+  garden either.
 
 ## Harnesses and models
 

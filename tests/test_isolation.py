@@ -17,6 +17,16 @@ def _make_garden(path: Path) -> Path:
     return path
 
 
+def _probe_garden_root_env(ctx, spec):
+    """A custom `python:` check that spawns a subprocess without building its own env,
+    used by test_run_check_guards_custom_python_checks_too below."""
+    proc = subprocess.run(
+        ["python3", "-c", "import os; print(os.environ.get('GARDEN_ROOT', ''))"],
+        capture_output=True, text=True, check=False,
+    )
+    return {"status": "pass", "summary": proc.stdout.strip(), "details": ""}
+
+
 def test_find_root_normal(tmp_path):
     root = _make_garden(tmp_path / "g")
     sub = root / "some" / "sub"
@@ -55,9 +65,9 @@ def test_find_root_worktree_nested_garden_is_fine(tmp_path):
 def test_garden_root_env_valid_is_ignored(tmp_path, monkeypatch):
     """GARDEN_ROOT pointing to a real garden is ignored; cwd walk finds the right root.
 
-    check_ctx sets GARDEN_ROOT to the live garden so check commands can use
-    $GARDEN_ROOT/.venv/bin/python, but find_root() must not use it as a redirect —
-    otherwise tests running inside a pre-PR check subprocess land on the live garden.
+    GARDEN_ROOT is not a supported way to redirect the root: workers and check
+    subprocesses only ever see it set to a non-existent sentinel (no_live_garden_root),
+    so find_root() must not use a valid-looking GARDEN_ROOT as a redirect either.
     """
     root = _make_garden(tmp_path / "g")
     other = _make_garden(tmp_path / "other")
@@ -98,3 +108,61 @@ def test_local_runner_sets_garden_root(sched, monkeypatch):
     assert not (Path(env["GARDEN_ROOT"]) / "garden.yaml").exists(), (
         f"worker GARDEN_ROOT={env['GARDEN_ROOT']!r} must not point at a real garden"
     )
+
+
+def test_check_ctx_exposes_exec_root_not_garden_root(sched):
+    """check_ctx must carry the live garden's root under exec_root, never under a `root`
+    key — the generic ctx-to-env mapping in checks.py would otherwise leak it as
+    GARDEN_ROOT and defeat the sentinel that keeps check commands off the live garden."""
+    task = sched.store.task("DM-001")
+    ctx = sched.check_ctx(task, task.default_branch(), "main")
+    assert ctx.get("exec_root") == str(sched.store.root)
+    assert "root" not in ctx
+
+
+def test_run_check_forces_garden_root_sentinel(sched, tmp_path):
+    """A check command must see GARDEN_EXEC_ROOT for the live garden's own root, but
+    GARDEN_ROOT must always be a non-existent sentinel, even though check_ctx's exec_root
+    is a real garden — closing the dual-use CG-054 flagged as fragile."""
+    from garden.checks import run_check
+
+    ctx = sched.check_ctx(sched.store.task("DM-001"), "b", "main")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    result = run_check(
+        {
+            "name": "env-probe",
+            "command": (
+                "python3 -c \"import os, json; "
+                "print(json.dumps({'summary': os.environ.get('GARDEN_ROOT', ''), "
+                "'details': os.environ.get('GARDEN_EXEC_ROOT', '')}))\""
+            ),
+        },
+        ctx, cwd=worktree,
+    )
+    assert result["status"] == "pass"
+    garden_root, garden_exec_root = result["summary"], result["details"]
+    assert garden_exec_root == str(sched.store.root)
+    assert garden_root != str(sched.store.root)
+    assert not (Path(garden_root) / "garden.yaml").exists()
+
+
+def test_run_check_guards_custom_python_checks_too(sched, tmp_path, monkeypatch):
+    """A custom `python:` callable that spawns a subprocess without building its own env
+    must still see the GARDEN_ROOT sentinel, not the scheduler's own environment —
+    CG-082 review feedback: guard every python check, not only the built-in helper."""
+    import os
+
+    from garden.checks import run_check
+
+    monkeypatch.setenv("GARDEN_ROOT", str(sched.store.root))  # simulate an unguarded caller
+    ctx = sched.check_ctx(sched.store.task("DM-001"), "b", "main")
+    result = run_check(
+        {"name": "custom-probe", "python": "tests.test_isolation:_probe_garden_root_env"}, ctx, cwd=tmp_path
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"] != str(sched.store.root)
+    assert not (Path(result["summary"]) / "garden.yaml").exists()
+    # the guard is scoped to the call: the caller's own env is restored afterwards
+    assert os.environ["GARDEN_ROOT"] == str(sched.store.root)
