@@ -1072,16 +1072,18 @@ class Scheduler:
         parts = []
         foreign_seen = False
         for v in violations:
+            # Lead with the operator-critical facts (which repo, which files) and put the
+            # long absolute path last, so a truncated Inbox card still names what was touched.
             bits = []
-            if v["commits"]:
-                bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
             if v["files"]:
                 bits.append("wrote " + ", ".join(v["files"]))
+            if v["commits"]:
+                bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
             if v.get("foreign"):
                 foreign_seen = True
                 bits.append("also changed (left in place, not attributed to the worker): "
                             + ", ".join(v["foreign"]))
-            parts.append(f"{v['label']} ({v['path']}): " + " and ".join(bits))
+            parts.append(f"{v['label']}: " + " and ".join(bits) + f" ({v['path']})")
         card = "worker wrote outside its worktree; the writes it made were reverted. Touched " + " | ".join(parts)
         if foreign_seen:
             card += " — the un-attributed changes were left for a person to check."
