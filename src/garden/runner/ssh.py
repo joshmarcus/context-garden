@@ -68,9 +68,11 @@ export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-
 {setup_env}
 GARDEN_SETUP_CMD={setup_cmd}
 GARDEN_SETUP_STAMP={setup_stamp}
+GARDEN_SETUP_TIMEOUT={setup_timeout}
 GARDEN_SETUP_MARKER="$REPO/.garden-worktrees/.garden-setup-{task}"
 if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" != "$GARDEN_SETUP_STAMP" ]; then
-  if sh -c "$GARDEN_SETUP_CMD" >&2; then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed" >&2; exit 3; fi
+  if command -v timeout >/dev/null 2>&1; then GARDEN_SETUP_RUN="timeout $GARDEN_SETUP_TIMEOUT sh -c"; else GARDEN_SETUP_RUN="sh -c"; fi
+  if $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2; then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
 fi
 set +e
 {harness} < .garden-run/brief.md
@@ -147,6 +149,7 @@ class SSHRunner(Runner):
             brief=brief_text, harness=harness_cmd, run_id=run.run_id,
             setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
+            setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")
