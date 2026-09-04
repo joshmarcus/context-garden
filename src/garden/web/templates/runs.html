@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block body %}
+<div class="page-head"><div><h1>Runs</h1><p>Every worker, review, persona and comparison run, with what it cost.</p></div></div>
+<div class="kpis">
+  <div class="kpi"><div class="v">{{ totals.runs }}</div><div class="l">runs</div></div>
+  <div class="kpi"><div class="v">${{ '%.2f' % totals.cost_usd }}</div><div class="l">total cost</div></div>
+  <div class="kpi"><div class="v">{{ '{:,}'.format(totals.input_tokens) }}</div><div class="l">input tokens</div></div>
+  <div class="kpi"><div class="v">{{ '{:,}'.format(totals.cache_read_input_tokens) }}</div><div class="l">cache reads</div></div>
+</div>
+<div class="grid2">
+  <div class="panel">
+    <table>
+    <tr><th>task</th><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>in / out</th><th>cost</th></tr>
+    {% for r in runs %}
+    <tr><td><a class="id" href="/tasks/{{ r.task_id }}">{{ r.task_id }}</a></td><td class="mono">{{ r.run_id }}</td><td>{{ r.mode }}</td><td>{{ r.status }}</td><td class="mono">{{ r.harness }}{% if r.model %}:{{ r.model }}{% endif %}</td>
+      <td>{{ '%.0f' % r.elapsed_minutes() }}</td><td>{{ '{:,}'.format(r.brief_tokens) }}</td><td>{{ r.usage.get('input_tokens', '') }} / {{ r.usage.get('output_tokens', '') }}</td><td>{% if r.cost_usd is not none %}${{ '%.2f' % r.cost_usd }}{% endif %}</td></tr>
+    {% else %}<tr><td colspan="9" class="faint">no runs yet</td></tr>{% endfor %}
+    </table>
+  </div>
+  <div class="panel"><div class="eyebrow">Scheduler log</div><div class="log" style="margin-top:6px">{% for e in events %}{{ e.at[11:19] }} {{ e.msg }}
+{% else %}nothing yet{% endfor %}</div></div>
+</div>
+{% endblock %}

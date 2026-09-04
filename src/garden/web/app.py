@@ -1,0 +1,426 @@
+"""Local web UI: a board, task pages, the graph, runs and cost. FastAPI + Jinja + HTMX.
+
+All logic lives in store/graph/scheduler; this module only renders and forwards actions.
+The scheduler loop runs in a background thread when `watch=True` (the `garden serve` default).
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+from typing import Any
+
+import markdown as md
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from ..brief import build_brief
+from ..charts import burnup_svg, tier_bars_svg
+from ..events import EventLog, digest, metrics, parse_since
+from ..graph import (
+    blockers,
+    critical_path,
+    dependents,
+    effective_status,
+    mermaid,
+    ready,
+    svg,
+    validate,
+)
+from ..inbox import build_inbox, running_now
+from ..model import STATUS_ORDER, Status, now_iso
+from ..review import review_to_markdown
+from ..runs import RunStore
+from ..scheduler import Scheduler, State
+from ..store import Store
+from ..trials import TrialLog, ranking_markdown
+
+TEMPLATES = Path(__file__).parent / "templates"
+COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
+
+
+class Hub:
+    """Shared state for request handlers: the store, a lock around scheduler passes, and
+    a log of recent tick results."""
+
+    def __init__(self, store: Store, watch: bool):
+        self.store = store
+        self.lock = threading.Lock()
+        self.events: list[dict[str, Any]] = []
+        self.last_tick = ""
+        self.watch = watch
+        self.planning: dict[str, str] = {}  # "product/phase" -> status text
+        self._stop = threading.Event()
+        if watch:
+            threading.Thread(target=self._loop, daemon=True, name="garden-watch").start()
+
+    def scheduler(self) -> Scheduler:
+        self.store.invalidate()
+        return Scheduler(self.store, log=self._log)
+
+    def _log(self, msg: str) -> None:
+        self.events.append({"at": now_iso(), "msg": msg})
+        del self.events[:-200]
+
+    def tick(self) -> str:
+        with self.lock:
+            rep = self.scheduler().tick()
+            self.last_tick = now_iso()
+            return rep.summary()
+
+    def _loop(self) -> None:
+        interval = int(self.store.config.get("tick_interval", 60))
+        while not self._stop.is_set():
+            try:
+                self.tick()
+            except Exception as e:  # noqa: BLE001
+                self._log(f"tick error: {e}")
+            self._stop.wait(interval)
+
+    def fresh(self) -> Store:
+        self.store.invalidate()
+        return self.store
+
+
+def render_md(text: str) -> str:
+    return md.markdown(text, extensions=["fenced_code", "tables", "sane_lists"])
+
+
+def create_app(store: Store, watch: bool = False) -> FastAPI:
+    app = FastAPI(title="context-garden")
+    hub = Hub(store, watch)
+    templates = Jinja2Templates(directory=str(TEMPLATES))
+    templates.env.filters["md"] = render_md
+    templates.env.globals["columns"] = COLUMNS
+    templates.env.globals["statuses"] = STATUS_ORDER
+
+    def ctx(request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
+        s = hub.fresh()
+        sched = Scheduler(s, log=lambda m: None)
+        items = build_inbox(s, sched)
+        return {
+            "request": request,
+            "page": page,
+            "garden_name": s.config.get("name"),
+            "root": str(s.root),
+            "watch": hub.watch,
+            "last_tick": hub.last_tick,
+            "products": s.products(),
+            "inbox_count": len(items),
+            "env": s.config.env,
+            "running": running_now(s),
+            "totals": RunStore(s.config.garden_dir).totals(),
+            **kw,
+        }
+
+    def tier_rows(s: Store, tasks: dict[str, Any]) -> list[dict[str, Any]]:
+        m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)
+        return [{"tier": t, **m["by_difficulty"][t]} for t in ("easy", "medium", "hard") if m["by_difficulty"].get(t)]
+
+    def board_data(product: str | None, phase: str | None) -> dict[str, Any]:
+        s = hub.fresh()
+        tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
+        state = State(s.config.garden_dir / "state.json")
+        cols: dict[str, list] = {c: [] for c in COLUMNS}
+        for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
+            if product and t.product != product:
+                continue
+            if phase and t.phase != phase:
+                continue
+            eff = effective_status(t, tasks, stack)
+            if eff == "cancelled":
+                continue
+            st = state.get(t.id)
+            cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+                              "stack": st.get("stack_parent", ""), "needs_human": st.get("needs_human", ""),
+                              "question": st.get("question", "") if eff == "waiting_human" else ""})
+        runs = RunStore(s.config.garden_dir)
+        active = {r.task_id: r for r in runs.active()}
+        return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
+                "problems": validate(tasks)}
+
+    # ---- pages -------------------------------------------------------------
+    @app.get("/", response_class=HTMLResponse)
+    @app.get("/inbox", response_class=HTMLResponse, include_in_schema=False)
+    def inbox_page(request: Request):
+        from ..inbox import GROUPS
+
+        s = hub.fresh()
+        sched = Scheduler(s, log=lambda m: None)
+        items = build_inbox(s, sched)
+        tasks = s.tasks()
+        evs = EventLog(s.config.garden_dir / "events.jsonl")
+        open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
+        in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
+        spent_24h = digest(evs.read(since=parse_since("24h")))["cost_usd"]
+        return templates.TemplateResponse(request, "inbox.html", ctx(
+            request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
+            spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope)), tiers=tier_bars_svg(tier_rows(s, tasks))))
+
+    @app.get("/board", response_class=HTMLResponse)
+    def board(request: Request, product: str | None = None, phase: str | None = None):
+        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", **board_data(product, phase)))
+
+    @app.get("/partials/board", response_class=HTMLResponse)
+    def board_partial(request: Request, product: str | None = None, phase: str | None = None):
+        return templates.TemplateResponse(request, "_board.html", ctx(request, **board_data(product, phase)))
+
+    @app.get("/tasks/{task_id}", response_class=HTMLResponse)
+    def task_page(request: Request, task_id: str):
+        s = hub.fresh()
+        try:
+            t = s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
+        runs = RunStore(s.config.garden_dir).runs_for(t.id)
+        st = State(s.config.garden_dir / "state.json").get(t.id)
+        body, log = _split_log(t.body)
+        evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
+        usage = RunStore(s.config.garden_dir).usage_for(t.id)
+        from ..personas import DEFAULT_PERSONAS, list_personas
+
+        return templates.TemplateResponse(request, "task.html", ctx(
+            request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
+            task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
+            dependents=dependents(t.id, tasks), runs=list(reversed(runs)), state=st, body_html=render_md(body),
+            log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
+            discovered=[x for x in tasks.values() if x.discovered_from == t.id],
+            review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
+        ))
+
+    @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
+    def task_runs_partial(request: Request, task_id: str):
+        s = hub.fresh()
+        t = s.task(task_id)
+        runs = RunStore(s.config.garden_dir).runs_for(t.id)
+        return templates.TemplateResponse(request, "_runs.html", ctx(request, runs=list(reversed(runs)), task=t))
+
+    @app.get("/tasks/{task_id}/brief", response_class=PlainTextResponse)
+    def task_brief(task_id: str, revise: bool = False):
+        s = hub.fresh()
+        t = s.task(task_id)
+        fb = str(State(s.config.garden_dir / "state.json").get(t.id).get("pending_feedback") or "") if revise else ""
+        b = build_brief(s, t, review_feedback=fb)
+        return f"# ~{b.tokens:,} tokens\n\n" + b.text
+
+    @app.get("/tasks/{task_id}/log", response_class=PlainTextResponse)
+    def task_log(task_id: str, run_id: str | None = None):
+        s = hub.fresh()
+        rs = RunStore(s.config.garden_dir)
+        runs = rs.runs_for(task_id)
+        run = next((r for r in runs if r.run_id == run_id), None) if run_id else rs.latest(task_id)
+        if not run:
+            return "no runs"
+        parts = [f"run {run.run_id}  status={run.status}  runner={run.runner}  mode={run.mode}  dir={run.dir}"]
+        if run.error:
+            parts.append(f"error: {run.error}")
+        final = run.path / "final.md"
+        if final.exists():
+            parts.append("---- final message ----\n" + final.read_text())
+        stderr = run.stderr_text()
+        if stderr.strip():
+            parts.append("---- stderr ----\n" + stderr[-8000:])
+        return "\n\n".join(parts)
+
+    @app.get("/trellis", response_class=HTMLResponse)
+    @app.get("/graph", response_class=HTMLResponse, include_in_schema=False)
+    def trellis_page(request: Request, product: str | None = None, phase: str | None = None):
+        s = hub.fresh()
+        tasks = {k: v for k, v in s.tasks().items()
+                 if (not product or v.product == product) and (not phase or v.phase == phase)}
+        try:
+            cp = critical_path(tasks)
+        except Exception:  # noqa: BLE001
+            cp = []
+        return templates.TemplateResponse(request, "trellis.html", ctx(
+            request, page="trellis", svg=svg(tasks), mermaid=mermaid(tasks), product=product, phase=phase,
+            critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
+
+    @app.get("/runs", response_class=HTMLResponse)
+    def runs_page(request: Request):
+        s = hub.fresh()
+        rs = RunStore(s.config.garden_dir)
+        return templates.TemplateResponse(request, "runs.html", ctx(
+            request, page="runs", runs=list(reversed(rs.all_runs())), events=list(reversed(hub.events))[:100]))
+
+    @app.get("/trials", response_class=HTMLResponse)
+    def trials_page(request: Request):
+        s = hub.fresh()
+        log = TrialLog(s.config.garden_dir / "trials.jsonl")
+        return templates.TemplateResponse(request, "trials.html", ctx(
+            request, page="trials", rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
+
+    @app.get("/events", response_class=HTMLResponse)
+    def events_page(request: Request, since: str = "24h"):
+        s = hub.fresh()
+        since_iso = parse_since(since) if since else ""
+        evs = EventLog(s.config.garden_dir / "events.jsonl").read(since=since_iso)
+        d = digest(evs)
+        tasks = s.tasks()
+        return templates.TemplateResponse(request, "events.html", ctx(
+            request, page="events", events=list(reversed(evs))[:300], digest=d, since=since, tasks=tasks,
+            metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks), tiers=tier_bars_svg(tier_rows(s, tasks))))
+
+    @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
+    def phase_page(request: Request, product: str, phase: str):
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        tasks = s.tasks()
+        goals = ph.goals_path.read_text() if ph.goals_path else ""
+        specs = [(s.rel(p), p.read_text()) for p in ph.specs]
+        docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
+        fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
+        state = State(s.config.garden_dir / "state.json")
+        stack = bool(s.config.get("stack", True))
+        sched = hub.scheduler()
+        phase_tasks = {t.id: t for t in ph.tasks}
+        m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
+        from ..personas import DEFAULT_PERSONAS, list_personas
+
+        reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
+        phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
+        usage = RunStore(s.config.garden_dir).usage_by_task()
+        in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
+        return templates.TemplateResponse(request, "phase.html", ctx(
+            request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
+            burnup=burnup_svg(phase_events, len(in_scope)), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
+            personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
+            budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
+            rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {})) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
+        ))
+
+    # ---- actions -----------------------------------------------------------
+    @app.post("/tick")
+    def tick(request: Request):
+        summary = hub.tick()
+        hub._log(f"manual tick: {summary}")
+        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+
+    @app.post("/tasks/{task_id}/{action}")
+    def task_action(request: Request, task_id: str, action: str, note: str = Form("")):
+        s = hub.fresh()
+        try:
+            t = s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        with hub.lock:
+            sched = hub.scheduler()
+            t = sched.store.task(task_id)
+            if action == "approve":
+                if t.status == Status.DRAFT:
+                    t.status = Status.READY
+                    t.log("approved (web)")
+                    s.save(t)
+            elif action == "unapprove":
+                if t.status == Status.READY:
+                    t.status = Status.DRAFT
+                    t.log("back to draft (web)")
+                    s.save(t)
+            elif action == "dispatch":
+                sched.dispatch(t, mode="revise" if t.status == Status.CHANGES_REQUESTED else "work")
+            elif action == "cancel":
+                sched.cancel(t, note or "cancelled (web)")
+            elif action == "retry":
+                sched.retry(t)
+            elif action == "done":
+                t.status = Status.DONE
+                t.log(note or "marked done (web)")
+                s.save(t)
+            elif action == "review":
+                if t.pr:
+                    sched.dispatch_review(t)
+            elif action == "answer":
+                if t.status == Status.WAITING_HUMAN and note.strip():
+                    sched.answer(t, note.strip())
+            elif action == "triage-ready":
+                sched.triage(t, ready=True)
+            elif action == "triage-changes":
+                sched.triage(t, changes=note.strip() or "please revisit; see the PR")
+            elif action == "persona":
+                for name in [n.strip() for n in note.split(",") if n.strip()]:
+                    sched.dispatch_persona_pr(t, name)
+            elif action == "trial":
+                contenders = [n.strip() for n in note.split(",") if n.strip()]
+                sched.start_trial(t, contenders)
+            elif action == "reset-revisions":
+                st = sched.state.get(t.id)
+                st["revisions"] = 0
+                sched.state.save()
+                t.log("revision counter reset (web)")
+                s.save(t)
+            else:
+                raise HTTPException(400, f"unknown action {action}")
+        back = request.headers.get("referer", "")
+        return RedirectResponse(back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}", status_code=303)
+
+    @app.post("/phases/{product}/{phase}/approve-all")
+    def approve_all(product: str, phase: str):
+        s = hub.fresh()
+        for t in s.tasks().values():
+            if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
+                t.status = Status.READY
+                t.log("approved (web)")
+                s.save(t)
+        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+
+    @app.post("/phases/{product}/{phase}/persona")
+    def persona_phase(product: str, phase: str, personas: str = Form(""), file_tasks: str = Form("")):
+        s = hub.fresh()
+        ph = s.phase(product, phase)
+        with hub.lock:
+            sched = hub.scheduler()
+            for name in [n.strip() for n in personas.split(",") if n.strip()]:
+                sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
+        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+
+    @app.post("/phases/{product}/{phase}/plan")
+    def plan_phase(product: str, phase: str, background: BackgroundTasks, guidance: str = Form("")):
+        key = f"{product}/{phase}"
+        if hub.planning.get(key, "").startswith("running"):
+            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        hub.planning[key] = f"running since {now_iso()}"
+
+        def job() -> None:
+            from ..planner import import_plan, parse_plan, plan_prompt, run_planner
+
+            try:
+                s = hub.fresh()
+                raw = run_planner(s, plan_prompt(s, product, phase, extra=guidance))
+                created = import_plan(s, product, phase, parse_plan(raw))  # ready by default (plan.auto_approve)
+                hub.planning[key] = f"done {now_iso()}: created {', '.join(t.id for t in created) or 'nothing new'}"
+            except Exception as e:  # noqa: BLE001
+                hub.planning[key] = f"failed {now_iso()}: {e}"
+
+        background.add_task(job)
+        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+
+    # ---- json --------------------------------------------------------------
+    @app.get("/api/tasks")
+    def api_tasks():
+        s = hub.fresh()
+        tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
+        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack)} for t in tasks.values()])
+
+    @app.get("/api/events")
+    def api_events():
+        return JSONResponse(hub.events[-50:])
+
+    return app
+
+
+def _split_log(body: str) -> tuple[str, list[str]]:
+    if "\n## Log" in body:
+        head, _, tail = body.partition("\n## Log")
+        lines = [ln[2:] for ln in tail.strip().splitlines() if ln.startswith("- ")]
+        return head, lines
+    return body, []
+

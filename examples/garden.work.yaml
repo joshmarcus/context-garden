@@ -1,0 +1,34 @@
+# Environment overlay, loaded on top of garden.yaml when GARDEN_ENV=work.
+# Copy to the garden root as garden.work.yaml and adjust. Keys merge; lists replace.
+#
+#   GARDEN_ENV=work garden serve
+#
+# A per-machine overlay, garden.local.yaml, is applied last and is gitignored.
+
+runner: ssh                       # workers on the build hosts, not this laptop
+ssh:
+  hosts:
+    - name: build-1
+      host: me@build-1.internal
+      repos: {context-garden: /srv/gardens/context-garden}
+      max_parallel: 4
+    - name: build-2
+      host: me@build-2.internal
+      repos: {context-garden: /srv/gardens/context-garden}
+      max_parallel: 4
+
+github:
+  use_gh: true
+  draft_pr: true
+
+checks:
+  ci:                             # replaces the home list entirely (lists do not merge)
+    - name: jenkins-log
+      python: "garden.checks:local_command_check"
+      command: "scripts/jenkins_failures.sh"   # prints the failing job log; exit 1 on failure
+      flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "Slave went offline"]
+      retry_command: "scripts/jenkins_rebuild.sh"
+
+harnesses:
+  claude:
+    models: {easy: haiku, medium: sonnet, hard: sonnet}   # cheaper tier map for work

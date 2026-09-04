@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Timeline{% endblock %}
+{% block body %}
+<div class="page-head"><div><h1>Timeline</h1><p>Every transition, run, review and decision, newest first. The digest on the right is what you'd want to know after being away.</p></div></div>
+<div class="filters">
+  {% for w in ['6h','24h','3d','1w'] %}<a href="/events?since={{ w }}" class="{{ 'on' if since == w else '' }}">{{ w }}</a>{% endfor %}
+  <span class="muted" style="margin-left:auto">{{ events|length }} events · {{ digest.dispatched }} dispatches · ${{ '%.2f' % digest.cost_usd }}</span>
+</div>
+<div class="grid2">
+  <div class="stack">
+    {% if digest.needs_human %}<div class="panel" style="border-color:var(--bad)"><div class="eyebrow" style="color:var(--bad)">Needed you</div><ul class="tl" style="margin-top:6px">{% for e in digest.needs_human %}<li><span class="faint mono">{{ e.at[5:16] }}</span><span class="k"><a href="/tasks/{{ e.task }}">{{ e.task }}</a></span><span>{{ e.question or e.reason or e.note or e.to }}</span></li>{% endfor %}</ul></div>{% endif %}
+    <div class="panel"><div class="eyebrow">Events</div>
+      <ul class="tl" style="margin-top:6px">{% for e in events %}<li><span class="faint mono">{{ e.at[5:16] }}</span><span class="k"><a href="/tasks/{{ e.task }}" style="text-decoration:none">{{ e.task }}</a> {{ e.kind }}</span><span>
+        {% if e.kind == 'transition' %}{{ e['from'] }} → {{ e.to }}: {{ e.note[:110] }}{% elif e.kind == 'dispatch' %}{{ e.mode }} {{ e.model }}{% if e.resumed %} (resumed){% endif %}{% elif e.kind == 'run_finished' %}{{ e.mode }} {{ e.status }}{% if e.cost_usd %} ${{ '%.2f' % e.cost_usd }}{% endif %}{% elif e.kind == 'review' %}{{ e.verdict }}: {{ e.summary[:110] }}{% elif e.kind == 'waiting_human' %}{{ e.question[:120] }}{% elif e.kind == 'discovered' %}{{ e.new_task }} {{ e.title }}{% elif e.kind == 'budget' %}{{ e.phase }} spent ${{ '%.2f' % e.spent }} of ${{ '%.2f' % e.budget }}{% elif e.kind == 'triaged' %}{{ e.decision or 'ready' }} by {{ e.by }}{% elif e.kind == 'persona' %}{{ e.persona }} {{ e.score }}/10{% elif e.kind == 'trial_done' %}winner {{ e.winner }}{% else %}{{ e.reason or e.note or e.pr or e.answer or '' }}{% endif %}</span></li>
+      {% else %}<li class="faint">no events in this window</li>{% endfor %}</ul></div>
+  </div>
+  <div class="stack">
+    <div class="panel"><div class="eyebrow">Since {{ since }}</div>
+      <dl class="kv" style="margin-top:8px">
+        <dt>PRs opened</dt><dd>{% for e in digest.prs_opened %}<a href="/tasks/{{ e.task }}" class="id">{{ e.task }}</a> {% else %}<span class="faint">—</span>{% endfor %}</dd>
+        <dt>merged</dt><dd>{% for e in digest.merged %}<a href="/tasks/{{ e.task }}" class="id">{{ e.task }}</a> {% else %}<span class="faint">—</span>{% endfor %}</dd>
+        <dt>reviews</dt><dd>{% for e in digest.reviews %}{{ e.task }}: {{ e.verdict }}<br>{% else %}<span class="faint">—</span>{% endfor %}</dd>
+        <dt>discovered</dt><dd>{% for e in digest.discovered %}<a href="/tasks/{{ e.new_task }}" class="id">{{ e.new_task }}</a> {% else %}<span class="faint">—</span>{% endfor %}</dd>
+      </dl></div>
+    <div class="panel"><div class="eyebrow">All time</div><h3>Cost by difficulty tier</h3>{{ tiers|safe }}
+      {% if metrics.by_difficulty %}<table style="margin-top:10px;font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>avg rev</th><th>first-pass</th></tr>
+      {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}<tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td></tr>{% endif %}{% endfor %}</table>{% endif %}</div>
+  </div>
+</div>
+{% endblock %}
