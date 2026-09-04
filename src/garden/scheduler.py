@@ -31,6 +31,7 @@ from .github import GitHub, GitHubError, mark_garden_comment
 from .graph import blockers, ready, stack_parents
 from .harness import DIFFICULTIES
 from .model import Phase, Status, Task, now_iso
+from .notify import notify, should_notify
 from .personas import parse_persona, phase_brief, pr_brief, report_markdown, report_path, valid_name
 from .review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from .runner import get_runner
@@ -171,13 +172,15 @@ class Scheduler:
     def slots_free(self) -> int:
         return max(0, int(self.cfg.get("max_parallel", 10)) - len(self.active_runs()))
 
-    def _transition(self, task: Task, status: Status, note: str) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
         self.store.save(task)
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
+        if should_notify(status.value, needs_human=needs_human):
+            notify(self.cfg.data, task.id, status.value, note, task.pr or "")
 
     def _pr_status(self, task: Task) -> Status:
         """Where an open PR sits: awaiting a human's triage while it is a draft, else in review."""
@@ -218,6 +221,7 @@ class Scheduler:
             marker["budget_hit"] = now_iso()
             self.events.emit("budget", "", phase=task.key, spent=spent, budget=budget)
             self.log(f"{task.key}: budget ${budget:.2f} exceeded (spent ${spent:.2f}); dispatch paused")
+            notify(self.cfg.data, task.key, "budget", f"budget ${budget:.2f} exceeded (spent ${spent:.2f})", "")
         return True
 
     # ---- tick --------------------------------------------------------------
@@ -578,10 +582,11 @@ class Scheduler:
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'
         if task.status != Status.CHANGES_REQUESTED:
-            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; run `{action}`")
+            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; run `{action}`", needs_human=True)
         else:
             task.log(f"stalled: {reason}; run `{action}`")
             self.store.save(task)
+            notify(self.cfg.data, task.id, "stalled", reason, task.pr or "")
         rep.transitions.append(f"{task.id} stalled")
 
     # ---- automated review --------------------------------------------------
@@ -792,14 +797,14 @@ class Scheduler:
             note += " + CI failure"
         self.events.emit("feedback", task.id, items=n, ci=bool(ci_note))
         if not bool(self.cfg.get("auto_revise", True)):
-            self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)")
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested")
             return
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
             st["needs_human"] = f"{max_rev} revision rounds used"
             self.events.emit("needs_human", task.id, reason=st["needs_human"])
-            self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human")
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (cap)")
             return
         self._transition(task, Status.CHANGES_REQUESTED, note)
@@ -876,8 +881,10 @@ class Scheduler:
     def _on_parent_closed(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):
             st = self.state.get(child.id)
-            st["needs_human"] = f"stack parent {task.id} was closed without merging"
-            self.events.emit("needs_human", child.id, reason=st["needs_human"])
+            reason = f"stack parent {task.id} was closed without merging"
+            st["needs_human"] = reason
+            self.events.emit("needs_human", child.id, reason=reason)
+            notify(self.cfg.data, child.id, "needs_human", reason, child.pr or "")
             child.log(f"stack parent {task.id} closed without merging; this PR targets a dead branch and needs a human")
             self.store.save(child)
             rep.transitions.append(f"{child.id} needs human (parent closed)")

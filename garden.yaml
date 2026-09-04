@@ -89,6 +89,10 @@ github:
   reviewers: []
   bot_logins: []            # accounts whose PR comments are ignored; other bots count as reviewers
 
+notify:                      # webhook on human-needed task transitions (awaiting_triage, waiting_human, failed, etc)
+  command: ""               # shell command to run; empty = disabled. Env vars: GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR
+  timeout_seconds: 30       # timeout before killing the command; e.g. reach a Slack webhook, log to a file, osascript
+
 products:
   context-garden:
     repo: .                 # this repo is its own first product

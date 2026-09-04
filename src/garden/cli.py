@@ -1164,6 +1164,8 @@ def doctor():
         console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
         ok = ok and not probs
     console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={store.config.get('max_parallel')}")
+    notify_cmd = store.config.get("notify.command")
+    console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
     for p in store.products():
         repo = store.config.product_repo(p.name)
         console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}")

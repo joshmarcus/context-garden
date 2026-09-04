@@ -48,6 +48,10 @@ DEFAULTS: dict[str, Any] = {
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
     },
+    "notify": {
+        "command": "",            # shell command to run when a task needs a human; empty = disabled
+        "timeout_seconds": 30,    # timeout for the command
+    },
     "products": {},
 }
 
