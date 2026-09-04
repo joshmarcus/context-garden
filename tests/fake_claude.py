@@ -106,8 +106,8 @@ if mode.startswith("review"):
         # description-only feedback, no blocking findings: round after round can repeat this
         # without tripping the "same finding twice" stall, since that check only looks at
         # blocking findings.
-        rev = {"verdict": "request_changes", "summary": "description needs work", "description_ok": False,
-               "description_feedback": "explain why this change is needed", "findings": []}
+        rev = {"verdict": "request_changes", "summary": "code is correct, description needs work", "description_ok": False,
+               "description_feedback": "explain why, drop 'as requested'", "findings": []}
     elif mode == "review-rewrite":
         # description-only feedback with the corrected body supplied: the scheduler applies it
         # directly and starts no revise round.

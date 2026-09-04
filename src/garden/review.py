@@ -116,6 +116,14 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
     return "\n".join(out)
 
 
+def review_is_description_only(rev: dict[str, Any]) -> bool:
+    """True when a request_changes verdict has no blocking code findings, only a PR
+    description fix. CG-109: that revise round is a paragraph rewrite, not a code review,
+    and should not cost a code-review-tier model."""
+    findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
+    return not any(f.get("severity") == "blocking" for f in findings) and not rev.get("description_ok", True)
+
+
 def feedback_from_review(rev: dict[str, Any]) -> str:
     """The revise-brief text for a request_changes verdict."""
     items = []

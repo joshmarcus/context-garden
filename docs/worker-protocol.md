@@ -237,7 +237,10 @@ rollup, from the automated review or from a rebase conflict all land in the same
 `pending_feedback` in `state.json`. The next dispatch starts a `revise` run: the same
 worktree and branch, the same brief plus a "Revision round" section and the feedback
 itself (only what is new since the last dispatch). The result line, push and PR update
-follow the same path; the revise run's `pr_body` replaces the PR description.
+follow the same path; the revise run's `pr_body` replaces the PR description. When the
+automated review's only finding is the PR description (no blocking findings), the revise
+round dispatches on the easy tier's model regardless of the task's own difficulty; any
+blocking finding keeps the task's tier.
 
 ## Variants of the transport
 

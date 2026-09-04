@@ -43,7 +43,13 @@ from .retro import (
     render_next_goals,
     render_retro_doc,
 )
-from .review import feedback_from_review, parse_review, review_brief, review_to_markdown
+from .review import (
+    feedback_from_review,
+    parse_review,
+    review_brief,
+    review_is_description_only,
+    review_to_markdown,
+)
 from .runner import get_runner
 from .runner.base import Runner, RunnerError, run_setup
 from .runs import Run, RunStore
@@ -811,6 +817,7 @@ class Scheduler:
             rep.transitions.append(f"{task.id} -> changes_requested (check did not finish)")
             return
         st["pending_feedback"] = feedback
+        st.pop("pending_feedback_easy", None)
         if int(st.get("revisions", 0)) >= max_rev:
             # Cap reached: hand it to a human like the review path, rather than leaving a
             # task in changes_requested that the dispatch queue skips forever.
@@ -1301,6 +1308,7 @@ class Scheduler:
             fb = feedback_from_review(review)
             if fb and bool(self.cfg.get("auto_revise", True)):
                 st["pending_feedback"] = fb
+                st["pending_feedback_easy"] = review_is_description_only(review)
                 self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
                 rep.transitions.append(f"{task.id} -> changes_requested (review)")
                 return True
@@ -1476,6 +1484,7 @@ class Scheduler:
             return
         pending = fb.to_markdown() + ("\n\n" + ci_note if ci_note else "")
         st["pending_feedback"] = pending
+        st.pop("pending_feedback_easy", None)
         n = len(fb.items)
         note = f"{n} new review item(s)" if n else "CI failure"
         if n and ci_note:
@@ -1656,6 +1665,7 @@ class Scheduler:
             f"Then drop from the PR description anything `{new_base}` now already contains; the description must cover only what this branch still adds. "
             f"Put the corrected description in `pr_body` (only if it must change)."
         )
+        st.pop("pending_feedback_easy", None)
         st["force_push"] = True
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
         if child.status.pr_open:
@@ -1696,6 +1706,7 @@ class Scheduler:
             + f"Then drop from the PR description anything `{base}` now already contains; the description must cover only what this branch still adds. "
             + "Put the corrected description in `pr_body` (only if it must change)."
         )
+        st.pop("pending_feedback_easy", None)
         st["force_push"] = True
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
@@ -1908,6 +1919,7 @@ class Scheduler:
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
+        revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
         qa = list(st.get("qa") or [])
         commits_ahead = None
         wt_path = worktree_override or self.worktree_for(task)
@@ -1922,8 +1934,8 @@ class Scheduler:
         text = prompt_override or brief.text
         run = self.runs.new_run(task.id, runner.name, mode=mode)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
-        run.model = model_override if model_override is not None else self.model_for(task, runner)
-        run.difficulty = task.difficulty
+        run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if revise_easy else "")
+        run.difficulty = "easy" if revise_easy else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
         if session_id and st.get("session_host"):
@@ -1948,13 +1960,15 @@ class Scheduler:
         if mode == "revise":
             st["revisions"] = int(st.get("revisions", 0)) + 1
             st["pending_feedback"] = ""
+            st.pop("pending_feedback_easy", None)
         where = f" on {run.host}" if run.host else ""
         model = f" model={run.model}" if run.model else ""
         how = "resumed session" if session_id else "fresh session"
         stacked = f" stacked on {stack['parent_id']}" if stack else ""
+        tier_note = ", description only; easy tier" if revise_easy else ""
         self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
-        self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}, ~{run.brief_tokens} tokens)")
+        self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}, ~{run.brief_tokens} tokens)")
         self.state.save()
         return run
 
@@ -2007,6 +2021,7 @@ class Scheduler:
             f"The person does not accept that. Their note:\n\n{note.strip() or '(no note)'}\n\n"
             f"Carry out the task as originally asked: make the change and, if there is no open PR yet, leave the branch ready for one."
         )
+        st.pop("pending_feedback_easy", None)
         self.events.emit("decision_rejected", task.id, decision=kind, note=note[:200])
         self._transition(task, Status.CHANGES_REQUESTED, f"decision rejected by the person; revise run will follow: {note.strip()[:100]}")
         self.state.save()
@@ -2392,6 +2407,7 @@ class Scheduler:
         if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.cfg.get("auto_revise", True)):
             st = self.state.get(task.id)
             st["pending_feedback"] = "\n".join(f"- **{name} persona** ({f.get('area', '')}): {f.get('summary', '')} — {f.get('suggestion', '')}" for f in highs)
+            st.pop("pending_feedback_easy", None)
             self._transition(task, Status.CHANGES_REQUESTED, f"{name} persona review raised {len(highs)} high finding(s)")
             rep.transitions.append(f"{task.id} -> changes_requested (persona {name})")
 
@@ -2613,6 +2629,7 @@ class Scheduler:
         number = self._pr_number(task)
         if changes:
             st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
+            st.pop("pending_feedback_easy", None)
             st.pop("needs_human", None)
             self._grant_one_more_round(st)
             self.events.emit("triaged", task.id, pr=task.pr, by="human", decision="changes", note=changes[:200])
@@ -2703,6 +2720,7 @@ class Scheduler:
         info = raw if isinstance(raw, dict) else {"reason": str(raw)}
         st.pop("needs_human", None)
         st.pop("pending_feedback", None)
+        st.pop("pending_feedback_easy", None)
         self.events.emit("resumed", task.id, stop_kind=str(info.get("kind", "")), reason=str(info.get("reason", "")))
         prior = str(info.get("prior_status", ""))
         target: Status | None = None
