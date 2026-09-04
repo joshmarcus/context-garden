@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from .config import Config, find_root
@@ -139,7 +141,7 @@ class Store:
     def save(self, task: Task) -> None:
         task.touch()
         task.path.parent.mkdir(parents=True, exist_ok=True)
-        task.path.write_text(task.render())
+        _atomic_write(task.path, task.render())
 
     def next_id(self, product: str) -> str:
         prefix = str(self.config.product(product).get("id_prefix") or _prefix_for(product))
@@ -204,3 +206,16 @@ def _prefix_for(product: str) -> str:
     if len(parts) >= 2:
         return "".join(p[0] for p in parts[:3]).upper()
     return product[:3].upper()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write text to path without a window where a concurrent reader sees a truncated file:
+    write to a temp file in the same directory, then rename (atomic on POSIX)."""
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
