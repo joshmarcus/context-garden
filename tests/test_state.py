@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from garden.scheduler import State, _TaskState
 
 # ── _TaskState unit tests ──────────────────────────────────────────────────────
@@ -140,3 +143,53 @@ def test_read_only_access_does_not_write(tmp_path):
     # File should be untouched (no dirty keys → save is a no-op)
     final = State(path)
     assert final.get("CG-001")["pr_number"] == 7
+
+
+# ── atomic replace ──────────────────────────────────────────────────────────
+
+def test_save_leaves_no_temp_files_behind(tmp_path):
+    """save() writes via a temp file + os.replace(); no .tmp file should remain."""
+    path = tmp_path / "state.json"
+    s = State(path)
+    s.get("CG-001")["pr_number"] = 1
+    s.save()
+
+    assert [p.name for p in tmp_path.iterdir() if p.name != path.name and not p.name.endswith(".lock")] == []
+
+
+def test_concurrent_reader_never_sees_truncated_file(tmp_path, monkeypatch):
+    """A reader racing State.__init__ against save() must see the old or new file in
+    full, never a partial write (CG-091). save() must write the new content to a temp
+    file first and only swap it into place with os.replace(), so the destination path
+    is never open for writing (and thus never truncated) at any point readers can see."""
+    import os as os_module
+
+    path = tmp_path / "state.json"
+
+    init = State(path)
+    init.get("CG-001")["pr_number"] = 1
+    init.save()
+    old_content = path.read_text()
+
+    real_replace = os_module.replace
+    seen: dict = {}
+
+    def spy_replace(src, dst):
+        # Immediately before the swap, the destination must still hold the complete
+        # old content (never truncated) and the source the complete new content.
+        seen["dst_before_replace"] = Path(dst).read_text()
+        seen["src_before_replace"] = Path(src).read_text()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os_module, "replace", spy_replace)
+
+    s = State(path)
+    s.get("CG-002")["pr_number"] = 2
+    s.save()
+
+    assert seen["dst_before_replace"] == old_content
+    assert json.loads(seen["src_before_replace"])["CG-002"]["pr_number"] == 2
+
+    final = State(path)
+    assert final.get("CG-001")["pr_number"] == 1
+    assert final.get("CG-002")["pr_number"] == 2

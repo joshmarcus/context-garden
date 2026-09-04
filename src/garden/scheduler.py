@@ -17,6 +17,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -116,7 +117,11 @@ class State:
     Concurrency guarantee: save() acquires an exclusive flock on a companion
     lock file, re-reads the on-disk state, and merges only the keys that this
     process actually wrote on top of what is currently on disk.  Two concurrent
-    writers that touch different keys of the same task will both survive.
+    writers that touch different keys of the same task will both survive. The
+    new content is written to a temp file and moved into place with os.replace(),
+    so a concurrent reader (e.g. __init__ from another process, which does not
+    take the lock) always sees either the old or the new file in full, never a
+    truncated one.
     """
 
     def __init__(self, path: Path):
@@ -170,7 +175,9 @@ class State:
                         task_disk[key] = task_mem[key]
                     else:
                         task_disk.pop(key, None)
-            self.path.write_text(json.dumps(disk, indent=2, sort_keys=True))
+            tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+            tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))
+            os.replace(tmp_path, self.path)
 
 
 class Scheduler:
