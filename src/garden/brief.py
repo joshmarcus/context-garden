@@ -78,14 +78,14 @@ class Brief:
         """Fixed cost: head + rules + principles + product + goals (+ optional stack/revise)."""
         fixed_sections = {"head", "rules", "principles", "product", "goals", "stack", "revise", "qa"}
         chars = sum(v for k, v in self.sections.items() if k in fixed_sections)
-        return estimate_tokens(" " * chars) if chars else 0
+        return max(1, chars // 4)
 
     @property
     def reading_tokens(self) -> int:
         """Reading list cost: inlined and referenced content."""
         reading_sections = {"reading", "reading_refs", "feedback"}
         chars = sum(v for k, v in self.sections.items() if k in reading_sections)
-        return estimate_tokens(" " * chars) if chars else 0
+        return max(1, chars // 4)
 
 
 def _read(p: Path) -> str:
