@@ -130,7 +130,9 @@ def test_stall_when_revise_changes_nothing(sched, fake_github, monkeypatch):
     rep = sched.tick()
     assert "DM-001 stalled" in rep.transitions
     assert statuses(sched)["DM-001"] == "changes_requested"
-    assert "no change" in sched.state.get("DM-001")["needs_human"]
+    stop = sched.state.get("DM-001")["needs_human"]
+    assert stop["kind"] == "stall" and "no change" in stop["reason"]
+    assert stop["prior_status"] == "in_review"
     assert "garden triage DM-001" in sched.store.task("DM-001").body
     # more feedback does not spend another round while a human is needed
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "again", "created": "2099-01-03T00:00:00Z"}])
@@ -176,7 +178,8 @@ def test_repeated_review_finding_stalls(sched, fake_github, monkeypatch):
     wait_for_runs(sched)
     rep = sched.tick()  # same blocking finding again -> stall
     assert "DM-001 stalled" in rep.transitions
-    assert "repeated" in sched.state.get("DM-001")["needs_human"]
+    stop = sched.state.get("DM-001")["needs_human"]
+    assert stop["kind"] == "stall" and "repeated" in stop["reason"]
 
 
 def test_phase_budget_pauses_dispatch(sched):

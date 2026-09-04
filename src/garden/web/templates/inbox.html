@@ -24,6 +24,14 @@
       <div class="why">{{ it.why }}</div>
       {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
       {% if it.review %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
+      {% if it.group == 'attention' %}
+        {% if it.kind_blurb %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
+        {% if it.evidence %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+        <div id="discuss-{{ it.task }}" hidden style="margin-top:6px">
+          <textarea id="discuss-text-{{ it.task }}" readonly style="width:100%;box-sizing:border-box;min-height:130px">{{ it.discuss }}</textarea>
+          <div class="actions" style="margin-top:4px"><button data-copy="discuss-text-{{ it.task }}">Copy prompt</button><span class="faint">paste it into a chat session or <code>garden take {{ it.task }}</code></span></div>
+        </div>
+      {% endif %}
     </div>
     <div class="do">
       {% if it.group == 'tool' %}
@@ -37,8 +45,16 @@
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
       {% elif it.group == 'attention' %}
-        <form method="post" action="/tasks/{{ it.task }}/retry"><button class="primary">Continue the loop</button></form>
-        <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel task</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">PR ↗</a>{% endif %}</form>
+        {% for a in it.actions %}
+        <div style="display:flex;gap:8px;align-items:center">
+          {% if a.kind == 'resume' %}<form method="post" action="/tasks/{{ it.task }}/resume"><button class="primary">{{ a.label }}</button></form>
+          {% elif a.kind == 'retry' %}<form method="post" action="/tasks/{{ it.task }}/retry"><button>{{ a.label }}</button></form>
+          {% elif a.kind == 'discuss' %}<button class="quiet" data-toggle="discuss-{{ it.task }}">{{ a.label }}…</button>
+          {% elif a.kind == 'cancel' %}<form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">{{ a.label }}</button></form>
+          {% elif a.kind == 'link' %}<a class="btn quiet" href="{{ a.href }}" target="_blank">{{ a.label }} ↗</a>{% endif %}
+          <span class="faint">{{ a.detail }}</span>
+        </div>
+        {% endfor %}
       {% elif it.group == 'retrying' %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
       {% elif it.group == 'approve' %}
