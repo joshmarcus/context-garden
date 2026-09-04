@@ -349,6 +349,13 @@ github:
   use_gh: true              # gh CLI first, REST with GITHUB_TOKEN otherwise
   draft_pr: true            # PRs open as drafts; your triage marks them ready
   reviewers: []
+                            # To post garden comments (reviews, verdicts, persona reviews)
+                            # under a separate identity (bot) instead of your user login:
+                            # - set GITHUB_TOKEN to a fine-grained personal access token or app token
+                            #   (separate from the gh CLI's authentication)
+                            # - all comments will be prefixed with a visible marker identifying
+                            #   the garden and the run, and the HTML comment (for detection) will
+                            #   remain to exclude the garden's own comments from feedback
 products:
   widget:
     repo: ../widget         # path relative to the garden, or a git URL (cloned under .garden/repos)

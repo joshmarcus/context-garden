@@ -76,6 +76,18 @@ def repo_slug_from_remote(url: str) -> str | None:
 GARDEN_MARKER = "<!-- context-garden -->"
 
 
+def mark_garden_comment(body: str, run_id: str = "") -> str:
+    """Prefix a comment with a visible marker identifying it as from context-garden.
+
+    The visible marker helps readers see that this is an automated comment. The hidden
+    GARDEN_MARKER is used for programmatic detection.
+    """
+    marker = "> **🌱 context-garden**"
+    if run_id:
+        marker += f" · run `{run_id}`"
+    return marker + "\n\n" + body
+
+
 class GitHub:
     def __init__(self, use_gh: bool = True, token: str | None = None, bot_logins: list[str] | None = None):
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
