@@ -18,6 +18,44 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_board_columns_and_list_views(garden):
+    c = client(garden)
+    # Default is the columns view.
+    cols = c.get("/board")
+    assert cols.status_code == 200
+    assert 'class="board"' in cols.text
+    assert "viewswitch" in cols.text and "columns" in cols.text and "list" in cols.text
+    # The list view groups tasks by status with section headings and per-state facts.
+    lst = c.get("/board?view=list")
+    assert lst.status_code == 200
+    assert 'class="board-list"' in lst.text
+    assert 'class="lgroup' in lst.text
+    assert "DM-001" in lst.text and "DM-002" in lst.text
+    # A blocked task shows what it waits on in the list.
+    assert "waits on" in lst.text
+    # Both views are reachable through the live-refresh partial.
+    assert 'class="board"' in c.get("/partials/board?view=columns").text
+    assert 'class="board-list"' in c.get("/partials/board?view=list").text
+    # The switch and filters carry the chosen view so navigation keeps it.
+    assert "view=list" in lst.text
+
+
+def test_board_list_surfaces_a_waiting_question(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub, wait_for_runs
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    c = client(garden)
+    text = c.get("/partials/board?view=list").text
+    assert "waiting_human".replace("_", " ") in text
+    assert "Q: Postgres" in text
+
+
 def test_actions(garden):
     c = client(garden)
     r = c.post("/tasks/DM-002/cancel", follow_redirects=False)
