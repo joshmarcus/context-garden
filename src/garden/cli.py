@@ -844,6 +844,7 @@ def plan(
     guidance: str = typer.Option("", help="Extra instructions for the planner"),
     draft: bool = typer.Option(False, help="Create tasks as draft (default follows plan.auto_approve)"),
     approve_all: bool = typer.Option(False, "--approve", help="Create tasks as ready"),
+    replan: bool = typer.Option(False, "--replan", help="Include failed/blocked task logs so the planner can propose fixes or replacements"),
 ):
     """Turn goals + specs into task files (one model call, or --import). Ready by default."""
     from .planner import import_plan, parse_plan, plan_prompt, prompt_tokens, run_planner
@@ -858,7 +859,7 @@ def plan(
     if import_file:
         items = parse_plan(import_file.read_text())
     else:
-        prompt = plan_prompt(store, product, phase, extra=guidance)
+        prompt = plan_prompt(store, product, phase, extra=guidance, replan=replan)
         if dry_run:
             print(prompt)
             err.print(f"[dim]~{prompt_tokens(prompt):,} tokens[/dim]")

@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .model import Task, estimate_tokens, goals_text
+from .model import Status, Task, estimate_tokens, goals_text
 from .store import Store
 
 PLAN_INSTRUCTIONS = """\
@@ -47,7 +47,46 @@ def _read(p: Path) -> str:
         return ""
 
 
-def plan_prompt(store: Store, product: str, phase: str, extra: str = "") -> str:
+def _task_log_lines(task: Task, n: int = 3) -> list[str]:
+    """Return the last n bullet lines from the task's ## Log section."""
+    m = re.search(r"^## Log\s*$(.*?)(?=^## |\Z)", task.body, re.MULTILINE | re.DOTALL)
+    if not m:
+        return []
+    lines = [ln.strip() for ln in m.group(1).splitlines() if ln.strip().startswith("-")]
+    return lines[-n:]
+
+
+def _replan_section(tasks: list[Task]) -> str:
+    """Build a prompt section summarising failed/blocked tasks for --replan."""
+    troubled = [t for t in tasks if t.status in (Status.FAILED, Status.WAITING_HUMAN)]
+    if not troubled:
+        return ""
+    lines = [
+        "## Failed and blocked tasks",
+        "",
+        "These tasks did not complete. When replanning you may fix them in place, split them,",
+        "or supersede them with new tasks. To supersede, include `\"supersedes\": [\"CG-001\"]`",
+        "in the replacement task's JSON; the import will cancel the listed ids.",
+        "",
+    ]
+    for t in troubled:
+        lines.append(f"### {t.id} [{t.status.value}] {t.title}")
+        lines.append("")
+        log = _task_log_lines(t)
+        if log:
+            lines.append("Last log entries:")
+            lines.extend(log)
+        if t.status == Status.WAITING_HUMAN:
+            for entry in reversed(log):
+                m = re.match(r"^- \S+ worker asks: (.+)", entry)
+                if m:
+                    lines.append(f"Blocked question: {m.group(1)}")
+                    break
+        lines.append("")
+    return "\n".join(lines)
+
+
+def plan_prompt(store: Store, product: str, phase: str, extra: str = "", replan: bool = False) -> str:
     prod = store.product(product)
     ph = store.phase(product, phase)
     parts = [PLAN_INSTRUCTIONS]
@@ -70,6 +109,10 @@ def plan_prompt(store: Store, product: str, phase: str, extra: str = "") -> str:
     if other:
         lines = [f"- {t.id} [{t.status.value}] {t.phase}: {t.title}" for t in other[-40:]]
         parts.append("## Tasks in other phases of this product (for dependencies / avoiding repeats)\n\n" + "\n".join(lines))
+    if replan:
+        replan_text = _replan_section(ph.tasks)
+        if replan_text:
+            parts.append(replan_text)
     if extra:
         parts.append("## Additional guidance from the human\n\n" + extra.strip())
     parts.append("Now output the JSON array.")
@@ -139,6 +182,18 @@ def import_plan(store: Store, product: str, phase: str, items: list[dict[str, An
                 t.log(f"planner referenced unknown dependency {d!r}; dropped")
         t.depends_on = deps
         store.save(t)
+    # third pass: supersedes — cancel tasks the planner wants to replace
+    tasks_by_id = store.tasks()
+    for t, item in pending:
+        for sid in [str(s) for s in (item.get("supersedes") or [])]:
+            sup = tasks_by_id.get(sid)
+            if sup is None:
+                t.log(f"supersedes references unknown task {sid!r}; ignored")
+                store.save(t)
+            elif not sup.status.terminal:
+                sup.status = Status.CANCELLED
+                sup.log(f"superseded by {t.id}")
+                store.save(sup)
     store.invalidate()
     return created
 
