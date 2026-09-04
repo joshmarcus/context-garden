@@ -94,13 +94,39 @@ def new_product(name: str, repo: str = typer.Option(".", help="Path (relative to
 
 
 @app.command("new-phase")
-def new_phase(product: str, phase: str):
-    """Scaffold <product>/<phase>/{goals.md,specs/,tasks/}."""
+def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Botanical emblem: pea|bramble|foxglove|fern|poppy (default: next unused)")):
+    """Scaffold <product>/<phase>/{goals.md,specs/,tasks/}; assigns the phase its plant."""
     from .scaffold import new_phase as _nph
 
     store = _store()
-    for p in _nph(store, product, phase):
+    for p in _nph(store, product, phase, plant=plant):
         console.print(f"created {p}")
+    store.invalidate()
+    try:
+        ph = store.phase(product, phase)
+        console.print(f"plate {ph.plate} · {ph.latin} ({ph.common})")
+    except KeyError:
+        pass
+
+
+@app.command()
+def plants():
+    """The botanical key: which plant each phase carries, and the growth-stage names for task states."""
+    from .plants import PLANTS, STAGE_WORD
+
+    store = _store()
+    table = Table(title="plates")
+    for c in ("product/phase", "plate", "plant", "latin", "note"):
+        table.add_column(c)
+    for prod in store.products():
+        for ph in prod.phases:
+            from .plants import plant_info
+
+            info = plant_info(ph.plant)
+            table.add_row(ph.key, ph.plate, ph.plant, info["latin"], info["note"])
+    console.print(table)
+    console.print("seed packet (unassigned, in order): " + ", ".join(p["latin"] for p in PLANTS))
+    console.print("stages: " + " · ".join(f"{k} = {v}" for k, v in STAGE_WORD.items() if k != "blocked"))
 
 
 @app.command("new-task")

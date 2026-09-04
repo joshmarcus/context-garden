@@ -23,6 +23,7 @@ specs under `context-garden/phase-01-bootstrap/specs/`.
 - `context-garden/<phase>/` goals, specs and tasks for the tool itself
 - `.claude/skills/` `garden-take`, `garden-plan`, `garden-review` for interactive sessions
 - `personas/` reviewer personas for `garden persona-review`
+- The look is a herbarium (see `context-garden/phase-01-bootstrap/specs/botanical-theme.md`): plants per phase and growth-stage glyphs are drawings in `src/garden/plants.py`; keep titles and copy plain
 
 ## Rules
 

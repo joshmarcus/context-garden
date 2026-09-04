@@ -10,10 +10,10 @@
   <div class="stack">
     <div class="panel"><div class="eyebrow">Progress</div><h3>Merged against scope</h3>{{ burnup|safe }}</div>
     <div class="panel">
-      <table>
+      <div class="scroll"><table>
       <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>tokens</th><th>cost</th></tr>
       {% for t, eff, st, u in rows %}
-      <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
+      <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="state s-{{ eff }}" title="{{ stage_word(eff) }}">{{ stage(eff, 18) }}{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
         <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% if st.pr_draft %} <span class="badge">draft</span>{% endif %}{% endif %}</td>
         <td class="muted">{% if st.last_review %}auto: {{ st.last_review.verdict.replace('_', ' ') }}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
         <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ (st.checks or '').lower() }}</td>
@@ -21,7 +21,7 @@
         <td class="muted mono" title="input / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
         <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
       {% else %}<tr><td colspan="12" class="faint">no tasks yet</td></tr>{% endfor %}
-      </table>
+      </table></div>
       <div class="actions" style="margin-top:12px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/plan" style="display:inline-flex; gap:6px; align-items:center">
@@ -40,6 +40,13 @@
     <div class="panel prose"><div class="eyebrow">Goals</div>{{ goals_html|safe }}</div>
   </div>
   <div class="stack">
+    <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
+      <span class="tape" style="left:46%; top:150px; transform:rotate(-8deg)"></span>
+      <div style="display:flex; justify-content:center">{{ plant(phase.plant, 240, 360) }}</div>
+      <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
+      <div class="lbl" style="right:16px; bottom:16px"><b>{{ phase.product }} · plate {{ phase.plate }}</b><br>{{ phase.name }}<br><i>{{ sheet.info.latin }}</i> — {{ sheet.info.common }}<br>{{ sheet.total }} tasks · {{ sheet.merged }} merged · {{ sheet.prs_open }} PRs open<br>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% endif %}</div>
+      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">{{ 'complete' if sheet.complete else 'open' }}</span></div>
+    </div>
     <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3>{{ tiers|safe }}
       {% if metrics.by_difficulty %}<table style="margin-top:10px;font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th></tr>
       {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}<tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.done }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td></tr>{% endif %}{% endfor %}</table>{% endif %}

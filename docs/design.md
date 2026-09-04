@@ -38,6 +38,8 @@ attention and tokens. So:
 | **trial** | one task run by several models, compared, winner kept, scores recorded |
 | **triage** | the human's first look at a draft PR: ready for review, or send back |
 | **inbox** | the one list of everything that needs a person, with the action for each |
+| **plant, plate** | every phase's emblem, drawn as a pressed specimen and numbered like a plate in a flora |
+| **stage** | the growth-stage drawing shown beside each task state (seed, sprout, leaf, bud, flower, fruit) |
 
 ## Architecture
 

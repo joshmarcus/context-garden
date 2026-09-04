@@ -19,9 +19,22 @@ def _ts(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s)
 
 
-def burnup_svg(events: list[dict[str, Any]], total_tasks: int, width: int = 640, height: int = 220) -> str:
-    """Cumulative tasks done over time (single series, area) against the total (reference line)."""
-    done = sorted(e["at"] for e in events if e.get("kind") == "transition" and e.get("to") == "done")
+def burnup_svg(events: list[dict[str, Any]], total_tasks: int, width: int = 640, height: int = 220,
+               done_ids: set[str] | None = None) -> str:
+    """Cumulative tasks done over time (single series, area) against the total (reference line).
+
+    With `done_ids`, only tasks that are done *now* count, each at its latest done transition, so the
+    chart agrees with the task table even when a task was reopened after a merge.
+    """
+    done_events = [e for e in events if e.get("kind") == "transition" and e.get("to") == "done"]
+    if done_ids is None:
+        done = sorted(e["at"] for e in done_events)
+    else:
+        latest: dict[str, str] = {}
+        for e in done_events:
+            if e.get("task") in done_ids:
+                latest[e["task"]] = max(latest.get(e["task"], ""), e["at"])
+        done = sorted(latest.values())
     opened = sorted(e["at"] for e in events if e.get("kind") == "pr_opened")
     if not done and not opened:
         return '<div class="empty">No merges yet. The burn-up starts with the first merged PR.</div>'

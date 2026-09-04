@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import Task, estimate_tokens
+from .model import Task, estimate_tokens, goals_text
 from .store import Store
 
 RESULT_MARKER = "GARDEN_RESULT:"
@@ -133,7 +133,7 @@ def build_brief(
         inlined.append(store.rel(product.overview_path))
 
     if phase.goals_path:
-        sections.append(("goals", f"## Phase goals: {phase.name}\n\n" + _read(phase.goals_path).strip() + "\n"))
+        sections.append(("goals", f"## Phase goals: {phase.name}\n\n" + goals_text(phase.goals_path) + "\n"))
         inlined.append(store.rel(phase.goals_path))
 
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
