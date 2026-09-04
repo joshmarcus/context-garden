@@ -24,6 +24,10 @@ DEFAULTS: dict[str, Any] = {
     "auto_revise": True,
     "auto_dispatch": True,
     "plan": {"auto_approve": True},
+    "stack": True,                # start tasks on top of a dependency's open PR branch
+    "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
+    "stall": {"enabled": True},   # escalate to a human when revise rounds stop changing the diff
+    "budgets": {},                # "<product>/<phase>": usd cap; also products.<name>.budget_usd
     "review": {
         "enabled": True,
         "max_rounds": 2,          # automated review rounds per PR

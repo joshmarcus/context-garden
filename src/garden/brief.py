@@ -24,12 +24,29 @@ OPERATING_RULES = """\
 - Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
 - Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
 - Run the project's own fast checks (tests, lint, typecheck) before you finish. Fix what you broke.
-- If you are blocked on something only a human can decide, stop early and report `status: blocked` with a precise question rather than guessing.
+- If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
+- If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "blocked", "summary": "<1-3 sentences>", "pr_title": "<title>", "pr_body": "<markdown body>", "notes": "<anything the human should know>"}}
+  {marker} {{"status": "done" | "needs_input" | "blocked", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "pr_title": "<title>", "pr_body": "<markdown body>", "notes": "<anything the human should know>", "discovered": [{{"title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
-  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request.
+  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `discovered` may be omitted or empty.
+"""
+
+STACK_NOTE = """\
+## Stacked branch
+
+This task depends on **{parent_id}** ({parent_title}), whose pull request ({parent_pr}) is open but not merged yet. Your branch is based on that task's branch (`{parent_branch}`), so its changes are already in your worktree; build on them and do not modify them. Your PR will target that branch and is retargeted to `{final_base}` automatically when the parent merges.
+"""
+
+RESUME_PROMPT = """\
+The human answered your question.
+
+**Your question:** {question}
+
+**Answer:** {answer}
+
+Continue the task from where you stopped, in the same worktree and branch. The same rules apply: commit your work, do not push, and end your final message with the `{marker}` line (status `done`, or `needs_input` again with a new question).
 """
 
 REVISE_RULES = """\
@@ -64,6 +81,10 @@ def _read(p: Path) -> str:
         return ""
 
 
+def resume_prompt(question: str, answer: str) -> str:
+    return RESUME_PROMPT.format(question=question.strip(), answer=answer.strip(), marker=RESULT_MARKER)
+
+
 def build_brief(
     store: Store,
     task: Task,
@@ -72,6 +93,8 @@ def build_brief(
     base: str | None = None,
     review_feedback: str = "",
     include_rules: bool = True,
+    stack: dict | None = None,
+    qa: list[dict] | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -97,6 +120,8 @@ def build_brief(
         sections.append(("rules", rules))
         if review_feedback:
             sections.append(("revise", REVISE_RULES.format(pr=task.pr or "(unknown)")))
+        if stack:
+            sections.append(("stack", STACK_NOTE.format(**stack)))
 
     digest = root / str(cfg.get("principles_digest"))
     if digest.exists():
@@ -158,6 +183,11 @@ def build_brief(
         )
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
+    if qa:
+        lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
+        for i, item in enumerate(qa, 1):
+            lines.append(f"{i}. **Q:** {str(item.get('q', '')).strip()}\n   **A:** {str(item.get('a', '')).strip()}\n")
+        sections.append(("qa", "\n".join(lines)))
 
     # Enforce the total budget by trimming the largest inlined reading entries first.
     text = "\n".join(s for _, s in sections)

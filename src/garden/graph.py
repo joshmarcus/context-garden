@@ -48,28 +48,44 @@ def topological_order(tasks: dict[str, Task]) -> list[str]:
     return order
 
 
-def blockers(task: Task, tasks: dict[str, Task]) -> list[str]:
-    """Deps that are not done (unknown deps count as blockers)."""
+def stackable(dep: Task) -> bool:
+    """A dependency whose branch is pushed and PR is open can be stacked on."""
+    return dep.status.has_branch and bool(dep.branch) and bool(dep.pr)
+
+
+def blockers(task: Task, tasks: dict[str, Task], stack: bool = False) -> list[str]:
+    """Deps that are not done (unknown deps count as blockers). With `stack`, deps whose PR is
+    open count as satisfied: the task will branch from the dep's branch."""
     out = []
     for d in task.depends_on:
         dep = tasks.get(d)
-        if dep is None or dep.status != Status.DONE:
-            out.append(d)
+        if dep is None or dep.status == Status.DONE:
+            if dep is None:
+                out.append(d)
+            continue
+        if stack and stackable(dep):
+            continue
+        out.append(d)
     return out
 
 
-def is_blocked(task: Task, tasks: dict[str, Task]) -> bool:
-    return bool(blockers(task, tasks))
+def stack_parents(task: Task, tasks: dict[str, Task]) -> list[Task]:
+    """Open-PR dependencies this task would stack on (in dependency order)."""
+    return [tasks[d] for d in task.depends_on if d in tasks and tasks[d].status != Status.DONE and stackable(tasks[d])]
 
 
-def ready(tasks: dict[str, Task]) -> list[Task]:
+def is_blocked(task: Task, tasks: dict[str, Task], stack: bool = False) -> bool:
+    return bool(blockers(task, tasks, stack))
+
+
+def ready(tasks: dict[str, Task], stack: bool = False) -> list[Task]:
     """Tasks that can be dispatched now, best first (priority, then id)."""
-    out = [t for t in tasks.values() if t.status == Status.READY and not is_blocked(t, tasks)]
+    out = [t for t in tasks.values() if t.status == Status.READY and not is_blocked(t, tasks, stack)]
     return sorted(out, key=lambda t: (t.priority, t.id))
 
 
-def effective_status(task: Task, tasks: dict[str, Task]) -> str:
-    if task.status in (Status.READY, Status.DRAFT) and is_blocked(task, tasks):
+def effective_status(task: Task, tasks: dict[str, Task], stack: bool = False) -> str:
+    if task.status in (Status.READY, Status.DRAFT) and is_blocked(task, tasks, stack):
         return "blocked"
     return task.status.value
 
@@ -104,6 +120,7 @@ MERMAID_CLASS = {
     "running": "fill:#cce5ff,stroke:#004085,color:#333",
     "in_review": "fill:#e2d9f3,stroke:#4b2e83,color:#333",
     "changes_requested": "fill:#ffe5d0,stroke:#b35c00,color:#333",
+    "waiting_human": "fill:#fde2f3,stroke:#8a1c5c,color:#333",
     "done": "fill:#d4edda,stroke:#155724,color:#333",
     "failed": "fill:#f8d7da,stroke:#721c24,color:#333",
     "cancelled": "fill:#e9ecef,stroke:#6c757d,color:#999",
@@ -123,6 +140,8 @@ def mermaid(tasks: dict[str, Task], direction: str = "LR") -> str:
         for d in t.depends_on:
             if d in tasks:
                 lines.append(f"  {_mid(d)} --> {_mid(t.id)}")
+        if t.discovered_from in tasks:
+            lines.append(f"  {_mid(t.discovered_from)} -.->|discovered| {_mid(t.id)}")
     return "\n".join(lines)
 
 
@@ -138,6 +157,7 @@ SVG_FILL = {
     "running": ("#cce5ff", "#004085"),
     "in_review": ("#e2d9f3", "#4b2e83"),
     "changes_requested": ("#ffe5d0", "#b35c00"),
+    "waiting_human": ("#fde2f3", "#8a1c5c"),
     "done": ("#d4edda", "#155724"),
     "failed": ("#f8d7da", "#721c24"),
     "cancelled": ("#e9ecef", "#6c757d"),
@@ -150,6 +170,8 @@ def layers(tasks: dict[str, Task]) -> dict[str, int]:
     out: dict[str, int] = {}
     for tid in order:
         deps = [d for d in tasks[tid].depends_on if d in out]
+        if tasks[tid].discovered_from in out:
+            deps.append(tasks[tid].discovered_from)
         out[tid] = 1 + max((out[d] for d in deps), default=-1)
     return out
 
@@ -182,13 +204,14 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/") -> str:
         '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/></marker></defs>',
     ]
     for t in tasks.values():
-        for d in t.depends_on:
-            if d not in pos:
-                continue
+        edges = [(d, "") for d in t.depends_on if d in pos]
+        if t.discovered_from in pos and t.discovered_from not in t.depends_on:
+            edges.append((t.discovered_from, ' stroke-dasharray="5,4"'))
+        for d, dash in edges:
             x1, y1 = pos[d][0] + w, pos[d][1] + h / 2
             x2, y2 = pos[t.id][0], pos[t.id][1] + h / 2
             cx = (x1 + x2) / 2
-            parts.append(f'<path d="M {x1:.0f} {y1:.0f} C {cx:.0f} {y1:.0f}, {cx:.0f} {y2:.0f}, {x2:.0f} {y2:.0f}" fill="none" stroke="#888" stroke-width="1.3" marker-end="url(#arrow)"/>')
+            parts.append(f'<path d="M {x1:.0f} {y1:.0f} C {cx:.0f} {y1:.0f}, {cx:.0f} {y2:.0f}, {x2:.0f} {y2:.0f}" fill="none" stroke="#888" stroke-width="1.3"{dash} marker-end="url(#arrow)"/>')
     for tid, (x, y) in pos.items():
         t = tasks[tid]
         fill, stroke = SVG_FILL[effective_status(t, tasks)]

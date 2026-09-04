@@ -10,7 +10,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Header, Markdown, Static
+from textual.widgets import DataTable, Footer, Header, Input, Markdown, Static
 
 from ..graph import blockers, effective_status
 from ..model import Status
@@ -20,7 +20,7 @@ from ..store import Store
 
 STATUS_COLOR = {
     "draft": "grey70", "blocked": "yellow", "ready": "cyan", "running": "blue", "in_review": "magenta",
-    "changes_requested": "dark_orange", "done": "green", "failed": "red", "cancelled": "grey50",
+    "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "done": "green", "failed": "red", "cancelled": "grey50",
 }
 
 
@@ -31,6 +31,8 @@ class GardenTUI(App):
     #right { width: 40%; border-left: solid $panel; padding: 0 1; }
     #detail { height: 1fr; }
     #status { height: 1; color: $text-muted; padding: 0 1; }
+    #answer { display: none; }
+    #answer.visible { display: block; }
     DataTable { height: 1fr; }
     """
     BINDINGS = [
@@ -43,6 +45,7 @@ class GardenTUI(App):
         Binding("b", "brief", "Brief size"),
         Binding("l", "log", "Log"),
         Binding("f", "filter", "Filter open/all"),
+        Binding("w", "answer", "Answer question"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -57,6 +60,7 @@ class GardenTUI(App):
         with Horizontal():
             with Vertical(id="left"):
                 yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+                yield Input(placeholder="answer for the waiting worker, enter to send, esc to cancel", id="answer")
                 yield Static("", id="status")
             with Vertical(id="right"):
                 yield Markdown("", id="detail")
@@ -81,13 +85,16 @@ class GardenTUI(App):
         table.clear()
         rs = RunStore(self.store.config.garden_dir)
         active = {r.task_id: r for r in rs.active()}
+        stack = bool(self.store.config.get("stack", True))
         for t in sorted(tasks.values(), key=lambda t: (t.status.terminal, t.product, t.phase, t.priority, t.id)):
-            eff = effective_status(t, tasks)
+            eff = effective_status(t, tasks, stack)
             if self.only_open and eff in ("done", "cancelled"):
                 continue
             extra = ""
             if eff == "blocked":
-                extra = "waits " + ",".join(blockers(t, tasks))
+                extra = "waits " + ",".join(blockers(t, tasks, stack))
+            elif eff == "waiting_human":
+                extra = "Q: " + str(State(self.store.config.garden_dir / "state.json").get(t.id).get("question", ""))[:40]
             elif eff == "running" and t.id in active:
                 extra = f"{active[t.id].elapsed_minutes():.0f} min"
             elif t.pr:
@@ -105,7 +112,8 @@ class GardenTUI(App):
         tot = rs.totals()
         counts: dict[str, int] = {}
         for t in tasks.values():
-            counts[effective_status(t, tasks)] = counts.get(effective_status(t, tasks), 0) + 1
+            e = effective_status(t, tasks, stack)
+            counts[e] = counts.get(e, 0) + 1
         summary = "  ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
         self._set_status(f"{summary}   runs {tot['runs']} ${tot['cost_usd']:.2f}   {self._msg}")
         self._show_detail()
@@ -152,6 +160,14 @@ class GardenTUI(App):
             head.append(f"last run: {r.run_id} {r.status}{cost} ({len(runs)} total)")
             if r.error:
                 head.append(f"error: {r.error[:200]}")
+        if st.get("stack_parent"):
+            head.append(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
+        if t.discovered_from:
+            head.append(f"discovered by: {t.discovered_from}")
+        if st.get("question"):
+            head.append(f"\n## Waiting for your answer\n\n{st['question']}\n\n(press `w` to answer)")
+        if st.get("needs_human"):
+            head.append(f"\n**Needs a human:** {st['needs_human']} (press `e` to continue)")
         if st.get("pending_feedback"):
             head.append("\n## Pending feedback\n\n" + st["pending_feedback"])
         detail.update("\n\n".join(head) + "\n\n---\n\n" + t.body)
@@ -228,6 +244,40 @@ class GardenTUI(App):
         final = (r.path / "final.md").read_text() if (r.path / "final.md").exists() else ""
         stderr = r.stderr_text()[-3000:]
         detail.update(f"# {t.id} run {r.run_id}\n\nstatus {r.status} · {r.dir}\n\n## Final message\n\n{final or '_none_'}\n\n## stderr\n\n```\n{stderr}\n```")
+
+    def action_answer(self) -> None:
+        t = self._current()
+        if not t or t.status != Status.WAITING_HUMAN:
+            self._msg = "select a waiting_human task first"
+            self.action_refresh()
+            return
+        box = self.query_one("#answer", Input)
+        box.add_class("visible")
+        box.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        box = self.query_one("#answer", Input)
+        text = event.value.strip()
+        box.value = ""
+        box.remove_class("visible")
+        self.query_one(DataTable).focus()
+        t = self._current()
+        if not text or not t:
+            return
+        try:
+            run = self._sched().answer(t, text)
+            self._msg = f"{t.id}: {'resumed' if run.session_id else 'fresh run with answer'}"
+        except Exception as e:  # noqa: BLE001
+            self._msg = f"answer failed: {e}"
+        self.action_refresh()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            box = self.query_one("#answer", Input)
+            if box.has_class("visible"):
+                box.remove_class("visible")
+                box.value = ""
+                self.query_one(DataTable).focus()
 
     def action_filter(self) -> None:
         self.only_open = not self.only_open

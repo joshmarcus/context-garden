@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.templating import Jinja2Templates
 
 from ..brief import build_brief
+from ..events import EventLog, digest, metrics, parse_since
 from ..graph import (
     blockers,
     critical_path,
@@ -33,7 +34,7 @@ from ..scheduler import Scheduler, State
 from ..store import Store
 
 TEMPLATES = Path(__file__).parent / "templates"
-COLUMNS = ["draft", "blocked", "ready", "running", "in_review", "changes_requested", "done", "failed"]
+COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "in_review", "changes_requested", "done", "failed"]
 
 
 class Hub:
@@ -106,16 +107,21 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     def board_data(product: str | None, phase: str | None) -> dict[str, Any]:
         s = hub.fresh()
         tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
+        state = State(s.config.garden_dir / "state.json")
         cols: dict[str, list] = {c: [] for c in COLUMNS}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
             if product and t.product != product:
                 continue
             if phase and t.phase != phase:
                 continue
-            eff = effective_status(t, tasks)
+            eff = effective_status(t, tasks, stack)
             if eff == "cancelled":
                 continue
-            cols[eff].append({"task": t, "blockers": blockers(t, tasks) if eff == "blocked" else []})
+            st = state.get(t.id)
+            cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+                              "stack": st.get("stack_parent", ""), "needs_human": st.get("needs_human", ""),
+                              "question": st.get("question", "") if eff == "waiting_human" else ""})
         runs = RunStore(s.config.garden_dir)
         active = {r.task_id: r for r in runs.active()}
         return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
@@ -138,13 +144,16 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         except KeyError:
             raise HTTPException(404) from None
         tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
         runs = RunStore(s.config.garden_dir).runs_for(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
         body, log = _split_log(t.body)
+        evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
         return templates.TemplateResponse(request, "task.html", ctx(
-            request, task=t, eff=effective_status(t, tasks), blockers=blockers(t, tasks),
+            request, task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), state=st, body_html=render_md(body),
-            log_lines=log, rel=s.rel(t.path),
+            log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
+            discovered=[x for x in tasks.values() if x.discovered_from == t.id],
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
         ))
 
@@ -202,6 +211,17 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         return templates.TemplateResponse(request, "runs.html", ctx(
             request, runs=list(reversed(rs.all_runs())), totals=rs.totals(), events=list(reversed(hub.events))[:100]))
 
+    @app.get("/events", response_class=HTMLResponse)
+    def events_page(request: Request, since: str = "24h"):
+        s = hub.fresh()
+        since_iso = parse_since(since) if since else ""
+        evs = EventLog(s.config.garden_dir / "events.jsonl").read(since=since_iso)
+        d = digest(evs)
+        tasks = s.tasks()
+        return templates.TemplateResponse(request, "events.html", ctx(
+            request, events=list(reversed(evs))[:300], digest=d, since=since, tasks=tasks,
+            metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)))
+
     @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
     def phase_page(request: Request, product: str, phase: str):
         s = hub.fresh()
@@ -215,9 +235,14 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
         state = State(s.config.garden_dir / "state.json")
+        stack = bool(s.config.get("stack", True))
+        sched = hub.scheduler()
+        phase_tasks = {t.id: t for t in ph.tasks}
+        m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), phase_tasks)
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
-            rows=[(t, effective_status(t, tasks), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
+            rows=[(t, effective_status(t, tasks, stack), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
         ))
 
@@ -261,6 +286,9 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             elif action == "review":
                 if t.pr:
                     sched.dispatch_review(t)
+            elif action == "answer":
+                if t.status == Status.WAITING_HUMAN and note.strip():
+                    sched.answer(t, note.strip())
             elif action == "reset-revisions":
                 st = sched.state.get(t.id)
                 st["revisions"] = 0
@@ -307,7 +335,8 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     def api_tasks():
         s = hub.fresh()
         tasks = s.tasks()
-        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks)} for t in tasks.values()])
+        stack = bool(s.config.get("stack", True))
+        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack)} for t in tasks.values()])
 
     @app.get("/api/events")
     def api_events():

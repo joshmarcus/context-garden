@@ -24,7 +24,7 @@ class LocalRunner(Runner):
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         final_path = d / "final.md"
-        inner = self.harness.shell_command(run.model, final_path)
+        inner = self.harness_shell(run, final_path)
         timeout_min = int(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
             inner = f"timeout {timeout_min * 60} {inner}"

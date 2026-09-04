@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Timeline{% endblock %}
+{% block body %}
+<div class="filters">
+  {% for w in ['6h','24h','3d','1w'] %}<a href="/events?since={{ w }}" class="{{ 'on' if since == w else '' }}">{{ w }}</a>{% endfor %}
+  <span class="muted" style="margin-left:auto">{{ events|length }} events · {{ digest.dispatched }} dispatches · ${{ '%.2f' % digest.cost_usd }}</span>
+</div>
+<div class="grid2">
+  <div>
+    {% if digest.needs_human %}<div class="panel" style="border-color:var(--failed)"><h3 style="margin-top:0;color:var(--failed)">Needs you</h3><ul class="tl">{% for e in digest.needs_human %}<li><a href="/tasks/{{ e.task }}">{{ e.task }}</a> <span class="k">{{ e.kind }}</span> {{ e.question or e.reason or e.note or e.to }}</li>{% endfor %}</ul></div>{% endif %}
+    <div class="panel"><h3 style="margin-top:0">Timeline</h3>
+      <ul class="tl">{% for e in events %}<li><span class="muted mono">{{ e.at[5:16] }}</span> <a href="/tasks/{{ e.task }}">{{ e.task }}</a> <span class="k">{{ e.kind }}</span>
+        {% if e.kind == 'transition' %}{{ e['from'] }} → {{ e.to }}: {{ e.note[:100] }}{% elif e.kind == 'dispatch' %}{{ e.mode }} {{ e.model }}{% if e.resumed %} (resumed){% endif %}{% elif e.kind == 'run_finished' %}{{ e.mode }} {{ e.status }}{% if e.cost_usd %} ${{ '%.2f' % e.cost_usd }}{% endif %}{% elif e.kind == 'review' %}{{ e.verdict }}: {{ e.summary[:100] }}{% elif e.kind == 'waiting_human' %}{{ e.question[:120] }}{% elif e.kind == 'discovered' %}{{ e.new_task }} {{ e.title }}{% elif e.kind == 'budget' %}{{ e.phase }} spent ${{ '%.2f' % e.spent }} of ${{ '%.2f' % e.budget }}{% else %}{{ e.reason or e.note or e.pr or e.answer or '' }}{% endif %}</li>
+      {% else %}<li class="muted">no events in this window</li>{% endfor %}</ul></div>
+  </div>
+  <div>
+    <div class="panel"><h3 style="margin-top:0">Since {{ since }}</h3>
+      <dl class="kv">
+        <dt>PRs opened</dt><dd>{% for e in digest.prs_opened %}<a href="/tasks/{{ e.task }}">{{ e.task }}</a> {% else %}—{% endfor %}</dd>
+        <dt>merged</dt><dd>{% for e in digest.merged %}<a href="/tasks/{{ e.task }}">{{ e.task }}</a> {% else %}—{% endfor %}</dd>
+        <dt>reviews</dt><dd>{% for e in digest.reviews %}{{ e.task }}: {{ e.verdict }}<br>{% else %}—{% endfor %}</dd>
+        <dt>discovered</dt><dd>{% for e in digest.discovered %}<a href="/tasks/{{ e.new_task }}">{{ e.new_task }}</a> {% else %}—{% endfor %}</dd>
+      </dl></div>
+    {% if metrics.by_difficulty %}<div class="panel"><h3 style="margin-top:0">All time, by difficulty</h3>
+      <table><tr><th>tier</th><th>tasks</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
+      {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}<tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td><td>${{ '%.2f' % d.cost_usd }}</td></tr>{% endif %}{% endfor %}</table></div>{% endif %}
+  </div>
+</div>
+{% endblock %}

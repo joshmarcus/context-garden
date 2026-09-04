@@ -34,8 +34,10 @@ own the code change.
    ```
 
    `finish` pushes the branch and opens the PR (or comments on the existing one for a
-   revision round) and moves the task to `in_review`. If you are blocked on a human
-   decision, use `garden finish <ID> --blocked --summary "<the precise question>"` instead.
+   revision round) and moves the task to `in_review`. Add `"discovered": [{"title", "body",
+   "difficulty", "blocking"}]` for out-of-scope work you noticed; the garden files it as
+   tasks. If you need a human decision, ask the user directly (you are interactive) rather
+   than reporting `needs_input`; that status is for headless workers.
 
 ## If you are already inside the product repo (no worktree)
 

@@ -135,10 +135,32 @@ def commit_all(worktree: Path, message: str) -> bool:
     return True
 
 
-def push(worktree: Path, branch: str) -> None:
+def push(worktree: Path, branch: str, force: bool = False) -> None:
     if not remote_url(worktree):
         raise GitError("no origin remote to push to")
-    git("push", "-u", "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
+    args = ["push", "-u"]
+    if force:
+        args.append("--force-with-lease")
+    git(*args, "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
+
+
+def rebase_onto(worktree: Path, onto: str) -> tuple[bool, list[str]]:
+    """Rebase the worktree branch onto `onto` (e.g. origin/main). Returns (ok, conflicted files);
+    on conflict the rebase is aborted so the worktree is left clean."""
+    fetch(worktree)
+    try:
+        git("rebase", onto, cwd=worktree)
+        return True, []
+    except GitError:
+        files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        git("rebase", "--abort", cwd=worktree, check=False)
+        return False, files
+
+
+def diff_hash(worktree: Path, base: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(diff(worktree, base).encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def log_summary(worktree: Path, base: str, n: int = 20) -> str:

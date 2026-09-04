@@ -53,6 +53,7 @@ STATUS_STYLE = {
     "running": "blue",
     "in_review": "magenta",
     "changes_requested": "dark_orange",
+    "waiting_human": "deep_pink3",
     "done": "green",
     "failed": "red",
     "cancelled": "dim strike",
@@ -139,17 +140,26 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     tasks = store.tasks()
     table = Table(title=f"garden: {store.config.get('name')}  ({store.root})", show_lines=False)
     table.add_column("product/phase")
-    for s in ["draft", "blocked", "ready", "running", "in_review", "changes_requested", "done", "failed"]:
-        table.add_column(s, justify="right")
+    cols = ["draft", "blocked", "ready", "running", "waiting_human", "in_review", "changes_requested", "done", "failed"]
+    short = {"blocked": "blkd", "running": "run", "waiting_human": "wait", "in_review": "review", "changes_requested": "chg", "failed": "fail"}
+    for s in cols:
+        table.add_column(short.get(s, s), justify="right")
+    table.add_column("spent", justify="right")
+    sched = _scheduler(store)
+    stack = bool(store.config.get("stack", True))
     for prod in store.products():
         if product and prod.name != product:
             continue
         for ph in prod.phases:
             counts = {s: 0 for s in STATUS_ORDER + ["blocked"]}
             for t in ph.tasks:
-                counts[effective_status(t, tasks)] += 1
-            table.add_row(ph.key, *[_count(counts[s], s) for s in
-                                     ["draft", "blocked", "ready", "running", "in_review", "changes_requested", "done", "failed"]])
+                counts[effective_status(t, tasks, stack)] += 1
+            budget = sched.budget_for(ph.key)
+            spent = sched.spent_for(ph.key)
+            money = f"${spent:.2f}" + (f" / ${budget:.2f}" if budget else "")
+            if budget and spent >= budget:
+                money = f"[red]{money}[/red]"
+            table.add_row(ph.key, *[_count(counts[s], s) for s in cols], money)
     console.print(table)
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
@@ -163,7 +173,8 @@ def _count(n: int, s: str) -> str:
 def ls(
     product: str | None = typer.Option(None, "--product", "-p"),
     phase: str | None = typer.Option(None, "--phase"),
-    status_: str | None = typer.Option(None, "--status", "-s", help="draft|blocked|ready|running|in_review|changes_requested|done|failed|cancelled"),
+    status_: str | None = typer.Option(None, "--status", "-s", help="draft|blocked|ready|running|waiting_human|in_review|changes_requested|done|failed|cancelled"),
+    discovered: bool = typer.Option(False, help="Only tasks that workers discovered"),
     json_out: bool = typer.Option(False, "--json"),
 ):
     """List tasks."""
@@ -171,13 +182,16 @@ def ls(
 
     store = _store()
     tasks = store.tasks()
+    stack = bool(store.config.get("stack", True))
     rows = []
     for t in sorted(tasks.values(), key=lambda t: (t.product, t.phase, t.id)):
         if product and t.product != product:
             continue
         if phase and t.phase != phase:
             continue
-        eff = effective_status(t, tasks)
+        if discovered and not t.discovered_from:
+            continue
+        eff = effective_status(t, tasks, stack)
         if status_ and eff != status_:
             continue
         rows.append((t, eff))
@@ -190,8 +204,11 @@ def ls(
     for t, eff in rows:
         deps = ",".join(t.depends_on)
         if eff == "blocked":
-            deps = "[yellow]" + ",".join(blockers(t, tasks)) + "[/yellow]"
-        table.add_row(t.id, _style(eff), str(t.priority), t.difficulty, t.title, t.key, deps, t.pr or "")
+            deps = "[yellow]" + ",".join(blockers(t, tasks, stack)) + "[/yellow]"
+        elif stack and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
+            deps = "[cyan]stack:" + ",".join(blockers(t, tasks, stack=False)) + "[/cyan]"
+        title = t.title + (" [dim](discovered)[/dim]" if t.discovered_from else "")
+        table.add_row(t.id, _style(eff), str(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
     console.print(table)
 
 
@@ -222,6 +239,17 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(f"pr: {t.pr}")
     if t.reading:
         console.print("reading: " + ", ".join(t.reading))
+    if t.discovered_from:
+        console.print(f"discovered by: {t.discovered_from}")
+    from .scheduler import State
+
+    st = State(store.config.garden_dir / "state.json").get(t.id)
+    if st.get("stack_parent"):
+        console.print(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
+    if t.status == Status.WAITING_HUMAN and st.get("question"):
+        console.print(f"[bold deep_pink3]question:[/bold deep_pink3] {st['question']}\n  answer with: garden answer {t.id} \"...\"")
+    if st.get("needs_human"):
+        console.print(f"[bold red]needs a human:[/bold red] {st['needs_human']}  (garden retry {t.id} to resume)")
     console.print(Markdown(t.body))
     runs = RunStore(store.config.garden_dir).runs_for(t.id)
     if runs:
@@ -263,10 +291,13 @@ def graph(
         print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": effective_status(t, tasks)} for t in tasks.values()],
                           "edges": [{"from": d, "to": t.id} for t in tasks.values() for d in t.depends_on]}, indent=2))
         return
+    stack = bool(store.config.get("stack", True))
     for tid in topological_order(tasks):
         t = tasks[tid]
         arrows = f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""
-        console.print(f"{tid:<10} {_style(effective_status(t, tasks)):<22} {t.title}{arrows}")
+        if t.discovered_from:
+            arrows += f"  (discovered by {t.discovered_from})"
+        console.print(f"{tid:<10} {_style(effective_status(t, tasks, stack)):<22} {t.title}{arrows}")
     cp = critical_path(tasks)
     if cp:
         console.print(f"\ncritical path: {' -> '.join(cp)}")
@@ -495,6 +526,111 @@ def finish(
         t.pr = pr_url
     rep = _scheduler(store).finish_manual(t, result)
     console.print(rep.summary())
+
+
+@app.command()
+def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to the worker's question")):
+    """Answer a waiting_human task; the worker resumes (same session when the harness supports it)."""
+    store = _store()
+    t = _task(store, task_id)
+    try:
+        run = _scheduler(store).answer(t, text)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: {'resumed session' if run.session_id else 'fresh run with the answer'} ({run.run_id})")
+
+
+@app.command()
+def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an ISO timestamp")):
+    """What happened while you were away: PRs opened and merged, tasks needing you, cost."""
+    from .events import EventLog, parse_since
+    from .events import digest as _digest
+
+    store = _store()
+    since_iso = parse_since(since)
+    events = EventLog(store.config.garden_dir / "events.jsonl").read(since=since_iso)
+    d = _digest(events)
+    console.print(f"[bold]since {since_iso}[/bold]: {len(events)} events, {d['dispatched']} dispatches, ${d['cost_usd']:.2f} spent")
+    tasks = store.tasks()
+
+    def title(tid: str) -> str:
+        return tasks[tid].title if tid in tasks else ""
+
+    if d["needs_human"]:
+        console.print("\n[bold red]Needs you[/bold red]")
+        seen = set()
+        for ev in d["needs_human"]:
+            key = (ev["task"], ev.get("kind"))
+            if key in seen:
+                continue
+            seen.add(key)
+            what = ev.get("question") or ev.get("reason") or ev.get("note") or ev.get("to") or ev.get("kind")
+            console.print(f"  {ev['task']:<8} {title(ev['task'])[:40]:<40} {what}")
+    if d["prs_opened"]:
+        console.print("\n[bold magenta]PRs opened[/bold magenta]")
+        for ev in d["prs_opened"]:
+            console.print(f"  {ev['task']:<8} {title(ev['task'])[:40]:<40} {ev.get('pr', '')}")
+    if d["reviews"]:
+        console.print("\n[bold]Automated reviews[/bold]")
+        for ev in d["reviews"]:
+            console.print(f"  {ev['task']:<8} {ev.get('verdict', ''):<16} {ev.get('summary', '')[:70]}")
+    if d["merged"]:
+        console.print("\n[bold green]Merged[/bold green]")
+        for ev in d["merged"]:
+            console.print(f"  {ev['task']:<8} {title(ev['task'])}")
+    if d["discovered"]:
+        console.print("\n[bold cyan]Discovered work[/bold cyan]")
+        for ev in d["discovered"]:
+            console.print(f"  {ev.get('new_task', ''):<8} {ev.get('title', '')[:50]:<50} by {ev['task']}" + (" [blocking]" if ev.get("blocking") else ""))
+    if not any([d["needs_human"], d["prs_opened"], d["reviews"], d["merged"], d["discovered"]]):
+        console.print("[dim]nothing notable[/dim]")
+
+
+@app.command()
+def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
+    """Lead time, revise rounds, first-pass approval and cost per task and per difficulty tier."""
+    from .events import EventLog
+    from .events import metrics as _metrics
+
+    store = _store()
+    tasks = store.tasks()
+    if target:
+        product, phase = _split_target(target)
+        tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
+    events = EventLog(store.config.garden_dir / "events.jsonl").read()
+    m = _metrics(events, tasks)
+    table = Table(title="per task")
+    for c in ("id", "difficulty", "status", "runs", "revisions", "first review", "cost", "lead h"):
+        table.add_column(c)
+    for r in m["tasks"]:
+        table.add_row(r["id"], r["difficulty"], _style(str(r["status"].value if hasattr(r["status"], "value") else r["status"])),
+                      str(r["runs"]), str(r["revisions"]), r["first_review"], f"${r['cost_usd']:.2f}",
+                      f"{r['lead_hours']:.1f}" if r["lead_hours"] is not None else "")
+    console.print(table)
+    table = Table(title="per difficulty tier (is 'easy' really easy?)")
+    for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "cost", "avg lead h"):
+        table.add_column(c)
+    for tier in ("easy", "medium", "hard"):
+        d = m["by_difficulty"].get(tier)
+        if not d:
+            continue
+        table.add_row(tier, str(d["tasks"]), str(d["done"]), str(d["avg_revisions"]),
+                      f"{d['first_pass_rate']:.0%}" if d["first_pass_rate"] is not None else "",
+                      f"${d['cost_usd']:.2f}", f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
+    console.print(table)
+
+
+@app.command()
+def events(task_id: str | None = typer.Argument(None), since: str = typer.Option("", help="90m, 24h, 3d or ISO"), limit: int = typer.Option(50, "-n")):
+    """Timeline of scheduler events (all, or one task)."""
+    from .events import EventLog, parse_since
+
+    store = _store()
+    evs = EventLog(store.config.garden_dir / "events.jsonl").read(since=parse_since(since) if since else "", task_id=task_id or "")
+    for ev in evs[-limit:]:
+        extra = {k: v for k, v in ev.items() if k not in ("at", "kind", "task", "usage")}
+        console.print(f"[dim]{ev['at'][5:19]}[/dim] {ev['task']:<8} [bold]{ev['kind']:<14}[/bold] " + " ".join(f"{k}={v}" for k, v in extra.items() if v not in ("", None, False, 0)))
 
 
 # --------------------------------------------------------------------------- planning

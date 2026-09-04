@@ -29,6 +29,7 @@ Layout:
 - `src/garden/harness.py` harness definitions (claude, codex, custom) and output parsing
 - `src/garden/runner/` runner backends (`local`, `ssh`, `manual`)
 - `src/garden/review.py` automated review brief and verdict parsing
+- `src/garden/events.py` append-only event log, digest and metrics
 - `src/garden/gitops.py`, `src/garden/github.py` git worktrees and PRs
 - `src/garden/planner.py` planning prompt and JSON import
 - `src/garden/web/` FastAPI + HTMX web UI; `src/garden/tui/` Textual TUI

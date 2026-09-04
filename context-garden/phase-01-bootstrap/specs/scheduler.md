@@ -32,6 +32,9 @@ Every PR the garden opened (or attached with `garden pr`) is tracked until merge
 closed: `garden prs [product/phase]` and the phase page list state, review decision, CI
 rollup with failed check names, revision and review counts, and the last poll time.
 
+See coordination.md for stacking, pause/resume, discovered work, stall detection, budgets
+and the event log, which hook into the same three steps.
+
 ## Run records
 
 `.garden/runs/<task>/<run-id>/` holds `run.json`, `brief.md`, `stdout.json`, `stderr.log`,

@@ -140,14 +140,16 @@ class FakeGitHub:
     def comment(self, slug, number, body):
         self.comments.append(body)
 
-    def update_pr(self, slug, number, title="", body=""):
+    def update_pr(self, slug, number, title="", body="", base=""):
         for pr in self.prs.values():
             if pr.number == number:
                 if title:
                     pr.title = title
                 if body:
                     pr.body = body
-                self.updated.append({"number": number, "title": title, "body": body})
+                if base:
+                    pr.base = base
+                self.updated.append({"number": number, "title": title, "body": body, "base": base})
 
 
 @pytest.fixture

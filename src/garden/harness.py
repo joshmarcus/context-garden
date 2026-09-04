@@ -23,6 +23,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "MultiEdit"],
         "models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
         "review_model": "",              # empty = the task's difficulty tier
+        "resume": True,                  # `claude -p --resume <session>` after a human answers
     },
     "codex": {
         "bin": "codex",
@@ -30,6 +31,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "permission_mode": "full-auto",  # or "bypass"
         "models": {},                    # empty = the CLI default for every tier
         "review_model": "",
+        "resume": False,                 # set true if your codex supports `codex exec resume <id>`
     },
 }
 
@@ -103,6 +105,30 @@ class Harness:
 
     def shell_command(self, model: str = "", final_path: Path | None = None) -> str:
         return " ".join(shlex.quote(c) for c in self.command(model, final_path))
+
+    @property
+    def can_resume(self) -> bool:
+        return bool(self.cfg.get("resume")) and (self.output in ("claude-json", "codex-jsonl") or bool(self.cfg.get("resume_command")))
+
+    def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None) -> list[str]:
+        """Argv that continues a previous session; the follow-up prompt arrives on stdin."""
+        if self.cfg.get("resume_command"):
+            return [str(a).replace("{session}", session_id).replace("{model}", model).replace("{final}", str(final_path or ""))
+                    for a in self.cfg["resume_command"] if str(a)]
+        if self.output == "claude-json":
+            cmd = self.command(model, final_path)
+            cmd = cmd[:-1] + ["--resume", session_id, "Continue the task with the answer that follows."]
+            return cmd
+        if self.output == "codex-jsonl":
+            cmd = self.command(model, final_path)
+            # codex exec resume <id> [PROMPT]; keep the flags, prompt from stdin
+            i = cmd.index("exec") + 1
+            cmd = cmd[:i] + ["resume", session_id] + cmd[i:]
+            return cmd
+        raise ValueError(f"harness {self.name} cannot resume")
+
+    def shell_resume_command(self, session_id: str, model: str = "", final_path: Path | None = None) -> str:
+        return " ".join(shlex.quote(c) for c in self.resume_command(session_id, model, final_path))
 
     # ---- output ------------------------------------------------------------
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None) -> dict[str, Any]:

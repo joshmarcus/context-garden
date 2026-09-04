@@ -6,7 +6,7 @@
   {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary">Approve</button></form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
-  {% if task.status.value in ('failed','cancelled','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Reset to ready</button></form>{% endif %}
+  {% if task.status.value in ('failed','cancelled','changes_requested') or state.needs_human %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Reset / continue</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button>Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.status.value in ('running','in_review','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button>Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="danger">Cancel</button></form>{% endif %}
@@ -15,6 +15,17 @@
   {% if runs %}<a class="btn" href="/tasks/{{ task.id }}/log" target="_blank">Latest log</a>{% endif %}
   {% if task.pr and task.status.value in ('in_review','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button>Run automated review</button></form>{% endif %}
 </div>
+{% if task.status.value == 'waiting_human' %}
+<div class="panel" style="border-color:#b0306f">
+  <h3 style="margin-top:0;color:#b0306f">The worker is waiting for you</h3>
+  <p><b>Question:</b> {{ state.question }}</p>
+  <form method="post" action="/tasks/{{ task.id }}/answer">
+    <textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea>
+    <div class="actions"><button class="primary">Answer and resume</button></div>
+  </form>
+</div>
+{% endif %}
+{% if state.needs_human %}<div class="warn"><b>Needs a human:</b> {{ state.needs_human }}. Fix or decide, then use "Reset / continue" to let the loop resume.</div>{% endif %}
 <div class="grid2">
   <div>
     <div class="panel prose">{{ body_html|safe }}</div>
@@ -24,6 +35,9 @@
       <h3 style="margin-top:0">Runs</h3>
       <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000">{% include "_runs.html" %}</div>
     </div>
+    {% if state.qa %}<div class="panel"><h3 style="margin-top:0">Questions and answers</h3>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
+    {% if discovered %}<div class="panel"><h3 style="margin-top:0">Discovered work</h3><ul>{% for d in discovered %}<li><a href="/tasks/{{ d.id }}">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
+    {% if events %}<div class="panel"><h3 style="margin-top:0">Timeline</h3><ul class="tl">{% for e in events %}<li><span class="muted mono">{{ e.at[5:16] }}</span> <span class="k">{{ e.kind }}</span> {% if e.kind == 'transition' %}{{ e['from'] }} → {{ e.to }}: {{ e.note }}{% elif e.kind == 'dispatch' %}{{ e.mode }} {{ e.model }} {% if e.resumed %}(resumed){% endif %} base {{ e.base }}{% elif e.kind == 'run_finished' %}{{ e.mode }} {{ e.status }}{% if e.cost_usd %} ${{ '%.2f' % e.cost_usd }}{% endif %}{% elif e.kind == 'review' %}{{ e.verdict }}: {{ e.summary }}{% elif e.kind == 'waiting_human' %}{{ e.question }}{% elif e.kind == 'answer' %}{{ e.answer }}{% elif e.kind == 'discovered' %}{{ e.new_task }} {{ e.title }}{% elif e.kind == 'stall' %}{{ e.reason }}{% elif e.kind == 'restacked' %}onto {{ e.base }}{% if e.conflict %} (conflict){% endif %}{% elif e.kind == 'stacked' %}on {{ e.parent }} ({{ e.base }}){% elif e.kind == 'pr_opened' %}{{ e.pr }}{% else %}{{ e.reason or e.note or '' }}{% endif %}</li>{% endfor %}</ul></div>{% endif %}
     {% if log_lines %}<div class="panel"><h3 style="margin-top:0">Log</h3><div class="log">{% for l in log_lines %}{{ l }}
 {% endfor %}</div></div>{% endif %}
   </div>
@@ -33,6 +47,8 @@
         <dt>file</dt><dd class="mono">{{ rel }}</dd>
         <dt>phase</dt><dd><a href="/phases/{{ task.product }}/{{ task.phase }}">{{ task.product }}/{{ task.phase }}</a></dd>
         <dt>priority</dt><dd>{{ task.priority }}{% if task.estimate %} · {{ task.estimate }}{% endif %} · {{ task.difficulty }}{% if task.model %} · model {{ task.model }}{% endif %}</dd>
+        {% if task.discovered_from %}<dt>discovered by</dt><dd><a href="/tasks/{{ task.discovered_from }}">{{ task.discovered_from }}</a></dd>{% endif %}
+        {% if state.stack_parent %}<dt>stacked on</dt><dd><a href="/tasks/{{ state.stack_parent }}">{{ state.stack_parent }}</a> <span class="muted">(PR targets {{ state.pr_base }})</span></dd>{% endif %}
         <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>reading</dt><dd>{% for r in task.reading %}<span class="mono">{{ r }}</span><br>{% else %}<span class="muted">—</span>{% endfor %}</dd>

@@ -2,7 +2,7 @@
 {% block title %}{{ phase.key }}{% endblock %}
 {% block body %}
 <h2 style="margin:0 0 6px">{{ phase.product }} / {{ phase.name }}</h2>
-<p class="muted">{{ rows|selectattr('0.pr')|list|length }} PR(s) tracked; polled every tick for merges, comments and CI · fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
+<p class="muted">spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }} budget{% if spent >= budget %} <b style="color:var(--failed)">(exceeded; dispatch paused)</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked; polled every tick for merges, comments and CI · fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
 <div class="grid2">
   <div>
     <div class="panel">
@@ -25,6 +25,11 @@
         {% if planning %}<span class="muted">{{ planning }}</span>{% endif %}
       </div>
     </div>
+    {% if metrics.by_difficulty %}<div class="panel"><h3 style="margin-top:0">Metrics by difficulty</h3>
+      <table><tr><th>tier</th><th>tasks</th><th>done</th><th>avg revisions</th><th>first-pass approve</th><th>cost</th><th>avg lead h</th></tr>
+      {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}
+      <tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.done }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td><td>${{ '%.2f' % d.cost_usd }}</td><td>{% if d.avg_lead_hours is not none %}{{ d.avg_lead_hours }}{% endif %}</td></tr>
+      {% endif %}{% endfor %}</table></div>{% endif %}
     <div class="panel prose"><h3 style="margin-top:0">Goals</h3>{{ goals_html|safe }}</div>
   </div>
   <div>

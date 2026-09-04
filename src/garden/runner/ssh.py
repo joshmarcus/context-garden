@@ -50,7 +50,10 @@ if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
 fi
 cd "$WT"
 git checkout -q "$BRANCH" >&2 || true
-if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then git merge -q --ff-only "origin/$BRANCH" >&2 || true; fi
+if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+  if [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ] && [ "$(git rev-list --count origin/$BRANCH..HEAD)" = "0" ]; then git merge -q --ff-only "origin/$BRANCH" >&2 || true; fi
+  if [ "$(git rev-list --count origin/$BRANCH..HEAD)" != "0" ] && [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ]; then git reset -q --hard "origin/$BRANCH" >&2; fi
+fi
 mkdir -p .garden-run
 cat > .garden-run/brief.md <<'GARDEN_BRIEF_EOF'
 {brief}
@@ -62,7 +65,7 @@ RC=$?
 set -e
 rm -rf .garden-run
 if [ -n "$(git status --porcelain)" ]; then git add -A >&2; git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >&2 || true; fi
-if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u origin "HEAD:refs/heads/$BRANCH" >&2; fi
+if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >&2; fi
 exit $RC
 """
 
@@ -75,9 +78,12 @@ class SSHRunner(Runner):
         return list(self.config.get("hosts") or [])
 
     def assign(self, run: Run, active: list[Run]) -> None:
-        """Least-loaded host that has a clone of this product (run.host may be preset)."""
+        """Least-loaded host that has a clone of this product (run.host may be preset, e.g. to
+        resume a session that lives on that host)."""
         product = str(getattr(run, "product", "") or self.config.get("_product") or "")
         candidates = [h for h in self.hosts() if not product or product in (h.get("repos") or {})]
+        if run.host:
+            candidates = [h for h in candidates if h.get("name") == run.host] or candidates
         if not candidates:
             raise RunnerError(f"no ssh host has a repo for product {product!r}")
         load = {h["name"]: 0 for h in candidates}
@@ -107,7 +113,7 @@ class SSHRunner(Runner):
         (d / "brief.md").write_text(brief_text)
         if "GARDEN_BRIEF_EOF" in brief_text:
             raise RunnerError("brief contains the heredoc delimiter")
-        harness_cmd = self.harness.shell_command(run.model, None)
+        harness_cmd = self.harness_shell(run, None)
         script = REMOTE_SCRIPT.format(
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
             brief=brief_text, harness=harness_cmd, run_id=run.run_id,

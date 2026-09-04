@@ -258,13 +258,15 @@ class GitHub:
         items.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items)
 
-    def update_pr(self, slug: str, number: int, title: str = "", body: str = "") -> None:
-        if not title and not body:
+    def update_pr(self, slug: str, number: int, title: str = "", body: str = "", base: str = "") -> None:
+        if not title and not body and not base:
             return
         if self.gh:
             args = ["pr", "edit", str(number), "-R", slug]
             if title:
                 args += ["--title", title]
+            if base:
+                args += ["--base", base]
             if body:
                 args += ["--body-file", "-"]
             self._gh(*args, input_=body if body else None)
@@ -274,6 +276,8 @@ class GitHub:
             payload["title"] = title
         if body:
             payload["body"] = body
+        if base:
+            payload["base"] = base
         self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json=payload)
 
     def comment(self, slug: str, number: int, body: str) -> None:

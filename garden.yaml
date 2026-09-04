@@ -13,6 +13,13 @@ auto_revise: true           # tick dispatches revise runs when PRs get feedback 
 plan:
   auto_approve: true        # planner output is created `ready` (dispatched on the next tick)
 
+stack: true                 # a task may start on top of a dependency's open PR branch; restacked on merge
+discovered:
+  auto_approve_blocking: true   # work a worker reports as blocking is created `ready`, not `draft`
+stall:
+  enabled: true             # stop revise loops that don't change the diff / repeat a review finding
+budgets: {}                 # "context-garden/phase-02-friction": 25.0   (usd cap per phase; see products.*.budget_usd)
+
 review:
   enabled: true             # automated first review of every PR round (acceptance criteria,
   max_rounds: 2             # correctness, scope, PR description quality / no scar tissue)
@@ -33,10 +40,12 @@ harnesses:
     permission_mode: acceptEdits   # or bypass (== --dangerously-skip-permissions)
     allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
     models: {easy: haiku, medium: sonnet, hard: opus}
+    resume: true                   # continue the same session after `garden answer`
   codex:
     bin: codex
     permission_mode: full-auto     # or bypass (== --dangerously-bypass-approvals-and-sandbox)
     models: {}                     # empty = the codex CLI default for every tier
+    resume: false                  # true if your codex supports `codex exec resume <id>`
 
 # Remote workers (runner: ssh). Each host has a clone of each product repo it may work on.
 ssh:
@@ -59,4 +68,5 @@ products:
     id_prefix: CG
     # runner: ssh           # per-product overrides
     # harness: codex
+    # budget_usd: 100       # per-product default budget for every phase
     # github: owner/name    # only needed when the origin remote is not a github.com URL

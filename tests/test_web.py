@@ -28,3 +28,25 @@ def test_actions(garden):
     assert "draft" in c.get("/api/tasks").json()[0]["status"]
     c.post("/phases/demo/p1/approve-all")
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
+
+
+def test_events_page_and_answer_flow(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub, wait_for_runs
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert "waiting for you" in page and "Postgres or SQLite?" in page
+    assert c.get("/events").status_code == 200 and "waiting_human" in c.get("/events").text
+    assert "Q: Postgres" in c.get("/partials/board").text
+    r = c.post("/tasks/DM-001/answer", data={"note": "SQLite"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert c.get("/api/tasks").json()[0]["status"] == "running"
+    page = c.get("/tasks/DM-001").text
+    assert "Questions and answers" in page and "SQLite" in page and "Timeline" in page

@@ -5,6 +5,8 @@ Reads the brief from stdin, does something to the cwd (a git worktree) depending
 FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
 Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
+       | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
+       | nochange (revise rounds commit nothing) | conflict (edits README.md to collide with main)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -51,7 +53,26 @@ if mode.startswith("review"):
                       "usage": {"input_tokens": 2000, "output_tokens": 100}, "total_cost_usd": 0.02}))
     sys.exit(0)
 
-if mode in ("done", "noresult"):
+resumed = "--resume" in args
+if mode == "needs_input" and not resumed:
+    # commit partial work, then ask
+    Path("partial.txt").write_text("half done\n")
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake", "commit", "-q", "-m", "partial"], check=True)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": "sess-42",
+                      "result": 'Stopping.\nGARDEN_RESULT: {"status": "needs_input", "question": "Postgres or SQLite?", "summary": "need a decision"}',
+                      "usage": {"input_tokens": 300, "output_tokens": 20}, "total_cost_usd": 0.01}))
+    sys.exit(0)
+if resumed:
+    Path("resumed.txt").write_text(brief)  # the resume prompt (contains the answer)
+if mode == "nochange" and "Revision round" in brief:
+    final = 'Nothing to change.\nGARDEN_RESULT: {"status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b"}'
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": final, "usage": {}, "total_cost_usd": 0.01}))
+    sys.exit(0)
+if mode == "conflict":
+    Path("README.md").write_text("# demo\n\nchanged by worker\n")
+
+if mode in ("done", "noresult", "needs_input", "discover", "nochange", "conflict"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
@@ -64,17 +85,20 @@ elif mode == "blocked":
     final = 'Need a decision.\nGARDEN_RESULT: {"status": "blocked", "summary": "Which database?", "notes": ""}'
 else:
     revise = "Revision round" in brief
-    final = (
-        "All done.\n"
-        + "GARDEN_RESULT: "
-        + json.dumps({
-            "status": "done",
-            "summary": "revised per feedback" if revise else "implemented the thing",
-            "pr_title": "Fake: implemented the thing",
-            "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
-            "notes": "",
-        })
-    )
+    result = {
+        "status": "done",
+        "summary": "revised per feedback" if revise else ("resumed and finished" if resumed else "implemented the thing"),
+        "pr_title": "Fake: implemented the thing",
+        "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
+        "notes": "",
+    }
+    if mode == "discover":
+        result["discovered"] = [
+            {"title": "Fix the flaky widget test", "body": "## Goal\n\nIt flakes.", "difficulty": "easy", "blocking": False},
+            {"title": "Add the missing config schema", "body": "## Goal\n\nNeeded first.", "difficulty": "medium", "blocking": True},
+            {"title": "First task", "body": "duplicate title, must be skipped"},
+        ]
+    final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
 print(json.dumps({
     "type": "result", "subtype": "success", "is_error": False, "result": final,
     "usage": {"input_tokens": 1234, "output_tokens": 321, "cache_read_input_tokens": 100},

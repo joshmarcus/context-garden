@@ -32,6 +32,7 @@ class Status(str, Enum):
     RUNNING = "running"  # a worker is on it
     IN_REVIEW = "in_review"  # PR open, waiting on humans / CI
     CHANGES_REQUESTED = "changes_requested"  # review feedback waiting for a revise run
+    WAITING_HUMAN = "waiting_human"  # worker asked a question; resumes when answered
     DONE = "done"  # PR merged (or manually closed out)
     FAILED = "failed"  # worker failed / PR closed unmerged / needs a human
     CANCELLED = "cancelled"
@@ -42,7 +43,12 @@ class Status(str, Enum):
 
     @property
     def active(self) -> bool:
-        return self in (Status.RUNNING, Status.IN_REVIEW, Status.CHANGES_REQUESTED)
+        return self in (Status.RUNNING, Status.IN_REVIEW, Status.CHANGES_REQUESTED, Status.WAITING_HUMAN)
+
+    @property
+    def has_branch(self) -> bool:
+        """The task's branch is pushed and a PR is open (stackable)."""
+        return self in (Status.IN_REVIEW, Status.CHANGES_REQUESTED)
 
 
 STATUS_ORDER = [s.value for s in Status]
@@ -92,6 +98,7 @@ class Task:
     harness: str = ""  # override harness (claude | codex | ...)
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
+    discovered_from: str = ""  # task id that reported this one as discovered work
     attempts: int = 0
     last_dispatched_at: str = ""
     created: str = ""
@@ -117,6 +124,7 @@ class Task:
         "harness",
         "difficulty",
         "model",
+        "discovered_from",
         "attempts",
         "last_dispatched_at",
         "created",
@@ -152,6 +160,7 @@ class Task:
             harness=str(data.get("harness") or ""),
             difficulty=str(data.get("difficulty") or "medium"),
             model=str(data.get("model") or ""),
+            discovered_from=str(data.get("discovered_from") or ""),
             attempts=int(data.get("attempts", 0) or 0),
             last_dispatched_at=str(data.get("last_dispatched_at") or ""),
             created=str(data.get("created") or ""),
@@ -174,7 +183,7 @@ class Task:
             data["estimate"] = self.estimate
         data["difficulty"] = self.difficulty
         data["reading"] = list(self.reading)
-        for k in ("repo", "branch", "pr", "runner", "harness", "model"):
+        for k in ("repo", "branch", "pr", "runner", "harness", "model", "discovered_from"):
             v = getattr(self, k)
             if v:
                 data[k] = v

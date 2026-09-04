@@ -29,6 +29,7 @@ class Run:
     harness: str = ""
     model: str = ""
     host: str = ""  # ssh runner: which host
+    session_id: str = ""  # harness session, for resume
     status: str = "running"  # running | done | blocked | failed | timeout | cancelled
     pid: int | None = None
     started_at: str = ""

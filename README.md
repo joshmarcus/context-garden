@@ -119,8 +119,9 @@ principles digest, the product overview, the phase goals, the task body, and the
 list inlined. `garden brief WID-003 --stats` shows the size of each section. A typical
 brief is 2-4k tokens; that is the whole point.
 
-Workers end with one line, `GARDEN_RESULT: {"status": "done", "summary": ..., "pr_title":
-..., "pr_body": ...}`. They never push; the runner does.
+Workers end with one line, `GARDEN_RESULT: {"status": "done" | "needs_input", "summary":
+..., "question": ..., "pr_title": ..., "pr_body": ..., "discovered": [...]}`. They never
+push; the runner does.
 
 ## Commands
 
@@ -133,6 +134,8 @@ Workers end with one line, `GARDEN_RESULT: {"status": "done", "summary": ..., "p
 | `garden approve ID... ` / `--all product/phase` | draft -> ready |
 | `garden prs [product/phase]` | every tracked PR: review decision, CI, failed checks, revisions |
 | `garden review ID` | start an automated review round now |
+| `garden answer ID "..."` | answer a `waiting_human` task; the worker resumes |
+| `garden digest [--since 24h]` / `metrics [product/phase]` / `events [ID]` | what happened, how it's going, the timeline |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
 | `garden take ID [--worktree]` / `finish ID --result '{...}'` | human-driven session path |
@@ -155,6 +158,25 @@ One `tick` is deterministic (details in `context-garden/phase-01-bootstrap/specs
 Run it however you like: `garden watch` in a terminal, `garden serve` (loop + web UI),
 or `garden tick` from cron/launchd every minute. Ticks are idempotent and safe to overlap
 with the UIs.
+
+## Coordination
+
+Borrowed from graph-based agent systems; all deterministic (details in
+`context-garden/phase-01-bootstrap/specs/coordination.md`):
+
+- **Stacked dependencies.** A task whose dependency has an open PR starts on top of that
+  branch instead of waiting for the merge; its PR targets the parent branch and is
+  retargeted and rebased when the parent merges. Conflicts become a revise run.
+- **Pause and resume.** A worker that needs a decision reports `needs_input`; the task
+  waits (holding no slot) until `garden answer ID "..."`, then the same session resumes.
+- **Discovered work.** Workers list out-of-scope work they noticed; it becomes task files
+  with `discovered_from`, ready immediately when blocking. `garden ls --discovered`.
+- **Stall detection and budgets.** A revise round that changes nothing, or a review
+  finding that repeats, stops the loop and flags the task for you. Per-phase dollar
+  budgets pause dispatch.
+- **Event log, digest, metrics.** `.garden/events.jsonl` feeds `garden digest --since
+  24h` (what needs you, PRs opened/merged, cost), `garden metrics` (lead time, revise
+  rounds, first-pass approval and cost per difficulty tier), and the Timeline page.
 
 ## Harnesses and models
 
@@ -209,8 +231,8 @@ CI, failed checks, revisions), a one-click planner, and run/cost history. No bui
 no CDN.
 
 `garden tui`: the same data in the terminal. Keys: `a` approve, `d` dispatch, `t` tick,
-`x` cancel, `e` reset to ready, `b` brief size, `l` last log, `f` toggle done/cancelled,
-`r` refresh, `q` quit.
+`w` answer a waiting worker, `x` cancel, `e` reset/continue, `b` brief size, `l` last log,
+`f` toggle done/cancelled, `r` refresh, `q` quit.
 
 ## Configuration (`garden.yaml`)
 
@@ -227,6 +249,11 @@ auto_dispatch: true
 auto_revise: true
 plan:
   auto_approve: true        # planner output is ready immediately
+stack: true                 # start on a dependency's open PR branch; restack on merge
+stall:
+  enabled: true             # flag revise loops that stop converging
+budgets:
+  widget/phase-01: 50.0     # usd cap per phase (or products.widget.budget_usd)
 review:
   enabled: true
   max_rounds: 2
