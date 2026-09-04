@@ -118,3 +118,11 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   reads 7.3M; output 61k. Everything ran on haiku. The lint round and the scar-tissue round,
   $0.27 plus a review, were the garden's own doing: the worker's false claim slipped past
   it, and the two prompts disagree.
+- **After the run.** `garden finish CG-027` opened its draft PR and filed the eleven items
+  as CG-032 to CG-042 in one call. CG-008 and CG-009 were then approved (`garden approve`,
+  both dispatched on sonnet at the next tick) and CG-010 left draft for the model trial.
+  Those three facts live in the task files' logs and in `events.jsonl`, not in this PR's
+  diff, and the automated review of this PR requested changes for exactly that reason: it
+  wanted the approvals "verified in the diff". A reviewer of a manual task cannot see garden
+  state, and a manual task gets no revise run, so the request sat until a person took the
+  task again. Two more items for the pile.
