@@ -972,6 +972,10 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
     events = EventLog(store.config.garden_dir / "events.jsonl").read(since=since_iso)
     d = _digest(events)
     console.print(f"[bold]since {since_iso}[/bold]: {len(events)} events, {d['dispatched']} dispatches, ${d['cost_usd']:.2f} spent")
+    n_decisions = len({(ev["task"], ev.get("kind")) for ev in d["needs_human"]})
+    n_notices = len(d["failures"])
+    console.print(f"  [bold]{n_decisions}[/bold] decision{'s' if n_decisions != 1 else ''} need you, "
+                  f"[dim]{n_notices} notice{'s' if n_notices != 1 else ''} (no action needed)[/dim]")
     tasks = store.tasks()
 
     def title(tid: str) -> str:
@@ -1197,23 +1201,35 @@ def triage(
 @app.command()
 def inbox():
     """Everything that needs a human, with the command that resolves it."""
-    from .inbox import build_inbox
+    from .inbox import build_inbox, decisions, notices
 
     store = _store()
     items = build_inbox(store, _scheduler(store))
-    if not items:
+    decision_items = decisions(items)
+    notice_items = notices(items)
+    if decision_items:
+        console.print(f"[bold]{len(decision_items)} need you[/bold]")
+        current = ""
+        for it in decision_items:
+            if it["group"] != current:
+                current = it["group"]
+                console.print(f"\n[bold]{it['group_title']}[/bold]")
+            console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
+            for a in it["actions"]:
+                if a.get("command"):
+                    detail = f"  [dim]{a['detail']}[/dim]" if a.get("detail") else ""
+                    console.print(f"           [cyan]{a['command']}[/cyan]{detail}")
+    else:
         console.print("[green]inbox zero[/green] — nothing needs you")
-        return
-    current = ""
-    for it in items:
-        if it["group"] != current:
-            current = it["group"]
-            console.print(f"\n[bold]{it['group_title']}[/bold]")
-        console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
-        for a in it["actions"]:
-            if a.get("command"):
-                detail = f"  [dim]{a['detail']}[/dim]" if a.get("detail") else ""
-                console.print(f"           [cyan]{a['command']}[/cyan]{detail}")
+    if notice_items:
+        console.print("\n[dim]Notices — no action needed[/dim]")
+        current = ""
+        for it in notice_items:
+            if it["group"] != current:
+                current = it["group"]
+                count = sum(1 for x in notice_items if x["group"] == current)
+                console.print(f"\n[dim]{it['group_title']} · {count}, no action needed[/dim]")
+            console.print(f"  [dim]{it['task']:<8} {it['title'][:44]:<44} {it['why'][:60]}[/dim]")
 
 
 # --------------------------------------------------------------------------- planning

@@ -33,7 +33,7 @@ from ..graph import (
     validate,
     visible_ids,
 )
-from ..inbox import attention_view, build_inbox, needs_human_info, running_now
+from ..inbox import attention_view, build_inbox, decisions, needs_human_info, running_now
 from ..model import PRIORITY_SCALE, STATUS_ORDER, Status, now_iso, priority_label
 from ..plants import (
     DEFS,
@@ -153,7 +153,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "products": s.products(),
-            "inbox_count": len(items),
+            "inbox_count": len(decisions(items)),
             "env": s.config.env,
             "running": running_now(s),
             "totals": RunStore(s.config.garden_dir).totals(),

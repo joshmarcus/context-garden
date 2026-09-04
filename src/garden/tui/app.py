@@ -22,7 +22,7 @@ from textual.widgets import (
 )
 
 from ..graph import blockers, effective_status
-from ..inbox import attention_view
+from ..inbox import GROUP_KIND, attention_view, decisions
 from ..model import Status
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -105,6 +105,7 @@ class GardenTUI(App):
         self.only_open = True
         self._msg = ""
         self._inbox_by_key: dict[str, dict] = {}
+        self._inbox_decisions = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -143,11 +144,13 @@ class GardenTUI(App):
         except Exception as e:  # noqa: BLE001
             self._msg = f"inbox error: {e}"
             return
+        self._inbox_decisions = len(decisions(items))
         keys = {"question": "w answer", "decision": "c accept · w reject", "triage": "y ready · n send back", "review": "open PR", "attention": "e continue · x cancel",
                 "approve": "a approve · x drop", "budget": "garden.yaml"}
         self._inbox_by_key = {}
         for it in items:
-            color = STATUS_COLOR.get(it["status"], "white")
+            # notices (retrying, upgrade available) render dimmed and don't count toward "needs you"
+            color = "grey50" if GROUP_KIND.get(it["group"]) == "notice" else STATUS_COLOR.get(it["status"], "white")
             row_key = it.get("decision") or it["task"] or it["title"]
             do = "a accept · x reject" if it.get("decision") else keys.get(it["group"], "")
             inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], do, key=row_key)
@@ -204,7 +207,7 @@ class GardenTUI(App):
             e = effective_status(t, tasks, stack)
             counts[e] = counts.get(e, 0) + 1
         summary = "  ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
-        self._set_status(f"{summary}   runs {tot['runs']} ${tot['cost_usd']:.2f}   {self._msg}")
+        self._set_status(f"{self._inbox_decisions} need you   {summary}   runs {tot['runs']} ${tot['cost_usd']:.2f}   {self._msg}")
         self._show_detail()
 
     def _active_table(self) -> DataTable:
