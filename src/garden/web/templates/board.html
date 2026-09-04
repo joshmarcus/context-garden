@@ -1,16 +1,40 @@
 {% extends "base.html" %}
 {% block title %}Board{% endblock %}
 {% block body %}
-<div class="page-head"><div><h1>Board</h1><p>Every task by state. Blocked and stacked tasks show what they wait on; running ones show elapsed time.</p></div></div>
+{% set base = '/board?product=' ~ (product or '') ~ '&phase=' ~ (phase or '') ~ ('&closed=1' if closed else '') %}
+<div class="page-head">
+  <div><h1>Board</h1><p>Every task by state. Blocked and stacked tasks show what they wait on; running ones show elapsed time.</p></div>
+  <div class="tools viewswitch">
+    <a href="{{ base }}&view=columns" class="{{ 'on' if view != 'list' else '' }}">columns</a>
+    <a href="{{ base }}&view=list" class="{{ 'on' if view == 'list' else '' }}">list</a>
+  </div>
+</div>
 <div class="filters">
-  <a href="/board{{ '?closed=1' if closed else '' }}" class="{{ 'on' if not product else '' }}">all</a>
+  <a href="/board{{ '?closed=1' if closed else '' }}{{ ('&' if closed else '?') ~ 'view=list' if view == 'list' else '' }}" class="{{ 'on' if not product else '' }}">all</a>
   {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
-    <a href="/board?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+    <a href="/board?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}{{ '&view=list' if view == 'list' else '' }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
   {% endfor %}{% endfor %}
-  {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase }}&{% endif %}{{ '' if closed else 'closed=1' }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
+  {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase }}&{% endif %}{{ '' if closed else 'closed=1' }}{{ '&view=list' if view == 'list' else '' }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
 </div>
 {% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
-<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}" data-every="5000">
+<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}&view={{ view }}" data-every="5000">
   {% include "_board.html" %}
 </div>
+<script>
+// Remember the columns/list choice across navigation. A view in the query string is
+// authoritative (and gets saved); otherwise a stored preference redirects once to apply it.
+(function () {
+  var params = new URLSearchParams(location.search);
+  if (params.has("view")) {
+    try { localStorage.setItem("board-view", params.get("view")); } catch (e) {}
+  } else {
+    var stored;
+    try { stored = localStorage.getItem("board-view"); } catch (e) {}
+    if (stored === "list") {
+      params.set("view", "list");
+      location.replace(location.pathname + "?" + params.toString());
+    }
+  }
+})();
+</script>
 {% endblock %}

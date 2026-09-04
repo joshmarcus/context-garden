@@ -52,6 +52,10 @@ from ..trials import TrialLog, ranking_markdown
 TEMPLATES = Path(__file__).parent / "templates"
 PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
 COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed", "wont_do"]
+# The list view orders sections by where the loop moves work: what needs a person first,
+# then what is in flight, then what is waiting or settled. Covers every board column
+# (cancelled is dropped like the columns view).
+LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed", "running", "in_review", "ready", "blocked", "draft", "done", "wont_do"]
 
 
 class Hub:
@@ -107,6 +111,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["md"] = render_md
     templates.env.globals["columns"] = COLUMNS
+    templates.env.globals["list_order"] = LIST_ORDER
     templates.env.globals["statuses"] = STATUS_ORDER
     templates.env.globals["DEFS"] = DEFS
     templates.env.globals["VINE"] = Markup(vine_svg())
@@ -163,6 +168,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         return {ph.key for p in s.products() for ph in p.phases if ph.closed}
 
     def board_data(product: str | None, phase: str | None, include_closed: bool = False) -> dict[str, Any]:
+        from ..inbox import _last_log_line
+
         s = hub.fresh()
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
@@ -181,14 +188,23 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             if eff == "cancelled":
                 continue
             st = state.get(t.id)
+            # The one fact the list view surfaces for a PR-bearing state: the human review
+            # decision if GitHub has one, else the last automated review verdict.
+            rev = st.get("last_review") or {}
+            review = str(st.get("review_decision") or rev.get("verdict") or "").replace("_", " ").strip()
             cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
                               "stack": st.get("stack_parent", ""),
                               "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
-                              "question": st.get("question", "") if eff == "waiting_human" else ""})
+                              "question": st.get("question", "") if eff == "waiting_human" else "",
+                              "review": review if eff in ("awaiting_triage", "in_review", "changes_requested") else "",
+                              "reason": _last_log_line(t) if eff == "failed" else ""})
         runs = RunStore(s.config.garden_dir)
         active = {r.task_id: r for r in runs.active()}
         return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
                 "closed": include_closed, "problems": validate(tasks)}
+
+    def _board_view(view: str | None) -> str:
+        return "list" if view == "list" else "columns"
 
     # ---- pages -------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
@@ -209,12 +225,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/board", response_class=HTMLResponse)
-    def board(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
-        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", **board_data(product, phase, closed)))
+    def board(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False, view: str | None = None):
+        return templates.TemplateResponse(request, "board.html", ctx(request, page="board", view=_board_view(view), **board_data(product, phase, closed)))
 
     @app.get("/partials/board", response_class=HTMLResponse)
-    def board_partial(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
-        return templates.TemplateResponse(request, "_board.html", ctx(request, **board_data(product, phase, closed)))
+    def board_partial(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False, view: str | None = None):
+        return templates.TemplateResponse(request, "_board.html", ctx(request, view=_board_view(view), **board_data(product, phase, closed)))
 
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
     def task_page(request: Request, task_id: str):

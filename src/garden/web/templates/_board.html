@@ -1,3 +1,31 @@
+{% if view == 'list' %}
+<div class="board-list">
+{% for c in list_order %}
+  <section class="lgroup s-{{ c }}{{ ' lgroup-empty' if not cols[c] else '' }}">
+    <h3><span class="lg-name">{{ stage(c, 18) }}{{ c.replace('_', ' ') }}</span><span class="n">{{ cols[c]|length }}</span></h3>
+    {% if cols[c] %}
+    <ul class="lrows">
+    {% for row in cols[c] %}{% set t = row.task %}
+      <li class="lrow">
+        <a class="lrow-main" href="/tasks/{{ t.id }}">
+          <span class="id">{{ t.id }}</span>
+          <span class="lt">{{ t.title }}{% if t.discovered_from %}<span class="badge" title="discovered by {{ t.discovered_from }}">found</span>{% endif %}{% if row.stack %}<span class="badge" title="stacked on {{ row.stack }}">stack</span>{% endif %}{% if row.needs_human %}<span class="badge hot" title="{{ row.needs_human }}">needs you</span>{% endif %}</span>
+          <span class="meta">p{{ t.priority }} · {{ t.difficulty }}</span>
+        </a>
+        {% if c == 'waiting_human' and row.question %}<span class="lfact q">Q: {{ row.question[:120] }}</span>
+        {% elif c in ('awaiting_triage', 'in_review', 'changes_requested') %}<span class="lfact">{% if t.pr %}<a href="{{ t.pr }}">PR</a>{% endif %}{% if row.review %}{{ ' · ' if t.pr else '' }}{{ row.review }}{% endif %}</span>
+        {% elif c == 'running' and t.id in active %}<span class="lfact">{{ '%.0f' % active[t.id].elapsed_minutes() }} min</span>
+        {% elif c == 'blocked' and row.blockers %}<span class="lfact">waits on {{ row.blockers|join(', ') }}</span>
+        {% elif c == 'failed' and row.reason %}<span class="lfact">{{ row.reason[:120] }}</span>
+        {% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+{% endfor %}
+</div>
+{% else %}
 <div class="board">
 {% for c in columns %}
   <div class="col s-{{ c }}">
@@ -13,3 +41,4 @@
   </div>
 {% endfor %}
 </div>
+{% endif %}
