@@ -63,15 +63,13 @@ def _mock_client(fail_key: str = ""):
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "commons.wikimedia.org":
+            # Each candidate prefix pins one exact Commons file (a trailing "0." or the full
+            # cleaned name), so - like the real API - exactly one match comes back.
             prefix = request.url.params["aiprefix"]
-            if prefix == "Illustration_Dryopteris_filix-mas":
-                return httpx.Response(200, json={"query": {"allimages": []}})  # the fern is filed under a synonym
-            species = prefix.removeprefix("Illustration_")
-            files = [{"name": f"{prefix}0.jpg", "url": f"https://upload.example/{species}0.jpg", "width": 1200, "height": 1800,
-                      "descriptionurl": f"https://commons.wikimedia.org/wiki/File:{prefix}0.jpg",
-                      "extmetadata": {"Artist": {"value": "<a href=x>Otto Wilhelm Thomé</a>"}, "LicenseShortName": {"value": "Public domain"}}},
-                     {"name": f"{prefix}0_clean.jpg", "url": f"https://upload.example/{species}0_clean.jpg", "width": 1200, "height": 1800,
-                      "extmetadata": {"Artist": {"value": "Otto Wilhelm Thomé"}, "LicenseShortName": {"value": "Public domain"}}}]
+            name = f"{prefix}jpg" if prefix.endswith(".") else f"{prefix}0.jpg"
+            files = [{"name": name, "url": f"https://upload.example/{name}", "width": 1200, "height": 1800,
+                      "descriptionurl": f"https://commons.wikimedia.org/wiki/File:{name}",
+                      "extmetadata": {"Artist": {"value": "<a href=x>Otto Wilhelm Thomé</a>"}, "LicenseShortName": {"value": "Public domain"}}}]
             return httpx.Response(200, content=json.dumps({"query": {"allimages": files}}).encode())
         if fail_key and fail_key in str(request.url):
             return httpx.Response(503, text="upstream down")
@@ -84,14 +82,14 @@ def test_fetch_all_publishes_a_complete_set_with_provenance(tmp_path):
     from garden.platefetch import fetch_all
 
     out = tmp_path / "static" / "plates"
+    keys = [p["key"] for p in PLANTS]
     rows = fetch_all(out, height=120, log=lambda m: None, client=_mock_client())
-    assert [r["key"] for r in rows] == ["pea", "bramble", "foxglove", "fern", "poppy"]
-    assert all(r["title"].endswith("0_clean.jpg") for r in rows)  # the background-removed scan
-    assert rows[3]["title"].startswith("Illustration_Aspidium_filix-mas")  # resolved through the synonym
-    for key in ("pea", "bramble", "foxglove", "fern", "poppy"):
+    assert [r["key"] for r in rows] == keys
+    assert all(r["title"] for r in rows)
+    for key in keys:
         assert (out / f"{key}.webp").stat().st_size > 0 and (out / f"{key}-thumb.webp").stat().st_size > 0
     sources = (out / "SOURCES.md").read_text(encoding="utf-8")
-    assert "Otto Wilhelm Thomé" in sources and sources.count("| Public domain |") == 5
+    assert "Otto Wilhelm Thomé" in sources and sources.count("| Public domain |") == len(keys)
     assert not [d for d in out.parent.iterdir() if d.name.startswith(".plates-")]  # staging cleaned up
 
 

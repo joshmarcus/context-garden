@@ -19,8 +19,19 @@ PLANTS: list[dict[str, str]] = [
     {"key": "foxglove", "latin": "Digitalis purpurea", "common": "foxglove", "note": "tall, and every bell in its turn"},
     {"key": "fern", "latin": "Dryopteris filix-mas", "common": "male fern", "note": "unfurls one frond at a time"},
     {"key": "poppy", "latin": "Papaver rhoeas", "common": "corn poppy", "note": "short-lived flower, long-lived seed"},
+    {"key": "peony", "latin": "Paeonia mascula", "common": "peony", "note": "big first, before anything else opens"},
+    {"key": "quince", "latin": "Cydonia oblonga", "common": "quince", "note": "blossoms early, fruit takes all season"},
+    {"key": "orchid", "latin": "Cypripedium calceolus", "common": "lady's slipper orchid", "note": "one pouch, waiting for the right bee"},
+    {"key": "thistle", "latin": "Carduus nutans", "common": "musk thistle", "note": "armored, and nodding anyway"},
+    {"key": "snapdragon", "latin": "Antirrhinum majus", "common": "snapdragon", "note": "answers back when squeezed"},
+    {"key": "adonis", "latin": "Adonis vernalis", "common": "spring pheasant's eye", "note": "opens before the frost is sure it's gone"},
+    {"key": "daphne", "latin": "Daphne mezereum", "common": "mezereon", "note": "flowers before its own leaves"},
 ]
 PLANT_BY_KEY = {p["key"]: p for p in PLANTS}
+
+# The original five have a hand-drawn specimen in DEFS; the rest arrived as scanned plates only
+# (`garden plants --fetch`) and share the generic "sprig" drawing as their pre-scan fallback.
+DRAWN_PLANTS = {"pea", "bramble", "foxglove", "fern", "poppy"}
 
 # Where a scanned plate for a plant lives once fetched (`garden plants --fetch`): the web UI shows
 # it in place of the drawn specimen when the file exists, and falls back to the drawing otherwise.
@@ -124,6 +135,15 @@ DEFS = r'''
   <g transform="translate(116 82)"><use href="#petal" transform="rotate(10) scale(1.05)"/><use href="#petal" transform="rotate(100) scale(1.05)"/><use href="#petal" transform="rotate(190) scale(1.05)"/><use href="#petal" transform="rotate(280) scale(1.05)"/><circle cx="0" cy="0" r="7" fill="var(--ink)"/><circle cx="0" cy="0" r="3" fill="var(--seed)"/><path d="M-11 -4 l-4 -3 M11 -4 l4 -3 M-8 8 l-3 5 M8 8 l3 5 M-12 3 l-5 1 M12 3 l5 1" stroke="var(--ink)" stroke-width=".8"/></g>
 </g>
 
+<!-- generic sprig: the pre-scan placeholder for a plant with a plate but no bespoke drawing -->
+<g id="sprig">
+  <path d="M100 292 C98 240 102 190 100 140 C99 110 100 80 100 50" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linecap="round"/>
+  <use href="#lf" transform="translate(100 230) rotate(-28) scale(1.05)"/><use href="#lf" transform="translate(100 230) scale(-1 1) rotate(-28) scale(1.05)"/>
+  <use href="#lf" transform="translate(100 178) rotate(-25) scale(.95)"/><use href="#lf" transform="translate(100 178) scale(-1 1) rotate(-25) scale(.95)"/>
+  <use href="#lf" transform="translate(100 126) rotate(-30) scale(.82)"/><use href="#lf" transform="translate(100 126) scale(-1 1) rotate(-30) scale(.82)"/>
+  <use href="#bell" transform="translate(100 80) rotate(-90) scale(.7)"/>
+</g>
+
 <!-- growth-stage glyphs: 24x24 -->
 <g id="st-seed"><ellipse cx="12" cy="13" rx="5" ry="7.5" transform="rotate(-25 12 13)" fill="var(--seed)" stroke="var(--ink)" stroke-width="1.1"/><path d="M9.5 9 c1.2 2 1.2 6 0 8" stroke="var(--ink)" stroke-width=".8" fill="none"/></g>
 <g id="st-sprout"><path d="M12 21 V12" stroke="var(--ink)" stroke-width="1.2" fill="none"/><path d="M12 13 C6 13 5 8 4 6 C9 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M12 13 C18 13 19 8 20 6 C15 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M6 21 H18" stroke="var(--ink)" stroke-width="1"/></g>
@@ -175,8 +195,9 @@ def plant_info(key: str) -> dict[str, str]:
 
 def plant_svg(key: str, width: int, height: int, cls: str = "plant", style: str = "") -> str:
     key = key if key in PLANT_BY_KEY else PLANTS[0]["key"]
+    sym = key if key in DRAWN_PLANTS else "sprig"
     return (f'<svg class="{cls}" viewBox="0 0 200 300" width="{width}" height="{height}" style="{style}" aria-hidden="true">'
-            f'<use href="#{key}"/></svg>')
+            f'<use href="#{sym}"/></svg>')
 
 
 def stage_svg(status: str, size: int = 20, cls: str = "stage") -> str:

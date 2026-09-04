@@ -3,6 +3,7 @@
 from garden.model import goals_text
 from garden.plants import (
     DEFS,
+    DRAWN_PLANTS,
     PLANTS,
     STAGE,
     assign_plant,
@@ -17,12 +18,12 @@ from garden.store import Store
 
 def test_roman_and_assignment():
     assert [roman(n) for n in (1, 2, 4, 9, 12)] == ["I", "II", "IV", "IX", "XII"]
-    assert assign_plant([]) == "pea" and assign_plant(["pea"]) == "bramble" and assign_plant(["pea", "bramble", "foxglove", "fern", "poppy"]) == "pea"
+    assert assign_plant([]) == "pea" and assign_plant(["pea"]) == "bramble" and assign_plant([p["key"] for p in PLANTS]) == "pea"
     assert len({p["key"] for p in PLANTS}) == len(PLANTS)
     # a phase without a plant of its own keeps its positional plant whatever the others pin
     assert positional_plant(1, ["poppy"]) == "bramble"
     assert positional_plant(1, ["bramble"]) == "foxglove"  # pinned elsewhere: the next free one
-    assert positional_plant(5, ["pea", "bramble", "foxglove", "fern", "poppy"]) == "pea"  # wraps
+    assert positional_plant(len(PLANTS), [p["key"] for p in PLANTS]) == "pea"  # wraps
 
 
 def test_drawings_cover_every_status_and_plant():
@@ -34,7 +35,9 @@ def test_drawings_cover_every_status_and_plant():
         assert f'href="#{STAGE[st.value]}"' in stage_svg(st.value)
         assert stage_word(st.value)
     for p in PLANTS:
-        assert f'id="{p["key"]}"' in DEFS and f'href="#{p["key"]}"' in plant_svg(p["key"], 40, 60)
+        # the original five have a bespoke drawing; the rest fall back to the generic sprig
+        sym = p["key"] if p["key"] in DRAWN_PLANTS else "sprig"
+        assert f'id="{sym}"' in DEFS and f'href="#{sym}"' in plant_svg(p["key"], 40, 60)
     assert 'href="#pea"' in plant_svg("nope", 10, 10)  # unknown plant falls back
 
 
