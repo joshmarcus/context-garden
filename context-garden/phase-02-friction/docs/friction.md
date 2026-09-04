@@ -74,7 +74,17 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   Verification, Review responses and the garden's footer. Readable, if boastful. The log line
   reuses the worker's summary, so the task log now says "Addressed lint error by fixing
   import sorting. All acceptance criteria met" as the description of the PR.
-- **Automated review.** pending.
-- **Triage.** pending.
+- **Automated review.** Ran on haiku (`review.difficulty` empty means the task's tier),
+  one turn, 86 seconds, $0.07, verdict `approve` with no findings and `description_ok`.
+  It missed a real bug (the phase header passes the whole first-task brief, 2,935 tokens,
+  to the template while the new column uses the fixed part, 1,781) and did not notice the
+  missing `## Friction` section, which the description check exists to catch. A one-turn
+  review is a read of the diff and a verdict; it never ran anything. The comment on the PR
+  is posted under the person's own login, `joshmarcus`, with a tick emoji, so on GitHub the
+  human appears to have approved their own PR.
+- **Triage.** The Inbox card had the two forms it should: "Ready for review" and a
+  "Send back" note. Sending back through the form worked (303 to the task page), the note
+  became `pending_feedback` word for word, and the task went to `changes_requested`. The
+  log line truncates the note; the full text is only in `state.json` and the next brief.
 - **Merge and done.** pending.
 - **Cost.** pending (`garden usage CG-012`).
