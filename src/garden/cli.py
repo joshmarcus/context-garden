@@ -1182,6 +1182,7 @@ def plan(
     draft: bool = typer.Option(False, help="Create tasks as draft (default follows plan.auto_approve)"),
     approve_all: bool = typer.Option(False, "--approve", help="Create tasks as ready"),
     replan: bool = typer.Option(False, "--replan", help="Include failed/blocked task logs so the planner can propose fixes or replacements"),
+    reopen: bool = typer.Option(False, "--reopen", help="Reopen a closed phase to take these tasks"),
 ):
     """Turn goals + specs into task files (one model call, or --import). Ready by default."""
     from .planner import import_plan, parse_plan, plan_prompt, prompt_tokens, run_planner
@@ -1189,9 +1190,12 @@ def plan(
     store = _store()
     product, phase = _split_target(target)
     try:
-        store.phase(product, phase)
+        ph = store.phase(product, phase)
     except KeyError as e:
         err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    if ph.closed and not reopen and not dry_run:
+        err.print(f"[red]{ph.key} is closed ({ph.closed}); pass --reopen or run `garden reopen-phase {ph.key}` first[/red]")
         raise typer.Exit(1) from None
     if import_file:
         items = parse_plan(import_file.read_text())
@@ -1212,7 +1216,9 @@ def plan(
             err.print(f"[red]{e}; raw output saved to {out}[/red]")
             raise typer.Exit(1) from None
     status = "draft" if draft else ("ready" if approve_all else None)
-    created = import_plan(store, product, phase, items, status=status)
+    if ph.closed and reopen:
+        console.print(f"{ph.key} reopened")
+    created = import_plan(store, product, phase, items, status=status, reopen=reopen)
     for t in created:
         console.print(f"created {t.id} {_style(t.status.value)} {t.title}" + (f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""))
     if not created:
@@ -1272,7 +1278,10 @@ def friction_report(
     console.print(f"appended to {store.rel(doc)}")
     if not no_task:
         t = create_friction_draft_task(store, product, phase_name, text, page, date)
-        console.print(f"created draft task {t.id}: {t.title}")
+        if t:
+            console.print(f"created draft task {t.id}: {t.title}")
+        else:
+            console.print(f"[dim]{ph.key} is closed; friction recorded but no draft task created[/dim]")
 
 
 @app.command()

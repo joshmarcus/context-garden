@@ -126,7 +126,12 @@ def append_friction_report(path: Path, text: str, provenance: str, date: str) ->
 
 
 def create_friction_draft_task(store: Store, product: str, phase: str, text: str, provenance: str, date: str) -> Any:
-    """Create a draft task from a friction report; returns the new Task."""
+    """Create a draft task from a friction report; returns the new Task, or None if the phase
+    is closed. The friction text is always recorded in friction.md by the caller; a closed
+    phase just takes no new tasks."""
+    ph = store.phase(product, phase)
+    if ph.closed:
+        return None
     first_line = text.strip().splitlines()[0] if text.strip() else "Friction report"
     title = first_line[:120]
     body = (

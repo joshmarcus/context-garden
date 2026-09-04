@@ -70,6 +70,44 @@ def test_new_task_refuses_closed_phase_without_reopen(garden):
     assert not Store(garden).phase("demo", "p1").closed
 
 
+def test_plan_refuses_closed_phase_without_reopen(garden, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "plan")
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+
+    r = run(garden, "plan", "demo/p1")
+    assert r.exit_code == 1 and "--reopen" in r.output
+    assert not Store(garden).tasks().get("DM-003")
+
+    r = run(garden, "plan", "demo/p1", "--reopen")
+    assert r.exit_code == 0, r.output
+    assert not Store(garden).phase("demo", "p1").closed
+    assert Store(garden).tasks().get("DM-003")
+
+
+def test_plan_dry_run_allowed_on_closed_phase(garden):
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+    r = run(garden, "plan", "demo/p1", "--dry-run")
+    assert r.exit_code == 0, r.output
+
+
+def test_friction_report_records_but_skips_draft_task_on_closed_phase(garden):
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+    r = run(garden, "friction-report", "demo/p1", "the CLI is confusing")
+    assert r.exit_code == 0, r.output
+    assert "no draft task created" in r.output
+    doc = (garden / "demo" / "p1" / "docs" / "friction.md").read_text()
+    assert "the CLI is confusing" in doc
+    assert not any(t.discovered_from == "" and t.title.startswith("the CLI") for t in Store(garden).tasks().values())
+
+
+def test_web_plan_refuses_closed_phase(garden):
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+    c = TestClient(create_app(Store(garden), watch=False))
+    r = c.post("/phases/demo/p1/plan", data={"guidance": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    assert not Store(garden).tasks().get("DM-003")
+
+
 def test_scheduler_does_not_dispatch_into_closed_phase(garden, sched):
     store = Store(garden)
     store.set_phase_closed(store.phase("demo", "p1"), "2026-09-04")
