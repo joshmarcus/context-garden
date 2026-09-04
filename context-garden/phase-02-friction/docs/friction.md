@@ -23,6 +23,10 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   so a harness installed as `claude.cmd` is found by `shutil.which` in doctor but not by
   the runner. The `checks.pre_pr` commands (`$GARDEN_ROOT`, quoting) assume a POSIX shell.
   Neither bites in WSL; both belong here because doctor passed on Windows too.
+- **Git identity.** The WSL profile had no `user.name`/`user.email`, so the first commit
+  in the CG-027 worktree failed with "Author identity unknown". A headless worker would
+  fail the same way at its first commit, and so would the scheduler's leftover commit.
+  Doctor does not check it. Set repo-locally from the repo's own history.
 - **Garden state in the working tree.** `garden set-status`, `take` and `approve` each
   edit a task file in the main checkout, which sits uncommitted while the loop runs;
   worker branches are cut from `origin/main`, so those edits never ride a PR. The person
