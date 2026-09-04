@@ -33,7 +33,7 @@
   <span class="faint mono">result</span>
   <span class="k"></span>
   <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-    {%- if c and c[0].get("text") %}{{ c[0].text[:160] }}{%- endif %}
+    {%- if c is string %}{{ c[:160] }}{%- elif c and c[0] is mapping and c[0].get("text") %}{{ c[0].text[:160] }}{%- endif %}
   </span>
 </li>
   {% endif %}

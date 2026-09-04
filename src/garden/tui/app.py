@@ -43,7 +43,10 @@ def _fmt_tui_event(ev: dict) -> str:
         for p in parts:
             if isinstance(p, dict) and p.get("type") == "tool_result":
                 c = p.get("content") or []
-                text = next((x.get("text", "") for x in c if isinstance(x, dict) and x.get("text")), "")
+                if isinstance(c, str):
+                    text = c
+                else:
+                    text = next((x.get("text", "") for x in c if isinstance(x, dict) and x.get("text")), "")
                 return f"**result** {text[:100]}" if text else "**result**"
         return ""
     if t == "result":
