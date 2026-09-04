@@ -68,7 +68,7 @@ Git is the database. The split between the four stores is deliberate.
 | store | what it holds | written by | why it is separate |
 |---|---|---|---|
 | `<product>/<phase>/tasks/*.md` | one task per file: YAML frontmatter is the state (`status`, `depends_on`, `priority`, `difficulty`, `branch`, `pr`, `attempts`, `last_dispatched_at`), the body is what the worker reads, `## Log` is one line per transition | humans (everything but the scheduler-owned fields), the planner, the scheduler | reviewable in git, readable by people, the source of truth for *state* |
-| `.garden/state.json` | per-task bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; safe to delete and rebuild from GitHub, at the cost of one poll |
+| `.garden/state.json` | per-task bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; safe to delete and rebuild from GitHub, at the cost of one poll; concurrent writers are safe (see below) |
 | `.garden/runs/<task>/<run>/` | one directory per worker run: the exact brief, raw output, exit code, usage and cost | runners and the scheduler | the audit trail and the token ledger |
 | `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
 
@@ -94,6 +94,19 @@ garden commit
 
 The commit message is always `garden: update task state`. `garden status` warns when task
 files have uncommitted changes.
+
+### Concurrent writes to `state.json`
+
+`State.save()` acquires an exclusive `fcntl.flock` on a companion lock file
+(`.garden/state.json.lock`), re-reads the on-disk JSON, and merges only the
+keys that this process actually wrote on top of what is currently on disk.  Two
+concurrent writers that touch **different keys** of the same task entry will both
+survive: `garden serve` polling GitHub and `garden triage` clearing a draft flag
+can run simultaneously without either change being silently lost.
+
+If two writers change the **same key** of the same task concurrently, the last
+writer wins for that key — which is fine, because individual keys are small and
+owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 
 ### What `state.json` remembers per task
 
