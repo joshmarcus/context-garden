@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .model import STATUS_ORDER, Status, now_iso
+from .model import STATUS_ORDER, Status, now_iso, priority_label
 
 app = typer.Typer(help="Tend a context garden: plan tasks, dispatch agents, track PRs.", no_args_is_help=True, pretty_exceptions_enable=False)
 console = Console()
@@ -373,7 +373,7 @@ def ls(
         elif stack and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
             deps = "[cyan]stack:" + ",".join(blockers(t, tasks, stack=False)) + "[/cyan]"
         title = t.title + (" [dim](discovered)[/dim]" if t.discovered_from else "")
-        table.add_row(t.id, _style(eff), str(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
+        table.add_row(t.id, _style(eff), priority_label(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
     console.print(table)
 
 
@@ -391,7 +391,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         print(t.render())
         return
     tasks = store.tasks()
-    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={t.priority}  difficulty={t.difficulty}  {t.key}")
+    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
         console.print(f"depends_on: {', '.join(t.depends_on)}  blockers: {', '.join(blockers(t, tasks)) or '-'}")
@@ -452,7 +452,7 @@ def ready():
 
     store = _store()
     for t in _ready(store.tasks()):
-        console.print(f"{t.id}  pri={t.priority}  {t.title}")
+        console.print(f"{t.id}  pri={priority_label(t.priority)}  {t.title}")
 
 
 @app.command()
@@ -574,7 +574,7 @@ def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatch
     t.priority = int(value)
     t.log(f"priority {old} -> {t.priority}")
     store.save(t)
-    console.print(f"{t.id} priority {old} -> {t.priority}")
+    console.print(f"{t.id} priority {priority_label(old)} -> {priority_label(t.priority)}")
 
 
 @app.command()
