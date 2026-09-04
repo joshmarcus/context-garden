@@ -338,7 +338,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
             rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
-            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
+            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.fixed_tokens if fixed else 0,
         ))
 
     # ---- actions -----------------------------------------------------------
