@@ -185,3 +185,32 @@ def diff(worktree: Path, base: str) -> str:
         return git("diff", f"{ref}...HEAD", cwd=worktree)
     except GitError:
         return ""
+
+
+def uncommitted_task_files(repo: Path) -> list[str]:
+    """Return relative paths of task files (under tasks/) with uncommitted changes."""
+    try:
+        out = git("status", "--porcelain", cwd=repo)
+    except GitError:
+        return []
+    files = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:  # rename: shows as "old -> new"
+            path = path.split(" -> ")[-1]
+        if "/tasks/" in path and path.endswith(".md"):
+            files.append(path)
+    return files
+
+
+def commit_task_files(repo: Path, message: str) -> list[str]:
+    """Stage and commit task files with uncommitted changes. Returns committed paths."""
+    files = uncommitted_task_files(repo)
+    if not files:
+        return []
+    for f in files:
+        git("add", "--", f, cwd=repo)
+    git("commit", "-q", "-m", message, cwd=repo)
+    return files
