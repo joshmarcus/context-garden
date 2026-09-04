@@ -3,7 +3,7 @@
 {% block body %}
 <div class="page-head">
   <div><span class="eyebrow">{{ task.product }} / {{ task.phase }} · <a href="/tasks/{{ task.id }}" class="id">{{ task.id }}</a></span><h1>{{ task.title }}</h1>
-    <p style="display:flex;align-items:center;gap:10px">{{ stage(eff, 24) }}<span class="state s-{{ eff }}">{{ eff.replace('_',' ') }} <span class="stage-word">{{ stage_word(eff) }}</span></span><span class="muted">priority {{ task.priority }} · {{ task.difficulty }}{% if task.estimate %} · {{ task.estimate }}{% endif %}{% if task.pr %} · <a href="{{ task.pr }}" target="_blank">PR ↗</a>{% endif %}</span></p></div>
+    <p style="display:flex;align-items:center;gap:10px">{{ stage(eff, 24) }}<span class="state s-{{ eff }}">{{ eff.replace('_',' ') }} <span class="stage-word">{{ stage_word(eff) }}</span></span><span class="muted">priority {{ priority_label(task.priority) }} · {{ task.difficulty }}{% if task.estimate %} · {{ task.estimate }}{% endif %}{% if task.pr %} · <a href="{{ task.pr }}" target="_blank">PR ↗</a>{% endif %}</span></p></div>
   <div class="tools"><a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">Brief</a>{% if latest_run %}<a class="btn" href="/runs/{{ task.id }}/{{ latest_run.run_id }}">Latest run</a>{% endif %}</div>
 </div>
 
@@ -67,8 +67,8 @@
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch"><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><button class="quiet">Set</button></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first"><label class="muted" for="priority">priority</label><input id="priority" name="note" type="number" value="{{ task.priority }}" style="width:64px"><button class="quiet">Set</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch"><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.submit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first"><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.submit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select></form>
 
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if task.status.value in ('ready','draft','failed') and not task.pr %}<button class="quiet" data-toggle="trial-form">Model trial…</button>{% endif %}
