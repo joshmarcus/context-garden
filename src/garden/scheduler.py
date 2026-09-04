@@ -559,6 +559,14 @@ class Scheduler:
                          status=str(result.get("status") or ("error" if run.error else "no_result")),
                          cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
 
+        # The runner's fence, not the brief's: whatever the worker was told, a write to the
+        # live garden or the product clone is reverted here and the run fails (see the
+        # permission deny rules in Harness.fence_settings for the first line of defence).
+        violations = self._fence_check(task)
+        if violations:
+            self._fence_fail(task, run, violations, rep)
+            return
+
         if run.exit_code not in (0, None) and not result:
             run.status = "failed"
             run.save()
@@ -944,6 +952,110 @@ class Scheduler:
         else:
             self._transition(task, Status.FAILED, f"attempt {task.attempts} failed: {reason}; giving up")
             rep.transitions.append(f"{task.id} -> failed")
+
+    # ---- worktree fence ----------------------------------------------------
+    def _fence_repos(self, task: Task) -> list[tuple[str, Path]]:
+        """Git repos a worker must never write: the live garden and the product clone. Its
+        own worktree is a separate checkout, so it is not in this list."""
+        out: list[tuple[str, Path]] = []
+        root = self.store.root
+        if gitops.is_repo(root):
+            out.append(("the live garden", root))
+        try:
+            clone = Path(self.repo_for(task))
+        except Exception:  # noqa: BLE001 - a missing/URL repo just means nothing to guard here
+            return out
+        if gitops.is_repo(clone) and clone.resolve() != root.resolve():
+            out.append(("the product clone", clone))
+        return out
+
+    @staticmethod
+    def _fence_owned(rel: str) -> bool:
+        """Paths the scheduler itself may change in the live garden, so a worker touching
+        them is not counted as an escape: task files and the .garden/ state dir."""
+        parts = rel.split("/")
+        return "tasks" in parts or (bool(parts) and parts[0] == ".garden")
+
+    @staticmethod
+    def _porcelain_path(line: str) -> str:
+        body = line[3:] if len(line) > 3 else line
+        if " -> " in body:  # rename shows as "old -> new"
+            body = body.split(" -> ", 1)[1]
+        return body.strip().strip('"')
+
+    def _fence_snapshot(self, task: Task) -> None:
+        """Record HEAD and working-tree state of the guarded repos at dispatch, so finalize
+        can tell what a worker changed."""
+        snap = {str(path): {"label": label, "head": gitops.head_sha(path), "status": gitops.status_lines(path)}
+                for label, path in self._fence_repos(task)}
+        st = self.state.get(task.id)
+        if snap:
+            st["fence"] = snap
+        else:
+            st.pop("fence", None)
+
+    def _fence_check(self, task: Task) -> list[dict[str, Any]]:
+        """Compare each guarded repo against its dispatch snapshot; revert and report any
+        commit or write the worker made. Task files and .garden/ are the scheduler's own and
+        are ignored."""
+        snap = self.state.get(task.id).pop("fence", None)
+        if not snap:
+            return []
+        violations: list[dict[str, Any]] = []
+        for path_str, before in snap.items():
+            path = Path(path_str)
+            if not gitops.is_repo(path):
+                continue
+            head_before = str(before.get("head") or "")
+            head_now = gitops.head_sha(path)
+            was = set(before.get("status") or [])
+            files = {self._porcelain_path(ln) for ln in gitops.status_lines(path) if ln not in was}
+            moved = bool(head_before) and head_now != head_before
+            commits = gitops.commits_between(path, head_before, head_now) if moved else []
+            if moved:
+                files.update(gitops.changed_files(path, head_before, head_now))
+            touched = sorted(p for p in files if p and not self._fence_owned(p))
+            # A HEAD move that only touched task files or .garden/ is the scheduler's own
+            # (e.g. `garden sync`), not a worker escape: the trigger is a non-owned write.
+            if not touched:
+                continue
+            self._fence_revert(path, head_before, moved, touched)
+            violations.append({"label": str(before.get("label") or path.name), "path": path_str,
+                               "commits": commits, "files": touched})
+        return violations
+
+    def _fence_revert(self, repo: Path, head_before: str, moved: bool, touched: list[str]) -> None:
+        """Undo a worker's escape: drop its commits (keeping unrelated in-flight edits) and
+        restore or remove each non-owned path it wrote."""
+        try:
+            if moved and head_before:
+                gitops.reset_soft(repo, head_before)
+            for rel in touched:
+                if head_before and gitops.path_at(repo, head_before, rel):
+                    gitops.restore_path(repo, head_before, rel)
+                else:
+                    gitops.unstage_and_remove(repo, rel)
+        except gitops.GitError as e:
+            self.log(f"fence: revert in {repo} was incomplete: {e}")
+
+    def _fence_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
+        parts = []
+        for v in violations:
+            bits = []
+            if v["commits"]:
+                bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
+            if v["files"]:
+                bits.append("wrote " + ", ".join(v["files"]))
+            parts.append(f"{v['label']} ({v['path']}): " + " and ".join(bits))
+        card = "worker wrote outside its worktree; the writes were reverted. Touched " + " | ".join(parts)
+        self.state.get(task.id)["needs_human"] = card
+        self.events.emit("fence_violation", task.id, run=run.run_id, repos=[v["path"] for v in violations],
+                         commits=sum(len(v["commits"]) for v in violations), files=sum(len(v["files"]) for v in violations))
+        run.status = "failed"
+        run.error = (run.error + " | " if run.error else "") + "wrote outside its worktree (reverted)"
+        run.save()
+        self._transition(task, Status.FAILED, f"fenced: {card}"[:400], needs_human=True)
+        rep.transitions.append(f"{task.id} -> failed (wrote outside worktree)")
 
     # ---- discovered work ---------------------------------------------------
     def _file_discovered(self, task: Task, run: Run, result: dict[str, Any]) -> list[Task]:
@@ -1945,6 +2057,10 @@ class Scheduler:
         if worktree and not runner.remote:
             wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
             run.worktree = str(wt)
+        if mode in ("work", "revise", "resume"):
+            fence = self._fence_repos(task)
+            run.fence_paths = [str(p) for _, p in fence]
+            self._fence_snapshot(task)
         run.save()
         try:
             runner.start(run, wt or self.store.root, text)
