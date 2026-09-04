@@ -1239,13 +1239,14 @@ def usage(
 
 @app.command()
 def review(task_id: str):
-    """Start an automated review run for a task's open PR now."""
+    """Start an automated review run for a task's open PR now. If the task's review cap
+    was already reached, this raises it by one round and clears the needs-human stop."""
     store = _store()
     t = _task(store, task_id)
     if not t.pr:
         err.print(f"[red]{t.id} has no PR[/red]")
         raise typer.Exit(1)
-    run = _scheduler(store).dispatch_review(t)
+    run = _scheduler(store).review_again(t)
     console.print(f"{t.id}: review run {run.run_id} started (model {run.model or 'default'})")
 
 

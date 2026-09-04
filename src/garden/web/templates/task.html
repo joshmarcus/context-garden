@@ -43,9 +43,11 @@
   {% for a in attention.actions %}
   <div class="actions" style="align-items:center;margin-top:6px">
     {% if a.kind == 'resume' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/resume"><button class="primary">{{ a.label }}</button></form>
+    {% elif a.kind == 'review-again' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="primary">{{ a.label }}</button></form>
     {% elif a.kind == 'retry' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ a.label }}</button></form>
     {% elif a.kind == 'discuss' %}<button class="quiet" data-toggle="discuss-panel">{{ a.label }}…</button>
     {% elif a.kind == 'cancel' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">{{ a.label }}</button></form>
+    {% elif a.kind == 'triage-changes' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/triage-changes" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="what to change" required></textarea><button>{{ a.label }}</button></form>
     {% elif a.kind == 'link' %}<a class="btn quiet" href="{{ a.href }}" target="_blank">{{ a.label }} ↗</a>{% endif %}
     <span class="faint">{{ a.detail }}</span>
   </div>

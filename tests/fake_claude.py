@@ -4,7 +4,7 @@
 Reads the brief from stdin, does something to the cwd (a git worktree) depending on
 FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
-Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
+Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad | review-desc
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
@@ -75,6 +75,12 @@ if mode.startswith("review"):
                "description_feedback": "explain why, drop 'as requested'",
                "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test"},
                             {"severity": "nit", "file": "", "line": None, "summary": "naming"}]}
+    elif mode == "review-desc":
+        # description-only feedback, no blocking findings: round after round can repeat this
+        # without tripping the "same finding twice" stall, since that check only looks at
+        # blocking findings.
+        rev = {"verdict": "request_changes", "summary": "description needs work", "description_ok": False,
+               "description_feedback": "explain why this change is needed", "findings": []}
     else:
         rev = {"verdict": "approve", "summary": "looks good", "description_ok": True, "description_feedback": "", "findings": []}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev),

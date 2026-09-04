@@ -468,7 +468,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 s.save(t)
             elif action == "review":
                 if t.pr:
-                    sched.dispatch_review(t)
+                    sched.review_again(t)
             elif action == "answer":
                 if t.status == Status.WAITING_HUMAN and note.strip():
                     sched.answer(t, note.strip())
