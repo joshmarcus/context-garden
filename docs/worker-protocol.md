@@ -104,6 +104,35 @@ filled in.
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick
 moves on.
 
+### 2a. The worktree fence
+
+A worker may edit and commit only inside its own worktree. That boundary is the
+**runner's**, not the brief's: it holds whatever the brief says, whatever a worker reads
+on disk, and whatever a person types into an answer. Nothing a worker is told can lift it.
+
+It is enforced in two layers:
+
+- **First line — the harness denies the write.** For `claude`, the runner passes
+  `--settings` with `permissions.deny` rules for the live garden and the product clone
+  (and, when the harness config sets `sandbox: true`, an OS-level sandbox that confines
+  every process's writes to the worktree). Deny rules are evaluated before the
+  `acceptEdits` mode, so an edit *inside* the worktree still needs no prompt while an edit
+  *outside* it is refused — and in `-p` mode there is no one to approve a prompt, so a
+  refused edit simply fails. The forbidden directories travel on the run as
+  `fence_paths`, set at dispatch.
+- **Belt and braces — the runner reverts anything that got through.** At dispatch the
+  scheduler snapshots the HEAD and working tree of the live garden and the product clone.
+  On reap, `finalize` compares them: any commit or write the worker made (task files and
+  `.garden/`, which the scheduler owns, are ignored) is reverted — its commits dropped
+  with a soft reset that preserves unrelated in-flight edits, its files restored or
+  removed — and the run is marked **failed** with a card in the Inbox quoting exactly what
+  was touched. A person answers the card; the answer cannot un-fail the run or reach back
+  into the garden.
+
+This closes the hole CG-054 and CG-058 left: those keep the brief and `garden` commands
+away from the live garden; the fence keeps a worker's *writes* away from it even when the
+brief never named it and a person told the worker to go there.
+
 ### 3. While the worker runs
 
 Nothing is connected. The scheduler may not even be running: `garden tick` from cron
@@ -230,6 +259,11 @@ stopped, with its earlier context intact, in the same worktree. A harness that c
 resume gets a fresh run whose brief carries every previous question and answer under
 "Answers from the human". Resume runs do not count as attempts.
 
+A resumed run is fenced exactly like a fresh one (see §2a): the answer becomes the prompt
+on stdin, and no wording in it — "go fix it in the garden yourself" included — can let the
+worker write outside its worktree. The runner denies the write, and `finalize` reverts and
+fails the run if one slips through.
+
 ### 8. Revise runs
 
 Feedback from the human's triage note, from review comments on GitHub, from a red CI
@@ -275,6 +309,7 @@ the JSON array it prints as task files.
 | holds a connection to a worker | edits files under `tasks/` |
 | edits code in a worktree (it only commits leftovers before pushing) | reads the whole garden; it gets the brief and the reading list |
 | retries without a cap | waits for the scheduler; it finishes and exits |
+| lets an answer or a brief widen the fence | writes or commits outside its own worktree (the runner denies it; a slip is reverted, §2a) |
 
 ## When things go wrong
 
@@ -289,6 +324,7 @@ the JSON array it prints as task files.
 | GitHub is unreachable | `gh` and the token both unavailable, or the API errors | the task moves to `in_review` with a note to open the PR by hand and register it with `garden pr ID URL` |
 | the answer arrives but the session is gone | `session_id` set, resume command fails or the harness cannot resume | a fresh run with the Q&A in its brief |
 | two ticks overlap | both read the same `run.json` | the run is reaped by whichever finishes first; the second sees the run already marked done and finds no active run |
+| the worker wrote outside its worktree | the live garden or the product clone changed since dispatch | the change is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched (§2a) |
 
 ## Where to look
 
