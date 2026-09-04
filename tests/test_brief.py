@@ -113,3 +113,19 @@ def test_reading_list_resolves_against_the_product_checkout(garden):
     assert "src/nowhere.py" in b.missing
     assert "- `src/nowhere.py` (not found when the brief was built)" in b.text
     assert str(garden) not in b.text
+
+
+def test_brief_never_names_the_garden_root(garden):
+    from garden.brief import build_brief
+    from garden.store import Store
+
+    store = Store(garden)
+    task = next(iter(store.tasks().values()))
+    big = garden / "big.md"
+    big.write_text("x" * 30000)
+    task.reading = [str(big.relative_to(garden))]
+    text = build_brief(store, task).text
+    assert str(garden) not in text
+    assert "context garden root" not in text
+    assert "relative to your current directory" in text
+    assert "Work only in the directory you were started in" in text

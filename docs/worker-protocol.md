@@ -67,6 +67,7 @@ have had to make:
 - **Worktree**: `.garden/worktrees/<id>` is created from `origin/<base>` (fetched first)
   or reused if it already exists on that branch. Remote runners skip this; the host makes
   its own.
+- **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
   small, listed when large), plus the "Revision round" feedback for revise runs, the
