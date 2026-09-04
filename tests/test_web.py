@@ -90,3 +90,18 @@ def test_inbox_triage_flow(garden, monkeypatch):
     c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "in_review"
     assert "Review and merge" in c.get("/").text
+
+
+def test_drawings_render_unescaped(garden):
+    """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
+    c = client(garden)
+    for url in ["/", "/board", "/phases/demo/p1", "/tasks/DM-001", "/trellis"]:
+        html = c.get(url).text
+        assert "&lt;svg" not in html, url
+        assert '<use href="#pea"/>' in html, url  # the rail shows every phase's plant
+        if url != "/":  # the fixture inbox is empty, so it shows no stage glyphs
+            assert '<use href="#st-' in html, url
+    phase = c.get("/phases/demo/p1").text
+    assert '<use href="#pea"/>' in phase
+    assert "Plate I" in phase
+    assert phase.count('class="bg-vine"') == 1  # the background vine, once per page

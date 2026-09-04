@@ -33,6 +33,7 @@ Layout:
 - `src/garden/trials.py` model trials: comparison brief, leaderboard
 - `src/garden/personas.py` persona reviews of PRs and phases
 - `src/garden/checks.py` token-free pre-PR and CI checks (plugin runner + helpers for writing CI analysers)
+- `src/garden/plants.py` the botanical drawings (plants per phase, growth-stage glyphs) as SVG symbols
 - `src/garden/gitops.py`, `src/garden/github.py` git worktrees and PRs
 - `src/garden/planner.py` planning prompt and JSON import
 - `src/garden/web/` FastAPI + HTMX web UI; `src/garden/tui/` Textual TUI

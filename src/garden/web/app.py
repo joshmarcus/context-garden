@@ -14,6 +14,7 @@ import markdown as md
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 
 from ..brief import build_brief
 from ..charts import burnup_svg, tier_bars_svg
@@ -30,6 +31,7 @@ from ..graph import (
 )
 from ..inbox import build_inbox, running_now
 from ..model import STATUS_ORDER, Status, now_iso
+from ..plants import DEFS, plant_info, plant_svg, stage_svg, stage_word, vine_svg
 from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -94,6 +96,13 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     templates.env.filters["md"] = render_md
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["statuses"] = STATUS_ORDER
+    templates.env.globals["DEFS"] = DEFS
+    templates.env.globals["VINE"] = Markup(vine_svg())
+    # The drawings are trusted SVG built from fixed symbols; mark them safe so Jinja does not escape them.
+    templates.env.globals["plant"] = lambda *a, **k: Markup(plant_svg(*a, **k))
+    templates.env.globals["stage"] = lambda *a, **k: Markup(stage_svg(*a, **k))
+    templates.env.globals["stage_word"] = stage_word
+    templates.env.globals["plant_info"] = plant_info
 
     def ctx(request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
         s = hub.fresh()
@@ -157,7 +166,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         spent_24h = digest(evs.read(since=parse_since("24h")))["cost_usd"]
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
-            spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope)), tiers=tier_bars_svg(tier_rows(s, tasks))))
+            spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/board", response_class=HTMLResponse)
     def board(request: Request, product: str | None = None, phase: str | None = None):
@@ -237,7 +246,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             cp = []
         return templates.TemplateResponse(request, "trellis.html", ctx(
-            request, page="trellis", svg=svg(tasks), mermaid=mermaid(tasks), product=product, phase=phase,
+            request, page="trellis", svg=svg(tasks, stack=bool(s.config.get("stack", True))), mermaid=mermaid(tasks), product=product, phase=phase,
             critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
 
     @app.get("/runs", response_class=HTMLResponse)
@@ -273,7 +282,9 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         except KeyError:
             raise HTTPException(404) from None
         tasks = s.tasks()
-        goals = ph.goals_path.read_text() if ph.goals_path else ""
+        from ..model import goals_text
+
+        goals = goals_text(ph.goals_path)
         specs = [(s.rel(p), p.read_text()) for p in ph.specs]
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
@@ -288,9 +299,14 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
         usage = RunStore(s.config.garden_dir).usage_by_task()
         in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
+        open_tasks = [t for t in ph.tasks if t.status.value != "cancelled"]
+        merged = sum(1 for t in open_tasks if t.status.value == "done")
+        prs_open = sum(1 for t in open_tasks if t.pr and t.status.value != "done")
+        complete = bool(open_tasks) and merged == len(open_tasks)
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
-            burnup=burnup_svg(phase_events, len(in_scope)), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
+            sheet={"merged": merged, "total": len(open_tasks), "prs_open": prs_open, "complete": complete, "info": plant_info(ph.plant)},
+            burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
             rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {})) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],

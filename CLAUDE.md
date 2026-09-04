@@ -13,7 +13,8 @@ context files. This repo is also its own first product (`context-garden/`).
 
 ## Design docs
 
-`docs/design.md` (ideas, vocabulary, architecture, the loop) and `docs/roadmap.md`. Per-feature
+`docs/design.md` (ideas, vocabulary, the loop), `docs/architecture.md` (how the pieces fit),
+`docs/worker-protocol.md` (scheduler to worker, step by step) and `docs/roadmap.md`. Per-feature
 specs under `context-garden/phase-01-bootstrap/specs/`.
 
 ## Where things are
@@ -23,6 +24,7 @@ specs under `context-garden/phase-01-bootstrap/specs/`.
 - `context-garden/<phase>/` goals, specs and tasks for the tool itself
 - `.claude/skills/` `garden-take`, `garden-plan`, `garden-review` for interactive sessions
 - `personas/` reviewer personas for `garden persona-review`
+- The look is a herbarium (see `context-garden/phase-01-bootstrap/specs/botanical-theme.md`): plants per phase and growth-stage glyphs are drawings in `src/garden/plants.py`; keep titles and copy plain
 
 ## Rules
 

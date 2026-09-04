@@ -28,6 +28,17 @@ Only four steps spend tokens: planning, working, reviewing, revising. Waiting is
 Python process sleeping, not an agent session polling. The model for each run is picked
 from the task's difficulty, so easy tasks run on cheap models.
 
+## The look
+
+Every phase carries a plant, drawn as a pressed specimen: the garden pea for bootstrap, the
+bramble for friction, then foxglove, fern and poppy for the phases that follow. Task
+states keep their names, and each also has a growth-stage drawing beside it: seed, sprout,
+leaf, bud, flower, fruit. The web UI is set like a herbarium sheet, with typed labels and
+small stamps for decisions, in Newsreader and Courier Prime, and one faint climbing vine
+behind the page; titles and copy stay plain.
+`garden plants` prints the key; details in
+`context-garden/phase-01-bootstrap/specs/botanical-theme.md`.
+
 ## Screenshots
 
 The Inbox is the home page: one row per decision, with its action inline.
@@ -189,6 +200,8 @@ with the UIs.
 ## Design documents
 
 - `docs/design.md`: the idea, vocabulary, architecture, the loop, bounded loops, extension points.
+- `docs/architecture.md`: how the pieces fit: processes, where state lives, one tick, the state machine, git and PRs, every kind of run, interfaces.
+- `docs/worker-protocol.md`: how the scheduler and a worker it spun up communicate, step by step, with the failure modes.
 - `docs/roadmap.md`: shipped, next, later, not planned.
 - `context-garden/phase-01-bootstrap/specs/`: one spec per mechanism (task format, scheduler,
   brief, harness, remote runner, review pass, coordination, trials, personas, checks).

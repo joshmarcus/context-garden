@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .model import Task, estimate_tokens
+from .model import Task, estimate_tokens, goals_text
 from .store import Store
 
 PLAN_INSTRUCTIONS = """\
@@ -57,7 +57,7 @@ def plan_prompt(store: Store, product: str, phase: str, extra: str = "") -> str:
     if prod.overview_path:
         parts.append(f"## Product: {product}\n\n" + _read(prod.overview_path))
     if ph.goals_path:
-        parts.append(f"## Phase goals: {phase}\n\n" + _read(ph.goals_path))
+        parts.append(f"## Phase goals: {phase}\n\n" + goals_text(ph.goals_path))
     for spec in ph.specs:
         parts.append(f"## Spec: {store.rel(spec)}\n\n" + _read(spec))
     for doc in ph.docs:

@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import Config, find_root
-from .model import Phase, Product, Task, now_iso
+from .model import Phase, Product, Task, now_iso, split_frontmatter
+from .plants import PLANT_BY_KEY, positional_plant, roman
 
 SKIP_DIRS = {".git", ".garden", ".venv", "node_modules", "src", "tests", "principles", ".claude"}
 
@@ -50,6 +51,12 @@ class Store:
                     for f in sorted(tasks_dir.glob("*.md"))
                     if tasks_dir.exists()
                 ]
+                meta: dict = {}
+                if goals.exists():
+                    try:
+                        meta, _ = split_frontmatter(goals.read_text())
+                    except (OSError, ValueError):
+                        meta = {}
                 phases.append(
                     Phase(
                         product=d.name,
@@ -59,8 +66,20 @@ class Store:
                         specs=specs,
                         docs=docs,
                         tasks=tasks,
+                        plant=str(meta.get("plant") or ""),
+                        plate=str(meta.get("plate") or ""),
+                        meta=meta,
                     )
                 )
+            # botanical emblems: explicit in goals.md frontmatter, else by position (skipping a
+            # plant another phase has pinned, so one phase's choice never moves the others)
+            taken = [ph.plant for ph in phases if ph.plant in PLANT_BY_KEY]
+            for i, ph in enumerate(phases):
+                if not ph.plate:
+                    ph.plate = roman(i + 1)
+                if ph.plant not in PLANT_BY_KEY:
+                    ph.plant = positional_plant(i, taken)
+                    taken.append(ph.plant)
             overview = d / "product.md"
             out.append(
                 Product(

@@ -138,7 +138,11 @@ def new_product(store: Store, name: str, repo: str, base_branch: str) -> list[Pa
     return created
 
 
-def new_phase(store: Store, product: str, phase: str) -> list[Path]:
+def new_phase(store: Store, product: str, phase: str, plant: str = "") -> list[Path]:
+    from .plants import PLANT_BY_KEY, assign_plant, plant_info, roman
+
+    if plant and plant not in PLANT_BY_KEY:
+        raise ValueError(f"unknown plant {plant!r}; choose one of {', '.join(PLANT_BY_KEY)}")
     created = []
     d = store.root / product / phase
     for sub in ("specs", "tasks"):
@@ -149,6 +153,15 @@ def new_phase(store: Store, product: str, phase: str) -> list[Path]:
             created.append(keep)
     goals = d / "goals.md"
     if not goals.exists():
-        goals.write_text(GOALS_TEMPLATE.format(phase=phase))
+        try:
+            existing = store.product(product).phases
+        except KeyError:
+            existing = []
+        taken = [ph.plant for ph in existing if ph.name != phase]
+        key = plant or assign_plant(taken)
+        info = plant_info(key)
+        plate = roman(len([ph for ph in existing if ph.name != phase]) + 1)
+        front = f"---\nplant: {key}\nlatin: {info['latin']}\nplate: {plate}\n---\n\n"
+        goals.write_text(front + GOALS_TEMPLATE.format(phase=phase))
         created.append(goals)
     return created

@@ -239,10 +239,36 @@ class Phase:
     specs: list[Path]
     docs: list[Path]
     tasks: list[Task]
+    plant: str = ""  # botanical emblem (see plants.py); from goals.md frontmatter or assigned by position
+    plate: str = ""  # roman plate number within the product
+    meta: dict[str, Any] = field(default_factory=dict)  # goals.md frontmatter
 
     @property
     def key(self) -> str:
         return f"{self.product}/{self.name}"
+
+    @property
+    def latin(self) -> str:
+        from .plants import plant_info
+
+        return str(self.meta.get("latin") or plant_info(self.plant)["latin"])
+
+    @property
+    def common(self) -> str:
+        from .plants import plant_info
+
+        return str(self.meta.get("common") or plant_info(self.plant)["common"])
+
+
+def goals_text(path: Path | None) -> str:
+    """goals.md without its frontmatter (the frontmatter carries the plant assignment)."""
+    if not path or not path.exists():
+        return ""
+    try:
+        _, body = split_frontmatter(path.read_text())
+    except (OSError, ValueError):
+        return ""
+    return body.strip()
 
 
 @dataclass

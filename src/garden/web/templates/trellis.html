@@ -13,8 +13,11 @@
   <span class="muted">ready now:</span> {% for r in ready %}<a href="/tasks/{{ r }}" class="id">{{ r }}</a> {% else %}<span class="faint">none</span>{% endfor %}
   {% if critical %}&nbsp;·&nbsp;<span class="muted">longest open chain:</span> <span class="mono">{{ critical|join(' → ') }}</span>{% endif %}
 </div>
-<div class="panel" style="overflow-x:auto">
+<div class="specimen" style="overflow-x:auto; padding:10px">
   {{ svg|safe }}
+  <div style="display:flex; gap:18px; flex-wrap:wrap; margin:12px 4px 4px; font:11px/1.4 var(--mono); color:var(--muted); letter-spacing:.04em">
+    {% for s_ in ['draft','ready','running','waiting_human','awaiting_triage','in_review','changes_requested','done','failed'] %}<span style="display:inline-flex;align-items:center;gap:6px">{{ stage(s_, 18) }}{{ s_.replace('_',' ') }} <span class="faint">· {{ stage_word(s_) }}</span></span>{% endfor %}
+  </div>
   <details style="margin-top:10px"><summary>mermaid source (paste into docs or PRs)</summary><pre class="mono" style="margin-top:8px">{{ mermaid }}</pre></details>
 </div>
 {% endblock %}

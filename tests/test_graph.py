@@ -53,7 +53,9 @@ def test_svg():
     from garden.graph import svg
 
     out = svg(tasks)
-    assert out.startswith("<svg") and 'href="/tasks/B-2"' in out and out.count("<rect") == 3 and out.count("marker-end") == 2
+    assert out.startswith("<svg") and 'href="/tasks/B-2"' in out and out.count("<circle class=\"halo\"") == 3
+    assert out.count("<path d=") == 3  # A-1 rises from the ground; two dependency vines
+    assert 'href="#st-fruit"' in out and 'href="#st-sprout"' in out and 'href="#st-seed"' in out
 
 
 def test_every_status_renders_in_svg_and_mermaid():
@@ -66,6 +68,6 @@ def test_every_status_renders_in_svg_and_mermaid():
         tasks[tid] = T(tid, [prev] if prev else (), status=st.value)
         prev = tid
     out = svg(tasks)
-    assert out.count("<rect") == len(list(Status))
+    assert out.count("<circle class=\"halo\"") == len(list(Status))
     m = mermaid(tasks)
     assert m.count("style ") == len(list(Status))
