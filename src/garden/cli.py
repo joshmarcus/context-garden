@@ -220,6 +220,12 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
         if dirty:
             n = len(dirty)
             console.print(f"[yellow]{n} task file{'s' if n != 1 else ''} with uncommitted changes — run `garden commit` to save them[/yellow]")
+    from .scheduler import State
+    self_meta = State(store.config.garden_dir / "state.json").get("_self")
+    if self_meta.get("needs_restart"):
+        console.print("[yellow]garden code updated — restart `garden serve` to load the new version[/yellow]")
+    if self_meta.get("dirty_warning"):
+        console.print(f"[yellow]{self_meta['dirty_warning']}[/yellow]")
 
 
 def _count(n: int, s: str) -> str:

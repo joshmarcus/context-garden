@@ -13,6 +13,7 @@ from .runs import RunStore
 from .store import Store
 
 GROUPS = [
+    ("restart", "Restart required", "The garden's own code was updated by a merged PR. Restart `garden serve` to load the new version."),
     ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer."),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back."),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents."),
@@ -120,6 +121,21 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                           "status": "", "pr": "", "why": f"spent ${sched.spent_for(key):.2f} of ${budget:.2f}; dispatch paused",
                           "actions": [{"label": "Raise in garden.yaml", "kind": "config", "command": f"# budgets: {{{key}: <usd>}}"}],
                           "age": "", "difficulty": probe.difficulty})
+
+    self_meta = state.get("_self")
+    if self_meta.get("needs_restart"):
+        items.append({"group": "restart", "group_title": titles["restart"], "task": "", "title": "Garden code updated",
+                      "phase": "", "status": "", "pr": "",
+                      "why": "A merged PR updated the garden's own code. Restart `garden serve` to load the new version.",
+                      "actions": [{"label": "Restart", "kind": "info", "command": "# stop garden serve and re-run it"}],
+                      "age": _age(self_meta.get("updated_at", "")), "difficulty": ""})
+    if self_meta.get("dirty_warning"):
+        items.append({"group": "restart", "group_title": titles["restart"], "task": "", "title": "Garden checkout has uncommitted changes",
+                      "phase": "", "status": "", "pr": "",
+                      "why": self_meta["dirty_warning"],
+                      "actions": [],
+                      "age": "", "difficulty": ""})
+
     items.sort(key=lambda i: (order[i["group"]], i["task"]))
     return items
 

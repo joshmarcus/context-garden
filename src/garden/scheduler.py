@@ -104,6 +104,7 @@ class Scheduler:
         )
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)
+        self._maybe_clear_restart_flag()
 
     # ---- helpers -----------------------------------------------------------
     @property
@@ -827,6 +828,21 @@ class Scheduler:
         return [t for t in self.store.tasks().values()
                 if self.state.get(t.id).get("stack_parent") == task.id and not t.status.terminal]
 
+    def _maybe_clear_restart_flag(self) -> None:
+        """On process startup: if the checkout is already at the fast-forwarded sha, clear the
+        restart notice (a previous `garden serve` process updated the checkout; this new one
+        loaded the updated code)."""
+        meta = self.state.get("_self")
+        if not meta.get("needs_restart"):
+            return
+        try:
+            current = gitops.git("rev-parse", "HEAD", cwd=self.store.root).strip()
+            if current == meta.get("updated_sha", ""):
+                meta["needs_restart"] = False
+                self.state.save()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _on_merged(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):
             st = self.state.get(child.id)
@@ -836,6 +852,35 @@ class Scheduler:
                 self.store.save(child)
                 continue
             self._restack(child, rep)
+        try:
+            if self.repo_for(task) == self.store.root:
+                self._self_update(task, rep)
+        except Exception:  # noqa: BLE001 — don't let self-update errors kill the merge transition
+            pass
+
+    def _self_update(self, task: Task, rep: TickReport) -> None:
+        """Fast-forward the garden's own checkout after a PR into repo: . merges."""
+        repo = self.store.root
+        base = self.final_base_for(task)
+        meta = self.state.get("_self")
+        if not gitops.is_clean_except(repo, ("tasks", ".garden")):
+            msg = (f"garden checkout has uncommitted changes outside tasks/ and .garden/ — "
+                   f"update by hand after merging {task.id}: git fetch origin && git merge --ff-only origin/{base}")
+            meta["dirty_warning"] = msg
+            self.events.emit("self_dirty", task.id, base=base)
+            self.log(msg)
+            rep.transitions.append(f"{task.id}: self-update skipped (dirty tree)")
+            return
+        new_sha = gitops.fast_forward(repo, base)
+        if not new_sha:
+            return  # already up to date or fetch/ff failed silently
+        meta["needs_restart"] = True
+        meta["updated_sha"] = new_sha
+        meta["updated_at"] = now_iso()
+        meta.pop("dirty_warning", None)
+        self.events.emit("self_updated", task.id, base=base, sha=new_sha)
+        self.log(f"{task.id}: garden self-updated to {new_sha[:8]}; restart `garden serve` to load the new code")
+        rep.transitions.append(f"{task.id}: garden self-updated to {new_sha[:8]}")
 
     def _restack(self, child: Task, rep: TickReport) -> None:
         """Parent merged: retarget the child's PR to the final base and rebase its branch."""

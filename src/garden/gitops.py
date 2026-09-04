@@ -239,3 +239,52 @@ def commit_task_files(repo: Path, message: str) -> list[str]:
         git("add", "--", f, cwd=repo)
     git("commit", "-q", "-m", message, cwd=repo)
     return files
+
+
+def is_clean_except(repo: Path, ignore_segments: tuple[str, ...] = ()) -> bool:
+    """True if the working tree has no changes outside the given path segments.
+
+    A file is considered safe if any of the `ignore_segments` appears as a complete
+    path component anywhere in the file's repo-relative path (e.g. 'tasks' matches
+    'context-garden/p1/tasks/CG-001.md'). Untracked files under gitignored dirs
+    (e.g. .garden/) never appear in porcelain output.
+    """
+    try:
+        out = git("status", "--porcelain", cwd=repo)
+    except GitError:
+        return False
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ")[-1]
+        # normalise: prepend "/" so every component is surrounded by slashes
+        normalised = f"/{path}"
+        if not any(f"/{seg}/" in normalised or normalised.startswith(f"/{seg}") for seg in ignore_segments):
+            return False
+    return True
+
+
+def fast_forward(repo: Path, branch: str, remote: str = "origin") -> str:
+    """Fast-forward local `branch` to `remote/<branch>`.
+
+    Returns the new sha (of remote/<branch>) on success, or "" if already up to date
+    or if the fast-forward is impossible. Fetches from the remote first.
+    If the checkout is currently on `branch`, uses merge --ff-only (updates the working
+    tree). Otherwise updates the ref directly without touching the working tree.
+    """
+    try:
+        fetch(repo, remote)
+        old = git("rev-parse", f"refs/heads/{branch}", cwd=repo).strip()
+        new = git("rev-parse", f"{remote}/{branch}", cwd=repo).strip()
+        if old == new:
+            return ""  # already up to date
+        cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo).strip()
+        if cur == branch:
+            git("merge", "--ff-only", f"{remote}/{branch}", cwd=repo)
+        else:
+            git("update-ref", f"refs/heads/{branch}", f"{remote}/{branch}", cwd=repo)
+        return new
+    except GitError:
+        return ""
