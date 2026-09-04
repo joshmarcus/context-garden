@@ -15,6 +15,13 @@ def statuses(sched):
 
 
 def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
+    # Exercise the plain dependency gate (dep must be *done*), not stacking: with stacking on,
+    # DM-002 would stack-dispatch onto DM-001's open PR at tick 2, and this test's final
+    # "DM-002 running after merge" assertion would then depend on whether that stacked worker
+    # happened to still be running at the merge tick — a timing race that flaked in CI. Stacking
+    # has its own coverage (see test_feedback_triggers_revise_round); here we want the merge to
+    # be what unblocks and dispatches DM-002. See CG-119.
+    sched.cfg.data["stack"] = False
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(work)"]  # DM-002 is blocked
     assert statuses(sched)["DM-001"] == "running"
@@ -36,7 +43,7 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     # nothing new on the PR -> no change
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
-    # merge -> done, and DM-002 unblocks and dispatches
+    # merge -> done, and DM-002 (blocked until now) unblocks and dispatches in the same tick
     fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
     rep = sched.tick()
     s = statuses(sched)
