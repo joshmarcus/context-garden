@@ -242,6 +242,39 @@ def test_pr_closed_fails(sched, fake_github):
     assert statuses(sched)["DM-001"] == "failed"
 
 
+def test_failed_task_with_merged_pr_becomes_done(sched, fake_github):
+    """CG-046/CG-039: a revise round (or a retry) can die with the task's PR still open.
+    A human merging that PR on GitHub must still resolve the task to done, worktree cleaned
+    up and dependants unblocked, even though the task fell out of the review flow."""
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 -> in_review, PR opened
+    t = sched.store.task("DM-001")
+    t.status = Status.FAILED  # e.g. a revise run died while the PR was still open
+    sched.store.save(t)
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    rep = sched.tick()
+    s = statuses(sched)
+    assert s["DM-001"] == "done" and s["DM-002"] == "running"
+    assert "DM-001 -> done" in rep.transitions
+    assert not sched.worktree_for(sched.store.task("DM-001")).exists()
+
+
+def test_failed_task_with_closed_pr_stays_failed(sched, fake_github):
+    """A failed task whose PR is closed unmerged stays failed, with the close noted."""
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    t = sched.store.task("DM-001")
+    t.status = Status.FAILED
+    sched.store.save(t)
+    fake_github.prs["garden/dm-001-first-task"].state = "CLOSED"
+    rep = sched.tick()
+    assert statuses(sched)["DM-001"] == "failed"
+    assert "PR closed without merging" in sched.store.task("DM-001").body
+    assert "DM-001 -> failed (PR closed)" in rep.transitions
+
+
 def test_max_parallel(sched, garden):
     for t in sched.store.tasks().values():
         t.depends_on = []
