@@ -31,7 +31,11 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   edit a task file in the main checkout, which sits uncommitted while the loop runs;
   worker branches are cut from `origin/main`, so those edits never ride a PR. The person
   has to commit them by hand, and it is not written down anywhere when.
-- **Dispatch.** pending: the run needs `gh auth login` and `claude auth login` in WSL first.
+- **Dispatch.** After both logins, `garden serve` dispatched CG-012 on its first tick within
+  a few seconds: runner local, harness claude, model `haiku` (the easy tier), brief 2,636
+  tokens, worktree cut from `origin/main`. The Inbox answered at once. Nothing to note,
+  except that the doctor line for github now shows `as joshmarcus`, which is the only visible
+  difference between logged in and not.
 - **Worker run.** pending.
 - **Result line.** pending.
 - **Push and draft PR.** pending.
