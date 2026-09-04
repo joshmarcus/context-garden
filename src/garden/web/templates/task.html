@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ task.id }}{% endblock %}
+{% block body %}
+<h2 style="margin:0 0 6px"><span class="mono muted">{{ task.id }}</span> {{ task.title }} <span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></h2>
+<div class="actions">
+  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary">Approve</button></form>{% endif %}
+  {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
+  {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
+  {% if task.status.value in ('failed','cancelled','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Reset to ready</button></form>{% endif %}
+  {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button>Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
+  {% if task.status.value in ('running','in_review','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button>Mark done</button></form>{% endif %}
+  {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="danger">Cancel</button></form>{% endif %}
+  <a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">View brief</a>
+  {% if task.status.value == 'changes_requested' %}<a class="btn" href="/tasks/{{ task.id }}/brief?revise=1" target="_blank">View revise brief</a>{% endif %}
+  {% if runs %}<a class="btn" href="/tasks/{{ task.id }}/log" target="_blank">Latest log</a>{% endif %}
+</div>
+<div class="grid2">
+  <div>
+    <div class="panel prose">{{ body_html|safe }}</div>
+    {% if state.pending_feedback %}<div class="panel"><h3 style="margin-top:0">Pending review feedback</h3><div class="prose">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
+    <div class="panel">
+      <h3 style="margin-top:0">Runs</h3>
+      <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000">{% include "_runs.html" %}</div>
+    </div>
+    {% if log_lines %}<div class="panel"><h3 style="margin-top:0">Log</h3><div class="log">{% for l in log_lines %}{{ l }}
+{% endfor %}</div></div>{% endif %}
+  </div>
+  <div>
+    <div class="panel">
+      <dl class="kv">
+        <dt>file</dt><dd class="mono">{{ rel }}</dd>
+        <dt>phase</dt><dd><a href="/phases/{{ task.product }}/{{ task.phase }}">{{ task.product }}/{{ task.phase }}</a></dd>
+        <dt>priority</dt><dd>{{ task.priority }}{% if task.estimate %} · {{ task.estimate }}{% endif %}</dd>
+        <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="muted">—</span>{% endfor %}</dd>
+        <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="muted">—</span>{% endfor %}</dd>
+        <dt>reading</dt><dd>{% for r in task.reading %}<span class="mono">{{ r }}</span><br>{% else %}<span class="muted">—</span>{% endfor %}</dd>
+        <dt>branch</dt><dd class="mono">{{ task.branch or '—' }}</dd>
+        <dt>PR</dt><dd>{% if task.pr %}<a href="{{ task.pr }}" target="_blank">{{ task.pr }}</a>{% else %}<span class="muted">—</span>{% endif %}</dd>
+        {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}</dd>{% endif %}
+        <dt>attempts</dt><dd>{{ task.attempts }}{% if state.revisions %} · {{ state.revisions }} revision(s){% endif %}</dd>
+        <dt>runner</dt><dd>{{ task.runner or 'default' }}</dd>
+        <dt>updated</dt><dd class="mono">{{ task.updated }}</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+{% endblock %}

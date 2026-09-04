@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ phase.key }}{% endblock %}
+{% block body %}
+<h2 style="margin:0 0 6px">{{ phase.product }} / {{ phase.name }}</h2>
+<p class="muted">fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
+<div class="grid2">
+  <div>
+    <div class="panel">
+      <table>
+      <tr><th>id</th><th>status</th><th>p</th><th>title</th><th>deps</th><th>pr</th></tr>
+      {% for t, eff in rows %}
+      <tr><td class="mono"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td><td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">PR</a>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="6" class="muted">no tasks yet</td></tr>{% endfor %}
+      </table>
+      <div class="actions" style="margin-top:10px">
+        <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>
+        <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/plan" style="display:flex; gap:6px; align-items:center">
+          <input name="guidance" placeholder="optional guidance for the planner" style="font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); min-width:280px">
+          <button class="primary" title="One model call: goals + specs -> draft tasks">Plan phase</button>
+        </form>
+        {% if planning %}<span class="muted">{{ planning }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="panel prose"><h3 style="margin-top:0">Goals</h3>{{ goals_html|safe }}</div>
+  </div>
+  <div>
+    {% for name, text in specs %}<details class="panel" {% if loop.first %}open{% endif %}><summary class="mono">{{ name }}</summary><div class="prose">{{ text|md|safe }}</div></details>{% endfor %}
+    {% for name, text in docs %}<details class="panel"><summary class="mono">{{ name }}</summary><div class="prose">{{ text|md|safe }}</div></details>{% endfor %}
+  </div>
+</div>
+{% endblock %}

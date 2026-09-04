@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Board{% endblock %}
+{% block body %}
+<div class="filters">
+  <a href="/" class="{{ 'on' if not product else '' }}">all</a>
+  {% for p in products %}{% for ph in p.phases %}
+    <a href="/?product={{ p.name }}&phase={{ ph.name }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+  {% endfor %}{% endfor %}
+  <span class="muted" style="margin-left:auto">runs {{ totals.runs }} · ${{ '%.2f' % totals.cost_usd }} · in {{ '{:,}'.format(totals.input_tokens) }} · out {{ '{:,}'.format(totals.output_tokens) }}</span>
+</div>
+{% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
+<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}" data-every="5000">
+  {% include "_board.html" %}
+</div>
+{% endblock %}

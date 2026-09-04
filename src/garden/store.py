@@ -1,0 +1,185 @@
+"""Discover products, phases and tasks on disk; read and write task files."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from .config import Config, find_root
+from .model import Phase, Product, Task, now_iso
+
+SKIP_DIRS = {".git", ".garden", ".venv", "node_modules", "src", "tests", "principles", ".claude"}
+
+
+class Store:
+    def __init__(self, root: Path | None = None, config: Config | None = None):
+        self.root = (root or find_root()).resolve()
+        self.config = config or Config.load(self.root)
+        self._tasks: dict[str, Task] | None = None
+        self._products: list[Product] | None = None
+
+    # ---- discovery ---------------------------------------------------------
+    def invalidate(self) -> None:
+        self._tasks = None
+        self._products = None
+
+    def products(self) -> list[Product]:
+        if self._products is None:
+            self._products = self._scan()
+        return self._products
+
+    def _scan(self) -> list[Product]:
+        out: list[Product] = []
+        configured = self.config.data.get("products", {}) or {}
+        for d in sorted(self.root.iterdir()):
+            if not d.is_dir() or d.name.startswith(".") or d.name in SKIP_DIRS:
+                continue
+            if d.name not in configured and not (d / "product.md").exists():
+                continue
+            phases: list[Phase] = []
+            for pd in sorted(d.iterdir()):
+                if not pd.is_dir() or pd.name.startswith("."):
+                    continue
+                tasks_dir = pd / "tasks"
+                goals = pd / "goals.md"
+                if not tasks_dir.exists() and not goals.exists():
+                    continue
+                specs = sorted((pd / "specs").glob("*.md")) if (pd / "specs").exists() else []
+                docs = sorted((pd / "docs").glob("*")) if (pd / "docs").exists() else []
+                tasks = [
+                    self._load_task(f, d.name, pd.name)
+                    for f in sorted(tasks_dir.glob("*.md"))
+                    if tasks_dir.exists()
+                ]
+                phases.append(
+                    Phase(
+                        product=d.name,
+                        name=pd.name,
+                        path=pd,
+                        goals_path=goals if goals.exists() else None,
+                        specs=specs,
+                        docs=docs,
+                        tasks=tasks,
+                    )
+                )
+            overview = d / "product.md"
+            out.append(
+                Product(
+                    name=d.name,
+                    path=d,
+                    overview_path=overview if overview.exists() else None,
+                    phases=phases,
+                    config=self.config.product(d.name),
+                )
+            )
+        return out
+
+    def _load_task(self, path: Path, product: str, phase: str) -> Task:
+        try:
+            return Task.parse(path, path.read_text(), product=product, phase=phase)
+        except Exception as e:
+            raise ValueError(f"{self.rel(path)}: {e}") from e
+
+    def tasks(self) -> dict[str, Task]:
+        if self._tasks is None:
+            tasks: dict[str, Task] = {}
+            for p in self.products():
+                for ph in p.phases:
+                    for t in ph.tasks:
+                        if t.id in tasks:
+                            raise ValueError(f"duplicate task id {t.id}: {t.path} and {tasks[t.id].path}")
+                        tasks[t.id] = t
+            self._tasks = tasks
+        return self._tasks
+
+    def task(self, task_id: str) -> Task:
+        tasks = self.tasks()
+        if task_id in tasks:
+            return tasks[task_id]
+        # tolerate case differences and prefixes like "cg-3"
+        for tid, t in tasks.items():
+            if tid.lower() == task_id.lower():
+                return t
+        raise KeyError(f"no task {task_id!r}")
+
+    def phase(self, product: str, phase: str) -> Phase:
+        for p in self.products():
+            if p.name == product:
+                for ph in p.phases:
+                    if ph.name == phase:
+                        return ph
+                raise KeyError(f"product {product!r} has no phase {phase!r}")
+        raise KeyError(f"no product {product!r}")
+
+    def product(self, name: str) -> Product:
+        for p in self.products():
+            if p.name == name:
+                return p
+        raise KeyError(f"no product {name!r}")
+
+    # ---- writing -----------------------------------------------------------
+    def save(self, task: Task) -> None:
+        task.touch()
+        task.path.parent.mkdir(parents=True, exist_ok=True)
+        task.path.write_text(task.render())
+
+    def next_id(self, product: str) -> str:
+        prefix = str(self.config.product(product).get("id_prefix") or _prefix_for(product))
+        n = 0
+        for t in self.tasks().values():
+            if t.id.upper().startswith(prefix.upper() + "-"):
+                try:
+                    n = max(n, int(t.id.split("-", 1)[1]))
+                except ValueError:
+                    pass
+        return f"{prefix}-{n + 1:03d}"
+
+    def create_task(
+        self,
+        product: str,
+        phase: str,
+        title: str,
+        body: str,
+        *,
+        depends_on: list[str] | None = None,
+        reading: list[str] | None = None,
+        priority: int = 3,
+        estimate: str = "",
+        status: str = "draft",
+        task_id: str | None = None,
+    ) -> Task:
+        from .model import Status, slugify
+
+        tid = task_id or self.next_id(product)
+        ph = self.phase(product, phase)
+        path = ph.path / "tasks" / f"{tid}-{slugify(title)}.md"
+        t = Task(
+            path=path,
+            id=tid,
+            title=title,
+            status=Status(status),
+            product=product,
+            phase=phase,
+            depends_on=list(depends_on or []),
+            priority=priority,
+            estimate=estimate,
+            reading=list(reading or []),
+            created=now_iso(),
+            updated=now_iso(),
+            body=body,
+        )
+        self.save(t)
+        self.invalidate()
+        return t
+
+    def rel(self, path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(self.root))
+        except ValueError:
+            return str(path)
+
+
+def _prefix_for(product: str) -> str:
+    parts = [p for p in product.replace("_", "-").split("-") if p]
+    if len(parts) >= 2:
+        return "".join(p[0] for p in parts[:3]).upper()
+    return product[:3].upper()

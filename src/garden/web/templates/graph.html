@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Graph{% endblock %}
+{% block body %}
+<div class="filters">
+  <a href="/graph" class="{{ 'on' if not product else '' }}">all</a>
+  {% for p in products %}{% for ph in p.phases %}
+    <a href="/graph?product={{ p.name }}&phase={{ ph.name }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+  {% endfor %}{% endfor %}
+</div>
+{% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
+<div class="panel">
+  <span class="muted">ready now:</span> {% for r in ready %}<a href="/tasks/{{ r }}">{{ r }}</a> {% else %}—{% endfor %}
+  {% if critical %}&nbsp;·&nbsp;<span class="muted">critical path:</span> {{ critical|join(' → ') }}{% endif %}
+</div>
+<div class="panel" style="overflow-x:auto">
+  {{ svg|safe }}
+  <details><summary>mermaid source (paste into docs/PRs)</summary><pre class="mono">{{ mermaid }}</pre></details>
+</div>
+{% endblock %}

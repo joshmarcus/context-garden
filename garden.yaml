@@ -1,0 +1,33 @@
+# context-garden configuration. See README.md for every key.
+name: context-garden
+runner: claude-local        # default runner for products: claude-local | manual
+max_parallel: 2             # concurrent detached workers
+max_attempts: 2             # work runs before a task is marked failed
+max_revisions: 3            # auto revise rounds per PR before a human must step in
+tick_interval: 60           # seconds between scheduler passes in `garden watch` / `garden serve`
+auto_dispatch: true         # tick starts workers for ready tasks
+auto_revise: true           # tick dispatches revise runs when PRs get feedback / CI fails
+
+brief:
+  inline_max_chars: 24000   # reading-list files above this are referenced, not inlined
+  total_max_chars: 120000   # hard budget for one brief
+
+claude:
+  bin: claude
+  model: ""                 # empty = the CLI default
+  max_turns: 60
+  permission_mode: acceptEdits   # or bypass (== --dangerously-skip-permissions)
+  allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
+  timeout_minutes: 90
+
+github:
+  use_gh: true              # prefer the gh CLI; falls back to REST with GITHUB_TOKEN
+  draft_pr: false
+  reviewers: []
+
+products:
+  context-garden:
+    repo: .                 # this repo is its own first product
+    # github: owner/name    # only needed when the origin remote is not a github.com URL
+    base_branch: main
+    id_prefix: CG
