@@ -375,6 +375,10 @@ class Scheduler:
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 rep.errors.append(f"{t.id}: reap failed: {e}")
                 self.log(f"{t.id}: reap failed: {e}")
+        try:
+            self.reap_orphaned(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"orphan reap failed: {e}")
         self.store.invalidate()
         tasks = self.store.tasks()
         for t in list(tasks.values()):
@@ -850,6 +854,41 @@ class Scheduler:
         self.store.save(task)
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    def reap_orphaned(self, rep: TickReport) -> None:
+        """Close any run still marked `running` that no task-specific or aux reap path
+        claimed above this tick: its task moved on (merged, sent back to revise,
+        re-reviewed) before the tick that would have read its verdict, so
+        `state[task].review_run` (or the task's own run pointer) no longer points at
+        it. Usage and cost are recorded; nothing is posted, since the task is no
+        longer where this run left it."""
+        aux_run_ids = {e["run_id"] for e in self._aux_list()}
+        tasks = self.store.tasks()
+        for run in self.runs.active():
+            if run.runner == "manual" or run.run_id in aux_run_ids:
+                continue
+            task = tasks.get(run.task_id)
+            runner = self.runner_for(task or Task(path=self.store.root, id=run.task_id, title=""), run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                continue
+            if run.status != "timeout":
+                run.exit_code = run.read_exit_code()
+                run.finished_at = now_iso()
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.error = collected.get("error") or ""
+                final = collected.get("final_text") or ""
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
+                run.status = "done" if run.exit_code in (0, None) else "failed"
+            note = "closed by orphan sweep: task moved on before this run's verdict was read"
+            run.error = f"{run.error} ({note})" if run.error else note
+            run.save()
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
+                             usage=run.usage, status=run.status, orphaned=True)
+            self.log(f"{run.task_id}: {run.mode} run {run.run_id} closed ({run.status}); {note}")
+            rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (orphaned)")
 
     # ---- poll --------------------------------------------------------------
     def poll(self, task: Task, rep: TickReport) -> None:

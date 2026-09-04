@@ -1,3 +1,4 @@
+from garden.model import Status
 from garden.review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from garden.store import Store
 
@@ -50,3 +51,34 @@ def test_review_flow(sched, fake_github, monkeypatch):
     assert sched.state.get("DM-001")["review_rounds"] == 2
     # cap reached: a further round would not start
     assert sched.state.get("DM-001")["last_review"]["verdict"] == "approve"
+
+
+def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched
+    assert "DM-001(review)" in rep.dispatched
+    review_run_id = sched.state.get("DM-001")["review_run"]
+    assert review_run_id
+
+    # the task moves on (e.g. the PR is merged by a human) before the tick that
+    # would have read the review's verdict; the reap gate on t.status.pr_open now
+    # fails, and the run would otherwise be stuck "running" forever.
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+
+    wait_for_runs(sched)
+    rep = sched.tick()
+
+    assert not any(r.task_id == "DM-001" and r.run_id == review_run_id for r in sched.runs.active())
+    run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == review_run_id)
+    assert run.status in ("done", "failed")
+    assert run.cost_usd == 0.02  # usage/cost still recorded from the fake worker's output
+    assert any(f"{review_run_id} closed (orphaned)" in t for t in rep.transitions)
+    # no verdict posted and the task's own status is left alone
+    assert sched.store.task("DM-001").status == Status.DONE
+    assert not any("request_changes" in c or "approve" in c for c in fake_github.comments)
