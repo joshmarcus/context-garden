@@ -313,6 +313,34 @@ class Scheduler:
             notify(self.cfg.data, task.key, "budget", f"budget ${budget:.2f} exceeded (spent ${spent:.2f})", "")
         return True
 
+    # ---- dispatch pause/resume ---------------------------------------------
+    def control(self) -> dict[str, Any]:
+        """Return the _control entry; non-empty means dispatch is paused."""
+        return self.state.get("_control")
+
+    def is_dispatch_paused(self) -> bool:
+        return self.control().get("dispatch") == "paused"
+
+    def pause(self, by: str = "cli", reason: str = "") -> None:
+        ctrl = self.control()
+        ctrl["dispatch"] = "paused"
+        ctrl["by"] = by
+        ctrl["at"] = now_iso()
+        ctrl["reason"] = reason
+        self.state.save()
+        self.events.emit("dispatch_paused", "", by=by, reason=reason)
+        self.log("dispatch paused by " + by + (f": {reason}" if reason else ""))
+
+    def resume(self, by: str = "cli") -> None:
+        ctrl = self.control()
+        ctrl.pop("dispatch", None)
+        ctrl.pop("by", None)
+        ctrl.pop("at", None)
+        ctrl.pop("reason", None)
+        self.state.save()
+        self.events.emit("dispatch_resumed", "", by=by)
+        self.log(f"dispatch resumed by {by}")
+
     # ---- tick --------------------------------------------------------------
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
@@ -348,6 +376,8 @@ class Scheduler:
                     self.log(f"{t.id}: poll failed: {e}")
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
+        if self.is_dispatch_paused():
+            dispatch = False
         if dispatch:
             self.dispatch_ready(rep)
         self.state.save()

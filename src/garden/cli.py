@@ -214,6 +214,17 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     console.print(table)
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
+    from .scheduler import State
+    ctrl = State(store.config.garden_dir / "state.json").get("_control")
+    if ctrl.get("dispatch") == "paused":
+        at = ctrl.get("at", "")
+        by = ctrl.get("by", "")
+        reason = ctrl.get("reason", "")
+        msg = f"dispatch paused (by {by} at {at[11:16]}"
+        if reason:
+            msg += f": {reason}"
+        msg += ")"
+        console.print(f"[yellow]{msg}[/yellow]")
     from .gitops import is_repo, uncommitted_task_files
     if is_repo(store.root):
         dirty = uncommitted_task_files(store.root)
@@ -509,6 +520,27 @@ def pr(task_id: str, url: str):
 
 
 # --------------------------------------------------------------------------- the loop
+@app.command()
+def pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason to record")):
+    """Pause automatic dispatch (reap, poll and reviews keep running)."""
+    store = _store()
+    sched = _scheduler(store)
+    sched.pause(by="cli", reason=reason)
+    msg = "dispatch paused"
+    if reason:
+        msg += f": {reason}"
+    console.print(f"[yellow]{msg}[/yellow]")
+
+
+@app.command()
+def resume():
+    """Resume automatic dispatch after a pause."""
+    store = _store()
+    sched = _scheduler(store)
+    sched.resume(by="cli")
+    console.print("[green]dispatch resumed[/green]")
+
+
 @app.command()
 def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't start workers")):
     """One scheduler pass: reap finished workers, poll PRs, dispatch ready tasks."""
@@ -1198,6 +1230,17 @@ def doctor():
     console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={store.config.get('max_parallel')}")
     notify_cmd = store.config.get("notify.command")
     console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
+    from .scheduler import State
+    ctrl = State(store.config.garden_dir / "state.json").get("_control")
+    if ctrl.get("dispatch") == "paused":
+        at = ctrl.get("at", "")
+        by = ctrl.get("by", "")
+        reason = ctrl.get("reason", "")
+        msg = f"dispatch paused (by {by} at {at[11:16]}"
+        if reason:
+            msg += f": {reason}"
+        msg += ")"
+        console.print(f"[yellow]{msg}[/yellow]")
     for p in store.products():
         repo = store.config.product_repo(p.name)
         console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}")
