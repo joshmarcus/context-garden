@@ -64,7 +64,7 @@ def parse_since(text: str) -> str:
     return text
 
 
-HUMAN_KINDS = {"waiting_human", "needs_human", "stall", "budget", "pr_closed", "failed"}
+HUMAN_KINDS = {"waiting_human", "needs_human", "stall", "budget", "pr_closed", "failed", "decision"}
 
 
 def digest(events: list[dict[str, Any]]) -> dict[str, Any]:

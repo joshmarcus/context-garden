@@ -132,7 +132,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "summary": "1-3 sentences", "question": "only for needs_input",
                 "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "notes": "...",
-                "discovered": [{"title", "body", "difficulty", "blocking"}]}
+                "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
@@ -147,7 +147,13 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   environment, not the diff); `reason` says why. The task moves to `waiting_human`; the person
   accepts (the round proceeds to the PR or the review as if it had pushed, with no new work
   run) or rejects (as above).
-- `discovered`: work it noticed but did not do; each item becomes a task file.
+- `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
+  a `task` becomes a draft task file; a `duplicate` (`of`/`duplicates`) or `cancel`
+  (`task`) becomes a decision card for a human — Accept cancels the named task with the
+  provenance in its log (and, for a `duplicate`, repoints any dependents onto the kept `of`
+  task so they are not left blocked behind a cancelled one), Reject dismisses the card and
+  logs the disagreement; a `note` (`note`) is filed to the phase's friction record and makes
+  no card. Decision and note kinds never file work.
 
 A `wont_do` or a `no_change` is a decision for the person, not a failure: the inbox card and
 the task page quote the `reason` and show the worker's final message in full, with Accept and

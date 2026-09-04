@@ -48,6 +48,9 @@
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
+      {% elif it.group == 'attention' and it.decision %}
+        <form method="post" action="/decisions/{{ it.decision }}/accept"><button class="primary">Accept</button></form>
+        <form method="post" action="/decisions/{{ it.decision }}/reject"><button class="quiet danger">Reject</button></form>
       {% elif it.group == 'attention' %}
         {% for a in it.actions %}
         <div style="display:flex;gap:8px;align-items:center">

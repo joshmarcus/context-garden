@@ -104,6 +104,7 @@ class GardenTUI(App):
         self.store = store
         self.only_open = True
         self._msg = ""
+        self._inbox_by_key: dict[str, dict] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -144,9 +145,13 @@ class GardenTUI(App):
             return
         keys = {"question": "w answer", "decision": "c accept · w reject", "triage": "y ready · n send back", "review": "open PR", "attention": "e continue · x cancel",
                 "approve": "a approve · x drop", "budget": "garden.yaml"}
+        self._inbox_by_key = {}
         for it in items:
             color = STATUS_COLOR.get(it["status"], "white")
-            inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], keys.get(it["group"], ""), key=it["task"] or it["title"])
+            row_key = it.get("decision") or it["task"] or it["title"]
+            do = "a accept · x reject" if it.get("decision") else keys.get(it["group"], "")
+            inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], do, key=row_key)
+            self._inbox_by_key[row_key] = it
         if selected:
             try:
                 inbox.move_cursor(row=inbox.get_row_index(selected))
@@ -218,6 +223,30 @@ class GardenTUI(App):
             return tid if tid != "—" else None
         except Exception:  # noqa: BLE001
             return None
+
+    def _selected_decision(self) -> dict | None:
+        """The inbox item under the cursor if it is a decision card, else None. Its first cell
+        is the *target* task id, so actions key off the row's own key (the decision id)."""
+        try:
+            tc = self.query_one(TabbedContent)
+            if tc.active != "inbox-pane":
+                return None
+            inbox = self.query_one("#inbox", DataTable)
+            if inbox.row_count == 0 or inbox.cursor_row is None:
+                return None
+            key = inbox.coordinate_to_cell_key(inbox.cursor_coordinate).row_key.value
+        except Exception:  # noqa: BLE001
+            return None
+        it = self._inbox_by_key.get(key)
+        return it if it and it.get("decision") else None
+
+    def _resolve_decision(self, dec: dict, accept: bool) -> None:
+        try:
+            self._sched().resolve_decision(str(dec["decision"]), accept)
+            self._msg = f"decision {'accepted' if accept else 'rejected'} on {dec.get('task') or '?'}"
+        except Exception as e:  # noqa: BLE001
+            self._msg = f"decision failed: {e}"
+        self.action_refresh()
 
     def action_inbox_tab(self) -> None:
         tc = self.query_one(TabbedContent)
@@ -331,6 +360,10 @@ class GardenTUI(App):
         self.call_from_thread(self.action_refresh)
 
     def action_approve(self) -> None:
+        dec = self._selected_decision()
+        if dec:
+            self._resolve_decision(dec, accept=True)
+            return
         t = self._current()
         if t and t.status == Status.DRAFT:
             t.status = Status.READY
@@ -352,12 +385,20 @@ class GardenTUI(App):
         self.call_from_thread(self.action_refresh)
 
     def action_cancel(self) -> None:
+        dec = self._selected_decision()
+        if dec:
+            self._resolve_decision(dec, accept=False)
+            return
         t = self._current()
         if t and not t.status.terminal:
             self._sched().cancel(t, "cancelled (tui)")
         self.action_refresh()
 
     def action_retry(self) -> None:
+        if self._selected_decision():
+            self._msg = "decision selected: a to accept, x to reject"
+            self.action_refresh()
+            return
         t = self._current()
         if t:
             self._sched().retry(t)
