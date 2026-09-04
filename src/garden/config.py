@@ -158,6 +158,12 @@ class Config:
 
         return Harness(name, dict((self.data.get("harnesses") or {}).get(name) or {}))
 
+    def harness_choices(self) -> dict[str, list[str]]:
+        """harness name -> known model choices, for every harness under `harnesses:` (or
+        just the default harness if none is configured) — populates trial contender pickers."""
+        names = list((self.data.get("harnesses") or {}).keys()) or [str(self.get("harness") or "claude")]
+        return {name: self.harness(name).known_models() for name in names}
+
     # ---- self-upgrade (the pinned tool install) ----------------------------
     def tool_product(self) -> str | None:
         """The product that provides the `garden` binary (config `provides_tool: true`), if any."""

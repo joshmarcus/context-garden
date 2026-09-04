@@ -77,6 +77,33 @@ def test_trial_with_one_contender_shows_a_message_not_a_500(garden):
     assert "a trial needs at least two contenders, e.g. claude:sonnet, claude:opus" in page
 
 
+def test_trial_form_picks_contenders_from_config(garden):
+    """CG-087: the trial form seeds harness/model selects from garden.yaml's harnesses (here
+    claude and codex, see the `garden` fixture) instead of a free-text harness:model field."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import wait_for_runs
+
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert "data-trial-form" in page and "trial-rows" in page and "+ Add contender" in page
+    assert '"claude"' in page and '"codex"' in page  # harness_choices embedded for the JS selects to read
+    assert '"sonnet"' in page and '"gpt-std"' in page  # each harness's tier map
+
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet, claude:sonnet"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "must be distinct" in page
+
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet, claude:opus"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "flash" not in r.headers["location"]
+    sched = Scheduler(Store(garden))
+    wait_for_runs(sched)
+    trial = sched.state.get("DM-001").get("trial")
+    assert trial and {c["label"] for c in trial["contenders"]} == {"claude:sonnet", "claude:opus"}
+
+
 def test_scheduler_errors_flash_a_message_instead_of_500(garden):
     """CG-092: a task whose precondition changed underneath the person (here: DM-001 is
     'ready', not 'waiting_human') must say so on the page, not 500 or silently drop the

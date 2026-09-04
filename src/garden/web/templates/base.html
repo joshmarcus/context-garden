@@ -341,6 +341,69 @@ document.querySelectorAll('a[href^="/phases/"]:not([data-hide-toggle])').forEach
     a.setAttribute("href", url.pathname + url.search);
   }
 });
+
+// ---- trial contender picker: a harness select + model select (from garden.yaml's
+// harnesses:), with an "other…" escape and a "current tier" default. Used by the task
+// page's trial form (add/remove rows) and the trials page's leaderboard filter (one row).
+function trialRow(harnesses, opts) {
+  opts = opts || {};
+  const names = Object.keys(harnesses);
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap";
+  const hSel = document.createElement("select");
+  names.forEach(name => hSel.appendChild(new Option(name, name)));
+  if (names.includes(opts.harness)) hSel.value = opts.harness;
+  const mSel = document.createElement("select");
+  const other = document.createElement("input");
+  other.type = "text"; other.placeholder = "model name"; other.hidden = true; other.style.width = "160px";
+  function fillModels() {
+    mSel.innerHTML = "";
+    mSel.appendChild(new Option(opts.emptyLabel || "current tier", ""));
+    (harnesses[hSel.value] || []).forEach(m => mSel.appendChild(new Option(m, m)));
+    mSel.appendChild(new Option("other…", "__other__"));
+    if (opts.model && (harnesses[hSel.value] || []).includes(opts.model)) {
+      mSel.value = opts.model;
+    } else if (opts.model) {
+      mSel.value = "__other__"; other.hidden = false; other.value = opts.model;
+    }
+    opts.model = "";  // only apply the initial value once
+  }
+  fillModels();
+  hSel.addEventListener("change", fillModels);
+  mSel.addEventListener("change", () => { other.hidden = mSel.value !== "__other__"; if (!other.hidden) other.focus(); });
+  row.append(hSel, mSel, other);
+  if (opts.removable !== false) {
+    const rm = document.createElement("button");
+    rm.type = "button"; rm.className = "quiet"; rm.textContent = "Remove";
+    rm.addEventListener("click", () => row.remove());
+    row.append(rm);
+  }
+  row._value = () => ({harness: hSel.value, model: mSel.value === "__other__" ? other.value.trim() : mSel.value});
+  return row;
+}
+document.querySelectorAll("[data-trial-form]").forEach(form => {
+  const harnesses = JSON.parse(form.dataset.harnesses || "{}");
+  const rows = form.querySelector(".trial-rows");
+  const add = () => rows.appendChild(trialRow(harnesses, {harness: form.dataset.defaultHarness}));
+  add(); add();
+  const addBtn = form.querySelector(".trial-add");
+  if (addBtn) addBtn.addEventListener("click", add);
+  form.addEventListener("submit", () => {
+    const pairs = Array.from(rows.children).map(r => { const v = r._value(); return v.harness ? `${v.harness}:${v.model}` : ""; }).filter(Boolean);
+    form.querySelector('input[name="note"]').value = pairs.join(", ");
+  });
+});
+document.querySelectorAll("[data-trial-filter]").forEach(form => {
+  const harnesses = JSON.parse(form.dataset.harnesses || "{}");
+  const slot = form.querySelector(".trial-filter-row");
+  const row = trialRow(harnesses, {removable: false, emptyLabel: "any model", harness: form.dataset.harness, model: form.dataset.model});
+  slot.appendChild(row);
+  form.addEventListener("submit", () => {
+    const v = row._value();
+    form.querySelector('input[name="harness"]').value = v.harness;
+    form.querySelector('input[name="model"]').value = v.model;
+  });
+});
 </script>
 </body>
 </html>

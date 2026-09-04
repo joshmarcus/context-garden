@@ -3,6 +3,15 @@
 {% block body %}
 <div class="page-head"><div><h1>Model trials</h1><p>The same task, several models, one comparison. Scores accumulate here so the tier-to-model map is a decision, not a guess.</p></div></div>
 <div class="panel">
+  <div class="eyebrow">Filter by contender</div>
+  <form method="get" action="/trials" class="trial-filter" data-trial-filter data-harnesses='{{ harness_choices|tojson }}' data-harness="{{ filter_harness }}" data-model="{{ filter_model }}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <input type="hidden" name="harness"><input type="hidden" name="model">
+    <div class="trial-filter-row"></div>
+    <button class="quiet">Filter</button>
+    {% if filter_harness %}<a class="btn quiet" href="/trials">Clear</a>{% endif %}
+  </form>
+</div>
+<div class="panel" style="margin-top:14px">
   <div class="eyebrow">Leaderboard</div>
   {% if rows %}<table style="margin-top:8px"><tr><th>contender</th><th>trials</th><th>wins</th><th>win rate</th><th>avg score</th><th>avg cost</th><th>$ per point</th><th>avg tokens in / out</th><th>failed</th></tr>
   {% for r in rows %}<tr><td class="mono">{{ r.label }}</td><td>{{ r.trials }}</td><td>{{ r.wins }}</td><td>{% if r.win_rate is not none %}{{ (r.win_rate * 100)|round|int }}%{% endif %}</td><td>{% if r.avg_score is not none %}{{ r.avg_score }}{% endif %}</td><td>{% if r.avg_cost is not none %}${{ '%.2f' % r.avg_cost }}{% endif %}</td><td>{% if r.cost_per_point is not none %}${{ '%.3f' % r.cost_per_point }}{% endif %}</td><td class="mono">{{ '{:,}'.format(r.avg_input_tokens) }} / {{ '{:,}'.format(r.avg_output_tokens) }}</td><td>{{ r.failed }}</td></tr>{% endfor %}</table>

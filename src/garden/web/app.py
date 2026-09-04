@@ -6,6 +6,7 @@ The scheduler loop runs in a background thread when `watch=True` (the `garden se
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -52,7 +53,7 @@ from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
-from ..trials import TrialLog, ranking_markdown
+from ..trials import TrialLog, parse_contender, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
 PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
@@ -127,6 +128,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     hub = Hub(store, watch)
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["md"] = render_md
+    templates.env.filters["tojson"] = lambda v: Markup(json.dumps(v))
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["list_order"] = LIST_ORDER
     templates.env.globals["statuses"] = STATUS_ORDER
@@ -285,6 +287,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             friction_text=friction_text,
             initial_stdout=initial_stdout,
             attention=attention_view(t, st, rs),
+            harness_choices=s.config.harness_choices(),
+            default_harness=t.harness or s.config.product_harness(t.product),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -404,11 +408,20 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             request, page="runs", runs=list(reversed(rs.all_runs())), events=list(reversed(hub.events))[:100]))
 
     @app.get("/trials", response_class=HTMLResponse)
-    def trials_page(request: Request):
+    def trials_page(request: Request, harness: str = "", model: str = ""):
         s = hub.fresh()
         log = TrialLog(s.config.garden_dir / "trials.jsonl")
+        rows = log.leaderboard()
+        trials = [(t, ranking_markdown(t)) for t in reversed(log.read())]
+        if harness:
+            def matches(label: str) -> bool:
+                return label == f"{harness}:{model}" if model else label == harness or label.startswith(f"{harness}:")
+
+            rows = [r for r in rows if matches(r["label"])]
+            trials = [(t, md) for t, md in trials if any(matches(c["label"]) for c in t.get("contenders", []))]
         return templates.TemplateResponse(request, "trials.html", ctx(
-            request, page="trials", rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
+            request, page="trials", rows=rows, trials=trials, harness_choices=s.config.harness_choices(),
+            filter_harness=harness, filter_model=model))
 
     @app.get("/events", response_class=HTMLResponse)
     def events_page(request: Request, since: str = "24h"):
@@ -706,6 +719,11 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                     contenders = [n.strip() for n in note.split(",") if n.strip()]
                     if len(contenders) < 2:
                         raise RuntimeError("a trial needs at least two contenders, e.g. claude:sonnet, claude:opus")
+                    default_h = t.harness or sched.cfg.product_harness(t.product)
+                    labels = [parse_contender(c, default_h)[0] for c in contenders]
+                    dupe = next((label for label in labels if labels.count(label) > 1), "")
+                    if dupe:
+                        raise RuntimeError(f"contenders must be distinct; {dupe} was picked more than once")
                     sched.start_trial(t, contenders)
                 elif action == "reset-revisions":
                     st = sched.state.get(t.id)
