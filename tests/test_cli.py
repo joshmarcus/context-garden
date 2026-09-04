@@ -39,6 +39,23 @@ def test_new_task_and_approve(garden):
     assert "Third: thing" in r.output and "ready" in r.output
 
 
+def test_budget_command(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub
+
+    r = run(garden, "budget", "demo/p1", "50")
+    assert r.exit_code == 0 and "$50.00" in r.output
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 50.0
+    r = run(garden, "budget", "demo/p1", "none")
+    assert r.exit_code == 0 and "no cap" in r.output
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
+    # bad inputs
+    assert run(garden, "budget", "demo/nope", "10").exit_code == 1
+    assert run(garden, "budget", "demo/p1", "abc").exit_code == 1
+    assert run(garden, "budget", "noslash", "10").exit_code == 1
+
+
 def test_brief_stats(garden):
     r = run(garden, "brief", "DM-001", "--stats")
     assert r.exit_code == 0 and "tokens" in r.output

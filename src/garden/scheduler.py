@@ -316,12 +316,33 @@ class Scheduler:
 
     # ---- budgets -----------------------------------------------------------
     def budget_for(self, task_or_key: Task | str) -> float:
+        """The USD cap for a phase. A `_budgets` override in state.json (set from the web UI or
+        `garden budget`) wins over garden.yaml, so a running scheduler picks up a change on the
+        next tick (state is re-read every pass). An override value of null means "no budget"
+        (cap removed) and beats any configured cap."""
         key = task_or_key if isinstance(task_or_key, str) else task_or_key.key
         product = key.split("/", 1)[0]
+        overrides = self.state.get("_budgets")
+        if key in overrides:
+            return float(overrides[key] or 0.0)
         b = (self.cfg.get("budgets", {}) or {}).get(key)
         if b is None:
             b = self.cfg.product(product).get("budget_usd")
         return float(b or 0.0)
+
+    def set_budget(self, key: str, usd: float | None, by: str = "cli") -> None:
+        """Set (`usd`) or remove (`usd=None`, i.e. "no budget") a phase's cap, overriding
+        garden.yaml. Stored in `.garden/state.json` under `_budgets`; the running scheduler
+        re-reads state each tick, so a raised or removed cap unpauses dispatch on the next pass.
+        Also clears the `budget_hit` marker so the pause state resets and a later re-exceed can
+        notify again."""
+        overrides = self.state.get("_budgets")
+        overrides[key] = None if usd is None else round(float(usd), 2)
+        self.state.get(f"_phase:{key}").pop("budget_hit", None)
+        self.state.save()
+        self.events.emit("budget_set", "", phase=key, budget=overrides[key], by=by)
+        shown = "none" if usd is None else f"${float(usd):.2f}"
+        self.log(f"{key}: budget set to {shown} by {by}")
 
     def spent_for(self, key: str) -> float:
         ids = {t.id for t in self.store.tasks().values() if t.key == key}
