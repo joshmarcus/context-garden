@@ -109,7 +109,7 @@ def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, l
                 "license": _plain(meta.get("LicenseShortName", {}).get("value", "")) or "Public domain",
                 "bytes": len(main),
             })
-    (out_dir / "SOURCES.md").write_text(sources_markdown(rows))
+    (out_dir / "SOURCES.md").write_text(sources_markdown(rows), encoding="utf-8")
     return rows
 
 
