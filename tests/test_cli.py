@@ -100,3 +100,93 @@ def test_init_scaffold(tmp_path):
         assert r.exit_code == 0 and (tmp_path / "g" / "widget" / "phase-01" / "goals.md").exists()
     finally:
         os.chdir(cwd)
+
+
+def test_doctor_success_with_valid_setup(garden, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if "auth" in cmd or "config" in cmd:
+                if "git" in cmd and "config" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    elif "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                elif "gh" in cmd and "auth" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0)
+                elif "claude" in cmd and "auth" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+        assert r.exit_code == 0, r.output
+        assert "[green]all good[/green]" in r.output
+
+
+def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
+                if "user.email" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                elif "user.name" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+        assert r.exit_code == 1, r.output
+        assert "NOT LOGGED IN" in r.output
+
+
+def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
+                if "user.email" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                elif "user.name" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+        assert r.exit_code == 1, r.output
+        assert "NOT LOGGED IN" in r.output
+
+
+def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "git" in cmd and "config" in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            if isinstance(cmd, list) and "claude" in cmd and "auth" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            if isinstance(cmd, list) and "gh" in cmd and "auth" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.run(cmd, *args, capture_output=True, text=True, **kwargs)
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+        assert r.exit_code == 1, r.output
+        assert "missing user.name or user.email" in r.output
