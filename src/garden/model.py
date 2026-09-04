@@ -56,6 +56,15 @@ class Status(str, Enum):
     def pr_open(self) -> bool:
         return self in (Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.CHANGES_REQUESTED)
 
+    @property
+    def pr_pending(self) -> bool:
+        """Whether a PR on this task (if any) can still change on GitHub without garden
+        having a run in flight to notice: the active review states, plus the terminal-looking
+        states a failed run, a stalled worker, or a hand retry can leave a stale PR reference
+        in. A merge or close on GitHub must resolve these to `done`/`failed` on the next poll,
+        not sit unseen because the task fell out of the review flow."""
+        return self.pr_open or self in (Status.FAILED, Status.WAITING_HUMAN, Status.READY)
+
 
 STATUS_ORDER = [s.value for s in Status]
 

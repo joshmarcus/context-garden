@@ -401,7 +401,7 @@ class Scheduler:
         self.store.invalidate()
         tasks = self.store.tasks()
         for t in list(tasks.values()):
-            if t.status.pr_open and t.pr:
+            if t.pr and t.status.pr_pending:
                 try:
                     self.poll(t, rep)
                     rep.polled.append(t.id)
@@ -1021,6 +1021,8 @@ class Scheduler:
             rep.transitions.append(f"{task.id} -> failed (PR closed)")
             self._on_parent_closed(task, rep)
             return
+        if not task.status.pr_open:
+            return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
         was_draft = bool(st.get("pr_draft"))
         st["pr_draft"] = bool(pr.is_draft)
         if task.status == Status.AWAITING_TRIAGE and not pr.is_draft:
