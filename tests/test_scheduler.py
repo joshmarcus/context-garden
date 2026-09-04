@@ -67,6 +67,23 @@ def test_feedback_triggers_revise_round(sched, fake_github):
     assert sched.state.get("DM-001")["revisions"] == 1
 
 
+def test_bot_notice_does_not_trigger_revise_but_is_logged(sched, fake_github):
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.updated_at = "t2"
+    fake_github.feedback[pr.number] = Feedback(
+        ignored=[{"author": "chatgpt-codex-connector[bot]", "body": "You have reached your Codex usage limits for code reviews", "created": "2099-01-01T00:00:00Z"}]
+    )
+    rep = sched.tick()
+    assert not any("changes_requested" in t for t in rep.transitions)
+    assert statuses(sched)["DM-001"] == "in_review"
+    t = sched.store.task("DM-001")
+    assert "bot notice ignored: chatgpt-codex-connector[bot]" in t.body
+    assert "usage limits" in t.body
+
+
 def test_revision_cap(sched, fake_github):
     sched.tick()
     wait_for_runs(sched)

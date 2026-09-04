@@ -53,6 +53,94 @@ def test_bot_logins_from_config_are_ignored(monkeypatch):
     assert [i["body"] for i in gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z").items] == ["P2: select the harness"]
 
 
+def test_bot_notice_is_ignored_and_logged(monkeypatch):
+    gh = GitHub(use_gh=True)
+    _stub(
+        monkeypatch, gh, reviews=[],
+        comments=[],
+        issue_comments=[
+            {
+                "user": {"login": "chatgpt-codex-connector[bot]"},
+                "created_at": "2026-09-04T10:00:00Z",
+                "body": "You have reached your Codex usage limits for code reviews",
+            },
+        ],
+    )
+    fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+    assert fb.items == []
+    assert not fb
+    assert len(fb.ignored) == 1
+    assert fb.ignored[0]["author"] == "chatgpt-codex-connector[bot]"
+    assert "usage limit" in fb.ignored[0]["body"].lower()
+
+
+def test_bot_notice_with_finding_marker_still_counts(monkeypatch):
+    gh = GitHub(use_gh=True)
+    _stub(
+        monkeypatch, gh, reviews=[],
+        comments=[],
+        issue_comments=[
+            {
+                "user": {"login": "chatgpt-codex-connector[bot]"},
+                "created_at": "2026-09-04T10:00:00Z",
+                "body": "[P2] looks good overall, but this usage limit check has a bug",
+            },
+        ],
+    )
+    fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+    assert [i["body"] for i in fb.items] == ["[P2] looks good overall, but this usage limit check has a bug"]
+    assert fb.ignored == []
+
+
+def test_bot_notice_on_diff_line_still_counts(monkeypatch):
+    gh = GitHub(use_gh=True)
+    _stub(
+        monkeypatch, gh, reviews=[],
+        comments=[
+            {
+                "user": {"login": "chatgpt-codex-connector[bot]"},
+                "created_at": "2026-09-04T10:00:00Z",
+                "body": "looks good, but consider renaming this",
+                "path": "a.py",
+                "line": 3,
+            },
+        ],
+        issue_comments=[],
+    )
+    fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+    assert [i["body"] for i in fb.items] == ["looks good, but consider renaming this"]
+    assert fb.ignored == []
+
+
+def test_human_comment_matching_notice_pattern_still_counts(monkeypatch):
+    gh = GitHub(use_gh=True)
+    _stub(
+        monkeypatch, gh, reviews=[],
+        comments=[],
+        issue_comments=[
+            {"user": {"login": "josh"}, "created_at": "2026-09-04T10:00:00Z", "body": "looks good to me, ship it"},
+        ],
+    )
+    fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+    assert [i["body"] for i in fb.items] == ["looks good to me, ship it"]
+    assert fb.ignored == []
+
+
+def test_custom_bot_notice_patterns_from_config(monkeypatch):
+    gh = GitHub(use_gh=True, bot_notice_patterns=["out of credits"])
+    _stub(
+        monkeypatch, gh, reviews=[],
+        comments=[],
+        issue_comments=[
+            {"user": {"login": "some-reviewer[bot]"}, "created_at": "2026-09-04T10:00:00Z", "body": "out of credits, try later"},
+            {"user": {"login": "some-reviewer[bot]"}, "created_at": "2026-09-04T10:01:00Z", "body": "usage limit reached"},
+        ],
+    )
+    fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+    assert [i["body"] for i in fb.items] == ["usage limit reached"]
+    assert [i["body"] for i in fb.ignored] == ["out of credits, try later"]
+
+
 def test_exclude_logins_and_since_still_apply(monkeypatch):
     gh = GitHub(use_gh=True)
     _stub(

@@ -201,9 +201,11 @@ class Scheduler:
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
+        notice_patterns = self.cfg.get("github.bot_notice_patterns")
         self.github = github if github is not None else GitHub(
             use_gh=bool(self.cfg.get("github.use_gh", True)),
             bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
+            bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
         )
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)
@@ -1242,6 +1244,10 @@ class Scheduler:
         st["pr_updated_at"] = pr.updated_at
         since = task.last_dispatched_at
         fb = self.github.feedback_since(slug, number, since)
+        if fb.ignored:
+            for note in fb.ignored:
+                task.log(f"bot notice ignored: {note['author']}: {note['body'].strip()[:200]}")
+            self.store.save(task)
         st["head_sha"] = pr.head_sha
         ci_note = ""
         if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:

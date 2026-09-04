@@ -353,6 +353,13 @@ github:
   reviewers: []
   bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
                             # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
+  bot_notice_patterns:      # a bot comment matching one of these (case-insensitive substring) is a
+                            # status notice, not a finding, unless it's on a diff line or carries a
+                            # finding marker like [P1]/[P2]; logged on the task and otherwise ignored
+    - "usage limit"
+    - "no issues"
+    - "looks good"
+    - "reviewed and found nothing"
                             # To post garden comments (reviews, verdicts, persona reviews)
                             # under a separate identity (bot) instead of your user login:
                             # - set GITHUB_TOKEN to a fine-grained personal access token or app token
