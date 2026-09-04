@@ -761,6 +761,9 @@ class Scheduler:
             rep.transitions.append(f"{task.id} -> awaiting_triage")
         if task.status == Status.CHANGES_REQUESTED:
             return  # already waiting for a revise slot (or a human)
+        if pr.mergeable == "CONFLICTING":
+            self._handle_pr_conflict(task, rep)
+            return
         if pr.updated_at and pr.updated_at == st.get("pr_updated_at"):
             return  # nothing new on GitHub since last look
         st["pr_updated_at"] = pr.updated_at
@@ -883,6 +886,48 @@ class Scheduler:
         else:
             child.log(f"parent {parent_id} merged; rebase onto {new_base} conflicts; next run must resolve")
             self.store.save(child)
+
+    def _handle_pr_conflict(self, task: Task, rep: TickReport) -> None:
+        """PR is CONFLICTING with its base: try an automatic rebase; on conflict set feedback for a revise run."""
+        st = self.state.get(task.id)
+        base = self.base_for(task)
+        branch = task.branch or task.default_branch()
+        wt = self.worktree_for(task)
+        repo = self.repo_for(task)
+        try:
+            if not wt.exists():
+                gitops.prepare_worktree(repo, wt, branch, base)
+            ok, files = gitops.rebase_onto(wt, gitops.base_ref(wt, base))
+        except gitops.GitError as e:
+            ok, files = False, [str(e)]
+        self.events.emit("conflict", task.id, base=base, files=files, resolved=ok)
+        if ok:
+            try:
+                gitops.push(wt, branch, force=True)
+                task.log(f"PR conflicted with {base}; rebased automatically and force-pushed")
+                self.store.save(task)
+            except gitops.GitError as e:
+                self.log(f"{task.id}: push after conflict rebase failed: {e}")
+            return
+        st["pending_feedback"] = (
+            f"- **garden**: this PR conflicts with `{base}`. "
+            f"Run `git fetch origin && git rebase origin/{base}`, "
+            f"resolve the conflicts keeping the intent of both sides"
+            + (f" (conflicting files: {', '.join(files)})" if files else "")
+            + ". The runner will force-push the rebased branch."
+        )
+        st["force_push"] = True
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        if int(st.get("revisions", 0)) >= max_rev:
+            st["needs_human"] = f"PR conflicts with {base} and {max_rev} revision rounds already used"
+            self.events.emit("needs_human", task.id, reason=st["needs_human"])
+            self._transition(task, Status.CHANGES_REQUESTED,
+                             f"PR conflicts with {base} ({', '.join(files) or 'unknown files'}); revision cap reached; needs a human",
+                             needs_human=True)
+        else:
+            self._transition(task, Status.CHANGES_REQUESTED,
+                             f"PR conflicts with {base} ({', '.join(files) or 'unknown files'}); revise run will rebase and resolve")
+        rep.transitions.append(f"{task.id} -> changes_requested (conflict)")
 
     def _on_parent_closed(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):

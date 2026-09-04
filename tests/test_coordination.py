@@ -257,6 +257,71 @@ def test_restack_conflict_routes_to_revise(sched, fake_github, tmp_path, monkeyp
     assert sched.state.get("DM-002")["force_push"] is True  # the rebased branch will be force-pushed
 
 
+# ---- 6. conflict detection ---------------------------------------------------
+def test_conflicting_pr_triggers_revise_run(sched, fake_github, tmp_path, monkeypatch):
+    """When GitHub reports a PR as CONFLICTING and the actual rebase conflicts,
+    poll transitions to changes_requested and queues a revise run."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "conflict")  # worker writes README.md
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 -> in_review
+    assert statuses(sched)["DM-001"] == "in_review"
+
+    # main diverges with a conflicting change to the same file
+    repo = tmp_path / "repo"
+    (repo / "README.md").write_text("# demo\n\nchanged on main\n")
+    gitc("commit", "-qam", "main conflicts with worker", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+    fake_github.prs["garden/dm-001-first-task"].mergeable = "CONFLICTING"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    rep = sched.tick()
+
+    assert "DM-001 -> changes_requested (conflict)" in rep.transitions
+    assert "DM-001(revise)" in rep.dispatched
+    # pending_feedback is cleared when dispatch() consumes it; check the brief instead
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "Revision round" in brief
+    assert "rebase" in brief.lower() and "README.md" in brief
+    # force_push is set for the upcoming push after the revise resolves the conflict
+    assert sched.state.get("DM-001").get("force_push") is True
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["conflict"])
+    assert len(evs) == 1 and evs[0]["resolved"] is False and "README.md" in evs[0]["files"]
+
+
+def test_conflicting_pr_auto_rebased_when_clean(sched, fake_github, tmp_path):
+    """When GitHub reports CONFLICTING but the actual rebase applies cleanly,
+    poll rebases and force-pushes without queuing a revise run."""
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 -> in_review
+    assert statuses(sched)["DM-001"] == "in_review"
+
+    # main advances with a non-conflicting change (a new file the worker never touched)
+    repo = tmp_path / "repo"
+    (repo / "other.txt").write_text("unrelated change\n")
+    gitc("add", "other.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "main adds unrelated file", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+    fake_github.prs["garden/dm-001-first-task"].mergeable = "CONFLICTING"
+    rep = sched.tick()
+
+    # clean rebase: no revise run, task stays in_review, pending_feedback is empty
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert "DM-001(revise)" not in rep.dispatched
+    assert not sched.state.get("DM-001").get("pending_feedback")
+    # conflict event recorded as resolved
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["conflict"])
+    assert len(evs) == 1 and evs[0]["resolved"] is True
+    # origin/main is now an ancestor of the branch (rebase completed)
+    gitc("fetch", "origin", cwd=repo)
+    branch = sched.store.task("DM-001").branch
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", "origin/main", f"origin/{branch}"],
+                       cwd=repo, capture_output=True)
+    assert r.returncode == 0, "origin/main must be an ancestor of the branch after rebase"
+
+
 def test_stack_disabled_keeps_strict_blocking(sched, fake_github):
     sched.cfg.data["stack"] = False
     sched.tick()

@@ -36,6 +36,9 @@ def garden(tmp_path: Path) -> Path:
     remote = tmp_path / "remote.git"
     repo.mkdir()
     git("init", "-q", "-b", "main", cwd=repo)
+    # set local user config so git-rebase can create commits without a global config
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     write(repo / "README.md", "# demo\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
