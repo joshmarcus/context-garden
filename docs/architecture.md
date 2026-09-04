@@ -252,6 +252,18 @@ files under `tasks/` must not be hand-edited.
 - **Repositories.** A product's repo is a path relative to the garden or a URL; URLs are
   cloned once under `.garden/repos/`. The GitHub slug comes from the `origin` remote
   unless `products.<name>.github` overrides it.
+- **The garden as its own product.** A product may point at the garden's own repo
+  (`products.<name>: {repo: <the garden's origin>, self: true}`). Its tasks change the
+  garden's own files — a phase's friction document, the next phase's goals, the product
+  overview, `garden.yaml` — and are dispatched like any other task: the worker gets a
+  worktree of the garden repo under `work_dir`, edits there, and the change comes back as a
+  PR to the garden repo, with the same fence, checks and review. **The live garden is never
+  edited by a worker; changes to it arrive by PR like everything else**, and the running
+  garden picks them up when the person merges and `garden sync` pulls. Two guards keep the
+  worktree apart from the live checkout: `garden doctor` refuses a `work_dir` inside the
+  live garden (and a `self` repo that resolves to the live garden root), so the clone and
+  worktrees sit outside it; and the fence (`find_root`) resolves a worker's garden worktree
+  to that worktree's own `garden.yaml`, never the enclosing live garden.
 - **Branches and worktrees.** A task's branch is `garden/<id>-<slug>`. Its worktree is
   created from `origin/<base>` (or the local base when there is no remote) and reused
   across runs of the same task. The worker only ever commits in the worktree; the
