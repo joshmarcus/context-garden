@@ -113,6 +113,21 @@ class Config:
     def product_harness(self, name: str) -> str:
         return str(self.product(name).get("harness") or self.get("harness") or "claude")
 
+    def product_setup(self, name: str) -> dict[str, Any]:
+        """How this product's working environment is prepared. All keys optional:
+
+        - `command`: run once in a fresh worktree (re-run when it changes) before the worker,
+          with `env` added — e.g. `uv sync --extra dev`, `npm ci`, a company bootstrap tool.
+        - `env`: extra environment for the worker, the setup command and the pre-PR checks.
+        - `test` / `lint`: the commands the brief tells the worker to run and the commands the
+          default `checks.pre_pr` uses in the worktree.
+        - `timeout_seconds`: cap for the setup command (default 600).
+
+        Nothing here assumes Python, pip, uv or a venv; a product that manages dependencies
+        differently sets its own commands (or leaves the block empty)."""
+        s = self.product(name).get("setup")
+        return dict(s) if isinstance(s, dict) else {}
+
     def harness(self, name: str):
         from .harness import Harness
 
