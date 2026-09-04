@@ -728,10 +728,16 @@ class Scheduler:
             self.store.invalidate()
         return created
 
+    # ---- needs-human stops -------------------------------------------------
+    def _set_needs_human(self, task: Task, kind: str, reason: str) -> None:
+        """Record a structured stop: which decision is being asked (kind), why, and where
+        the task stood when the loop stopped — so resume_task can put it back."""
+        self.state.get(task.id)["needs_human"] = {
+            "kind": kind, "reason": reason, "prior_status": task.status.value, "at": now_iso()}
+
     # ---- stall detection ---------------------------------------------------
     def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
-        st = self.state.get(task.id)
-        st["needs_human"] = reason
+        self._set_needs_human(task, "stall", reason)
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'
         if task.status != Status.CHANGES_REQUESTED:
@@ -999,8 +1005,9 @@ class Scheduler:
             return
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
-            st["needs_human"] = f"{max_rev} revision rounds used"
-            self.events.emit("needs_human", task.id, reason=st["needs_human"])
+            reason = f"{max_rev} revision rounds used"
+            self._set_needs_human(task, "revision_cap", reason)
+            self.events.emit("needs_human", task.id, stop_kind="revision_cap", reason=reason)
             self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (cap)")
             return
@@ -1112,8 +1119,9 @@ class Scheduler:
         st["force_push"] = True
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
-            st["needs_human"] = f"PR conflicts with {base} and {max_rev} revision rounds already used"
-            self.events.emit("needs_human", task.id, reason=st["needs_human"])
+            reason = f"PR conflicts with {base} and {max_rev} revision rounds already used"
+            self._set_needs_human(task, "revision_cap", reason)
+            self.events.emit("needs_human", task.id, stop_kind="revision_cap", reason=reason)
             self._transition(task, Status.CHANGES_REQUESTED,
                              f"PR conflicts with {base} ({', '.join(files) or 'unknown files'}); revision cap reached; needs a human",
                              needs_human=True)
@@ -1124,10 +1132,9 @@ class Scheduler:
 
     def _on_parent_closed(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):
-            st = self.state.get(child.id)
             reason = f"stack parent {task.id} was closed without merging"
-            st["needs_human"] = reason
-            self.events.emit("needs_human", child.id, reason=reason)
+            self._set_needs_human(child, "parent_closed", reason)
+            self.events.emit("needs_human", child.id, stop_kind="parent_closed", reason=reason)
             notify(self.cfg.data, child.id, "needs_human", reason, child.pr or "")
             child.log(f"stack parent {task.id} closed without merging; this PR targets a dead branch and needs a human")
             self.store.save(child)
@@ -1724,6 +1731,31 @@ class Scheduler:
             return
         task.attempts = 0
         self._transition(task, Status.READY, "reset to ready by hand")
+        self.state.save()
+
+    def resume_task(self, task: Task) -> None:
+        """'Nothing to fix': clear the needs-human stop and return the task to the state it
+        held before the stop, without starting a run. Pending feedback is dropped too — the
+        human judged there is nothing to act on."""
+        st = self.state.get(task.id)
+        raw = st.get("needs_human")
+        if not raw:
+            raise RuntimeError(f"{task.id} has no needs-human stop to resume from")
+        info = raw if isinstance(raw, dict) else {"reason": str(raw)}
+        st.pop("needs_human", None)
+        st.pop("pending_feedback", None)
+        self.events.emit("resumed", task.id, stop_kind=str(info.get("kind", "")), reason=str(info.get("reason", "")))
+        prior = str(info.get("prior_status", ""))
+        target: Status | None = None
+        if prior in (Status.AWAITING_TRIAGE.value, Status.IN_REVIEW.value):
+            target = Status(prior)
+        elif task.pr and task.status == Status.CHANGES_REQUESTED:
+            target = self._pr_status(task)
+        if target is not None and task.status != target:
+            self._transition(task, target, f"nothing to fix; resumed to {target.value.replace('_', ' ')} by hand")
+        else:
+            task.log("nothing to fix; needs-human stop cleared by hand")
+            self.store.save(task)
         self.state.save()
 
     def finish_manual(self, task: Task, result: dict[str, Any]) -> TickReport:
