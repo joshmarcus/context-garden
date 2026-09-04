@@ -24,6 +24,7 @@ garden = "garden.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+plates = ["pillow>=10"]
 
 [build-system]
 requires = ["hatchling"]

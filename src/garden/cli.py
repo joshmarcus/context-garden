@@ -115,21 +115,39 @@ def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Bota
 
 
 @app.command()
-def plants():
-    """The botanical key: which plant each phase carries, and the growth-stage names for task states."""
-    from .plants import PLANTS, STAGE_WORD
+def plants(
+    fetch: bool = typer.Option(False, "--fetch", help="Download the scanned plates (Thomé, 1885, public domain) from Wikimedia Commons into the web UI"),
+    out: Path | None = typer.Option(None, "--out", help="Where to write the plates (default: the package's static/plates directory)"),
+    height: int = typer.Option(900, help="Pixel height of the prepared plates"),
+):
+    """The botanical key: which plant each phase carries, whether its scanned plate is present, and the growth-stage names."""
+    from .plants import PLANTS, STAGE_WORD, plant_info, plate_filename
 
+    plates_dir = out or Path(__file__).parent / "web" / "static" / "plates"
+    if fetch:
+        try:
+            from .platefetch import fetch_all
+
+            rows = fetch_all(plates_dir, height=height, log=lambda m: console.print(f"[dim]{m}[/dim]"))
+        except ImportError as e:
+            err.print(f"[red]{e}[/red]\nPillow is needed: pip install 'context-garden[plates]'")
+            raise typer.Exit(1) from None
+        except Exception as e:  # noqa: BLE001 - network, API or image errors, all reported the same way
+            err.print(f"[red]could not fetch plates: {e}[/red]")
+            raise typer.Exit(1) from None
+        console.print(f"wrote {len(rows)} plate(s) and SOURCES.md to {plates_dir}")
     store = _store()
     table = Table(title="plates")
-    for c in ("product/phase", "plate", "plant", "latin", "note"):
+    for c in ("product/phase", "plate", "plant", "latin", "scan", "note"):
         table.add_column(c)
     for prod in store.products():
         for ph in prod.phases:
-            from .plants import plant_info
-
             info = plant_info(ph.plant)
-            table.add_row(ph.key, ph.plate, ph.plant, info["latin"], info["note"])
+            scan = "yes" if (plates_dir / plate_filename(ph.plant)).exists() else "drawing"
+            table.add_row(ph.key, ph.plate, ph.plant, info["latin"], scan, info["note"])
     console.print(table)
+    if not any((plates_dir / plate_filename(p["key"])).exists() for p in PLANTS):
+        console.print("[dim]no scanned plates yet: `garden plants --fetch` downloads them (needs network access to Wikimedia Commons)[/dim]")
     console.print("seed packet (unassigned, in order): " + ", ".join(p["latin"] for p in PLANTS))
     console.print("stages: " + " · ".join(f"{k} = {v}" for k, v in STAGE_WORD.items() if k != "blocked"))
 

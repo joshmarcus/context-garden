@@ -1,0 +1,132 @@
+"""Fetch the phase plates: scanned botanical illustrations from Wikimedia Commons.
+
+The plates are from Otto Wilhelm Thomé's *Flora von Deutschland, Österreich und der Schweiz*
+(Gera, 1885), chromolithographs long in the public domain. Commons hosts the scans, and
+for most plates a "clean" version with the page background removed. This module resolves
+each plant to a file on Commons, downloads it, crops the margins, downsamples it and writes
+`<key>.webp` and `<key>-thumb.webp` under the web UI's static plates directory, plus a
+`SOURCES.md` recording exactly what was taken from where.
+
+Only `garden plants --fetch` calls this; nothing in the scheduler or the UIs touches the
+network for plates. Needs Pillow (`pip install "context-garden[plates]"`).
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from .plants import PLANTS
+
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+USER_AGENT = "context-garden/plates (https://github.com/joshmarcus/context-garden)"
+WORK = "Prof. Dr. Thomé's Flora von Deutschland, Österreich und der Schweiz"
+ARTIST = "Otto Wilhelm Thomé"
+YEAR = "1885"
+
+# Commons names Thomé's plates "Illustration <Genus> <species>0.jpg" (and "... clean.jpg" for
+# the background-removed version); the fern has been filed under three names over the years.
+CANDIDATES: dict[str, list[str]] = {
+    "pea": ["Illustration_Pisum_sativum"],
+    "bramble": ["Illustration_Rubus_fruticosus"],
+    "foxglove": ["Illustration_Digitalis_purpurea"],
+    "fern": ["Illustration_Dryopteris_filix-mas", "Illustration_Aspidium_filix-mas", "Illustration_Polystichum_filix-mas"],
+    "poppy": ["Illustration_Papaver_rhoeas"],
+}
+
+
+def pick_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Prefer the background-removed scan, then the plain plate, among an allimages result."""
+    jpgs = [f for f in files if str(f.get("name", "")).lower().endswith((".jpg", ".jpeg", ".png"))]
+    for f in jpgs:
+        if "clean" in str(f.get("name", "")).lower():
+            return f
+    for f in jpgs:
+        stem = str(f.get("name", "")).rsplit(".", 1)[0]
+        if stem.endswith("0"):
+            return f
+    return jpgs[0] if jpgs else None
+
+
+def resolve(key: str, client: httpx.Client) -> dict[str, Any]:
+    for prefix in CANDIDATES[key]:
+        r = client.get(COMMONS_API, params={
+            "action": "query", "list": "allimages", "aiprefix": prefix, "ailimit": "50",
+            "aiprop": "url|size|mime|extmetadata", "format": "json",
+        })
+        r.raise_for_status()
+        files = r.json().get("query", {}).get("allimages", [])
+        chosen = pick_file(files)
+        if chosen:
+            return chosen
+    raise LookupError(f"no plate found on Commons for {key} (tried {', '.join(CANDIDATES[key])})")
+
+
+def prepare(raw: bytes, height: int = 900, thumb_height: int = 160) -> tuple[bytes, bytes]:
+    """Crop near-white margins, downsample, and encode the plate and its thumbnail as WebP."""
+    import io
+
+    from PIL import Image, ImageChops
+
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+    bg = Image.new("RGB", im.size, (255, 255, 255))
+    diff = ImageChops.difference(im, bg).convert("L").point(lambda v: 255 if v > 28 else 0)
+    box = diff.getbbox()
+    if box:
+        pad_x, pad_y = int(im.width * 0.03), int(im.height * 0.02)
+        im = im.crop((max(0, box[0] - pad_x), max(0, box[1] - pad_y), min(im.width, box[2] + pad_x), min(im.height, box[3] + pad_y)))
+
+    def encode(img: Image.Image, h: int) -> bytes:
+        w = max(1, round(img.width * h / img.height))
+        out = io.BytesIO()
+        img.resize((w, h), Image.LANCZOS).save(out, "WEBP", quality=82, method=6)
+        return out.getvalue()
+
+    return encode(im, height), encode(im, thumb_height)
+
+
+def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, log=print) -> list[dict[str, Any]]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=60, follow_redirects=True) as client:
+        for p in PLANTS:
+            key = p["key"]
+            if keys and key not in keys:
+                continue
+            f = resolve(key, client)
+            log(f"{key}: {f['name']} ({f.get('width')}x{f.get('height')})")
+            raw = client.get(f["url"]).content
+            main, thumb = prepare(raw, height=height)
+            (out_dir / f"{key}.webp").write_bytes(main)
+            (out_dir / f"{key}-thumb.webp").write_bytes(thumb)
+            meta = f.get("extmetadata") or {}
+            rows.append({
+                "key": key, "latin": p["latin"], "title": f["name"], "url": f.get("descriptionurl") or f["url"],
+                "artist": _plain(meta.get("Artist", {}).get("value", "")) or ARTIST,
+                "license": _plain(meta.get("LicenseShortName", {}).get("value", "")) or "Public domain",
+                "bytes": len(main),
+            })
+    (out_dir / "SOURCES.md").write_text(sources_markdown(rows))
+    return rows
+
+
+def _plain(html: str) -> str:
+    import re
+
+    return re.sub(r"<[^>]+>", "", html).strip()
+
+
+def sources_markdown(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Plate sources", "",
+        f"Scanned plates from *{WORK}* ({ARTIST}, Gera, {YEAR}), via Wikimedia Commons. The work is in",
+        "the public domain; the files here are cropped, downsampled WebP copies made by `garden plants --fetch`",
+        f"on {dt.date.today().isoformat()}.", "",
+        "| plant | species | Commons file | artist | licence | size |", "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        lines.append(f"| {r['key']} | *{r['latin']}* | [{r['title']}]({r['url']}) | {r['artist']} | {r['license']} | {r['bytes'] // 1024} KB |")
+    return "\n".join(lines) + "\n"
