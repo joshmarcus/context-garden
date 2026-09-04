@@ -233,6 +233,7 @@ details[open] > summary::before { content:"▾ "; }
     <a href="/events" class="{{ 'on' if page == 'events' else '' }}">Timeline</a>
     <a href="/trials" class="{{ 'on' if page == 'trials' else '' }}">Trials</a>
     <a href="/runs" class="{{ 'on' if page == 'runs' else '' }}">Runs <span class="count">${{ '%.0f' % totals.cost_usd }}</span></a>
+    <a href="/config" class="{{ 'on' if page == 'config' else '' }}">Config</a>
   </nav>
   <div>
     <h4>Phases</h4>
@@ -245,7 +246,12 @@ details[open] > summary::before { content:"▾ "; }
     </div>
   </div>
   <div class="foot">
+    {% if dispatch_paused %}
+    <span style="color:var(--warn)">dispatch paused{% if pause_ctrl.by %} · by {{ pause_ctrl.by }}{% endif %}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}{% endif %}{% if pause_ctrl.reason %} · {{ pause_ctrl.reason }}{% endif %}</span>
+    <form method="post" action="/resume"><button class="quiet" style="color:var(--warn);border-color:var(--warn)">▶ Resume</button></form>
+    {% else %}
     <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick {{ last_tick[11:19] }}Z{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
+    {% endif %}
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>

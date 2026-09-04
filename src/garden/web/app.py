@@ -134,6 +134,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         s = hub.fresh()
         sched = Scheduler(s, log=lambda m: None)
         items = build_inbox(s, sched)
+        ctrl = sched.control()
         return {
             "request": request,
             "page": page,
@@ -146,6 +147,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "env": s.config.env,
             "running": running_now(s),
             "totals": RunStore(s.config.garden_dir).totals(),
+            "dispatch_paused": ctrl.get("dispatch") == "paused",
+            "pause_ctrl": ctrl,
             **kw,
         }
 
@@ -357,11 +360,49 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.fixed_tokens if fixed else 0,
         ))
 
+    @app.get("/config", response_class=HTMLResponse)
+    def config_page(request: Request):
+        s = hub.fresh()
+        cfg = s.config
+        effective = {
+            "max_parallel": cfg.get("max_parallel"),
+            "auto_dispatch": cfg.get("auto_dispatch"),
+            "auto_revise": cfg.get("auto_revise"),
+            "tick_interval": cfg.get("tick_interval"),
+            "review.enabled": cfg.get("review.enabled"),
+            "review.max_rounds": cfg.get("review.max_rounds"),
+            "review.difficulty": cfg.get("review.difficulty") or "(task tier)",
+            "github.draft_pr": cfg.get("github.draft_pr"),
+            "stack": cfg.get("stack"),
+        }
+        budgets = dict(cfg.get("budgets") or {})
+        for pname, pdata in (cfg.data.get("products") or {}).items():
+            if isinstance(pdata, dict) and pdata.get("budget_usd"):
+                budgets.setdefault(pname, pdata["budget_usd"])
+        return templates.TemplateResponse(request, "config.html", ctx(
+            request, page="config", sources=cfg.sources, effective=effective, budgets=budgets))
+
     # ---- actions -----------------------------------------------------------
     @app.post("/tick")
     def tick(request: Request):
         summary = hub.tick()
         hub._log(f"manual tick: {summary}")
+        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+
+    @app.post("/pause")
+    def web_pause(request: Request, reason: str = Form("")):
+        with hub.lock:
+            sched = hub.scheduler()
+            sched.pause(by="web", reason=reason.strip())
+        hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
+        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+
+    @app.post("/resume")
+    def web_resume(request: Request):
+        with hub.lock:
+            sched = hub.scheduler()
+            sched.resume(by="web")
+        hub._log("dispatch resumed via web")
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
 
     @app.post("/tasks/{task_id}/{action}")

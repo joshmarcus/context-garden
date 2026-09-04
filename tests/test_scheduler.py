@@ -333,3 +333,55 @@ def test_notify_on_parent_closed(sched, fake_github, tmp_path):
     assert notify_file.exists(), "notify hook must fire when a stack parent is closed"
     content = notify_file.read_text()
     assert "task=DM-002" in content and "status=needs_human" in content
+
+
+def test_pause_stops_dispatch(sched, fake_github):
+    sched.pause(by="cli", reason="testing")
+    assert sched.is_dispatch_paused()
+    rep = sched.tick()
+    # nothing dispatched while paused
+    assert rep.dispatched == []
+    assert statuses(sched)["DM-001"] == "ready"
+
+
+def test_resume_restarts_dispatch(sched, fake_github):
+    sched.pause(by="cli")
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "ready"
+    sched.resume(by="cli")
+    assert not sched.is_dispatch_paused()
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
+
+
+def test_paused_tick_still_reaps_and_polls(sched, fake_github):
+    # dispatch, let worker finish, then pause before reaping
+    sched.tick()
+    wait_for_runs(sched)
+    sched.pause(by="cli")
+    rep = sched.tick()
+    # should reap the finished worker and push the PR even while paused
+    assert "DM-001" in rep.reaped
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert fake_github.created  # PR was opened
+    # poll should also run: merge the PR -> task becomes done
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    rep = sched.tick()
+    assert statuses(sched)["DM-001"] == "done"
+    # DM-002 remains ready (not dispatched because paused)
+    assert statuses(sched)["DM-002"] == "ready"
+
+
+def test_pause_state_persists_in_state_json(sched, fake_github):
+    sched.pause(by="cli", reason="hold")
+    path = sched.state.path
+    from garden.scheduler import State
+    fresh = State(path).get("_control")
+    assert fresh["dispatch"] == "paused" and fresh["reason"] == "hold" and fresh["by"] == "cli"
+
+
+def test_pause_overrides_auto_dispatch_true(sched, fake_github):
+    sched.cfg.data["auto_dispatch"] = True
+    sched.pause(by="web")
+    rep = sched.tick()
+    assert rep.dispatched == []

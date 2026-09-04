@@ -186,3 +186,34 @@ def test_friction_form_in_inbox_and_task(garden):
     c = client(garden)
     assert "Report friction" in c.get("/").text
     assert "Report friction" in c.get("/tasks/DM-001").text
+
+
+def test_config_page_renders(garden):
+    c = client(garden)
+    r = c.get("/config")
+    assert r.status_code == 200
+    assert "Pause" in r.text
+    assert "max_parallel" in r.text
+    assert "auto_dispatch" in r.text
+    assert "Config" in r.text
+
+
+def test_pause_resume_web(garden):
+    c = client(garden)
+    # not paused by default
+    assert "dispatch paused" not in c.get("/").text
+    # pause via web
+    r = c.post("/pause", data={"reason": "testing"}, follow_redirects=False)
+    assert r.status_code == 303
+    home = c.get("/").text
+    assert "dispatch paused" in home
+    config_page = c.get("/config").text
+    assert "testing" in config_page
+    assert "Resume dispatch" in config_page
+    # resume via web
+    r = c.post("/resume", follow_redirects=False)
+    assert r.status_code == 303
+    home = c.get("/").text
+    assert "dispatch paused" not in home
+    config_page = c.get("/config").text
+    assert "Pause dispatch" in config_page

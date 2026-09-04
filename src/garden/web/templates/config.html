@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Configuration{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change values; this page is read-only except for the pause switch.</p></div>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Dispatch</div>
+  <h3>Pause / Resume</h3>
+  {% if dispatch_paused %}
+  <p style="color:var(--warn);margin:0 0 10px">
+    Dispatch is <strong>paused</strong>{% if pause_ctrl.by %} (by {{ pause_ctrl.by }}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}Z{% endif %}){% endif %}.
+    {% if pause_ctrl.reason %}Reason: {{ pause_ctrl.reason }}.{% endif %}
+    Reaping, polling and reviews continue.
+  </p>
+  <form method="post" action="/resume" class="actions">
+    <button class="primary">▶ Resume dispatch</button>
+  </form>
+  {% else %}
+  <p style="color:var(--muted);margin:0 0 10px">Dispatch is <strong>running</strong>. Pause it to prevent new work and revise runs from being dispatched on the next tick without restarting the server.</p>
+  <form method="post" action="/pause" class="actions">
+    <input type="text" name="reason" placeholder="Reason (optional)" style="width:260px">
+    <button>⏸ Pause dispatch</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Config files loaded</div>
+  <h3>Sources</h3>
+  {% if sources %}
+  <ul class="log" style="margin:0;padding:0 0 0 1.2em">
+    {% for s in sources %}<li>{{ s }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">defaults only (no garden.yaml found)</p>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Effective values</div>
+  <h3>Scheduler &amp; dispatch</h3>
+  <dl class="kv" style="margin:0">
+    {% for k, v in effective.items() %}
+    <dt>{{ k }}</dt><dd class="mono">{{ v }}</dd>
+    {% endfor %}
+  </dl>
+</div>
+
+{% if budgets %}
+<div class="panel">
+  <div class="eyebrow">Budgets</div>
+  <h3>Per phase / product</h3>
+  <dl class="kv" style="margin:0">
+    {% for k, v in budgets.items() %}
+    <dt>{{ k }}</dt><dd class="mono">${{ v }}</dd>
+    {% endfor %}
+  </dl>
+</div>
+{% endif %}
+{% endblock %}
