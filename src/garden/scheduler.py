@@ -26,7 +26,7 @@ from .brief import build_brief, resume_prompt
 from .checks import failures as check_failures
 from .checks import run_checks, to_feedback
 from .events import EventLog
-from .github import GitHub, GitHubError
+from .github import GitHub, GitHubError, mark_garden_comment
 from .graph import blockers, ready, stack_parents
 from .harness import DIFFICULTIES
 from .model import Phase, Status, Task, now_iso
@@ -466,7 +466,8 @@ class Scheduler:
                 if run.mode in ("revise", "resume"):
                     try:
                         self.github.update_pr(slug, existing.number, title=title, body=body)
-                        self.github.comment(slug, existing.number, f"Pushed a revision round: {summary}\n\n_garden run {run.run_id}_")
+                        comment_body = mark_garden_comment(f"Pushed a revision round: {summary}", run.run_id)
+                        self.github.comment(slug, existing.number, comment_body)
                     except GitHubError as e:
                         self.log(f"{task.id}: could not update PR: {e}")
                 nxt = self._pr_status(task)
@@ -664,7 +665,8 @@ class Scheduler:
         number = self._pr_number(task)
         if slug and number and self.github.available:
             try:
-                self.github.comment(slug, number, review_to_markdown(review, run.run_id))
+                comment_body = mark_garden_comment(review_to_markdown(review), run.run_id)
+                self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
         # repeated blocking findings across rounds = the loop isn't converging
@@ -1146,9 +1148,9 @@ class Scheduler:
             st = self.state.get(task.id)
             with_pr = [c for c in st["trial"]["contenders"] if c["status"] == "pr"]
             verdict = {"winner": with_pr[0]["label"], "rationale": "comparison run produced no verdict; first contender kept", "ranking": []}
-        self._conclude_trial(task, verdict, rep, compare_cost=run.cost_usd)
+        self._conclude_trial(task, verdict, rep, compare_cost=run.cost_usd, run_id=run.run_id)
 
-    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None) -> None:
+    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None, run_id: str = "") -> None:
         st = self.state.get(task.id)
         trial = st["trial"]
         scores = {str(r.get("label")): r for r in verdict.get("ranking") or [] if isinstance(r, dict)}
@@ -1174,7 +1176,8 @@ class Scheduler:
         for c in trial["contenders"]:
             if c.get("pr_number") and slug and self.github.available:
                 try:
-                    self.github.comment(slug, c["pr_number"], md)
+                    comment_body = mark_garden_comment(md, run_id)
+                    self.github.comment(slug, c["pr_number"], comment_body)
                     if c is not winner:
                         self.github.close_pr(slug, c["pr_number"])
                 except GitHubError as e:
@@ -1286,7 +1289,8 @@ class Scheduler:
         number = self._pr_number(task)
         if slug and number and self.github.available:
             try:
-                self.github.comment(slug, number, md)
+                comment_body = mark_garden_comment(md, run.run_id)
+                self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post persona review: {e}")
         (run.path / "report.md").write_text(md)
