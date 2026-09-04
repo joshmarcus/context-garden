@@ -19,7 +19,7 @@
         <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ (st.checks or '').lower() }}</td>
         <td class="muted">{{ st.revisions or '' }}</td>
         <td class="muted mono">~{{ '{:,}'.format(brief_tok) }}</td>
-        <td class="muted mono" title="input / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
+        <td class="muted mono" title="input / cache-read / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.cache_read_input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
         <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
       {% else %}<tr><td colspan="13" class="faint">no tasks yet</td></tr>{% endfor %}
       </table></div>

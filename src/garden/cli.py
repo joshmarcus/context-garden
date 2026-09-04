@@ -965,10 +965,10 @@ def usage(
         fixed, reading = estimate_brief_tokens(store, t)
         console.print(f"[bold]{t.id}[/bold] {t.title}  brief ~{fixed + reading:,} (fixed {fixed:,} + reading {reading:,})  runs={u['runs']}  in={u['input_tokens']:,}  out={u['output_tokens']:,}  cache-read={u['cache_read_input_tokens']:,}  cost=${u['cost_usd']:.2f}  minutes={u['minutes']}")
         table = Table()
-        for c in ("mode", "runs", "in", "out", "cost"):
+        for c in ("mode", "runs", "in", "cache-read", "out", "cost"):
             table.add_column(c, justify="right" if c != "mode" else "left")
         for mode, m in sorted(u["by_mode"].items()):
-            table.add_row(mode, str(m["runs"]), f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", f"${m['cost_usd']:.2f}")
+            table.add_row(mode, str(m["runs"]), f"{m['input_tokens']:,}", f"{m['cache_read_input_tokens']:,}", f"{m['output_tokens']:,}", f"${m['cost_usd']:.2f}")
         console.print(table)
         return
     per = rs.usage_by_task()
@@ -995,7 +995,7 @@ def usage(
                       f"${u['cost_usd'] / u['runs']:.2f}" if u["runs"] else "")
         if by_mode:
             for mode, m in sorted(u["by_mode"].items()):
-                table.add_row(f"  {mode}", "", "", str(m["runs"]), "", f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", "", f"${m['cost_usd']:.2f}", "")
+                table.add_row(f"  {mode}", "", "", str(m["runs"]), "", f"{m['input_tokens']:,}", f"{m['cache_read_input_tokens']:,}", f"{m['output_tokens']:,}", f"${m['cost_usd']:.2f}", "")
         tot["runs"] += u["runs"]
         tot["in"] += u["input_tokens"]
         tot["out"] += u["output_tokens"]
@@ -1026,11 +1026,12 @@ def runs(task_id: str | None = typer.Argument(None)):
     store = _store()
     rs = RunStore(store.config.garden_dir)
     table = Table()
-    for c in ("task", "run", "mode", "status", "runner", "min", "brief tok", "in", "out", "cost"):
+    for c in ("task", "run", "mode", "status", "runner", "min", "brief tok", "in", "cache-read", "out", "cost"):
         table.add_column(c)
     for r in (rs.runs_for(task_id) if task_id else rs.all_runs()):
         table.add_row(r.task_id, r.run_id, r.mode, r.status, r.runner, f"{r.elapsed_minutes():.0f}", str(r.brief_tokens),
-                      str(r.usage.get("input_tokens", "")), str(r.usage.get("output_tokens", "")),
+                      str(r.usage.get("input_tokens", "")), str(r.usage.get("cache_read_input_tokens", "")),
+                      str(r.usage.get("output_tokens", "")),
                       f"${r.cost_usd:.2f}" if r.cost_usd is not None else "")
     console.print(table)
 

@@ -214,10 +214,11 @@ def _rollup(runs: list[Run]) -> dict[str, Any]:
         tot["cache_creation_input_tokens"] += cc
         tot["cost_usd"] += cost
         tot["minutes"] += r.elapsed_minutes() if r.finished_at else 0.0
-        m = tot["by_mode"].setdefault(r.mode, {"runs": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+        m = tot["by_mode"].setdefault(r.mode, {"runs": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": 0.0})
         m["runs"] += 1
         m["input_tokens"] += inp
         m["output_tokens"] += outp
+        m["cache_read_input_tokens"] += cr
         m["cost_usd"] += cost
     tot["cost_usd"] = round(tot["cost_usd"], 4)
     tot["minutes"] = round(tot["minutes"], 1)
