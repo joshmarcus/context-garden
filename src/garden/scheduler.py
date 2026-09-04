@@ -14,6 +14,7 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -424,11 +425,16 @@ class Scheduler:
         """Stall bookkeeping, token-free pre-PR checks, then PR open/update, then a pending restack."""
         st = self.state.get(task.id)
         stalled = False
+        diff_h: str | None = None
+        body_h: str | None = None
         if bool(self.cfg.get("stall.enabled", True)) and worktree.exists():
-            h = gitops.diff_hash(worktree, base)
-            if run.mode == "revise" and h and h == st.get("last_diff_hash"):
-                stalled = True
-            st["last_diff_hash"] = h
+            diff_h = gitops.diff_hash(worktree, base)
+            body_h = hashlib.sha1(str(result.get("pr_body") or "").encode("utf-8", "replace")).hexdigest()[:16]
+            if run.mode == "revise":
+                diff_unchanged = bool(diff_h and diff_h == st.get("last_diff_hash"))
+                body_unchanged = body_h == st.get("last_pr_body_hash", "")
+                if diff_unchanged and body_unchanged:
+                    stalled = True
         failed = check_failures(self._pre_pr_checks(task, worktree, branch, base))
         if failed and not stalled:
             st["pending_feedback"] = to_feedback(failed, "pre-PR check")
@@ -439,9 +445,14 @@ class Scheduler:
                 self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); no PR opened yet; revise run will fix{cost}")
             rep.transitions.append(f"{task.id} -> changes_requested (checks)")
             return
+        # Save hashes only after the round reaches the PR; failed pre-PR rounds are not recorded.
+        if diff_h is not None:
+            st["last_diff_hash"] = diff_h
+        if body_h is not None:
+            st["last_pr_body_hash"] = body_h
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
-            self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff")
+            self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff or PR description")
         if st.pop("restack_pending", False) and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             self._restack(task, rep)
 
@@ -555,10 +566,11 @@ class Scheduler:
         st = self.state.get(task.id)
         st["needs_human"] = reason
         self.events.emit("stall", task.id, reason=reason)
+        action = f'garden triage {task.id} --changes "<feedback>" to unblock'
         if task.status != Status.CHANGES_REQUESTED:
-            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; needs a human (garden retry to resume)")
+            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; run `{action}`")
         else:
-            task.log(f"stalled: {reason}; needs a human")
+            task.log(f"stalled: {reason}; run `{action}`")
             self.store.save(task)
         rep.transitions.append(f"{task.id} stalled")
 

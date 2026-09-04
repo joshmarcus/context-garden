@@ -104,22 +104,37 @@ def test_discovered_work_files_tasks(sched, fake_github, monkeypatch):
 # ---- 4. stall detection and budgets -----------------------------------------
 def test_stall_when_revise_changes_nothing(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")
+    sched.cfg.data["max_revisions"] = 4  # allow enough rounds for two revises before stall + one after retry
     sched.tick()
     wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
+
+    # First revise: body changes from the work-run body to "b"; diff unchanged.
+    # The round is NOT a stall because the description did change.
     pr.updated_at = "t2"
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "please fix", "created": "2099-01-01T00:00:00Z"}])
+    rep = sched.tick()
+    assert rep.dispatched == ["DM-001(revise)"]
+    wait_for_runs(sched)
+    fake_github.feedback.clear()
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"  # not stalled yet
+
+    # Second revise: body "b" again (same), diff still unchanged -> stall.
+    pr.updated_at = "t3"
+    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "same again", "created": "2099-01-02T00:00:00Z"}])
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
     wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 stalled" in rep.transitions
     assert statuses(sched)["DM-001"] == "changes_requested"
-    assert "no change to the diff" in sched.state.get("DM-001")["needs_human"]
+    assert "no change" in sched.state.get("DM-001")["needs_human"]
+    assert "garden triage DM-001" in sched.store.task("DM-001").body
     # more feedback does not spend another round while a human is needed
-    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "again", "created": "2099-01-02T00:00:00Z"}])
-    pr.updated_at = "t3"
+    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "again", "created": "2099-01-03T00:00:00Z"}])
+    pr.updated_at = "t4"
     rep = sched.tick()
     assert rep.dispatched == []
     # a human resets; the loop continues
@@ -127,6 +142,24 @@ def test_stall_when_revise_changes_nothing(sched, fake_github, monkeypatch):
     assert "needs_human" not in sched.state.get("DM-001")
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
+
+
+def test_stall_description_only_round_not_stalled(sched, fake_github, monkeypatch):
+    """A revise round that only changes the PR body is not a stall."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.updated_at = "t2"
+    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "fix the description", "created": "2099-01-01T00:00:00Z"}])
+    sched.tick()
+    wait_for_runs(sched)
+    fake_github.feedback.clear()
+    sched.tick()
+    # nochange revise: no new commits (diff hash same as work run) but body changed to "b"
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert not sched.state.get("DM-001").get("needs_human")
 
 
 def test_repeated_review_finding_stalls(sched, fake_github, monkeypatch):
