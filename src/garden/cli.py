@@ -1339,22 +1339,27 @@ def usage(
         console.print(table)
         return
     per = rs.usage_by_task()
+    if product and phase:
+        try:
+            ph = store.phase(product, phase)
+        except KeyError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        rows = [(t.id, t) for t in ph.tasks]
+        if rows:
+            phase_fixed, _ = estimate_brief_tokens(store, rows[0][1])
+            console.print(f"[bold]{product}/{phase}[/bold] fixed brief cost: ~{phase_fixed:,} tokens (head + rules + digest + product + goals)")
+    else:
+        rows = [(tid, tasks.get(tid)) for tid in sorted(per)]
+
     table = Table(title="usage per task")
     for c in ("task", "tier", "status", "runs", "brief", "in", "out", "cache-read", "cost", "$/run"):
         table.add_column(c, justify="right" if c not in ("task", "tier", "status") else "left")
     tot = {"runs": 0, "in": 0, "out": 0, "cache": 0, "cost": 0.0}
     brief_tot = 0
-    phase_fixed = None
-    printed_header = False
-    for tid, u in sorted(per.items()):
-        t = tasks.get(tid)
-        if product and (not t or t.product != product or t.phase != phase):
-            continue
+    for tid, t in rows:
+        u = per.get(tid) or rs.usage_for(tid)
         fixed, reading = estimate_brief_tokens(store, t) if t else (0, 0)
-        if product and phase and not printed_header:
-            phase_fixed = fixed
-            printed_header = True
-            console.print(f"[bold]{product}/{phase}[/bold] fixed brief cost: ~{phase_fixed:,} tokens (head + rules + digest + product + goals)")
         brief_est = fixed + reading
         brief_tot += brief_est
         table.add_row(tid, t.difficulty if t else "", _style(t.status.value) if t else "", str(u["runs"]), f"~{brief_est:,}",

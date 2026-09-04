@@ -61,6 +61,13 @@ def test_brief_stats(garden):
     assert r.exit_code == 0 and "tokens" in r.output
 
 
+def test_usage_phase_header_and_rows_with_no_runs(garden):
+    r = run(garden, "usage", "demo/p1")
+    assert r.exit_code == 0, r.output
+    assert "fixed brief cost" in r.output
+    assert "DM-001" in r.output and "DM-002" in r.output
+
+
 def test_plan_import(garden, tmp_path):
     f = tmp_path / "plan.json"
     f.write_text(json.dumps([{"title": "Imported", "body": "## Goal\n\nx"}]))
