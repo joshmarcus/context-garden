@@ -36,8 +36,7 @@ states keep their names, and each also has a growth-stage drawing beside it: see
 leaf, bud, flower, fruit. The web UI is set like a herbarium sheet, with typed labels and
 small stamps for decisions, in Newsreader and Courier Prime, and one faint climbing vine
 behind the page; titles and copy stay plain.
-`garden plants` prints the key; details in
-`context-garden/phase-01-bootstrap/specs/botanical-theme.md`.
+`garden plants` prints the key.
 
 ## Screenshots
 
@@ -56,6 +55,9 @@ A phase: burn-up of merged work against scope, cost by difficulty tier, every tr
 The trellis: dependencies left to right, dashed edges for discovered work.
 
 ![Trellis](docs/screenshots/trellis-light.png)
+
+The garden that drives this tool's own development lives at
+[joshmarcus/garden](https://github.com/joshmarcus/garden).
 
 ## Install
 
@@ -97,11 +99,6 @@ triage (ready for review, or send back), questions from workers, PRs ready to re
 merge, stalled tasks, work to approve. Comments you leave become the next revise run's
 brief; merging marks the task done and unblocks its dependents.
 
-This repository is itself a garden (`garden.yaml` at the root, product
-`context-garden/`). `garden status` here shows the bootstrap phase (done) and a
-`phase-02-friction` phase of draft tasks ready to be planned, approved and run on the tool
-itself.
-
 ## Layout
 
 ```
@@ -117,7 +114,6 @@ principles/
     docs/*.md                     supporting docs; planner input
     tasks/<ID>-<slug>.md          one task = one PR; frontmatter is state, body is the brief
 .garden/                          gitignored: runs, worktrees, clones, state.json
-.claude/skills/                   garden-take, garden-plan, garden-review for interactive sessions
 ```
 
 ### A task file
@@ -145,7 +141,7 @@ reading:                      # garden-relative files (or dirs) inlined into the
 ```
 
 `branch`, `pr`, `attempts`, `last_dispatched_at` and the `## Log` section are written by
-the scheduler. See `context-garden/phase-01-bootstrap/specs/task-format.md`.
+the scheduler.
 
 ### The brief a worker sees
 
@@ -185,7 +181,7 @@ push; the runner does.
 
 ## The scheduler
 
-One `tick` is deterministic (details in `context-garden/phase-01-bootstrap/specs/scheduler.md`):
+One `tick` is deterministic (details in `docs/architecture.md`):
 
 1. **Reap** finished workers: parse the result, push the branch, open or update the PR,
    `in_review`. No result or a crash retries up to `max_attempts`; a `blocked` report or
@@ -206,13 +202,10 @@ with the UIs.
 - `docs/architecture.md`: how the pieces fit: processes, where state lives, one tick, the state machine, git and PRs, every kind of run, interfaces.
 - `docs/worker-protocol.md`: how the scheduler and a worker it spun up communicate, step by step, with the failure modes.
 - `docs/roadmap.md`: shipped, next, later, not planned.
-- `context-garden/phase-01-bootstrap/specs/`: one spec per mechanism (task format, scheduler,
-  brief, harness, remote runner, review pass, coordination, trials, personas, checks).
 
 ## Coordination
 
-Borrowed from graph-based agent systems; all deterministic (details in
-`context-garden/phase-01-bootstrap/specs/coordination.md`):
+Borrowed from graph-based agent systems; all deterministic:
 
 - **Stacked dependencies.** A task whose dependency has an open PR starts on top of that
   branch instead of waiting for the merge; its PR targets the parent branch and is
@@ -230,11 +223,12 @@ Borrowed from graph-based agent systems; all deterministic (details in
 
 ## Personas, trials, and token-free checks
 
-- **Persona reviews.** `personas/*.md` describe reviewers (designer, project-manager,
-  staff-engineer, usability-expert, user, security by default; add your own). Run one
-  against a phase's body of work (`garden persona-review product/phase -p user`; the
-  report lands in the phase's `docs/reviews/`, where the planner reads it) or against a
-  PR (`garden persona-review ID -p security`; posted as a comment). `review.personas`
+- **Persona reviews.** Persona files describe reviewers (designer, project-manager,
+  staff-engineer, usability-expert, user, security by default; add your own under
+  `personas/*.md` in the garden). Run one against a phase's body of work
+  (`garden persona-review product/phase -p user`; the report lands in the phase's
+  `docs/reviews/`, where the planner reads it) or against a PR
+  (`garden persona-review ID -p security`; posted as a comment). `review.personas`
   runs chosen personas on every new PR.
 - **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
   per contender on separate branches, has one comparison run score the PRs, keeps the
@@ -277,12 +271,10 @@ the description. Bounded by `review.max_rounds`.
   detached from the scheduler.
 - **`ssh`**: the harness runs on a remote host from `ssh.hosts`, each holding a clone of
   the product repo. The run refreshes the clone, works in a worktree there, and pushes;
-  the garden opens the PR from local. Least-loaded host with capacity wins. See
-  `context-garden/phase-01-bootstrap/specs/remote-runner.md`.
+  the garden opens the PR from local. Least-loaded host with capacity wins.
 - **`manual`**: a human-driven session. `garden take ID --worktree` claims the task and
   prints the brief; `garden finish ID --result '{...}'` pushes and opens the PR through
-  the same code path. The `garden-take` skill in `.claude/skills/` automates this for an
-  interactive Claude Code session. Set `runner: manual` on a task or product to keep the
+  the same code path. Set `runner: manual` on a task or product to keep the
   scheduler from auto-dispatching it.
 
 Adding a runner: subclass `garden.runner.base.Runner` (`start`, `collect`) and register
