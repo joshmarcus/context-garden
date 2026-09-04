@@ -37,8 +37,8 @@ class Runner(ABC):
         """The harness command for this run: a resume when the run carries a session id."""
         assert self.harness is not None
         if run.mode == "resume" and run.session_id:
-            return self.harness.shell_resume_command(run.session_id, run.model, final_path)
-        return self.harness.shell_command(run.model, final_path)
+            return self.harness.shell_resume_command(run.session_id, run.model, final_path, run.difficulty)
+        return self.harness.shell_command(run.model, final_path, run.difficulty)
 
     def doctor(self) -> list[str]:
         return []

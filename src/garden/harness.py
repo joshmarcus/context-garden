@@ -59,8 +59,17 @@ class Harness:
         models = self.cfg.get("models") or {}
         return str(models.get(difficulty) or models.get("medium") or "")
 
+    def max_turns_for(self, difficulty: str) -> int:
+        """Get max_turns for a difficulty tier. Returns 0 if unset (no cap). Supports scalar or per-tier dict."""
+        max_turns = self.cfg.get("max_turns")
+        if not max_turns:
+            return 0
+        if isinstance(max_turns, dict):
+            return int(max_turns.get(difficulty) or max_turns.get("medium") or 0)
+        return int(max_turns)
+
     # ---- command -----------------------------------------------------------
-    def command(self, model: str = "", final_path: Path | None = None) -> list[str]:
+    def command(self, model: str = "", final_path: Path | None = None, difficulty: str = "") -> list[str]:
         """Argv for one headless run. The brief arrives on stdin; cwd is the worktree."""
         if self.cfg.get("command"):
             # fully custom: a list with {model} / {final} placeholders
@@ -78,9 +87,10 @@ class Harness:
                 cmd.append("--verbose")
             # A hard turn cap is optional and off by default: a run that hits it ends with no
             # final message and no result line, so the wall-clock timeout and the phase budget
-            # are the guards that count. Set `max_turns` to a number to add the cap.
-            if int(self.cfg.get("max_turns") or 0) > 0:
-                cmd += ["--max-turns", str(int(self.cfg["max_turns"]))]
+            # are the guards that count. Set `max_turns` to a number (or a per-tier dict) to add the cap.
+            max_turns = self.max_turns_for(difficulty or "medium")
+            if max_turns > 0:
+                cmd += ["--max-turns", str(max_turns)]
             if model:
                 cmd += ["--model", model]
             if mode in ("bypass", "bypassPermissions", "dangerously-skip-permissions"):
@@ -111,8 +121,8 @@ class Harness:
             cmd += [str(self.cfg["model_flag"]), model]
         return cmd
 
-    def shell_command(self, model: str = "", final_path: Path | None = None) -> str:
-        return " ".join(shlex.quote(c) for c in self.command(model, final_path))
+    def shell_command(self, model: str = "", final_path: Path | None = None, difficulty: str = "") -> str:
+        return " ".join(shlex.quote(c) for c in self.command(model, final_path, difficulty))
 
     def is_authenticated(self) -> bool:
         if self.name == "claude":
@@ -133,25 +143,25 @@ class Harness:
     def can_resume(self) -> bool:
         return bool(self.cfg.get("resume")) and (self.output in ("claude-json", "codex-jsonl") or bool(self.cfg.get("resume_command")))
 
-    def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None) -> list[str]:
+    def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None, difficulty: str = "") -> list[str]:
         """Argv that continues a previous session; the follow-up prompt arrives on stdin."""
         if self.cfg.get("resume_command"):
             return [str(a).replace("{session}", session_id).replace("{model}", model).replace("{final}", str(final_path or ""))
                     for a in self.cfg["resume_command"] if str(a)]
         if self.output == "claude-json":
-            cmd = self.command(model, final_path)
+            cmd = self.command(model, final_path, difficulty)
             cmd = cmd[:-1] + ["--resume", session_id, "Continue the task with the answer that follows."]
             return cmd
         if self.output == "codex-jsonl":
-            cmd = self.command(model, final_path)
+            cmd = self.command(model, final_path, difficulty)
             # codex exec resume <id> [PROMPT]; keep the flags, prompt from stdin
             i = cmd.index("exec") + 1
             cmd = cmd[:i] + ["resume", session_id] + cmd[i:]
             return cmd
         raise ValueError(f"harness {self.name} cannot resume")
 
-    def shell_resume_command(self, session_id: str, model: str = "", final_path: Path | None = None) -> str:
-        return " ".join(shlex.quote(c) for c in self.resume_command(session_id, model, final_path))
+    def shell_resume_command(self, session_id: str, model: str = "", final_path: Path | None = None, difficulty: str = "") -> str:
+        return " ".join(shlex.quote(c) for c in self.resume_command(session_id, model, final_path, difficulty))
 
     # ---- output ------------------------------------------------------------
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None) -> dict[str, Any]:

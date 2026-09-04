@@ -28,6 +28,7 @@ class Run:
     mode: str = "work"  # work | revise | review
     harness: str = ""
     model: str = ""
+    difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
     session_id: str = ""  # harness session, for resume
     status: str = "running"  # running | done | blocked | failed | timeout | cancelled

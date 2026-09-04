@@ -55,7 +55,7 @@ def garden(tmp_path: Path) -> Path:
         "review": {"enabled": False},
         "github": {"draft_pr": False},  # most tests exercise the non-draft flow; test_triage covers drafts
         "harnesses": {
-            "claude": {"bin": str(FAKE_CLAUDE), "max_turns": 5},
+            "claude": {"bin": str(FAKE_CLAUDE), "max_turns": {"easy": 40, "medium": 5, "hard": 80}},
             "codex": {"bin": str(FAKE_CODEX), "models": {"easy": "gpt-mini", "medium": "gpt-std", "hard": "gpt-max"}},
         },
         "ssh": {"ssh_bin": str(FAKE_SSH), "options": [],
