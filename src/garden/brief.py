@@ -20,6 +20,7 @@ OPERATING_RULES = """\
 ## Operating rules
 
 - You are working in a git worktree checked out on branch `{branch}` (based on `{base}`). Everything you change must be committed on this branch. Commit in small, well-described steps. Do NOT push and do NOT open a pull request: the garden runner does that when you finish.
+- You have **{max_turns} turns** to complete this task. Commit your work early and report your findings before you run out of turns. If you near the limit, commit what you have and finish with the final message even if incomplete.
 - Do NOT edit files under `**/tasks/` in the context garden; task state is managed by the scheduler.
 - Work only in the directory you were started in: it is your checkout on your branch. Do not change into any other checkout of this repository, and do not install anything outside it.
 - Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
@@ -172,10 +173,13 @@ def build_brief(
     sections.append(("head", head))
 
     if include_rules:
+        harness = cfg.harness(cfg.product_harness(task.product))
+        max_turns = harness.max_turns_for(task.difficulty or "medium")
         rules = OPERATING_RULES.format(
             branch=branch or task.branch or task.default_branch(),
             base=base or cfg.product_base_branch(task.product),
             marker=RESULT_MARKER,
+            max_turns=max_turns,
         )
         sections.append(("rules", rules))
         if review_feedback:
