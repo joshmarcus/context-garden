@@ -1,5 +1,5 @@
 {% if runs %}
-<table>
+<div class="scroll"><table>
 <tr><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th><th></th></tr>
 {% for r in runs %}
 <tr>
@@ -10,5 +10,5 @@
   <td><a href="/tasks/{{ task.id }}/log?run_id={{ r.run_id }}" target="_blank">log</a>{% if r.error %} · <span class="muted" title="{{ r.error }}">error</span>{% endif %}</td>
 </tr>
 {% endfor %}
-</table>
+</table></div>
 {% else %}<span class="faint">no runs yet</span>{% endif %}
