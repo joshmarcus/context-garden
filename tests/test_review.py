@@ -18,6 +18,26 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
+    """Workers can include pr_comment in the result to explain revisions."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "revise-with-comment")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    wait_for_runs(sched)
+    sched.tick()  # reap review -> request_changes -> revise dispatched
+    wait_for_runs(sched)
+    sched.tick()  # reap revise -> PR body updated + pr_comment posted
+    # Verify the pr_comment was posted as a separate comment
+    assert any("I addressed the feedback by adding the missing test." in c for c in fake_github.comments)
+    # Verify the standard revision comment was also posted
+    assert any("Pushed a revision round:" in c for c in fake_github.comments)
+
+
 def test_review_flow(sched, fake_github, monkeypatch):
     from tests.conftest import wait_for_runs
 

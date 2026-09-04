@@ -55,7 +55,7 @@ Continue the task from where you stopped, in the same worktree and branch. The s
 REVISE_RULES = """\
 ## Revision round
 
-This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain why not. Do not start over; build on the existing commits. If you need to explain a change or decline a suggestion, include a comment in your result JSON (see below) and the garden will post it on the PR.
+This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain why not. Do not start over; build on the existing commits. To reply to reviewers (e.g., if you decline a suggestion or explain a tradeoff), set `pr_comment` in your GARDEN_RESULT JSON; the garden will post it as a comment on the PR. Do not add review responses to the PR description (`pr_body`) — they belong in the comment thread, not in the change description.
 """
 
 PRE_PR_REVISE_RULES = """\

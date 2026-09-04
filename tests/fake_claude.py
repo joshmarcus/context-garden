@@ -6,7 +6,7 @@ FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
 Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
-       | nochange (revise rounds commit nothing) | conflict (edits README.md to collide with main)
+       | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -98,7 +98,7 @@ if mode == "nochange" and "Revision round" in brief:
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
-if mode in ("done", "noresult", "needs_input", "discover", "nochange", "conflict"):
+if mode in ("done", "noresult", "needs_input", "discover", "nochange", "revise-with-comment", "conflict"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
@@ -124,6 +124,8 @@ else:
             {"title": "Add the missing config schema", "body": "## Goal\n\nNeeded first.", "difficulty": "medium", "blocking": True},
             {"title": "First task", "body": "duplicate title, must be skipped"},
         ]
+    if mode == "revise-with-comment":
+        result["pr_comment"] = "I addressed the feedback by adding the missing test."
     final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
 result_obj = {
     "type": "result", "subtype": "success", "is_error": False, "result": final,
