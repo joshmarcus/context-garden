@@ -31,9 +31,14 @@ OPERATING_RULES = """\
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "notes": "<anything the human should know>", "discovered": [{{"title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
-  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty.
+  The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty; each item carries a `kind` (default `task`):
+
+  - `task` — work to do; becomes a draft task file (`blocking: true` fast-tracks it). This is the shape above.
+  - `duplicate` — two tasks are the same. Not work: it reaches the human as a decision. `{{"kind": "duplicate", "of": "<task-id-to-keep>", "duplicates": "<task-id-to-cancel>", "reason": "<why>"}}`. If accepted it cancels the `duplicates` task in favour of `of`.
+  - `cancel` — a task you believe is now obsolete. `{{"kind": "cancel", "task": "<task-id>", "reason": "<why>"}}`. If accepted it cancels that task.
+  - `note` — information for the phase's friction record, no action: `{{"kind": "note", "note": "<text>"}}`.
 """
 
 STACK_NOTE = """\
