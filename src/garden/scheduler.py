@@ -626,6 +626,9 @@ class Scheduler:
                 if run.mode in ("revise", "resume"):
                     try:
                         self.github.update_pr(slug, existing.number, title=title, body=body)
+                        pr_comment = str(result.get("pr_comment") or "").strip()
+                        if pr_comment:
+                            self.github.comment(slug, existing.number, mark_garden_comment(pr_comment, run.run_id))
                         comment_body = mark_garden_comment(f"Pushed a revision round: {summary}", run.run_id)
                         self.github.comment(slug, existing.number, comment_body)
                     except GitHubError as e:
@@ -753,10 +756,11 @@ class Scheduler:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
-        pr_title, pr_body = task.title, ""
+        pr_title, pr_body, pr_comment = task.title, "", ""
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
+            pr_comment = str(work_run.result.get("pr_comment") or "")
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available and not pr_body:
@@ -766,7 +770,8 @@ class Scheduler:
             except GitHubError:
                 pass
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
-                            diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)))
+                            diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
+                            pr_comment=pr_comment)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         review_difficulty = str(self.cfg.get("review.difficulty") or task.difficulty or "medium")
