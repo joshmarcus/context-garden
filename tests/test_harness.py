@@ -43,15 +43,16 @@ def test_stream_json_command():
     h = Harness("claude", {"output_format": "stream-json"})
     cmd = h.command("opus")
     assert "--output-format" in cmd and cmd[cmd.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in cmd
 
 
 def test_parse_claude_stream_json():
     h = Harness("claude", {"output_format": "stream-json"})
     lines = "\n".join([
         '{"type":"system","subtype":"init","session_id":"s1","tools":[]}',
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"Working..."}]}}',
-        '{"type":"tool_use","name":"Bash","input":{"command":"ls"},"id":"t1"}',
-        '{"type":"tool_result","content":[{"type":"text","text":"file.txt"}],"tool_use_id":"t1"}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working..."}]}}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"file.txt"}]}]}}',
         '{"type":"result","subtype":"success","is_error":false,"result":"Done.\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}",'
         '"usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.01,"session_id":"s1"}',
     ])
@@ -81,12 +82,12 @@ def test_stdout_events(tmp_path):
     assert r.stdout_events() == []
     (tmp_path / "stdout.json").write_text(
         '{"type":"system","session_id":"s1"}\n'
-        '{"type":"tool_use","name":"Bash","input":{"command":"ls"},"id":"t1"}\n'
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}\n'
         '{"type":"result","subtype":"success","result":"done"}\n'
     )
     evs = r.stdout_events()
-    assert len(evs) == 3 and evs[1]["name"] == "Bash"
-    assert len(r.stdout_events(n=2)) == 2 and r.stdout_events(n=2)[0]["type"] == "tool_use"
+    assert len(evs) == 3 and evs[1]["message"]["content"][0]["name"] == "Bash"
+    assert len(r.stdout_events(n=2)) == 2 and r.stdout_events(n=2)[0]["type"] == "assistant"
 
 
 def test_parse_codex_jsonl(tmp_path):

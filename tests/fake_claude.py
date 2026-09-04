@@ -132,9 +132,9 @@ result_obj = {
 }
 if stream:
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake", "tools": []}))
-    print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working on the task..."}]}}))
-    print(json.dumps({"type": "tool_use", "name": "Bash", "input": {"command": "echo working"}, "id": "t1"}))
-    print(json.dumps({"type": "tool_result", "content": [{"type": "text", "text": "working"}], "tool_use_id": "t1"}))
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task..."}]}}))
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo working"}}]}}))
+    print(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "working"}]}]}}))
     print(json.dumps(result_obj))
 else:
     print(json.dumps(result_obj))

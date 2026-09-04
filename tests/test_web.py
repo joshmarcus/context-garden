@@ -107,7 +107,7 @@ def test_stdout_partial(garden):
     rs = RunStore(store.config.garden_dir)
     run = rs.new_run("DM-001", "local", "work")
     (run.path / "stdout.json").write_text(
-        json.dumps({"type": "tool_use", "name": "Bash", "input": {"command": "ls"}, "id": "t1"}) + "\n" +
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}) + "\n" +
         json.dumps({"type": "result", "subtype": "success", "result": "Done."}) + "\n"
     )
     r = c.get("/partials/tasks/DM-001/stdout")

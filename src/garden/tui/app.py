@@ -30,18 +30,22 @@ from ..store import Store
 
 def _fmt_tui_event(ev: dict) -> str:
     t = ev.get("type", "")
-    if t == "tool_use":
-        inp = ev.get("input") or {}
-        detail = inp.get("command") or inp.get("file_path") or str(inp)[:80]
-        return f"**tool** {ev.get('name', '')} — {str(detail)[:100]}"
-    if t == "tool_result":
-        c = ev.get("content") or []
-        text = next((x.get("text", "") for x in c if isinstance(x, dict) and x.get("text")), "")
-        return f"**result** {text[:100]}" if text else ""
+    parts = (ev.get("message") or {}).get("content") or []
     if t == "assistant":
-        parts = (ev.get("message") or {}).get("content") or []
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "tool_use":
+                inp = p.get("input") or {}
+                detail = inp.get("command") or inp.get("file_path") or str(inp)[:80]
+                return f"**tool** {p.get('name', '')} — {str(detail)[:100]}"
         text = next((p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"), "")
         return f"**text** {text[:100]}" if text else ""
+    if t == "user":
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "tool_result":
+                c = p.get("content") or []
+                text = next((x.get("text", "") for x in c if isinstance(x, dict) and x.get("text")), "")
+                return f"**result** {text[:100]}" if text else "**result**"
+        return ""
     if t == "result":
         return f"**result** {ev.get('subtype', '')}"
     return ""

@@ -91,7 +91,11 @@ def test_stream_json_harness_end_to_end(garden, fake_github, monkeypatch):
     run = sc.runs.latest("DM-001")
     assert run is not None
     evs = run.stdout_events()
-    assert any(ev.get("type") == "tool_use" for ev in evs)
+    assert any(
+        ev.get("type") == "assistant"
+        and any(p.get("type") == "tool_use" for p in (ev.get("message") or {}).get("content") or [])
+        for ev in evs
+    )
     assert any(ev.get("type") == "result" for ev in evs)
     sc.tick()
     sc.store.invalidate()
