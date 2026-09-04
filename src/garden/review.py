@@ -52,7 +52,7 @@ The JSON must be on one line.
 
 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
-                 max_diff_chars: int) -> str:
+                 max_diff_chars: int, pr_comment: str = "") -> str:
     task_brief = build_brief(store, task, include_rules=False)
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
@@ -60,6 +60,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if pr_comment.strip():
+        parts.append(
+            "## Author's response to the previous review (posted as a PR comment, not part of the description)\n\n"
+            + pr_comment.strip() + "\n"
+        )
     if diff and len(diff) <= max_diff_chars:
         fence = "````" if "```" in diff else "```"
         parts.append(f"## Diff ({base}...HEAD)\n\n{fence}diff\n{diff.rstrip()}\n{fence}\n")

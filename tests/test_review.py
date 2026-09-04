@@ -31,11 +31,18 @@ def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
     wait_for_runs(sched)
     sched.tick()  # reap review -> request_changes -> revise dispatched
     wait_for_runs(sched)
-    sched.tick()  # reap revise -> PR body updated + pr_comment posted
+    rep = sched.tick()  # reap revise -> PR body updated + pr_comment posted -> second review dispatched
     # Verify the pr_comment was posted as a separate comment
     assert any("I addressed the feedback by adding the missing test." in c for c in fake_github.comments)
     # Verify the standard revision comment was also posted
     assert any("Pushed a revision round:" in c for c in fake_github.comments)
+    # Verify the pr_comment is not duplicated into the PR body/description
+    assert not any("I addressed the feedback" in u.get("body", "") for u in fake_github.updated)
+    # Verify the follow-up automated review can see the response, so it doesn't repeat the same finding
+    assert "DM-001(review)" in rep.dispatched
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "I addressed the feedback by adding the missing test." in brief
+    assert "not part of the description" in brief
 
 
 def test_review_flow(sched, fake_github, monkeypatch):
