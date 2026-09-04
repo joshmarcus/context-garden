@@ -214,6 +214,20 @@ def test_web_task_page_and_inbox_show_attention_and_resume_works(garden):
     assert Store(garden).task("DM-001").status == Status.IN_REVIEW
 
 
+def test_evidence_includes_diff_summary(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    rs = RunStore(garden / ".garden")
+    run = rs.new_run("DM-001", "local", mode="work")
+    run.status = "done"
+    run.diff_stat = " worker-output.txt | 1 +\n 1 file changed, 1 insertion(+)\n"
+    run.save()
+    _set_state(garden, "DM-001", needs_human=dict(STOP))
+    it = _attention(garden, "DM-001")
+    ev = "\n".join(it["evidence"])
+    assert "1 file changed, 1 insertion(+)" in ev
+
+
 def test_attention_view_none_for_quiet_task(garden):
     store = Store(garden)
     t = store.task("DM-001")

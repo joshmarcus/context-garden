@@ -65,6 +65,17 @@ def test_ready_on_github_is_detected_by_poll(sched, fake_github):
     assert "DM-001(revise)" in rep.dispatched
 
 
+def test_triage_row_shows_diff_summary(sched, fake_github):
+    sched.cfg.data["github"] = {"draft_pr": True}
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    items = build_inbox(sched.store, sched)
+    it = next(i for i in items if i["group"] == "triage")
+    assert "files changed" in it["why"]
+    assert "files changed" in it["diff_stat"]
+
+
 def test_inbox_groups(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
     sched.tick()
