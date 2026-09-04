@@ -33,6 +33,8 @@ DEFAULTS: dict[str, Any] = {
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,
+    "upgrade": "manual",          # "auto" upgrades the pinned tool install on the next idle tick;
+                                  # may also be a mapping {auto, package, pip} (see Config.upgrade_*)
     "plan": {"auto_approve": True},
     "stack": True,                # start tasks on top of a dependency's open PR branch
     "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
@@ -126,6 +128,39 @@ class Config:
         from .harness import Harness
 
         return Harness(name, dict((self.data.get("harnesses") or {}).get(name) or {}))
+
+    # ---- self-upgrade (the pinned tool install) ----------------------------
+    def tool_product(self) -> str | None:
+        """The product that provides the `garden` binary (config `provides_tool: true`), if any."""
+        for name, p in (self.data.get("products") or {}).items():
+            if isinstance(p, dict) and p.get("provides_tool"):
+                return name
+        return None
+
+    def upgrade_auto(self) -> bool:
+        """Whether merged tool updates are installed automatically (config `upgrade: auto`)."""
+        u = self.get("upgrade")
+        if isinstance(u, str):
+            return u.strip().lower() == "auto"
+        if isinstance(u, dict):
+            return bool(u.get("auto"))
+        return False
+
+    def upgrade_package(self) -> str:
+        u = self.get("upgrade")
+        if isinstance(u, dict) and u.get("package"):
+            return str(u["package"])
+        return "context-garden"
+
+    def upgrade_pip(self) -> list[str] | None:
+        """A pip command prefix override (config `upgrade.pip`), or None for the running interpreter's pip."""
+        import shlex
+
+        u = self.get("upgrade")
+        if isinstance(u, dict) and u.get("pip"):
+            p = u["pip"]
+            return list(p) if isinstance(p, list) else shlex.split(str(p))
+        return None
 
     @property
     def garden_dir(self) -> Path:
