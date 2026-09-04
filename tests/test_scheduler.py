@@ -173,6 +173,38 @@ def test_manual_take_and_finish(sched, fake_github):
     assert fake_github.created[-1]["title"] == "manual PR"
 
 
+def test_tick_does_not_race_manual_finish(sched, fake_github):
+    """A tick fired between ManualRunner.finish() and finalize() must leave the task alone."""
+    t = sched.store.task("DM-001")
+    run = sched.dispatch(t, runner=ManualRunner({}), worktree=True)
+    wt = run.worktree
+
+    # simulate the human doing work and committing
+    with open(os.path.join(wt, "hello.txt"), "w") as f:
+        f.write("hi\n")
+    subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"], cwd=wt, check=True)
+    subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "manual work"], cwd=wt, check=True)
+
+    # ManualRunner.finish() writes result.json + exit_code — this is the race window start
+    ManualRunner.finish(run, {"status": "done", "summary": "by hand", "pr_title": "manual PR"})
+    assert (run.path / "exit_code").exists()
+    assert sched.runs.latest("DM-001").status == "running"  # run.json still says running on disk
+
+    # tick fires inside the window: must not transition the task
+    rep = sched.tick()
+    assert rep.transitions == [], f"tick must not transition mid-finish: {rep.transitions}"
+    assert statuses(sched)["DM-001"] == "running"
+
+    # finalize() completes the single clean transition
+    sched.finalize(t, run, sched.runner_for(t, run.runner), rep)
+    sched.state.save()
+    sched.store.invalidate()
+    assert statuses(sched)["DM-001"] == "in_review"
+    # the tick must not have inserted a spurious "back to ready" revert
+    t = sched.store.task("DM-001")
+    assert "back to ready" not in t.body, "tick must not have reverted the task"
+
+
 def test_running_without_run_record_resets(sched):
     t = sched.store.task("DM-001")
     t.status = Status.RUNNING

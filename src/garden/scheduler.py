@@ -263,6 +263,12 @@ class Scheduler:
     # ---- reap --------------------------------------------------------------
     def reap(self, task: Task, rep: TickReport) -> bool:
         run = self.runs.latest(task.id)
+        # garden finish is the sole finaliser of manual runs.  Skip the task
+        # while a manual run is active (status "running") or while finalize()
+        # has completed the run record but has not yet written the task
+        # transition (run.finished_at set, task still RUNNING).
+        if run is not None and run.runner == "manual":
+            return False
         if run is None or run.status != "running" or run.mode == "review":
             self._transition(task, Status.READY, "no active run found; back to ready")
             rep.transitions.append(f"{task.id} running -> ready (no run)")
