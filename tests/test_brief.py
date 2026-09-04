@@ -1,4 +1,4 @@
-from garden.brief import RESULT_MARKER, build_brief, parse_result
+from garden.brief import RESULT_MARKER, build_brief, estimate_brief_tokens, parse_result
 from garden.store import Store
 
 
@@ -12,6 +12,22 @@ def test_brief_sections(garden):
     assert "garden/x" in b.text and RESULT_MARKER in b.text
     assert set(b.sections) >= {"head", "rules", "principles", "product", "goals", "task", "reading"}
     assert b.tokens > 100
+
+
+def test_brief_cost_breakdown(garden):
+    store = Store(garden)
+    b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
+    assert b.fixed_tokens > 0
+    assert b.reading_tokens >= 0
+    assert b.fixed_tokens + b.reading_tokens <= b.tokens + 10  # small tolerance for rounding
+
+
+def test_estimate_brief_tokens(garden):
+    store = Store(garden)
+    fixed, reading = estimate_brief_tokens(store, store.task("DM-001"))
+    assert fixed > 0
+    assert reading >= 0
+    assert fixed + reading > 0
 
 
 def test_brief_oversized_reading_is_referenced(garden):

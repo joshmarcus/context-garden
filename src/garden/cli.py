@@ -914,6 +914,7 @@ def usage(
     by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
 ):
     """Tokens and cost per task, rolled up from every run."""
+    from .brief import estimate_brief_tokens
     from .runs import RunStore
 
     store = _store()
@@ -925,7 +926,8 @@ def usage(
     elif target:
         t = _task(store, target)
         u = rs.usage_for(t.id)
-        console.print(f"[bold]{t.id}[/bold] {t.title}  runs={u['runs']}  in={u['input_tokens']:,}  out={u['output_tokens']:,}  cache-read={u['cache_read_input_tokens']:,}  cost=${u['cost_usd']:.2f}  minutes={u['minutes']}")
+        fixed, reading = estimate_brief_tokens(store, t)
+        console.print(f"[bold]{t.id}[/bold] {t.title}  brief ~{fixed + reading:,} (fixed {fixed:,} + reading {reading:,})  runs={u['runs']}  in={u['input_tokens']:,}  out={u['output_tokens']:,}  cache-read={u['cache_read_input_tokens']:,}  cost=${u['cost_usd']:.2f}  minutes={u['minutes']}")
         table = Table()
         for c in ("mode", "runs", "in", "out", "cost"):
             table.add_column(c, justify="right" if c != "mode" else "left")
@@ -935,25 +937,35 @@ def usage(
         return
     per = rs.usage_by_task()
     table = Table(title="usage per task")
-    for c in ("task", "tier", "status", "runs", "in", "out", "cache-read", "cost", "$/run"):
+    for c in ("task", "tier", "status", "runs", "brief", "in", "out", "cache-read", "cost", "$/run"):
         table.add_column(c, justify="right" if c not in ("task", "tier", "status") else "left")
     tot = {"runs": 0, "in": 0, "out": 0, "cache": 0, "cost": 0.0}
+    brief_tot = 0
+    phase_fixed = None
+    printed_header = False
     for tid, u in sorted(per.items()):
         t = tasks.get(tid)
         if product and (not t or t.product != product or t.phase != phase):
             continue
-        table.add_row(tid, t.difficulty if t else "", _style(t.status.value) if t else "", str(u["runs"]), f"{u['input_tokens']:,}",
-                      f"{u['output_tokens']:,}", f"{u['cache_read_input_tokens']:,}", f"${u['cost_usd']:.2f}",
+        fixed, reading = estimate_brief_tokens(store, t) if t else (0, 0)
+        if product and phase and not printed_header:
+            phase_fixed = fixed
+            printed_header = True
+            console.print(f"[bold]{product}/{phase}[/bold] fixed brief cost: ~{phase_fixed:,} tokens (head + rules + digest + product + goals)")
+        brief_est = fixed + reading
+        brief_tot += brief_est
+        table.add_row(tid, t.difficulty if t else "", _style(t.status.value) if t else "", str(u["runs"]), f"~{brief_est:,}",
+                      f"{u['input_tokens']:,}", f"{u['output_tokens']:,}", f"{u['cache_read_input_tokens']:,}", f"${u['cost_usd']:.2f}",
                       f"${u['cost_usd'] / u['runs']:.2f}" if u["runs"] else "")
         if by_mode:
             for mode, m in sorted(u["by_mode"].items()):
-                table.add_row(f"  {mode}", "", "", str(m["runs"]), f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", "", f"${m['cost_usd']:.2f}", "")
+                table.add_row(f"  {mode}", "", "", str(m["runs"]), "", f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", "", f"${m['cost_usd']:.2f}", "")
         tot["runs"] += u["runs"]
         tot["in"] += u["input_tokens"]
         tot["out"] += u["output_tokens"]
         tot["cache"] += u["cache_read_input_tokens"]
         tot["cost"] += u["cost_usd"]
-    table.add_row("[bold]total[/bold]", "", "", str(tot["runs"]), f"{tot['in']:,}", f"{tot['out']:,}", f"{tot['cache']:,}", f"${tot['cost']:.2f}", "")
+    table.add_row("[bold]total[/bold]", "", "", str(tot["runs"]), f"~{brief_tot:,}", f"{tot['in']:,}", f"{tot['out']:,}", f"{tot['cache']:,}", f"${tot['cost']:.2f}", "")
     console.print(table)
 
 
