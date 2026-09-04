@@ -21,7 +21,7 @@ Add `garden friction <product>/<phase>` that collects `## Friction` sections fro
 
 ## Context
 
-PR bodies come from `GitHub.get_pr`; extend it (or add `pr_body`) to return the body. Use the same gh/REST split as the rest of `github.py`. The planner already includes `docs/*.md`.
+The last work or revise run of a task keeps the PR body it wrote in `run.json` (`result.pr_body`, see `RunStore`); use that first so the command works offline, and fall back to `GitHub.get_pr`, whose `PRInfo.body` already carries the live body. The planner already includes `docs/*.md`, so the file it writes is read on the next `garden plan`.
 
 ## Acceptance criteria
 

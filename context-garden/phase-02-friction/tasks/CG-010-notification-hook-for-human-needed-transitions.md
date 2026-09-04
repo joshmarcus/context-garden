@@ -16,17 +16,17 @@ updated: '2026-09-04T00:00:00+00:00'
 
 ## Goal
 
-Run `notify.command` when a task needs a human (in_review, failed, revision cap).
+Run `notify.command` when a task needs a person: it reaches `awaiting_triage` or `waiting_human`, fails, is flagged `needs_human` (a stall or the revision cap), or its phase hits its budget.
 
 ## Context
 
-Transitions go through `Scheduler._transition`. Add the hook there, guarded by config, with a short timeout and never raising. Document the config in README and garden.yaml comments.
+Transitions go through `Scheduler._transition` and every other human-needed moment is an event (`events.HUMAN_KINDS`, emitted through `EventLog.emit`); hook both chokepoints, guarded by a `notify:` block in config, with a short timeout, and never raising into the tick. The Inbox and the Timeline already show these moments in the UI, so this task is only the outbound hook. Document the config in README and garden.yaml comments.
 
 ## Acceptance criteria
 
 - [ ] Hook receives GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR.
 - [ ] Test with a command that writes to a file.
-- [ ] Web UI shows an inbox strip of the last 20 human-needed events (from `.garden/state.json` or a small events log).
+- [ ] `garden doctor` reports whether a notify command is configured, and `garden.yaml` documents the block.
 
 ## Out of scope
 

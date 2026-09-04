@@ -21,13 +21,13 @@ Show, per phase, the fixed brief cost (digest + product + goals) and each task's
 
 ## Context
 
-`build_brief` already returns per-section sizes. Add `garden cost [product/phase]` and a Cost tab in the web UI. Include actual usage from run records next to the estimates when available.
+`garden usage`, the task page and the phase table already show actual tokens and cost per task and per run; `build_brief` returns per-section sizes. Put the estimate next to the actual instead of adding a page: `garden usage` gains a brief-tokens column (fixed part plus reading list), the phase view gets a header line with the fixed-cost estimate, and the phase page's task table gets the same column.
 
 ## Acceptance criteria
 
-- [ ] CLI table: task, brief tokens (est), actual input tokens (last run), cost.
-- [ ] Phase header line with the fixed-cost estimate.
-- [ ] Web page with the same data.
+- [ ] `garden usage product/phase`: task, brief tokens (estimated: fixed + reading), actual input tokens (last run), cost.
+- [ ] A phase header line with the fixed-cost estimate, in the CLI and on the phase page.
+- [ ] The phase page's task table carries the brief-tokens column.
 
 ## Out of scope
 
