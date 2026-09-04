@@ -6,6 +6,7 @@ FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
 Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
+       | discover-kinds (done + a task, a duplicate + cancel decision, and a note)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
@@ -110,7 +111,7 @@ if mode == "no_change" and "Revision round" in brief:
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
-if mode in ("done", "noresult", "needs_input", "discover", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change"):
+if mode in ("done", "noresult", "needs_input", "discover", "discover-kinds", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
@@ -135,6 +136,13 @@ else:
             {"title": "Fix the flaky widget test", "body": "## Goal\n\nIt flakes.", "difficulty": "easy", "blocking": False},
             {"title": "Add the missing config schema", "body": "## Goal\n\nNeeded first.", "difficulty": "medium", "blocking": True},
             {"title": "First task", "body": "duplicate title, must be skipped"},
+        ]
+    if mode == "discover-kinds":
+        result["discovered"] = [
+            {"kind": "task", "title": "A real follow-up task", "body": "## Goal\n\nDo it.", "difficulty": "easy"},
+            {"kind": "duplicate", "of": "DM-001", "duplicates": "DM-002", "reason": "DM-002 restates DM-001"},
+            {"kind": "cancel", "task": "DM-003", "reason": "obsolete after the refactor"},
+            {"kind": "note", "note": "The brief for DM-001 was missing the spec link."},
         ]
     if mode == "revise-with-comment":
         result["pr_comment"] = "I addressed the feedback by adding the missing test."
