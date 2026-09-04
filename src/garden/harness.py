@@ -71,7 +71,10 @@ class Harness:
             return out
         mode = str(self.cfg.get("permission_mode") or "")
         if self.output == "claude-json":
-            cmd = [self.bin, "-p", "--output-format", "json"]
+            fmt = str(self.cfg.get("output_format") or "json")
+            cmd = [self.bin, "-p", "--output-format", fmt]
+            if fmt == "stream-json":
+                cmd.append("--verbose")
             # A hard turn cap is optional and off by default: a run that hits it ends with no
             # final message and no result line, so the wall-clock timeout and the phase budget
             # are the guards that count. Set `max_turns` to a number to add the cap.
@@ -141,7 +144,11 @@ class Harness:
         if final_path is not None and final_path.exists():
             out["final_text"] = final_path.read_text()
         if self.output == "claude-json":
-            _parse_claude(stdout, out)
+            fmt = str(self.cfg.get("output_format") or "json")
+            if fmt == "stream-json":
+                _parse_claude_stream(stdout, out)
+            else:
+                _parse_claude(stdout, out)
         elif self.output == "codex-jsonl":
             _parse_codex(stdout, out)
         else:
@@ -167,13 +174,8 @@ def _last_json_object(text: str) -> Any:
     return None
 
 
-def _parse_claude(stdout: str, out: dict[str, Any]) -> None:
-    data = _last_json_object(stdout)
-    if isinstance(data, list):
-        data = next((d for d in reversed(data) if isinstance(d, dict) and d.get("type") == "result"), None)
-    if not isinstance(data, dict):
-        out["final_text"] = out["final_text"] or stdout
-        return
+def _parse_claude_dict(data: dict[str, Any], out: dict[str, Any]) -> None:
+    """Extract fields from a claude result dict into out."""
     final = data.get("result") if isinstance(data.get("result"), str) else ""
     out["final_text"] = final or out["final_text"]
     out["usage"] = data.get("usage") or {}
@@ -182,6 +184,35 @@ def _parse_claude(stdout: str, out: dict[str, Any]) -> None:
     out["session_id"] = str(data.get("session_id") or "")
     if data.get("is_error") or str(data.get("subtype", "")).startswith("error"):
         out["error"] = f"worker error: {data.get('subtype') or ''} {final[:500]}".strip()
+
+
+def _parse_claude(stdout: str, out: dict[str, Any]) -> None:
+    data = _last_json_object(stdout)
+    if isinstance(data, list):
+        data = next((d for d in reversed(data) if isinstance(d, dict) and d.get("type") == "result"), None)
+    if not isinstance(data, dict):
+        out["final_text"] = out["final_text"] or stdout
+        return
+    _parse_claude_dict(data, out)
+
+
+def _parse_claude_stream(stdout: str, out: dict[str, Any]) -> None:
+    """Parse claude --output-format stream-json JSONL: locate the final result event."""
+    result_data: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            result_data = ev
+    if not isinstance(result_data, dict):
+        out["final_text"] = out["final_text"] or stdout
+        return
+    _parse_claude_dict(result_data, out)
 
 
 def _parse_codex(stdout: str, out: dict[str, Any]) -> None:

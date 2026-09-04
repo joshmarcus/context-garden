@@ -20,6 +20,7 @@ mode = os.environ.get("FAKE_CLAUDE_MODE", "done")
 brief = sys.stdin.read()
 args = sys.argv[1:]
 model = args[args.index("--model") + 1] if "--model" in args else ""
+stream = "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json"
 if "GARDEN_REVIEW:" in brief:
     mode = os.environ.get("FAKE_CLAUDE_REVIEW", "review-ok")
 if "GARDEN_COMPARE:" in brief:
@@ -124,8 +125,16 @@ else:
             {"title": "First task", "body": "duplicate title, must be skipped"},
         ]
     final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
-print(json.dumps({
+result_obj = {
     "type": "result", "subtype": "success", "is_error": False, "result": final,
     "usage": {"input_tokens": 1234, "output_tokens": 321, "cache_read_input_tokens": 100},
     "total_cost_usd": 0.05, "num_turns": 3, "session_id": "fake",
-}))
+}
+if stream:
+    print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake", "tools": []}))
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task..."}]}}))
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo working"}}]}}))
+    print(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "working"}]}]}}))
+    print(json.dumps(result_obj))
+else:
+    print(json.dumps(result_obj))

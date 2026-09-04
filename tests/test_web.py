@@ -92,6 +92,29 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "Review and merge" in c.get("/").text
 
 
+def test_stdout_partial(garden):
+    c = client(garden)
+    r = c.get("/partials/tasks/DM-001/stdout")
+    assert r.status_code == 200
+    assert "no output yet" in r.text
+
+    # Write JSONL events into a fake run dir and verify the partial reflects them
+    import json
+
+    from garden.runs import RunStore
+    from garden.store import Store
+    store = Store(garden)
+    rs = RunStore(store.config.garden_dir)
+    run = rs.new_run("DM-001", "local", "work")
+    (run.path / "stdout.json").write_text(
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}) + "\n" +
+        json.dumps({"type": "result", "subtype": "success", "result": "Done."}) + "\n"
+    )
+    r = c.get("/partials/tasks/DM-001/stdout")
+    assert r.status_code == 200
+    assert "Bash" in r.text and "ls" in r.text
+
+
 def test_drawings_render_unescaped(garden, tmp_path):
     """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
     c = TestClient(create_app(Store(garden), watch=False, plates_dir=tmp_path / "plates"))

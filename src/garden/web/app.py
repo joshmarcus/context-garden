@@ -213,10 +213,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         stack = bool(s.config.get("stack", True))
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
+        latest_run = rs.latest(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
         body, log = _split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
         usage = rs.usage_for(t.id)
+        initial_stdout = latest_run.stdout_events() if latest_run else []
         from ..friction import extract_friction, pr_body_for
         from ..personas import DEFAULT_PERSONAS, list_personas
 
@@ -230,6 +232,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             discovered=[x for x in tasks.values() if x.discovered_from == t.id],
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
             friction_text=friction_text,
+            initial_stdout=initial_stdout,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -238,6 +241,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         t = s.task(task_id)
         runs = RunStore(s.config.garden_dir).runs_for(t.id)
         return templates.TemplateResponse(request, "_runs.html", ctx(request, runs=list(reversed(runs)), task=t))
+
+    @app.get("/partials/tasks/{task_id}/stdout", response_class=HTMLResponse)
+    def task_stdout_partial(request: Request, task_id: str):
+        s = hub.fresh()
+        rs = RunStore(s.config.garden_dir)
+        run = rs.latest(task_id)
+        events = run.stdout_events() if run else []
+        return templates.TemplateResponse(request, "_stdout.html", ctx(request, events=events))
 
     @app.get("/tasks/{task_id}/brief", response_class=PlainTextResponse)
     def task_brief(task_id: str, revise: bool = False):

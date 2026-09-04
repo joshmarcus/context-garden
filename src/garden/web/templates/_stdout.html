@@ -1,0 +1,62 @@
+{% if events %}
+<ul class="tl">
+{% for ev in events %}
+{% set t = ev.get("type","") %}
+{% set msg_content = (ev.get("message") or {}).get("content") or [] %}
+{% if t == "assistant" %}
+  {% for p in msg_content %}
+  {% if p.get("type") == "tool_use" %}
+  {% set inp = p.get("input") or {} %}
+<li>
+  <span class="faint mono">tool</span>
+  <span class="k">{{ p.get("name","") }}</span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+    {%- if inp.get("command") %}{{ inp.command[:160] }}
+    {%- elif inp.get("file_path") %}{{ inp.file_path }}
+    {%- else %}{{ (inp | string)[:160] }}
+    {%- endif %}
+  </span>
+</li>
+  {% elif p.get("type") == "text" and p.get("text","").strip() %}
+<li>
+  <span class="faint mono">text</span>
+  <span class="k"></span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.text[:160] }}</span>
+</li>
+  {% endif %}
+  {% endfor %}
+{% elif t == "user" %}
+  {% for p in msg_content %}
+  {% if p.get("type") == "tool_result" %}
+  {% set c = p.get("content") or [] %}
+<li>
+  <span class="faint mono">result</span>
+  <span class="k"></span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+    {%- if c and c[0].get("text") %}{{ c[0].text[:160] }}{%- endif %}
+  </span>
+</li>
+  {% endif %}
+  {% endfor %}
+{% elif t not in ("system",) %}
+<li>
+  <span class="faint mono">{{ t }}</span>
+  <span class="k">
+    {%- if t == "result" %}{{ ev.get("subtype","") }}
+    {%- else %}{{ ev.get("subtype","") or "" }}
+    {%- endif %}
+  </span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+    {%- if t == "result" %}
+      {%- if ev.get("is_error") %}error: {{ (ev.get("result") or "")[:160] }}
+      {%- else %}{{ (ev.get("result") or "")[:160] }}
+      {%- endif %}
+    {%- endif %}
+  </span>
+</li>
+{% endif %}
+{% endfor %}
+</ul>
+{% else %}
+<span class="faint">no output yet</span>
+{% endif %}

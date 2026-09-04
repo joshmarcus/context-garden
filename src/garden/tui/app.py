@@ -27,6 +27,30 @@ from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
 
+
+def _fmt_tui_event(ev: dict) -> str:
+    t = ev.get("type", "")
+    parts = (ev.get("message") or {}).get("content") or []
+    if t == "assistant":
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "tool_use":
+                inp = p.get("input") or {}
+                detail = inp.get("command") or inp.get("file_path") or str(inp)[:80]
+                return f"**tool** {p.get('name', '')} — {str(detail)[:100]}"
+        text = next((p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"), "")
+        return f"**text** {text[:100]}" if text else ""
+    if t == "user":
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "tool_result":
+                c = p.get("content") or []
+                text = next((x.get("text", "") for x in c if isinstance(x, dict) and x.get("text")), "")
+                return f"**result** {text[:100]}" if text else "**result**"
+        return ""
+    if t == "result":
+        return f"**result** {ev.get('subtype', '')}"
+    return ""
+
+
 STATUS_COLOR = {
     "draft": "grey70", "blocked": "yellow", "ready": "cyan", "running": "blue", "in_review": "magenta",
     "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "awaiting_triage": "medium_purple", "done": "green", "failed": "red", "cancelled": "grey50",
@@ -252,6 +276,14 @@ class GardenTUI(App):
             head.append(f"last run: {r.run_id} {r.status}{cost} ({len(runs)} total)")
             if r.error:
                 head.append(f"error: {r.error[:200]}")
+            if r.status == "running":
+                evs = r.stdout_events(n=10)
+                if evs:
+                    head.append("\n## Live output")
+                    for ev in evs:
+                        line = _fmt_tui_event(ev)
+                        if line:
+                            head.append(f"- {line}")
         if st.get("stack_parent"):
             head.append(f"stacked on: {st['stack_parent']} (PR targets {st.get('pr_base')})")
         if t.discovered_from:
