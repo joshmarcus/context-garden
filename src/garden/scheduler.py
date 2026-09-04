@@ -432,7 +432,17 @@ class Scheduler:
         if run is not None and run.runner == "manual":
             return False
         if run is None or run.status != "running" or run.mode == "review":
-            self._transition(task, Status.READY, "no active run found; back to ready")
+            # Record what happened to the run we expected to reap: if something else
+            # (the orphan sweep, a crash, a manual close) finished it out from under us,
+            # its run id and closer belong in the log so the next disappearance is traceable.
+            if run is None:
+                detail = "no run record found for this task"
+            else:
+                closer = run.error.strip() or "(no closer recorded)"
+                detail = f"expected run {run.run_id} but it is {run.status} (mode {run.mode}): {closer}"
+            self.events.emit("no_active_run", task.id, run=(run.run_id if run else ""),
+                             status=(run.status if run else ""), closer=(run.error if run else ""))
+            self._transition(task, Status.READY, f"no active run found; back to ready — {detail}")
             rep.transitions.append(f"{task.id} running -> ready (no run)")
             return True
         runner = self.runner_for(task, run.runner, run.harness)
@@ -957,19 +967,40 @@ class Scheduler:
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
 
+    def _verdict_is_moot(self, task: Task | None) -> bool:
+        """True when a verdict-bearing run (review/persona/compare) can no longer be
+        applied to its task: the task is gone, has reached a terminal status (done,
+        cancelled, wont_do) or failed, or its PR is closed or merged. A task that is
+        still running, changes_requested, in_review (or awaiting a human/triage) can
+        still receive the verdict, so its finished run is reaped by the normal path —
+        never swept."""
+        if task is None:
+            return True
+        if task.status.terminal or task.status == Status.FAILED:
+            return True
+        pr_state = str(self.state.get(task.id).get("pr_state") or "").upper()
+        return pr_state in ("CLOSED", "MERGED")
+
     def reap_orphaned(self, rep: TickReport) -> None:
-        """Close any run still marked `running` that no task-specific or aux reap path
-        claimed above this tick: its task moved on (merged, sent back to revise,
-        re-reviewed) before the tick that would have read its verdict, so
-        `state[task].review_run` (or the task's own run pointer) no longer points at
-        it. Usage and cost are recorded; nothing is posted, since the task is no
-        longer where this run left it."""
+        """Close a verdict-bearing run (review, persona, compare) still marked `running`
+        whose task has moved on before the tick that would have read its verdict: merged,
+        closed, failed or otherwise past the point where the verdict can be applied, so
+        `state[task].review_run` (or the aux pointer) no longer leads a reap to it. Only
+        these modes are swept — a task's own work/revise/resume/trial run is always reaped
+        by its task, so one that merely finishes between its task's reap and this sweep in
+        the same tick (the CG-098 case) is left for the next tick's reap, not swept out from
+        under it. Usage and cost are recorded; nothing is posted, since the task is no longer
+        where this run left it."""
         aux_run_ids = {e["run_id"] for e in self._aux_list()}
         tasks = self.store.tasks()
         for run in self.runs.active():
             if run.runner == "manual" or run.run_id in aux_run_ids:
                 continue
+            if run.mode not in ("review", "persona", "compare"):
+                continue
             task = tasks.get(run.task_id)
+            if not self._verdict_is_moot(task):
+                continue
             runner = self.runner_for(task or Task(path=self.store.root, id=run.task_id, title=""), run.runner, run.harness)
             if not self._finished_or_timed_out(run, runner):
                 continue
