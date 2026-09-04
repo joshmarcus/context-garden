@@ -71,6 +71,11 @@ def repo_slug_from_remote(url: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+# Appended to every comment the garden posts, so its own comments can be told apart from a
+# person's even when both use the same GitHub login. Invisible on GitHub (an HTML comment).
+GARDEN_MARKER = "<!-- context-garden -->"
+
+
 class GitHub:
     def __init__(self, use_gh: bool = True, token: str | None = None, bot_logins: list[str] | None = None):
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -219,14 +224,13 @@ class GitHub:
 
     def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
         """Reviews, review (line) comments and issue comments newer than `since_iso`."""
+        # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
+        # driving the garden usually is the login `gh` uses, and their comments must count.
         exclude = set(exclude_logins or set()) | self.bot_logins
-        me = self.me()
-        if me:
-            exclude.add(me)
         items: list[dict[str, Any]] = []
 
         def keep(author: str, created: str, body: str) -> bool:
-            if not body.strip():
+            if not body.strip() or GARDEN_MARKER in body:
                 return False
             if author in exclude or author.endswith("[bot]"):
                 return False
@@ -303,6 +307,8 @@ class GitHub:
             self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "closed"})
 
     def comment(self, slug: str, number: int, body: str) -> None:
+        if GARDEN_MARKER not in body:
+            body = body.rstrip() + "\n\n" + GARDEN_MARKER
         if self.gh:
             self._gh("pr", "comment", str(number), "-R", slug, "--body-file", "-", input_=body)
         else:
