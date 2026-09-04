@@ -31,6 +31,7 @@ from .github import GitHub, GitHubError, mark_garden_comment
 from .graph import blockers, ready, stack_parents
 from .harness import DIFFICULTIES
 from .model import Phase, Status, Task, now_iso
+from .notify import notify, should_notify
 from .personas import parse_persona, phase_brief, pr_brief, report_markdown, report_path, valid_name
 from .review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from .runner import get_runner
@@ -178,6 +179,8 @@ class Scheduler:
         self.store.save(task)
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
+        if should_notify(status.value, old):
+            notify(self.cfg.data, task.id, status.value, note, task.pr or "")
 
     def _pr_status(self, task: Task) -> Status:
         """Where an open PR sits: awaiting a human's triage while it is a draft, else in review."""
@@ -218,6 +221,7 @@ class Scheduler:
             marker["budget_hit"] = now_iso()
             self.events.emit("budget", "", phase=task.key, spent=spent, budget=budget)
             self.log(f"{task.key}: budget ${budget:.2f} exceeded (spent ${spent:.2f}); dispatch paused")
+            notify(self.cfg.data, task.key, "budget", f"budget ${budget:.2f} exceeded (spent ${spent:.2f})", "")
         return True
 
     # ---- tick --------------------------------------------------------------
@@ -582,6 +586,7 @@ class Scheduler:
         else:
             task.log(f"stalled: {reason}; run `{action}`")
             self.store.save(task)
+            notify(self.cfg.data, task.id, "stalled", reason, task.pr or "")
         rep.transitions.append(f"{task.id} stalled")
 
     # ---- automated review --------------------------------------------------
