@@ -68,6 +68,65 @@ def test_unexpected_action_exception_shows_a_generic_message(garden, monkeypatch
     assert "something failed; see the log" in c.get(r.headers["location"]).text
 
 
+def test_phase_and_global_actions_flash_a_message_instead_of_500(garden, monkeypatch):
+    """CG-122: extend the flash pattern from task_action to friction-report and the
+    phase/global actions (approve-all, persona, plan, pause, resume, upgrade)."""
+    from garden.scheduler import Scheduler
+
+    def boom(self, *a, **k):
+        raise RuntimeError("boom")
+
+    c = client(garden)
+
+    monkeypatch.setattr(Scheduler, "pause", boom)
+    r = c.post("/pause", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "resume", boom)
+    r = c.post("/resume", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "upgrade", boom)
+    r = c.post("/upgrade", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "dispatch_persona_phase", boom)
+    r = c.post("/phases/demo/p1/persona", data={"personas": "security"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+
+def test_persona_and_friction_report_404_on_unknown_phase(garden):
+    c = client(garden)
+    assert c.post("/phases/demo/nope/persona", data={"personas": "security"}).status_code == 404
+    assert c.post("/phases/demo/nope/plan").status_code == 404
+    assert c.post("/friction-report", data={"product": "demo", "phase": "nope", "text": "slow"}).status_code == 404
+
+
+def test_approve_all_flashes_a_message_instead_of_500(garden, monkeypatch):
+    from garden.store import Store
+
+    c = client(garden)
+    c.post("/tasks/DM-001/unapprove")  # DM-001 is now draft, so approve-all has work to do
+
+    def boom(self, task):
+        raise RuntimeError("save boom")
+
+    monkeypatch.setattr(Store, "save", boom)
+    r = c.post("/phases/demo/p1/approve-all", follow_redirects=False)
+    assert r.status_code == 303
+    assert "save boom" in c.get(r.headers["location"]).text
+
+
+def test_friction_report_files_and_redirects(garden):
+    c = client(garden)
+    r = c.post("/friction-report", data={"product": "demo", "phase": "p1", "text": "the brief was confusing"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
 def test_events_page_and_answer_flow(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store
