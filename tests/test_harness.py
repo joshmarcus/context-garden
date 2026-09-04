@@ -73,7 +73,7 @@ def test_parse_claude_stream_json_error():
 def test_parse_claude_stream_json_no_result():
     h = Harness("claude", {"output_format": "stream-json"})
     out = h.parse('{"type":"system","subtype":"init"}')
-    assert out["final_text"] != "" or out["error"] != "" or True  # falls back gracefully
+    assert out["final_text"] != ""
 
 
 def test_stdout_events(tmp_path):
