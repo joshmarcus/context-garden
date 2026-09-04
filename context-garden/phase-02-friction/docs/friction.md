@@ -99,5 +99,14 @@ as an earlier attempt from Windows. One bullet per step; cost at the end.
   to earlier review rounds". Every revised PR will fail its next review on this until one
   of the two changes. A third revise run started at once to delete the section, so a
   contradiction between two prompts costs a worker run and a review run per PR.
+- **The stall detector fired on a correct run.** The third revise run (haiku, $0.10)
+  deleted the "Review responses" section, which is all the review asked for, and touched no
+  code. `finalize` compared the diff hash with the last round's, saw no change, and stalled
+  the task: `changes_requested` with `needs_human`, "garden retry to resume". So the one
+  time the loop did exactly what was asked, it reported itself stuck; and `garden retry`
+  would start a fresh work run, not resume. A revise round whose feedback was only about
+  the description should be judged on the description, not the diff. Meanwhile the PR on
+  GitHub is mergeable, CI is green, and a merge is still noticed from `changes_requested`
+  because the poll checks for merged before it returns early.
 - **Merge and done.** pending.
 - **Cost.** pending (`garden usage CG-012`).
