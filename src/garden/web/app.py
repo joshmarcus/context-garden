@@ -243,9 +243,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
         in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
         spent_24h = digest(evs.read(since=parse_since("24h")))["cost_usd"]
+        from ..suggestions import has_pending
+
+        suggestions_pending = sum(1 for t in open_tasks if has_pending(t.body))
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
-            spent_24h=spent_24h, burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
+            spent_24h=spent_24h, suggestions_pending=suggestions_pending,
+            burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/board", response_class=HTMLResponse)
     def board(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False, view: str | None = None):
@@ -268,19 +272,25 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
-        body, log = _split_log(t.body)
+        _, log = _split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
         usage = rs.usage_for(t.id)
         initial_stdout = latest_run.stdout_events() if latest_run else []
         from ..friction import extract_friction, pr_body_for
         from ..personas import DEFAULT_PERSONAS, list_personas
+        from ..suggestions import APPLIES_TO, has_pending, parse_suggestions, spec_body
 
         friction_text = extract_friction(pr_body_for(t, rs))
+        suggestions = parse_suggestions(t.body)
+        edit_diff = _edit_diff(runs)
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
-            dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st, body_html=render_md(body),
+            dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
+            body_html=render_md(spec_body(t.body)),
+            suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
+            edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
             discovered=[x for x in tasks.values() if x.discovered_from == t.id],
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
@@ -670,7 +680,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         return RedirectResponse(back, status_code=303)
 
     @app.post("/tasks/{task_id}/{action}")
-    def task_action(request: Request, task_id: str, action: str, note: str = Form("")):
+    def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form("")):
         s = hub.fresh()
         try:
             t = s.task(task_id)
@@ -758,6 +768,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                     if dupe:
                         raise RuntimeError(f"contenders must be distinct; {dupe} was picked more than once")
                     sched.start_trial(t, contenders)
+                elif action == "suggest":
+                    from ..suggestions import record_suggestion
+
+                    if note.strip():
+                        record_suggestion(s, t, note.strip(), author="web", applies_to=applies_to.strip())
+                elif action == "integrate":
+                    sched.integrate_now(t)
                 elif action == "reset-revisions":
                     st = sched.state.get(t.id)
                     st["revisions"] = 0
@@ -960,6 +977,24 @@ def _review_head(path: Path) -> dict[str, Any]:
         elif section == "high" and stripped.startswith("- "):
             highs.append(stripped[2:])
     return {"persona": persona, "date": date, "score": score, "overall": overall, "highs": highs}
+
+
+def _edit_diff(runs: list[Any]) -> str:
+    """Unified diff of the task body from the most recent edit run that changed it, or ''."""
+    import difflib
+
+    for run in reversed(runs):
+        if run.mode != "edit":
+            continue
+        old_p, new_p = run.path / "old_body.md", run.path / "new_body.md"
+        if old_p.exists() and new_p.exists():
+            old, new = old_p.read_text(), new_p.read_text()
+            if old == new:
+                return ""
+            return "".join(difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile="before", tofile="after"))
+    return ""
 
 
 def _split_log(body: str) -> tuple[str, list[str]]:
