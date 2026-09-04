@@ -172,14 +172,14 @@ class Scheduler:
     def slots_free(self) -> int:
         return max(0, int(self.cfg.get("max_parallel", 10)) - len(self.active_runs()))
 
-    def _transition(self, task: Task, status: Status, note: str) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
         self.store.save(task)
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
-        if should_notify(status.value, old):
+        if should_notify(status.value, needs_human=needs_human):
             notify(self.cfg.data, task.id, status.value, note, task.pr or "")
 
     def _pr_status(self, task: Task) -> Status:
@@ -582,7 +582,7 @@ class Scheduler:
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'
         if task.status != Status.CHANGES_REQUESTED:
-            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; run `{action}`")
+            self._transition(task, Status.CHANGES_REQUESTED, f"stalled: {reason}; run `{action}`", needs_human=True)
         else:
             task.log(f"stalled: {reason}; run `{action}`")
             self.store.save(task)
@@ -797,14 +797,14 @@ class Scheduler:
             note += " + CI failure"
         self.events.emit("feedback", task.id, items=n, ci=bool(ci_note))
         if not bool(self.cfg.get("auto_revise", True)):
-            self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)")
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested")
             return
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
             st["needs_human"] = f"{max_rev} revision rounds used"
             self.events.emit("needs_human", task.id, reason=st["needs_human"])
-            self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human")
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (cap)")
             return
         self._transition(task, Status.CHANGES_REQUESTED, note)

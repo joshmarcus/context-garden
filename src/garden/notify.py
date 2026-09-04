@@ -12,11 +12,11 @@ import subprocess
 from typing import Any
 
 
-def should_notify(status: str | None, previous_status: str | None = None) -> bool:
+def should_notify(status: str | None, needs_human: bool = False) -> bool:
     """Return True if this status change should trigger a notification."""
     if status in ("awaiting_triage", "waiting_human", "failed"):
         return True
-    if status == "changes_requested" and previous_status is not None:
+    if status == "changes_requested" and needs_human:
         return True
     return False
 

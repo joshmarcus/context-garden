@@ -282,3 +282,26 @@ def test_notify_receives_all_env_vars(sched, fake_github, tmp_path):
     assert "task=DM-001" in content and "status=failed" in content
     assert "message=" in content  # GARDEN_MESSAGE should be present
     assert "pr=" in content and "pull/101" in content  # GARDEN_PR should contain the PR URL
+
+
+def test_no_notify_on_auto_revise_changes_requested(sched, fake_github, tmp_path):
+    """Auto-revise changes_requested (scheduler handles it) must not trigger a notification."""
+    notify_file = tmp_path / "notify.txt"
+    sched.cfg.data["notify"] = {
+        "command": f"bash -c 'echo \"task=$GARDEN_TASK_ID status=$GARDEN_STATUS\" >> {notify_file}'",
+        "timeout_seconds": 5,
+    }
+    # auto_revise=True (default) and max_revisions=3 (default), so the scheduler will
+    # queue a revise run without any human action
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.updated_at = "t2"
+    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak this", "created": "2099-01-01T00:00:00Z"}])
+    sched.tick()
+    # Auto-revise immediately re-dispatches in the same tick, so the task ends up running.
+    # The notify file must not exist because changes_requested was auto-handled.
+    assert statuses(sched)["DM-001"] in ("changes_requested", "running")
+    assert not notify_file.exists()
