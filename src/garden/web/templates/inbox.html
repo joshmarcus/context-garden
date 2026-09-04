@@ -26,7 +26,9 @@
       {% if it.review %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
     </div>
     <div class="do">
-      {% if it.group == 'question' %}
+      {% if it.group == 'tool' %}
+        <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
+      {% elif it.group == 'question' %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
       {% elif it.group == 'triage' %}
         <form method="post" action="/tasks/{{ it.task }}/triage-ready"><button class="primary">Ready for review</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">Open PR ↗</a>{% endif %}</form>

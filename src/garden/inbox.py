@@ -13,6 +13,7 @@ from .runs import RunStore
 from .store import Store
 
 GROUPS = [
+    ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code."),
     ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer."),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back."),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents."),
@@ -111,6 +112,18 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
             add("retrying", t, why, [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
                 attempts=t.attempts, last_log=last)
+
+    up = getattr(sched, "upgrade_available", lambda: None)()
+    if up:
+        sha = str(up.get("sha") or "")[:12]
+        count = up.get("count")
+        why = f"tool update available: {sha}"
+        if count is not None:
+            why += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
+        items.append({"group": "tool", "group_title": titles["tool"], "task": "", "title": f"{up.get('product', 'tool')} → {sha}",
+                      "phase": "", "status": "", "pr": "", "why": why,
+                      "actions": [{"label": "Upgrade", "kind": "upgrade", "command": "garden upgrade"}],
+                      "age": _age(str(up.get("at") or "")), "difficulty": ""})
 
     for key in sorted({t.key for t in tasks.values()}):
         budget = sched.budget_for(key)
