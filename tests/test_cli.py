@@ -187,7 +187,9 @@ def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
-        assert "NOT LOGGED IN" in r.output
+        # Collapse whitespace: Rich wraps the line at the console width, which can split
+        # "NOT LOGGED IN" across a newline depending on how long the preceding path is.
+        assert "NOT LOGGED IN" in " ".join(r.output.split())
 
 
 def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
@@ -215,7 +217,9 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
-        assert "NOT LOGGED" in r.output
+        # Collapse whitespace: the harness line embeds the (long) fake_claude path, so Rich
+        # wraps at the console width and can split "NOT LOGGED IN" across a newline.
+        assert "NOT LOGGED IN" in " ".join(r.output.split())
 
 
 def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
