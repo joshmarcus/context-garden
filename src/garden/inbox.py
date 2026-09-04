@@ -47,9 +47,143 @@ def _age(iso: str) -> str:
     return f"{int(secs // 86400)}d"
 
 
+# The kinds of needs-human stop the scheduler records (plus the two derived from a failed
+# task), each with a name for the decision and one sentence of what happened.
+ATTENTION_KINDS = {
+    "stall": ("The loop stalled", "A revise round changed nothing (or a review finding came back unchanged), so the garden stopped instead of spending more rounds."),
+    "revision_cap": ("Revision cap reached", "The task used all its revision rounds; the garden will not spend more without your go-ahead."),
+    "parent_closed": ("Stack parent closed", "The PR this branch is stacked on was closed without merging, so this PR targets a dead branch."),
+    "worker_failed": ("A worker run failed", "The last run ended without a usable result and automatic retries are used up."),
+    "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
+}
+
+
+def needs_human_info(raw: Any) -> dict[str, str] | None:
+    """Normalize the needs_human flag to {kind, reason, prior_status, at}. The scheduler
+    writes a dict since CG-045; older state files hold a bare reason string."""
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        reason = str(raw.get("reason", ""))
+        return {"kind": str(raw.get("kind") or _guess_kind(reason)), "reason": reason,
+                "prior_status": str(raw.get("prior_status", "")), "at": str(raw.get("at", ""))}
+    reason = str(raw)
+    return {"kind": _guess_kind(reason), "reason": reason, "prior_status": "", "at": ""}
+
+
+def _guess_kind(reason: str) -> str:
+    low = reason.lower()
+    if "revision rounds" in low:
+        return "revision_cap"
+    if "stack parent" in low:
+        return "parent_closed"
+    return "stall"
+
+
+def _failed_info(t: Task) -> dict[str, str]:
+    """Classify a failed task from its last log line: the garden's own errors (dispatch,
+    push, git) are env errors; everything else is the worker's failure."""
+    reason = _last_log_line(t) or "the task failed"
+    low = reason.lower()
+    kind = "env_error" if any(s in low for s in ("dispatch failed", "push failed", "git error")) else "worker_failed"
+    return {"kind": kind, "reason": reason, "prior_status": "", "at": ""}
+
+
+def _resume_target(t: Task, st: Any, info: dict[str, str]) -> str:
+    """Where 'nothing to fix, resume' would put the task (mirrors Scheduler.resume_task)."""
+    prior = info.get("prior_status", "")
+    if prior in (Status.AWAITING_TRIAGE.value, Status.IN_REVIEW.value):
+        return prior
+    if t.pr and t.status == Status.CHANGES_REQUESTED:
+        return Status.AWAITING_TRIAGE.value if st.get("pr_draft") else Status.IN_REVIEW.value
+    return t.status.value
+
+
+def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
+    """The evidence behind an attention card, as plain lines: recent runs, the last
+    automated review, the PR state and the revision count."""
+    out: list[str] = []
+    for r in (runs.runs_for(t.id) if runs else [])[-2:]:
+        line = f"run {r.run_id} ({r.mode}): {r.status}"
+        detail = (r.error or "").strip() or str((r.result or {}).get("summary") or "").strip()
+        if detail:
+            line += f" — {detail[:140]}"
+        out.append(line)
+    rev = st.get("last_review") or {}
+    if rev:
+        out.append(f"last automated review: {str(rev.get('verdict', '')).replace('_', ' ')} — {str(rev.get('summary', ''))[:160]}")
+    if t.pr:
+        bits = ["draft" if st.get("pr_draft") else str(st.get("pr_state") or "open").lower()]
+        if st.get("review_decision"):
+            bits.append(f"review {str(st['review_decision']).lower().replace('_', ' ')}")
+        if st.get("checks"):
+            bits.append(f"CI {str(st['checks']).lower()}")
+        out.append("PR: " + " · ".join(bits))
+    if st.get("revisions"):
+        out.append(f"{st['revisions']} revision round(s) used")
+    return out
+
+
+def discuss_prompt(t: Task, info: dict[str, str], evidence: list[str], actions: list[dict[str, str]]) -> str:
+    """A ready-made prompt about a stopped task, for pasting into a chat session or
+    `garden take`: the task, the reason, the PR, the run ids and the options."""
+    title, blurb = ATTENTION_KINDS.get(info["kind"], ("Needs a decision", ""))
+    lines = [
+        f"I need to decide what to do with context-garden task {t.id} ({t.title}).",
+        "",
+        f"The loop stopped — {title.lower()}: {info['reason']}",
+    ]
+    if blurb:
+        lines.append(blurb)
+    if t.pr:
+        lines.append(f"PR: {t.pr}")
+    lines += evidence
+    lines += ["", "My options:"]
+    for a in actions:
+        if a.get("command"):
+            lines.append(f"- `{a['command']}` — {a.get('detail', '')}")
+    lines += ["", "Tell me which option fits and why, or what to fix first. Ask me to paste the task file, the PR diff or a run log if you need more context."]
+    return "\n".join(lines)
+
+
+def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, Any] | None:
+    """Everything an attention card needs: which decision is being asked, the evidence for
+    it, and what each button will do. Shared by the Inbox, the task page and the CLI."""
+    if t.status.terminal:
+        return None
+    info = needs_human_info(st.get("needs_human"))
+    can_resume = info is not None
+    if info is None:
+        if t.status != Status.FAILED:
+            return None
+        info = _failed_info(t)
+    kind_title, kind_blurb = ATTENTION_KINDS.get(info["kind"], ("Needs a decision", ""))
+    evidence = _evidence_lines(t, st, runs)
+    resume_to = _resume_target(t, st, info)
+    retry_detail = ("keeps the PR and queues a revise run on this branch to address what is outstanding; it does not start the work over"
+                    if t.pr and t.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)
+                    else "resets attempts and starts a fresh work run from the task brief")
+    actions: list[dict[str, str]] = []
+    if can_resume:
+        actions.append({"label": "Nothing to fix, resume", "kind": "resume", "command": f"garden resume {t.id}",
+                        "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
+    actions.append({"label": "Continue the loop" if can_resume else "Retry", "kind": "retry", "command": f"garden retry {t.id}",
+                    "detail": retry_detail})
+    actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
+                    "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
+    actions.append({"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}",
+                    "detail": "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else "")})
+    if t.pr:
+        actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
+    return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
+            "resume_to": resume_to if can_resume else "", "evidence": evidence, "actions": actions,
+            "discuss": discuss_prompt(t, info, evidence, actions)}
+
+
 def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     tasks = store.tasks()
     state = sched.state
+    runs = getattr(sched, "runs", None) or RunStore(store.config.garden_dir)
     stack = bool(store.config.get("stack", True))
     items: list[dict[str, Any]] = []
     order = {g[0]: i for i, g in enumerate(GROUPS)}
@@ -83,17 +217,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 why += f" · CI {st['checks'].lower()}"
             add("review", t, why, [{"label": "Open PR", "kind": "link", "href": t.pr},
                                    {"label": "Mark done", "kind": "done", "command": f"garden set-status {t.id} done"}])
-        if st.get("needs_human") and not t.status.terminal:
-            add("attention", t, str(st["needs_human"]), [
-                {"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}"},
-                {"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"},
-            ] + ([{"label": "Open PR", "kind": "link", "href": t.pr}] if t.pr else []))
-        elif t.status == Status.FAILED:
-            last = _last_log_line(t)
-            add("attention", t, last[:140] or "failed", [
-                {"label": "Retry", "kind": "retry", "command": f"garden retry {t.id}"},
-                {"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"},
-            ])
+        if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
+            att = attention_view(t, st, runs)
+            if att:
+                add("attention", t, f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
+                    **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")})
         elif t.status == Status.DRAFT:
             eff = effective_status(t, tasks, stack)
             why = "discovered by " + t.discovered_from if t.discovered_from else "planned, not yet approved"
