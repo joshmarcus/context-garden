@@ -135,13 +135,38 @@ def commit_all(worktree: Path, message: str) -> bool:
     return True
 
 
-def push(worktree: Path, branch: str, force: bool = False) -> None:
+def _is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
+    """Return True if ref_a is an ancestor of ref_b (or equal)."""
+    proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True)
+    return proc.returncode == 0
+
+
+def push(worktree: Path, branch: str, force: bool = False, base: str = "") -> str:
+    """Push branch to origin. Returns a note if force-with-lease was used due to rebase detection.
+
+    When base is given and force is False, compares origin/<branch> against HEAD:
+    - fast-forward (origin/<branch> is ancestor of HEAD): plain push, no note.
+    - rebased (origin/<branch> not ancestor, but origin/<base> is): --force-with-lease with
+      an expectation ref so we only overwrite the sha we saw; logs "rebased branch force-pushed".
+    - other divergence: let the plain push fail with git's own message.
+    """
     if not remote_url(worktree):
         raise GitError("no origin remote to push to")
     args = ["push", "-u"]
+    note = ""
     if force:
         args.append("--force-with-lease")
+    elif base:
+        try:
+            origin_sha = git("rev-parse", f"origin/{branch}", cwd=worktree).strip()
+            if not _is_ancestor(worktree, f"origin/{branch}", "HEAD"):
+                if _is_ancestor(worktree, f"origin/{base}", "HEAD"):
+                    args.append(f"--force-with-lease={branch}:{origin_sha}")
+                    note = "rebased branch force-pushed"
+        except GitError:
+            pass  # origin/<branch> doesn't exist yet; plain push is fine
     git(*args, "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
+    return note
 
 
 def rebase_onto(worktree: Path, onto: str) -> tuple[bool, list[str]]:
