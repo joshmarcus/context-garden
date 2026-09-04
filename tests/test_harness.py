@@ -52,3 +52,10 @@ def test_parse_codex_jsonl(tmp_path):
     final.write_text("from file\nGARDEN_RESULT: {\"status\": \"blocked\"}")
     out = h.parse(lines, final_path=final)
     assert out["final_text"].startswith("from file") and out["result"]["status"] == "blocked"
+
+
+def test_turn_cap_is_optional_and_off_by_default():
+    assert "--max-turns" not in Harness("claude", {"bin": "/x/claude"}).command()
+    assert "--max-turns" not in Harness("claude", {"bin": "/x/claude", "max_turns": 0}).command()
+    capped = Harness("claude", {"bin": "/x/claude", "max_turns": 80}).command()
+    assert capped[capped.index("--max-turns") + 1] == "80"

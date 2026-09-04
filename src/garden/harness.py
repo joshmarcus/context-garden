@@ -18,7 +18,6 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
     "claude": {
         "bin": "claude",
         "output": "claude-json",        # claude -p --output-format json
-        "max_turns": 60,
         "permission_mode": "acceptEdits",  # or "bypass"
         "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "MultiEdit"],
         "models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
@@ -72,7 +71,12 @@ class Harness:
             return out
         mode = str(self.cfg.get("permission_mode") or "")
         if self.output == "claude-json":
-            cmd = [self.bin, "-p", "--output-format", "json", "--max-turns", str(self.cfg.get("max_turns", 60))]
+            cmd = [self.bin, "-p", "--output-format", "json"]
+            # A hard turn cap is optional and off by default: a run that hits it ends with no
+            # final message and no result line, so the wall-clock timeout and the phase budget
+            # are the guards that count. Set `max_turns` to a number to add the cap.
+            if int(self.cfg.get("max_turns") or 0) > 0:
+                cmd += ["--max-turns", str(int(self.cfg["max_turns"]))]
             if model:
                 cmd += ["--model", model]
             if mode in ("bypass", "bypassPermissions", "dangerously-skip-permissions"):

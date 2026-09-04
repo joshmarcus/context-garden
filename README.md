@@ -334,7 +334,7 @@ brief:
 harnesses:
   claude:
     bin: claude
-    max_turns: 60
+    # max_turns: 60               # optional hard turn cap, off by default; timeout_minutes and budgets are the guards
     permission_mode: acceptEdits   # or bypass (--dangerously-skip-permissions)
     allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
     models: {easy: haiku, medium: sonnet, hard: opus}

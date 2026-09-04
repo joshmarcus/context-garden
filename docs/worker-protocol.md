@@ -82,7 +82,7 @@ survives the scheduler exiting:
 
 ```sh
 cd /garden/.garden/worktrees/WID-003 && timeout 5400 \
-  claude -p --output-format json --max-turns 60 --model sonnet \
+  claude -p --output-format json --model sonnet \
     --permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,MultiEdit \
     'Carry out the brief that follows. It is the complete specification of your job.' \
   < /garden/.garden/runs/WID-003/20260904T120000Z-work/brief.md \
