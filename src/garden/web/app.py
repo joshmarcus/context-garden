@@ -13,6 +13,7 @@ from typing import Any
 import markdown as md
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -31,7 +32,16 @@ from ..graph import (
 )
 from ..inbox import build_inbox, running_now
 from ..model import STATUS_ORDER, Status, now_iso
-from ..plants import DEFS, plant_info, plant_svg, stage_svg, stage_word, vine_svg
+from ..plants import (
+    DEFS,
+    PLATE_CREDIT,
+    plant_info,
+    plant_svg,
+    plate_filename,
+    stage_svg,
+    stage_word,
+    vine_svg,
+)
 from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -39,6 +49,7 @@ from ..store import Store
 from ..trials import TrialLog, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
+PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
 COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
 
 
@@ -89,7 +100,7 @@ def render_md(text: str) -> str:
     return md.markdown(text, extensions=["fenced_code", "tables", "sane_lists"])
 
 
-def create_app(store: Store, watch: bool = False) -> FastAPI:
+def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="context-garden")
     hub = Hub(store, watch)
     templates = Jinja2Templates(directory=str(TEMPLATES))
@@ -98,6 +109,21 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
     templates.env.globals["statuses"] = STATUS_ORDER
     templates.env.globals["DEFS"] = DEFS
     templates.env.globals["VINE"] = Markup(vine_svg())
+    plates = plates_dir or PLATES_DIR
+    plates.mkdir(parents=True, exist_ok=True)
+    app.mount("/static/plates", StaticFiles(directory=str(plates)), name="plates")
+
+    def plate_url(key: str, thumb: bool = False) -> str:
+        """The scanned plate for a plant when it has been fetched, else '' (the drawing is used)."""
+        name = plate_filename(key, thumb=thumb)
+        if (plates / name).exists():
+            return f"/static/plates/{name}"
+        if thumb and (plates / plate_filename(key)).exists():
+            return f"/static/plates/{plate_filename(key)}"
+        return ""
+
+    templates.env.globals["plate"] = plate_url
+    templates.env.globals["PLATE_CREDIT"] = PLATE_CREDIT
     # The drawings are trusted SVG built from fixed symbols; mark them safe so Jinja does not escape them.
     templates.env.globals["plant"] = lambda *a, **k: Markup(plant_svg(*a, **k))
     templates.env.globals["stage"] = lambda *a, **k: Markup(stage_svg(*a, **k))

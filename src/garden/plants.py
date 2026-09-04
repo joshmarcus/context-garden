@@ -22,6 +22,15 @@ PLANTS: list[dict[str, str]] = [
 ]
 PLANT_BY_KEY = {p["key"]: p for p in PLANTS}
 
+# Where a scanned plate for a plant lives once fetched (`garden plants --fetch`): the web UI shows
+# it in place of the drawn specimen when the file exists, and falls back to the drawing otherwise.
+PLATE_CREDIT = "Thomé, Flora von Deutschland, 1885"
+
+
+def plate_filename(key: str, thumb: bool = False) -> str:
+    key = key if key in PLANT_BY_KEY else PLANTS[0]["key"]
+    return f"{key}-thumb.webp" if thumb else f"{key}.webp"
+
 STAGE: dict[str, str] = {
     "draft": "st-seed", "ready": "st-sprout", "running": "st-leaf", "waiting_human": "st-tag", "awaiting_triage": "st-bud",
     "in_review": "st-flower", "changes_requested": "st-cut", "done": "st-fruit", "failed": "st-wilt", "cancelled": "st-pressed",

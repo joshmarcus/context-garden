@@ -105,3 +105,20 @@ def test_drawings_render_unescaped(garden):
     assert '<use href="#pea"/>' in phase
     assert "Plate I" in phase
     assert phase.count('class="bg-vine"') == 1  # the background vine, once per page
+
+
+def test_scanned_plates_replace_the_drawing_when_present(garden, tmp_path):
+    plates = tmp_path / "plates"
+    c = TestClient(create_app(Store(garden), watch=False, plates_dir=plates))
+    html = c.get("/phases/demo/p1").text
+    assert '<use href="#pea"/>' in html and 'class="plate"' not in html  # nothing fetched yet: the drawing
+    (plates / "pea.webp").write_bytes(b"RIFF....WEBP")
+    html = c.get("/phases/demo/p1").text
+    assert '<img class="plate" src="/static/plates/pea.webp"' in html
+    assert "plate: Thomé, Flora von Deutschland, 1885" in html
+    assert c.get("/static/plates/pea.webp").status_code == 200
+    assert c.get("/static/plates/bramble.webp").status_code == 404
+    # the rail thumbnail uses the thumb file, or the plate itself until a thumb exists
+    assert 'src="/static/plates/pea.webp" alt="" width="38"' in html
+    (plates / "pea-thumb.webp").write_bytes(b"RIFF....WEBP")
+    assert 'src="/static/plates/pea-thumb.webp"' in c.get("/").text

@@ -63,6 +63,8 @@ svg.stage { --ink:var(--sp-ink); vertical-align:middle; flex:none; }
 .specimen .tape { position:absolute; width:72px; height:18px; background:var(--tape); box-shadow:0 1px 1px rgba(0,0,0,.08); }
 .specimen .lbl { position:absolute; background:var(--label); border:1px solid var(--ink); padding:8px 10px; font:11.5px/1.45 var(--mono); width:230px; color:var(--ink); }
 .specimen .lbl b { letter-spacing:.06em; }
+.specimen .plate-mount { display:flex; justify-content:center; padding:12px; background:#f4efe3; border:1px solid var(--line); box-shadow:0 1px 1px rgba(0,0,0,.06) inset; }
+.specimen .plate { display:block; width:auto; height:auto; max-width:100%; max-height:420px; mix-blend-mode:multiply; }
 .stamp { display:inline-block; font:700 10.5px/1.6 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--stamp); border:2px solid var(--stamp); border-radius:3px; padding:1px 7px; transform:rotate(-4deg); opacity:.85; mix-blend-mode:multiply; }
 :root[data-theme="dark"] .stamp { mix-blend-mode:normal; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stamp { mix-blend-mode:normal; } }
@@ -92,6 +94,7 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .drawer { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid var(--line); border-left:3px solid transparent; background:var(--label); text-decoration:none; color:var(--ink); margin-bottom:8px; }
 .drawer:hover, .drawer.on { border-left-color:var(--ink); }
 .drawer .thumb { width:40px; height:60px; background:var(--label); border:1px solid var(--line); display:flex; justify-content:center; align-items:center; flex:none; }
+.drawer .thumb img { width:38px; height:58px; object-fit:cover; object-position:center top; display:block; background:#f4efe3; }
 .drawer .k { font:11px/1.4 var(--mono); min-width:0; }
 .drawer .k b { display:block; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .drawer .k i { display:block; color:var(--muted); font-style:italic; font-family:var(--body); font-size:12px; }
@@ -232,7 +235,7 @@ details[open] > summary::before { content:"▾ "; }
   </nav>
   <div>
     <h4>Phases</h4>
-    {% for p in products %}{% for ph in p.phases %}<a class="drawer {{ 'on' if page == 'phase' and phase_key == ph.key else '' }}" href="/phases/{{ p.name }}/{{ ph.name }}"><span class="thumb">{{ plant(ph.plant, 34, 52) }}</span><span class="k"><b>{{ ph.name }}</b><i>Plate {{ ph.plate }} · {{ ph.latin }}</i><span>{{ p.name }} · {{ ph.tasks|length }} tasks</span></span></a>{% endfor %}{% endfor %}
+    {% for p in products %}{% for ph in p.phases %}<a class="drawer {{ 'on' if page == 'phase' and phase_key == ph.key else '' }}" href="/phases/{{ p.name }}/{{ ph.name }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="" width="38" height="58" loading="lazy">{% else %}{{ plant(ph.plant, 34, 52) }}{% endif %}</span><span class="k"><b>{{ ph.name }}</b><i>Plate {{ ph.plate }} · {{ ph.latin }}</i><span>{{ p.name }} · {{ ph.tasks|length }} tasks</span></span></a>{% endfor %}{% endfor %}
   </div>
   <div>
     <h4>Running now</h4>
