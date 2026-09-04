@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Herbarium{% endblock %}
+{% block body %}
+<div class="page-head"><div><h1>Herbarium</h1><p>Closed phases, pressed and filed. Newest first{% if groups|length > 1 %}, grouped by product{% endif %}.</p></div></div>
+{% if not n %}<div class="empty">no closed phases yet — <code>garden close-phase product/phase</code> files the first</div>{% endif %}
+{% for pname, entries in groups %}
+{% if pname %}<h2 class="eyebrow" style="margin:18px 0 10px">{{ pname }}</h2>{% endif %}
+<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px">
+  {% for e in entries %}{% set ph = e.phase %}{% set sm = e.summary %}
+  <div class="specimen" style="padding:20px 16px 16px">
+    <span class="tape" style="left:40%; top:8px; transform:rotate(-7deg)"></span>
+    {% set plate_src = plate(ph.plant) %}
+    {% if plate_src %}<div class="plate-mount"><img class="plate" src="{{ plate_src }}" alt="{{ e.info.latin }}, plate from {{ PLATE_CREDIT }}" style="max-height:220px"></div>
+    {% else %}<div style="display:flex; justify-content:center">{{ plant(ph.plant, 140, 210) }}</div>{% endif %}
+    <div style="margin-top:12px; display:flex; align-items:center; gap:10px"><span class="stamp ink">pressed</span><a href="/phases/{{ ph.product }}/{{ ph.name }}" style="font:500 18px/1.2 var(--display)">{{ ph.name }}</a></div>
+    <div class="mono muted" style="margin-top:4px; font-size:11.5px">{{ ph.product }} · plate {{ ph.plate }} · <i>{{ ph.latin }}</i><br>{% if sm.first_dispatch %}{{ sm.first_dispatch }} → {% endif %}closed {{ ph.closed }}</div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>tasks done</dt><dd>{{ sm.tasks_done }} of {{ sm.tasks_total }}</dd>
+      <dt>cost</dt><dd>${{ '%.2f' % e.spent }}</dd>
+      <dt>lead time</dt><dd>{% if sm.avg_lead_hours is not none %}{{ sm.avg_lead_hours }} h avg{% else %}<span class="faint">—</span>{% endif %}</dd>
+      <dt>first pass</dt><dd>{% if sm.first_pass_rate is not none %}{{ (sm.first_pass_rate * 100)|round|int }}%{% else %}<span class="faint">—</span>{% endif %}</dd>
+    </dl>
+    <div class="mono" style="margin-top:10px; font-size:12px"><a href="/phases/{{ ph.product }}/{{ ph.name }}">phase page</a>{% if e.friction_url %} · <a href="{{ e.friction_url }}">friction</a>{% endif %}{% if e.closing_url %} · <a href="{{ e.closing_url }}">closing document</a>{% endif %}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}
