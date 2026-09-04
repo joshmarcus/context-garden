@@ -204,7 +204,7 @@ def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: s
 
     harness = store.config.harness(harness_name or str(store.config.get("harness") or "claude"))
     model = harness.model_for(difficulty)
-    cmd = harness.command(model, None)
+    cmd = harness.command(model, None, difficulty)
     env = dict(os.environ)
     env.pop("CLAUDECODE", None)
     proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(store.root), check=False)

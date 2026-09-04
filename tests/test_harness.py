@@ -32,6 +32,10 @@ def test_custom_harness():
 
 
 def test_max_turns_scalar_and_per_tier():
+    h_unset = Harness("claude", {})
+    assert h_unset.max_turns_for("easy") == 0  # unset → no cap
+    assert h_unset.max_turns_for("medium") == 0
+
     h_scalar = Harness("claude", {"max_turns": 100})
     assert h_scalar.max_turns_for("easy") == 100
     assert h_scalar.max_turns_for("medium") == 100
@@ -41,12 +45,12 @@ def test_max_turns_scalar_and_per_tier():
     assert h_dict.max_turns_for("easy") == 40
     assert h_dict.max_turns_for("medium") == 60
     assert h_dict.max_turns_for("hard") == 90
-    assert h_dict.max_turns_for("unknown") == 60  # falls back to medium
+    assert h_dict.max_turns_for("unknown") == 60  # falls back to medium when medium is set
 
     h_partial = Harness("claude", {"max_turns": {"easy": 30}})
     assert h_partial.max_turns_for("easy") == 30
-    assert h_partial.max_turns_for("medium") == 60  # falls back to default
-    assert h_partial.max_turns_for("hard") == 60
+    assert h_partial.max_turns_for("medium") == 0  # not in dict, no fallback
+    assert h_partial.max_turns_for("hard") == 0
 
 
 def test_command_uses_difficulty_max_turns():
