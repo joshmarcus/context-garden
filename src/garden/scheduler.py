@@ -292,6 +292,23 @@ class Scheduler:
     def slots_free(self) -> int:
         return max(0, self.effective_max_parallel() - len(self.active_runs()))
 
+    @staticmethod
+    def _is_unreaped(task: Task, run: Run | None) -> bool:
+        """A run whose record reached a terminal status while its task is still RUNNING:
+        an earlier tick wrote the run's final status but was killed before the task
+        transition / push / PR step ran. `reap()` resumes these instead of treating them
+        as abandoned; `garden runs` labels them "finished, not yet reaped" until then."""
+        return (run is not None and run.runner != "manual" and run.mode != "review"
+                and run.status != "running" and task.status == Status.RUNNING)
+
+    def unreaped_run_ids(self) -> set[str]:
+        out: set[str] = set()
+        for t in self.store.tasks().values():
+            run = self.runs.latest(t.id)
+            if self._is_unreaped(t, run):
+                out.add(run.run_id)
+        return out
+
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False) -> None:
         old = task.status.value
         task.status = status
@@ -486,6 +503,19 @@ class Scheduler:
         # transition (run.finished_at set, task still RUNNING).
         if run is not None and run.runner == "manual":
             return False
+        if self._is_unreaped(task, run):
+            # The run record already reached a terminal status (written by a
+            # prior finalize() call) but the task is still RUNNING: an earlier
+            # tick was killed after writing the run's final status but before
+            # the task transition / push / PR step completed. Resume from
+            # there instead of declaring "no active run" and redispatching a
+            # second run on top of the first one's finished work.
+            if run.status == "timeout":
+                self._retry_or_fail(task, run, rep, "worker timed out")
+            else:
+                runner = self.runner_for(task, run.runner, run.harness)
+                self.finalize(task, run, runner, rep)
+            return True
         if run is None or run.status != "running" or run.mode == "review":
             # Record what happened to the run we expected to reap: if something else
             # (the orphan sweep, a crash, a manual close) finished it out from under us,
