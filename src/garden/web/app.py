@@ -451,6 +451,35 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         background.add_task(job)
         return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
 
+    @app.post("/friction-report")
+    def friction_report_web(
+        request: Request,
+        product: str = Form(...),
+        phase: str = Form(...),
+        text: str = Form(...),
+        page: str = Form(""),
+        task_id: str = Form(""),
+    ):
+        import datetime as _dt
+
+        from ..friction import append_friction_report, create_friction_draft_task
+
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        doc = ph.path / "docs" / "friction.md"
+        provenance = page or "web"
+        if task_id:
+            provenance = f"{page} ({task_id})" if page else task_id
+        date = _dt.date.today().isoformat()
+        append_friction_report(doc, text, provenance, date)
+        create_friction_draft_task(s, product, phase, text, provenance, date)
+        s.invalidate()
+        back = request.headers.get("referer", "/")
+        return RedirectResponse(back, status_code=303)
+
     # ---- json --------------------------------------------------------------
     @app.get("/api/tasks")
     def api_tasks():

@@ -34,12 +34,24 @@
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
+  <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if task.status.value in ('ready','draft','failed') and not task.pr %}<button class="quiet" data-toggle="trial-form">Model trial…</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button class="quiet">Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
 <div id="trial-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/trial" class="actions"><span class="muted">Contenders (harness:model):</span><input type="text" name="note" placeholder="claude:sonnet, claude:opus" style="width:300px"><button class="primary">Start trial</button></form></div>
+<div id="friction-form" class="panel" hidden>
+  <div class="eyebrow">Report friction about this process</div>
+  <form method="post" action="/friction-report" style="margin-top:8px">
+    <input type="hidden" name="product" value="{{ task.product }}">
+    <input type="hidden" name="phase" value="{{ task.phase }}">
+    <input type="hidden" name="page" value="/tasks/{{ task.id }}">
+    <input type="hidden" name="task_id" value="{{ task.id }}">
+    <textarea name="text" placeholder="What felt slow, unclear, or missing?" required style="width:100%;box-sizing:border-box"></textarea>
+    <div class="actions" style="margin-top:6px"><button class="primary">File report</button></div>
+  </form>
+</div>
 
 {% if usage.runs %}
 <div class="kpis">
