@@ -195,6 +195,7 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
     short = {"blocked": "blkd", "running": "run", "waiting_human": "wait", "awaiting_triage": "triage", "in_review": "review", "changes_requested": "chg", "failed": "fail"}
     for s in cols:
         table.add_column(short.get(s, s), justify="right")
+    table.add_column("attn", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
     stack = bool(store.config.get("stack", True))
@@ -203,14 +204,18 @@ def status(product: str | None = typer.Option(None, "--product", "-p")):
             continue
         for ph in prod.phases:
             counts = {s: 0 for s in STATUS_ORDER + ["blocked"]}
+            attn = 0
             for t in ph.tasks:
                 counts[effective_status(t, tasks, stack)] += 1
+                if not t.status.terminal and sched.state.get(t.id).get("needs_human"):
+                    attn += 1
             budget = sched.budget_for(ph.key)
             spent = sched.spent_for(ph.key)
             money = f"${spent:.2f}" + (f" / ${budget:.2f}" if budget else "")
             if budget and spent >= budget:
                 money = f"[red]{money}[/red]"
-            table.add_row(ph.key, *[_count(counts[s], s) for s in cols], money)
+            attn_cell = f"[bold red]{attn}[/bold red]" if attn else "[dim]·[/dim]"
+            table.add_row(ph.key, *[_count(counts[s], s) for s in cols], attn_cell, money)
     console.print(table)
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")

@@ -82,6 +82,73 @@ def test_revision_cap(sched, fake_github):
     assert "round 2" in sched.state.get("DM-001")["pending_feedback"]
 
 
+def test_audit_flags_stuck_changes_requested(sched, fake_github):
+    """A task hand-left in changes_requested with no feedback, no run and no needs_human
+    is stuck: the tick audit must give it an attention card, not let it sit silent."""
+    from garden.inbox import build_inbox
+
+    t = sched.store.task("DM-001")
+    t.status = Status.CHANGES_REQUESTED
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = ""  # nothing to revise against -> not dispatchable
+    st["revisions"] = 0
+    sched.state.save()
+
+    rep = sched.tick()
+    st = sched.state.get("DM-001")
+    assert str(st.get("needs_human", "")).startswith("stuck:")
+    assert "no feedback" in st["needs_human"]
+    assert any("stuck" in tr for tr in rep.transitions)
+    # it now appears on the Inbox attention group
+    cards = [it for it in build_inbox(sched.store, sched) if it["task"] == "DM-001"]
+    assert any(c["group"] == "attention" and "stuck" in c["why"] for c in cards)
+
+
+def test_audit_does_not_flag_dispatchable_changes_requested(sched, fake_github):
+    """A changes_requested task with feedback under the cap is dispatchable; not stuck."""
+    t = sched.store.task("DM-001")
+    t.status = Status.CHANGES_REQUESTED
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- fix this"
+    st["revisions"] = 0
+    sched.state.save()
+    sched.tick(dispatch=False)  # audit runs even with dispatch off
+    assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
+    """A pre-PR check that fails once the revision cap is reached hands off to a human,
+    exactly like the review path — it does not leave the task queued-but-skipped."""
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "echo boom; exit 1"}], "ci": []}
+    sched.cfg.data["max_revisions"] = 2
+    sched.tick()
+    wait_for_runs(sched)
+    sched.state.get("DM-001")["revisions"] = 2  # pretend two revise rounds were already used
+    sched.state.save()
+    rep = sched.tick()  # reap -> pre-PR check fails at the cap
+    assert statuses(sched)["DM-001"] == "changes_requested"
+    st = sched.state.get("DM-001")
+    assert st.get("needs_human") and "revision rounds already used" in st["needs_human"]
+    assert any("cap" in tr for tr in rep.transitions)
+
+
+def test_retry_grants_one_more_round_past_cap(sched, fake_github):
+    """Resuming a capped task rolls the revision counter back one so a revise run runs."""
+    t = sched.store.task("DM-001")
+    t.status = Status.CHANGES_REQUESTED
+    t.pr = "https://example.com/pull/101"
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["revisions"] = 2  # == max_revisions (2) in the test garden
+    st["needs_human"] = "2 revision rounds already used"
+    sched.retry(t)
+    st = sched.state.get("DM-001")
+    assert not st.get("needs_human")
+    assert int(st["revisions"]) == 1  # cap (2) minus one -> one more round dispatchable
+
+
 def test_ci_failure_triggers_revise(sched, fake_github):
     sched.tick()
     wait_for_runs(sched)

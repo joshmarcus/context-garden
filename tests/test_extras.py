@@ -31,6 +31,19 @@ def test_run_check_command_and_python(tmp_path, monkeypatch):
     assert run_checks([], {}) == []
 
 
+def test_run_check_killed_or_empty_did_not_finish(tmp_path):
+    # A check killed by a signal (e.g. torn down with the server) is recorded as
+    # "check did not finish", never as a clean failure with no text.
+    killed = run_check({"name": "tests", "command": "kill -TERM $$"}, {}, cwd=tmp_path)
+    assert killed["status"] == "error" and "check did not finish" in killed["summary"]
+    assert "SIGTERM" in killed["summary"]
+    # A non-zero exit that produced no output at all is likewise not a silent failure.
+    empty = run_check({"name": "tests", "command": "exit 5"}, {}, cwd=tmp_path)
+    assert empty["status"] == "error" and "check did not finish" in empty["summary"]
+    # to_feedback still yields text (never an empty string) for these.
+    assert to_feedback([killed], "pre-PR check").strip()
+
+
 def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     marker = garden / "checked"
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; test -f worker-output.txt && grep -q 2 worker-output.txt"}], "ci": []}
