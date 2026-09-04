@@ -25,6 +25,20 @@ def test_sources_markdown_lists_each_plate():
     assert "1885" in md
 
 
+def test_sources_markdown_collapses_a_multiline_artist_credit():
+    # Commons attributes some derivative files (e.g. the snapdragon plate) with a multi-line
+    # credit; a raw newline in a cell would split the row and break the rest of the table.
+    md = sources_markdown([{"key": "snapdragon", "latin": "Antirrhinum majus", "title": "Illustration_Antirrhinum_majus_clean.jpg",
+                            "url": "https://commons.wikimedia.org/wiki/File:x",
+                            "artist": "Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé\nderivative work: Aroche (talk)",
+                            "license": "Public domain", "bytes": 62000}])
+    rows = [line for line in md.splitlines() if line.startswith("|")]
+    assert len(rows) == 3  # header, separator, one data row for the one plate
+    assert rows[-1] == ("| snapdragon | *Antirrhinum majus* | [Illustration_Antirrhinum_majus_clean.jpg]"
+                         "(https://commons.wikimedia.org/wiki/File:x) | Illustration_Antirrhinum_majus0.jpg: "
+                         "Prof. Dr. Otto Wilhelm Thomé derivative work: Aroche (talk) | Public domain | 60 KB |")
+
+
 def test_prepare_crops_margins_and_makes_a_thumbnail():
     Image = pytest.importorskip("PIL.Image")
     import io
