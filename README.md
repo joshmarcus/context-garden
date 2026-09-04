@@ -299,6 +299,8 @@ for review, `n` send back, `a` approve, `d` dispatch, `e` continue, `x` cancel, 
 ```yaml
 name: my-garden
 runner: local               # local | ssh | manual
+work_dir: ""                # where product clones and task worktrees go; empty = .garden. Set a directory
+                            # outside the garden so workers cannot reach the garden, its venv or its state
 harness: claude             # claude | codex | a name under harnesses:
 max_parallel: 10            # concurrent detached runs (work + revise + review)
 max_attempts: 2             # work runs before failed
