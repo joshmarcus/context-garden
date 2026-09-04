@@ -365,10 +365,12 @@ def validate():
 
     store = _store()
     problems = _validate(store.tasks())
+    from .brief import resolve_reading
+
     for t in store.tasks().values():
         for r in t.reading:
-            if not (store.root / r).exists():
-                problems.append(f"{t.id}: reading path {r!r} does not exist")
+            if resolve_reading(store, t, r)[0] is None:
+                problems.append(f"{t.id}: reading path {r!r} does not exist in the garden or the product checkout")
     for p in problems:
         console.print(f"[red]![/red] {p}")
     if problems:
