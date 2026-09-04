@@ -177,9 +177,12 @@ def find_root(start: Path | None = None) -> Path:
 
     Refuses to return a root whose .garden/ directory contains the starting path,
     so code running inside a worktree (.garden/worktrees/<id>) cannot act on the
-    enclosing live garden.  The GARDEN_ROOT environment variable overrides the
-    search entirely; if it points to a non-existent garden, the function raises
-    with a message explaining that workers must not run garden commands.
+    enclosing live garden. GARDEN_ROOT is a guard only, not a redirect: if it is set
+    and does not contain a garden.yaml, the function raises with a message explaining
+    that workers must not run garden commands. If it is set and does point at a real
+    garden, it is ignored and the normal cwd walk still runs (see no_live_garden_root,
+    which is how workers and check subprocesses get a GARDEN_ROOT that always trips
+    this guard).
     """
     import os
 
