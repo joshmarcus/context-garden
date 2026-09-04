@@ -115,6 +115,34 @@ def test_stdout_partial(garden):
     assert "Bash" in r.text and "ls" in r.text
 
 
+def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
+    """A stream-json run mixes tool_result.content shapes (string and list of blocks); the
+    task page must render both instead of 500ing (CG-104)."""
+    import yaml
+
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub, wait_for_runs
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["harnesses"]["claude"]["output_format"] = "stream-json"
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    store = Store(garden)
+    sched = Scheduler(store, github=FakeGitHub())
+    sched.tick()
+    wait_for_runs(sched)
+
+    c = client(garden)
+    r = c.get("/tasks/DM-001")
+    assert r.status_code == 200
+    assert "abc1234 fake change" in r.text  # string tool_result.content
+    assert "working" in r.text  # list tool_result.content, first text block
+
+    r = c.get("/partials/tasks/DM-001/stdout")
+    assert r.status_code == 200
+    assert "abc1234 fake change" in r.text and "working" in r.text
+
+
 def test_drawings_render_unescaped(garden, tmp_path):
     """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
     c = TestClient(create_app(Store(garden), watch=False, plates_dir=tmp_path / "plates"))
