@@ -19,17 +19,21 @@ FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
 
 @pytest.fixture(autouse=True)
 def _no_ambient_garden_root(monkeypatch):
-    """Strip any GARDEN_ROOT inherited from the process environment before each test.
+    """Strip any GARDEN_ROOT / GARDEN_EXEC_ROOT inherited from the process environment
+    before each test, so this suite passes the same way in a developer's shell, in CI and
+    under the check runner (see garden.checks module docstring: a product's tests must not
+    depend on the garden's environment variables).
 
     When this suite itself runs as the pre-PR `tests` check (see garden.checks.run_check),
     the check runner sets GARDEN_ROOT in the subprocess environment to a non-existent
-    sentinel so a check command can't act on the live garden. That sentinel then leaks into
-    every test in this process, and find_root() raises on it regardless of cwd — breaking
-    any test that calls find_root() (directly, or via Store(root=None)) without first
-    managing GARDEN_ROOT itself. Tests that exercise the GARDEN_ROOT guard set it explicitly
-    via monkeypatch, which layers on top of this baseline.
+    sentinel so a check command can't act on the live garden, and sets GARDEN_EXEC_ROOT to
+    the live garden's own root. Both leak into every test in this process; GARDEN_ROOT makes
+    find_root() raise regardless of cwd, breaking any test that calls find_root() (directly,
+    or via Store(root=None)) without first managing GARDEN_ROOT itself. Tests that exercise
+    either guard set it explicitly via monkeypatch, which layers on top of this baseline.
     """
     monkeypatch.delenv("GARDEN_ROOT", raising=False)
+    monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
 
 
 def git(*args, cwd):
