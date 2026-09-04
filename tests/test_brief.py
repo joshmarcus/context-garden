@@ -129,3 +129,26 @@ def test_brief_never_names_the_garden_root(garden):
     assert "context garden root" not in text
     assert "relative to your current directory" in text
     assert "Work only in the directory you were started in" in text
+
+
+def test_brief_includes_max_turns_cap(garden):
+    store = Store(garden)
+    t = store.task("DM-001")
+    t.difficulty = "easy"
+    b = build_brief(store, t, branch="garden/x", base="main")
+    assert "You have **" in b.text and "turns**" in b.text
+    assert "40 turns" in b.text  # easy tier in test config is 40
+
+    t.difficulty = "hard"
+    b = build_brief(store, t, branch="garden/x", base="main")
+    assert "80 turns" in b.text  # hard tier in test config is 80
+
+
+def test_brief_omits_max_turns_when_unset(garden):
+    import yaml
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["harnesses"]["claude"].pop("max_turns")
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    store = Store(garden)
+    b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
+    assert "You have **" not in b.text

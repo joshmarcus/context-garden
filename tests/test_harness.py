@@ -31,6 +31,32 @@ def test_custom_harness():
     assert out["result"]["status"] == "done" and out["final_text"].startswith("did stuff")
 
 
+def test_max_turns_scalar_and_per_tier():
+    h_scalar = Harness("claude", {"max_turns": 100})
+    assert h_scalar.max_turns_for("easy") == 100
+    assert h_scalar.max_turns_for("medium") == 100
+    assert h_scalar.max_turns_for("hard") == 100
+
+    h_dict = Harness("claude", {"max_turns": {"easy": 40, "medium": 60, "hard": 90}})
+    assert h_dict.max_turns_for("easy") == 40
+    assert h_dict.max_turns_for("medium") == 60
+    assert h_dict.max_turns_for("hard") == 90
+    assert h_dict.max_turns_for("unknown") == 60  # falls back to medium
+
+    h_partial = Harness("claude", {"max_turns": {"easy": 30}})
+    assert h_partial.max_turns_for("easy") == 30
+    assert h_partial.max_turns_for("medium") == 60  # falls back to default
+    assert h_partial.max_turns_for("hard") == 60
+
+
+def test_command_uses_difficulty_max_turns():
+    h = Harness("claude", {"max_turns": {"easy": 40, "hard": 80}})
+    cmd_easy = h.command("haiku", difficulty="easy")
+    cmd_hard = h.command("opus", difficulty="hard")
+    assert "--max-turns" in cmd_easy and cmd_easy[cmd_easy.index("--max-turns") + 1] == "40"
+    assert "--max-turns" in cmd_hard and cmd_hard[cmd_hard.index("--max-turns") + 1] == "80"
+
+
 def test_parse_claude_json():
     h = Harness("claude", {})
     out = h.parse('{"type":"result","subtype":"success","result":"hi\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{"input_tokens":5},"total_cost_usd":0.5}')
