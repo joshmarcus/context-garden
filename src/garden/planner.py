@@ -33,8 +33,9 @@ Rules:
 - `reading` is a list of paths relative to the garden root (specs, docs) the agent must read. Keep it minimal; the digest/product/goals are included automatically.
 - The body must contain: `## Goal` (1-2 sentences), `## Context` (what the agent needs to know that isn't in the reading list), `## Acceptance criteria` (checklist, testable), `## Out of scope`.
 - Do not include tasks that already exist (see existing task list). You may depend on existing ids.
+- `difficulty` picks the model tier: "easy" (mechanical, well-specified, small blast radius), "medium" (typical feature work), "hard" (design judgment, cross-cutting, subtle correctness). Be honest; it controls cost.
 - Output ONLY a JSON array (no prose, no fences) of objects with keys:
-  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), depends_on (list of ids or titles from this batch), reading (list of paths), body (markdown string).
+  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard"), depends_on (list of ids or titles from this batch), reading (list of paths), body (markdown string).
   Reference batch-internal dependencies by exact title; they are resolved to ids on import.
 """
 
@@ -95,8 +96,10 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
     return out
 
 
-def import_plan(store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str = "draft") -> list[Task]:
+def import_plan(store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None) -> list[Task]:
     """Create task files; resolve batch-internal dependencies by title."""
+    if status is None:
+        status = "ready" if bool(store.config.get("plan.auto_approve", True)) else "draft"
     existing_titles = {t.title.strip().lower(): t.id for t in store.tasks().values()}
     created: list[Task] = []
     title_to_id: dict[str, str] = {}
@@ -115,6 +118,7 @@ def import_plan(store: Store, product: str, phase: str, items: list[dict[str, An
             reading=[str(r) for r in (item.get("reading") or [])],
             status=status,
             task_id=tid,
+            difficulty=str(item.get("difficulty") or "medium"),
         )
         title_to_id[title.lower()] = tid
         pending.append((t, item))
@@ -139,29 +143,20 @@ def import_plan(store: Store, product: str, phase: str, items: list[dict[str, An
     return created
 
 
-def run_planner(store: Store, prompt: str) -> str:
-    """One `claude -p` call. Returns the raw final text."""
-    cfg = store.config.get("claude", {}) or {}
-    cmd = [cfg.get("bin", "claude"), "-p", "--output-format", "json", "--max-turns", "8"]
-    if cfg.get("model"):
-        cmd += ["--model", str(cfg["model"])]
-    # the planner needs no tools; it reads the prompt and writes JSON
-    cmd += ["--allowedTools", "Read", "--permission-mode", "default"]
-    cmd.append("You are given a planning request on stdin. Follow it exactly.")
+def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: str = "hard") -> str:
+    """One headless harness call. Returns the raw final text."""
     import os
 
+    harness = store.config.harness(harness_name or str(store.config.get("harness") or "claude"))
+    model = harness.model_for(difficulty)
+    cmd = harness.command(model, None)
     env = dict(os.environ)
     env.pop("CLAUDECODE", None)
-    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(store.root))
-    if proc.returncode != 0:
+    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(store.root), check=False)
+    parsed = harness.parse(proc.stdout, proc.stderr, None)
+    if proc.returncode != 0 and not parsed["final_text"]:
         raise RuntimeError(f"planner failed ({proc.returncode}): {proc.stderr.strip()[-1000:]}")
-    try:
-        data = json.loads(proc.stdout)
-        if isinstance(data, dict) and isinstance(data.get("result"), str):
-            return data["result"]
-    except json.JSONDecodeError:
-        pass
-    return proc.stdout
+    return parsed["final_text"] or proc.stdout
 
 
 def prompt_tokens(prompt: str) -> int:

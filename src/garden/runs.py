@@ -25,7 +25,10 @@ class Run:
     run_id: str
     dir: str
     runner: str
-    mode: str = "work"  # work | revise
+    mode: str = "work"  # work | revise | review
+    harness: str = ""
+    model: str = ""
+    host: str = ""  # ssh runner: which host
     status: str = "running"  # running | done | blocked | failed | timeout | cancelled
     pid: int | None = None
     started_at: str = ""

@@ -1,24 +1,51 @@
-# context-garden configuration. See README.md for every key.
+# context-garden configuration. README.md documents every key.
 name: context-garden
-runner: claude-local        # default runner for products: claude-local | manual
-max_parallel: 2             # concurrent detached workers
+runner: local               # default runner: local | ssh | manual
+harness: claude             # default harness: claude | codex | any name under harnesses:
+max_parallel: 10            # concurrent detached workers (work, revise and review runs)
 max_attempts: 2             # work runs before a task is marked failed
 max_revisions: 3            # auto revise rounds per PR before a human must step in
+timeout_minutes: 90         # per run; the process is killed after this
 tick_interval: 60           # seconds between scheduler passes in `garden watch` / `garden serve`
 auto_dispatch: true         # tick starts workers for ready tasks
 auto_revise: true           # tick dispatches revise runs when PRs get feedback / CI fails
+
+plan:
+  auto_approve: true        # planner output is created `ready` (dispatched on the next tick)
+
+review:
+  enabled: true             # automated first review of every PR round (acceptance criteria,
+  max_rounds: 2             # correctness, scope, PR description quality / no scar tissue)
+  max_diff_chars: 60000     # larger diffs are read by the reviewer from git instead of inlined
+  harness: ""               # empty = the default harness
+  difficulty: ""            # empty = the task's tier; or easy | medium | hard for the reviewer model
 
 brief:
   inline_max_chars: 24000   # reading-list files above this are referenced, not inlined
   total_max_chars: 120000   # hard budget for one brief
 
-claude:
-  bin: claude
-  model: ""                 # empty = the CLI default
-  max_turns: 60
-  permission_mode: acceptEdits   # or bypass (== --dangerously-skip-permissions)
-  allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
-  timeout_minutes: 90
+# Harnesses: how to run an agent CLI headlessly. `claude` and `codex` are built in; keys here
+# override the defaults. `models` maps task difficulty -> model for that harness.
+harnesses:
+  claude:
+    bin: claude
+    max_turns: 60
+    permission_mode: acceptEdits   # or bypass (== --dangerously-skip-permissions)
+    allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
+    models: {easy: haiku, medium: sonnet, hard: opus}
+  codex:
+    bin: codex
+    permission_mode: full-auto     # or bypass (== --dangerously-bypass-approvals-and-sandbox)
+    models: {}                     # empty = the codex CLI default for every tier
+
+# Remote workers (runner: ssh). Each host has a clone of each product repo it may work on.
+ssh:
+  hosts: []
+  # - name: box1
+  #   host: user@box1.example.com
+  #   repos: {context-garden: /srv/repos/context-garden}
+  #   max_parallel: 4
+  # options: ["-o", "BatchMode=yes"]
 
 github:
   use_gh: true              # prefer the gh CLI; falls back to REST with GITHUB_TOKEN
@@ -28,6 +55,8 @@ github:
 products:
   context-garden:
     repo: .                 # this repo is its own first product
-    # github: owner/name    # only needed when the origin remote is not a github.com URL
     base_branch: main
     id_prefix: CG
+    # runner: ssh           # per-product overrides
+    # harness: codex
+    # github: owner/name    # only needed when the origin remote is not a github.com URL

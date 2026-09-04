@@ -155,3 +155,11 @@ def diff_stat(worktree: Path, base: str) -> str:
         return git("diff", "--stat", f"{ref}...HEAD", cwd=worktree)
     except GitError:
         return ""
+
+
+def diff(worktree: Path, base: str) -> str:
+    try:
+        ref = base_ref(worktree, base)
+        return git("diff", f"{ref}...HEAD", cwd=worktree)
+    except GitError:
+        return ""

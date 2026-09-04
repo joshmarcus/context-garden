@@ -26,7 +26,10 @@ def test_import_resolves_title_deps(garden):
     beta = store.task("DM-004")
     assert beta.depends_on == ["DM-003"] and "unknown dependency 'Nope'" in beta.body
     assert store.task("DM-003").depends_on == ["DM-001"]
-    assert store.task("DM-003").status.value == "draft"
+    assert store.task("DM-003").status.value == "ready"  # plan.auto_approve default
+    store.config.data["plan"] = {"auto_approve": False}
+    more = import_plan(store, "demo", "p1", [{"title": "Gamma", "body": "g", "difficulty": "hard"}])
+    assert more[0].status.value == "draft" and more[0].difficulty == "hard"
 
 
 def test_run_planner_with_fake_claude(garden, monkeypatch):

@@ -1,10 +1,10 @@
 ---
 id: CG-011
 title: Automated review pass before human review
-status: draft
+status: done
 product: context-garden
 phase: phase-02-friction
-depends_on: [CG-009]
+depends_on: []
 priority: 2
 estimate: M
 reading:
@@ -31,3 +31,7 @@ Add a `review.py` module with `review_prompt(brief, diff)` and `run_review` mirr
 ## Out of scope
 
 - Line-anchored review comments (a single summary comment is fine).
+
+## Log
+
+- 2026-09-04T00:00:00+00:00 shipped in the bootstrap phase (see phase-01-bootstrap/specs/review-pass.md); the stream-json dependency was not needed

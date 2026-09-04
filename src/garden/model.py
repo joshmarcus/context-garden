@@ -89,6 +89,9 @@ class Task:
     branch: str = ""
     pr: str = ""
     runner: str = ""  # override product/default runner
+    harness: str = ""  # override harness (claude | codex | ...)
+    difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
+    model: str = ""  # explicit model override
     attempts: int = 0
     last_dispatched_at: str = ""
     created: str = ""
@@ -111,6 +114,9 @@ class Task:
         "branch",
         "pr",
         "runner",
+        "harness",
+        "difficulty",
+        "model",
         "attempts",
         "last_dispatched_at",
         "created",
@@ -143,6 +149,9 @@ class Task:
             branch=str(data.get("branch") or ""),
             pr=str(data.get("pr") or ""),
             runner=str(data.get("runner") or ""),
+            harness=str(data.get("harness") or ""),
+            difficulty=str(data.get("difficulty") or "medium"),
+            model=str(data.get("model") or ""),
             attempts=int(data.get("attempts", 0) or 0),
             last_dispatched_at=str(data.get("last_dispatched_at") or ""),
             created=str(data.get("created") or ""),
@@ -163,8 +172,9 @@ class Task:
         }
         if self.estimate:
             data["estimate"] = self.estimate
+        data["difficulty"] = self.difficulty
         data["reading"] = list(self.reading)
-        for k in ("repo", "branch", "pr", "runner"):
+        for k in ("repo", "branch", "pr", "runner", "harness", "model"):
             v = getattr(self, k)
             if v:
                 data[k] = v

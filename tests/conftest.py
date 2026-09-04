@@ -13,6 +13,8 @@ from garden.scheduler import Scheduler
 from garden.store import Store
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
+FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
+FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
 
 
 def git(*args, cwd):
@@ -40,14 +42,23 @@ def garden(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)
+    # a second clone standing in for a remote host's checkout (ssh runner tests)
+    subprocess.run(["git", "clone", "-q", str(remote), str(tmp_path / "remote-clone")], check=True)
 
     root.mkdir()
     (root / "garden.yaml").write_text(yaml.safe_dump({
         "name": "test",
-        "max_parallel": 2,
         "max_attempts": 2,
         "max_revisions": 2,
-        "claude": {"bin": str(FAKE_CLAUDE), "max_turns": 5, "timeout_minutes": 1},
+        "max_parallel": 2,
+        "timeout_minutes": 1,
+        "review": {"enabled": False},
+        "harnesses": {
+            "claude": {"bin": str(FAKE_CLAUDE), "max_turns": 5},
+            "codex": {"bin": str(FAKE_CODEX), "models": {"easy": "gpt-mini", "medium": "gpt-std", "hard": "gpt-max"}},
+        },
+        "ssh": {"ssh_bin": str(FAKE_SSH), "options": [],
+                "hosts": [{"name": "boxA", "host": "boxA", "repos": {"demo": str(tmp_path / "remote-clone")}, "max_parallel": 1}]},
         "products": {"demo": {"repo": "../repo", "base_branch": "main", "id_prefix": "DM", "github": "test/demo"}},
     }))
     write(root / "principles" / "00-index.md", "# Digest\n\n- be good\n")
@@ -97,6 +108,7 @@ class FakeGitHub:
         self.prs: dict[str, PRInfo] = {}  # branch -> PR
         self.created: list[dict] = []
         self.comments: list[str] = []
+        self.updated: list[dict] = []
         self.feedback: dict[int, Feedback] = {}
         self._n = 100
 
@@ -127,6 +139,15 @@ class FakeGitHub:
 
     def comment(self, slug, number, body):
         self.comments.append(body)
+
+    def update_pr(self, slug, number, title="", body=""):
+        for pr in self.prs.values():
+            if pr.number == number:
+                if title:
+                    pr.title = title
+                if body:
+                    pr.body = body
+                self.updated.append({"number": number, "title": title, "body": body})
 
 
 @pytest.fixture

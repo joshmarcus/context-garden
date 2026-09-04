@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -106,6 +107,7 @@ def new_task(
     depends_on: list[str] = typer.Option([], "--dep", "-d"),
     reading: list[str] = typer.Option([], "--read", "-r"),
     priority: int = typer.Option(3),
+    difficulty: str = typer.Option("medium", help="easy|medium|hard (picks the model tier)"),
     ready: bool = typer.Option(False, help="Create as ready instead of draft"),
 ):
     """Create a task file from a template."""
@@ -114,7 +116,7 @@ def new_task(
     store = _store()
     product, phase = _split_target(target)
     t = store.create_task(product, phase, title, TASK_TEMPLATE, depends_on=depends_on, reading=reading,
-                          priority=priority, status="ready" if ready else "draft")
+                          priority=priority, status="ready" if ready else "draft", difficulty=difficulty)
     console.print(f"created {t.id} at {store.rel(t.path)}")
 
 
@@ -183,13 +185,13 @@ def ls(
         print(json.dumps([{**t.to_frontmatter(), "effective_status": eff, "path": store.rel(t.path)} for t, eff in rows], indent=2))
         return
     table = Table(show_lines=False)
-    for c in ("id", "status", "pri", "title", "phase", "deps", "pr"):
+    for c in ("id", "status", "pri", "diff", "title", "phase", "deps", "pr"):
         table.add_column(c)
     for t, eff in rows:
         deps = ",".join(t.depends_on)
         if eff == "blocked":
             deps = "[yellow]" + ",".join(blockers(t, tasks)) + "[/yellow]"
-        table.add_row(t.id, _style(eff), str(t.priority), t.title, t.key, deps, t.pr or "")
+        table.add_row(t.id, _style(eff), str(t.priority), t.difficulty, t.title, t.key, deps, t.pr or "")
     console.print(table)
 
 
@@ -207,7 +209,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         print(t.render())
         return
     tasks = store.tasks()
-    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={t.priority}  {t.key}")
+    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={t.priority}  difficulty={t.difficulty}  {t.key}")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
         console.print(f"depends_on: {', '.join(t.depends_on)}  blockers: {', '.join(blockers(t, tasks)) or '-'}")
@@ -502,9 +504,10 @@ def plan(
     dry_run: bool = typer.Option(False, help="Print the planning prompt and exit"),
     import_file: Path | None = typer.Option(None, "--import", help="Import a JSON task list instead of calling the model"),
     guidance: str = typer.Option("", help="Extra instructions for the planner"),
-    approve_all: bool = typer.Option(False, "--approve", help="Create tasks as ready instead of draft"),
+    draft: bool = typer.Option(False, help="Create tasks as draft (default follows plan.auto_approve)"),
+    approve_all: bool = typer.Option(False, "--approve", help="Create tasks as ready"),
 ):
-    """Turn goals + specs into draft task files (one model call, or --import)."""
+    """Turn goals + specs into task files (one model call, or --import). Ready by default."""
     from .planner import import_plan, parse_plan, plan_prompt, prompt_tokens, run_planner
 
     store = _store()
@@ -532,11 +535,51 @@ def plan(
         except ValueError as e:
             err.print(f"[red]{e}; raw output saved to {out}[/red]")
             raise typer.Exit(1) from None
-    created = import_plan(store, product, phase, items, status="ready" if approve_all else "draft")
+    status = "draft" if draft else ("ready" if approve_all else None)
+    created = import_plan(store, product, phase, items, status=status)
     for t in created:
         console.print(f"created {t.id} {_style(t.status.value)} {t.title}" + (f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""))
     if not created:
         console.print("no new tasks (all titles already existed)")
+
+
+@app.command()
+def prs(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
+    """Every tracked PR: state, review decision, CI, revisions, last poll."""
+    from .scheduler import State
+
+    store = _store()
+    st = State(store.config.garden_dir / "state.json")
+    product = phase = None
+    if target:
+        product, phase = _split_target(target)
+    table = Table()
+    for c in ("id", "status", "pr", "review", "ci", "rev", "auto-review", "polled", "title"):
+        table.add_column(c)
+    for t in sorted(store.tasks().values(), key=lambda t: (t.product, t.phase, t.id)):
+        if not t.pr or (product and t.product != product) or (phase and t.phase != phase):
+            continue
+        s_ = st.get(t.id)
+        ci = s_.get("checks") or ""
+        if s_.get("failed_checks"):
+            ci += " (" + ", ".join(s_["failed_checks"]) + ")"
+        last = s_.get("last_review") or {}
+        table.add_row(t.id, _style(t.status.value), t.pr, s_.get("review_decision") or "", ci, str(s_.get("revisions", 0)),
+                      f"{last.get('verdict', '')} ({s_.get('review_rounds', 0)})" if s_.get("review_rounds") else "",
+                      (s_.get("last_polled") or "")[11:19], t.title[:40])
+    console.print(table)
+
+
+@app.command()
+def review(task_id: str):
+    """Start an automated review run for a task's open PR now."""
+    store = _store()
+    t = _task(store, task_id)
+    if not t.pr:
+        err.print(f"[red]{t.id} has no PR[/red]")
+        raise typer.Exit(1)
+    run = _scheduler(store).dispatch_review(t)
+    console.print(f"{t.id}: review run {run.run_id} started (model {run.model or 'default'})")
 
 
 # --------------------------------------------------------------------------- runs / diagnostics
@@ -594,16 +637,26 @@ def doctor():
     console.print(f"github: {gh.describe()}" + (f" as {gh.me()}" if gh.available and gh.me() else ""))
     if not gh.available:
         ok = False
-    for name in {store.config.get("runner")} | {p.get("runner") for p in store.config.data.get("products", {}).values() if p and p.get("runner")}:
-        if not name:
-            continue
+    harness_names = {str(store.config.get("harness") or "claude")} | {
+        str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
+    runner_names = {str(store.config.get("runner") or "local")} | {
+        str(p.get("runner")) for p in store.config.data.get("products", {}).values() if p and p.get("runner")}
+    for hn in sorted(harness_names):
+        h = store.config.harness(hn)
+        found = shutil.which(h.bin)
+        console.print(f"harness {hn}: " + (f"[green]{found}[/green]" if found else f"[red]{h.bin!r} not on PATH[/red]")
+                      + f"  models={h.cfg.get('models') or 'cli default'}")
+        ok = ok and bool(found)
+    for name in sorted(runner_names):
         try:
-            r = get_runner(str(name), dict(store.config.get("claude", {}) or {}))
+            cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}
+            r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
             probs = r.doctor()
         except Exception as e:  # noqa: BLE001
             probs = [str(e)]
         console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
         ok = ok and not probs
+    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={store.config.get('max_parallel')}")
     for p in store.products():
         repo = store.config.product_repo(p.name)
         console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}")

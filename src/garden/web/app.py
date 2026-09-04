@@ -27,6 +27,7 @@ from ..graph import (
     validate,
 )
 from ..model import STATUS_ORDER, Status, now_iso
+from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
@@ -144,6 +145,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             request, task=t, eff=effective_status(t, tasks), blockers=blockers(t, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), state=st, body_html=render_md(body),
             log_lines=log, rel=s.rel(t.path),
+            review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -212,9 +214,10 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         specs = [(s.rel(p), p.read_text()) for p in ph.specs]
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
+        state = State(s.config.garden_dir / "state.json")
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
-            rows=[(t, effective_status(t, tasks)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            rows=[(t, effective_status(t, tasks), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
         ))
 
@@ -255,6 +258,9 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
                 t.status = Status.DONE
                 t.log(note or "marked done (web)")
                 s.save(t)
+            elif action == "review":
+                if t.pr:
+                    sched.dispatch_review(t)
             elif action == "reset-revisions":
                 st = sched.state.get(t.id)
                 st["revisions"] = 0
@@ -288,7 +294,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             try:
                 s = hub.fresh()
                 raw = run_planner(s, plan_prompt(s, product, phase, extra=guidance))
-                created = import_plan(s, product, phase, parse_plan(raw))
+                created = import_plan(s, product, phase, parse_plan(raw))  # ready by default (plan.auto_approve)
                 hub.planning[key] = f"done {now_iso()}: created {', '.join(t.id for t in created) or 'nothing new'}"
             except Exception as e:  # noqa: BLE001
                 hub.planning[key] = f"failed {now_iso()}: {e}"

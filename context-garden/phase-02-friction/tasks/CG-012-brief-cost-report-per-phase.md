@@ -7,6 +7,7 @@ phase: phase-02-friction
 depends_on: []
 priority: 3
 estimate: M
+difficulty: easy
 reading:
   - principles/agent-loop.md
   - context-garden/phase-01-bootstrap/specs/brief.md

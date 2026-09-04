@@ -26,11 +26,13 @@ Layout:
 - `src/garden/graph.py` dependency graph, ready set, mermaid export
 - `src/garden/brief.py` builds the worker brief; `GARDEN_RESULT` parsing
 - `src/garden/scheduler.py` the tick state machine (reap / poll / dispatch)
-- `src/garden/runner/` runner backends (`claude-local`, `manual`)
+- `src/garden/harness.py` harness definitions (claude, codex, custom) and output parsing
+- `src/garden/runner/` runner backends (`local`, `ssh`, `manual`)
+- `src/garden/review.py` automated review brief and verdict parsing
 - `src/garden/gitops.py`, `src/garden/github.py` git worktrees and PRs
 - `src/garden/planner.py` planning prompt and JSON import
 - `src/garden/web/` FastAPI + HTMX web UI; `src/garden/tui/` Textual TUI
-- `tests/` pytest; `tests/fake_claude.py` stands in for the `claude` binary
+- `tests/` pytest; `tests/fake_claude.py`, `fake_codex.py`, `fake_ssh.py` stand in for the real binaries
 
 ## Conventions
 

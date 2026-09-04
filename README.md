@@ -4,9 +4,10 @@ Drive agent development by tending a context garden.
 
 You write **principles**, **product overviews**, **phase goals** and **specs** as markdown.
 A planner turns a phase into **task files**. A token-free **scheduler** dispatches headless
-agent workers one task at a time, pushes their branches, opens PRs, and re-dispatches when
-you leave review comments. A local **web UI** and a **TUI** show the board, the dependency
-graph, and where the tokens went.
+agent workers (Claude Code, Codex, or any CLI harness; locally or on remote hosts over
+ssh), pushes their branches, opens PRs, runs an **automated review pass**, and
+re-dispatches when you or the reviewer leave comments. A local **web UI** and a **TUI**
+show the board, the dependency graph, every tracked PR, and where the tokens went.
 
 The human's job is: write goals and specs, approve the plan, review PRs, merge.
 Everything else is the loop.
@@ -17,13 +18,15 @@ Everything else is the loop.
  write goals/specs  ──────▶   garden plan ────────────────────────────▶  planner: 1 call
  approve drafts     ──────▶   ready set from the dependency graph
                               tick: dispatch into free slots ─────────▶  worker in a worktree
-                              tick: reap ─ push branch, open PR
+                              tick: reap ─ push branch, open PR ────────▶  review run: 1 call
+                              tick: reap review ─ comment; changes? ───▶  revise run
  review the PR      ──────▶   tick: poll ─ new comments / red CI ─────▶  revise run
  merge              ──────▶   tick: poll ─ merged ─ done, unblock deps
 ```
 
-Only three steps spend tokens: planning, working, revising. Waiting is a Python
-process sleeping, not an agent session polling.
+Only four steps spend tokens: planning, working, reviewing, revising. Waiting is a
+Python process sleeping, not an agent session polling. The model for each run is picked
+from the task's difficulty, so easy tasks run on cheap models.
 
 ## Install
 
@@ -35,8 +38,8 @@ uv venv && uv pip install -e ".[dev]"      # or: pip install -e ".[dev]"
 .venv/bin/garden doctor                    # checks claude, gh / GITHUB_TOKEN, repos, graph
 ```
 
-Requirements on the machine that runs the loop: `git`, the `claude` CLI (for the
-`claude-local` runner), and either the `gh` CLI (logged in) or a `GITHUB_TOKEN`.
+Requirements on the machine that runs the loop: `git`, the harness CLI (`claude` and/or
+`codex`), and either the `gh` CLI (logged in) or a `GITHUB_TOKEN`.
 
 ## Quick start
 
@@ -46,17 +49,18 @@ garden new-product widget --repo ../widget --base-branch main   # any local path
 garden new-phase widget phase-01
 $EDITOR principles/00-index.md widget/product.md widget/phase-01/goals.md widget/phase-01/specs/*.md
 
-garden plan widget/phase-01            # one model call -> draft task files
-garden graph                            # look at the plan
-garden approve --all widget/phase-01    # or garden approve WID-001 WID-003
+garden plan widget/phase-01            # one model call -> task files, ready to dispatch
+garden graph                            # look at the plan (edit files, or `garden plan --draft` to gate on approval)
 
 garden serve                            # web UI at http://127.0.0.1:8765 + the scheduler loop
 # or: garden watch                      # scheduler loop only
 # or: garden tick                       # one pass, e.g. from cron
 ```
 
-Then review PRs on GitHub as usual. Comments you leave become the next revise run's
-brief; merging marks the task done and unblocks its dependents.
+Each PR gets an automated first review (acceptance criteria, correctness, scope, and a
+PR description that gives broader context with no scar tissue). Then review on GitHub as
+usual. Comments you leave become the next revise run's brief; merging marks the task done
+and unblocks its dependents. `garden prs` lists every tracked PR.
 
 This repository is itself a garden (`garden.yaml` at the root, product
 `context-garden/`). `garden status` here shows the bootstrap phase (done) and a
@@ -93,6 +97,7 @@ phase: phase-01
 depends_on: [WID-001]         # `blocked` is derived, never stored
 priority: 2                   # 1 = highest
 estimate: M
+difficulty: medium            # easy | medium | hard -> picks the model tier
 reading:                      # garden-relative files (or dirs) inlined into the brief
   - widget/phase-01/specs/rate-limits.md
 ---
@@ -124,8 +129,10 @@ Workers end with one line, `GARDEN_RESULT: {"status": "done", "summary": ..., "p
 | `garden init [dir]`, `new-product`, `new-phase`, `new-task` | scaffold |
 | `garden status` / `ls` / `show ID` / `ready` / `graph [--format mermaid]` / `validate` | read the garden |
 | `garden brief ID [--stats] [--revise]` | the exact worker prompt |
-| `garden plan product/phase [--dry-run] [--import plan.json] [--guidance ...]` | goals + specs -> draft tasks |
+| `garden plan product/phase [--dry-run] [--import plan.json] [--guidance ...] [--draft]` | goals + specs -> tasks (ready by default) |
 | `garden approve ID... ` / `--all product/phase` | draft -> ready |
+| `garden prs [product/phase]` | every tracked PR: review decision, CI, failed checks, revisions |
+| `garden review ID` | start an automated review round now |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
 | `garden take ID [--worktree]` / `finish ID --result '{...}'` | human-driven session path |
@@ -149,12 +156,40 @@ Run it however you like: `garden watch` in a terminal, `garden serve` (loop + we
 or `garden tick` from cron/launchd every minute. Ticks are idempotent and safe to overlap
 with the UIs.
 
+## Harnesses and models
+
+A harness is how the garden runs an agent CLI headlessly. `claude` and `codex` are built
+in; add any other CLI under `harnesses:` with a `command:` template. Pick one per garden,
+product or task (`harness:`). Each harness maps task **difficulty** (`easy | medium |
+hard`, assigned by the planner and editable) to a model, so cost follows difficulty:
+
+```yaml
+harnesses:
+  claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
+  codex:  {models: {easy: gpt-5-mini, medium: gpt-5, hard: gpt-5}}
+```
+
+An explicit `model:` on a task wins. Every run records harness, model, usage and cost.
+
+## Automated review
+
+With `review.enabled` (default on), every PR round gets one review run: a worker in a
+worktree of the branch, given the task brief, the PR title and body, and the diff. It
+checks acceptance criteria with evidence, correctness, scope, principle violations, and
+the PR description: it must give broader context (what and why, how it fits the phase
+goals, what was verified) and carry no scar tissue (no "as requested in review", no
+process narration, no leftover debug or commented-out code). The verdict is posted as a PR
+comment; `request_changes` feeds the revise loop, and the revise run's `pr_body` replaces
+the description. Bounded by `review.max_rounds`.
+
 ## Runners
 
-- **`claude-local`** (default): `claude -p --output-format json` in
-  `.garden/worktrees/<ID>`, detached from the scheduler. Cost and token usage from the
-  JSON result are stored per run. Configure model, max turns, permission mode and
-  timeout under `claude:` in `garden.yaml`.
+- **`local`** (default): the harness runs in `.garden/worktrees/<ID>` on this machine,
+  detached from the scheduler.
+- **`ssh`**: the harness runs on a remote host from `ssh.hosts`, each holding a clone of
+  the product repo. The run refreshes the clone, works in a worktree there, and pushes;
+  the garden opens the PR from local. Least-loaded host with capacity wins. See
+  `context-garden/phase-01-bootstrap/specs/remote-runner.md`.
 - **`manual`**: a human-driven session. `garden take ID --worktree` claims the task and
   prints the brief; `garden finish ID --result '{...}'` pushes and opens the PR through
   the same code path. The `garden-take` skill in `.claude/skills/` automates this for an
@@ -162,15 +197,16 @@ with the UIs.
   scheduler from auto-dispatching it.
 
 Adding a runner: subclass `garden.runner.base.Runner` (`start`, `collect`) and register
-it in `garden/runner/__init__.py`. A remote runner (Claude Code on the web) is on the
-phase-02 list.
+it in `garden/runner/__init__.py`.
 
 ## Web UI and TUI
 
 `garden serve` (default port 8765, localhost only): board by status with polling, task
-pages with actions (approve, dispatch, cancel, retry, mark done, reset revisions), the
-brief and run logs, the dependency graph as inline SVG with clickable nodes, a phase page
-with goals, specs, a one-click planner, and run/cost history. No build step, no CDN.
+pages with actions (approve, dispatch, review, cancel, retry, mark done, reset revisions),
+the brief, run logs and the last automated review, the dependency graph as inline SVG
+with clickable nodes, a phase page with goals, specs, every tracked PR (review decision,
+CI, failed checks, revisions), a one-click planner, and run/cost history. No build step,
+no CDN.
 
 `garden tui`: the same data in the terminal. Keys: `a` approve, `d` dispatch, `t` tick,
 `x` cancel, `e` reset to ready, `b` brief size, `l` last log, `f` toggle done/cancelled,
@@ -180,23 +216,39 @@ with goals, specs, a one-click planner, and run/cost history. No build step, no 
 
 ```yaml
 name: my-garden
-runner: claude-local        # default runner
-max_parallel: 2             # concurrent detached workers
+runner: local               # local | ssh | manual
+harness: claude             # claude | codex | a name under harnesses:
+max_parallel: 10            # concurrent detached runs (work + revise + review)
 max_attempts: 2             # work runs before failed
 max_revisions: 3            # auto revise rounds per PR before a human must step in
+timeout_minutes: 90
 tick_interval: 60           # seconds, for watch/serve
 auto_dispatch: true
 auto_revise: true
+plan:
+  auto_approve: true        # planner output is ready immediately
+review:
+  enabled: true
+  max_rounds: 2
+  max_diff_chars: 60000
+  difficulty: ""            # reviewer tier; empty = the task's
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
-claude:
-  bin: claude
-  model: ""                 # CLI default
-  max_turns: 60
-  permission_mode: acceptEdits   # or bypass (--dangerously-skip-permissions)
-  allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
-  timeout_minutes: 90
+harnesses:
+  claude:
+    bin: claude
+    max_turns: 60
+    permission_mode: acceptEdits   # or bypass (--dangerously-skip-permissions)
+    allowed_tools: [Bash, Read, Edit, Write, Glob, Grep, MultiEdit]
+    models: {easy: haiku, medium: sonnet, hard: opus}
+  codex:
+    bin: codex
+    permission_mode: full-auto     # or bypass
+    models: {}
+ssh:
+  hosts:
+    - {name: box1, host: user@box1, repos: {widget: /srv/repos/widget}, max_parallel: 4}
 github:
   use_gh: true              # gh CLI first, REST with GITHUB_TOKEN otherwise
   draft_pr: false
@@ -206,7 +258,8 @@ products:
     repo: ../widget         # path relative to the garden, or a git URL (cloned under .garden/repos)
     base_branch: main
     id_prefix: WID
-    runner: claude-local    # per-product override
+    runner: local           # per-product overrides
+    harness: claude
     # github: owner/name    # only if the origin remote isn't a github.com URL
 ```
 
@@ -214,7 +267,10 @@ products:
 
 - `garden brief ID --stats` before approving a phase. The digest + product + goals are
   paid on every task; keep them dense. Reading lists should be what the worker needs.
-- One PR per task, workers never push or poll. Retries and revisions are capped.
+- Difficulty picks the model. Most tasks in a well-specified phase are `easy` or
+  `medium`; reserve `hard` (and the expensive tier) for judgment-heavy work.
+- One PR per task, workers never push or poll. Retries, revisions and review rounds are
+  capped.
 - Revise briefs carry only the comments since the last dispatch, not the whole thread.
 - Planning is one call that emits JSON; humans edit files, not chat.
 - `garden runs` and the Runs page show cost and input/output tokens per run, so context

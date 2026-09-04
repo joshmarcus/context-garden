@@ -19,6 +19,7 @@ class ManualRunner(Runner):
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         (run.path / "brief.md").write_text(brief_text)
         run.pid = None
+        run.harness = "human"
         run.save()
 
     def collect(self, run: Run) -> dict[str, Any]:

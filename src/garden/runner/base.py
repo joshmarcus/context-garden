@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from ..harness import Harness
 from ..runs import Run
 
 
@@ -14,9 +15,14 @@ class RunnerError(Exception):
 class Runner(ABC):
     name: str = "base"
     detached: bool = True  # False = a human drives the session; completion comes via `garden finish`
+    remote: bool = False  # True = the worker pushes the branch itself; no local worktree during the run
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], harness: Harness | None = None):
         self.config = config
+        self.harness = harness
+
+    def assign(self, run: Run, active: list[Run]) -> None:  # noqa: B027
+        """Optional: pick a host / slot before start (ssh runner)."""
 
     @abstractmethod
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
@@ -24,9 +30,8 @@ class Runner(ABC):
 
     @abstractmethod
     def collect(self, run: Run) -> dict[str, Any]:
-        """After the process finished: return {"result": {...}, "usage": {...}, "cost_usd": float|None,
+        """After the process finished: {"result": {...}, "usage": {...}, "cost_usd": float|None,
         "final_text": str, "error": str}."""
 
     def doctor(self) -> list[str]:
-        """Return problems that would stop this runner from working."""
         return []

@@ -7,6 +7,7 @@ phase: phase-02-friction
 depends_on: []
 priority: 2
 estimate: M
+difficulty: medium
 reading:
   - context-garden/phase-02-friction/specs/live-output.md
   - context-garden/phase-01-bootstrap/specs/scheduler.md

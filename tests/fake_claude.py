@@ -4,7 +4,8 @@
 Reads the brief from stdin, does something to the cwd (a git worktree) depending on
 FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
-Modes: done (default) | nocommit | blocked | crash | noresult | plan
+Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad
+Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
 import json
@@ -15,6 +16,14 @@ from pathlib import Path
 
 mode = os.environ.get("FAKE_CLAUDE_MODE", "done")
 brief = sys.stdin.read()
+args = sys.argv[1:]
+model = args[args.index("--model") + 1] if "--model" in args else ""
+if "GARDEN_REVIEW:" in brief:
+    mode = os.environ.get("FAKE_CLAUDE_REVIEW", "review-ok")
+try:
+    Path("model.txt").write_text(model + "\n")
+except OSError:
+    pass
 Path(os.environ.get("FAKE_CLAUDE_BRIEF_COPY", "/dev/null")).write_text(brief)
 
 if mode == "crash":
@@ -28,6 +37,18 @@ if mode == "plan":
     ]
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(items),
                       "usage": {"input_tokens": 100, "output_tokens": 50}, "total_cost_usd": 0.01}))
+    sys.exit(0)
+
+if mode.startswith("review"):
+    if mode == "review-bad":
+        rev = {"verdict": "request_changes", "summary": "criteria not met", "description_ok": False,
+               "description_feedback": "explain why, drop 'as requested'",
+               "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test"},
+                            {"severity": "nit", "file": "", "line": None, "summary": "naming"}]}
+    else:
+        rev = {"verdict": "approve", "summary": "looks good", "description_ok": True, "description_feedback": "", "findings": []}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev),
+                      "usage": {"input_tokens": 2000, "output_tokens": 100}, "total_cost_usd": 0.02}))
     sys.exit(0)
 
 if mode in ("done", "noresult"):

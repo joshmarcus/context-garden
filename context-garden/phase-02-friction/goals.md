@@ -8,7 +8,7 @@ tool that is smoother to operate and a first read on where tokens actually go.
 
 ## Goals
 
-1. Close the loop on review: an optional automated review pass before a human looks, and
+1. Close the loop on review: make the automated review pass (shipped in bootstrap) earn its keep, and
    review comments that are addressed without a human re-dispatching anything.
 2. Make waiting visible: live worker output in the web UI, and a notification when a
    task needs a human.

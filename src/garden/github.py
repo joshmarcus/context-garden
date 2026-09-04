@@ -35,7 +35,10 @@ class PRInfo:
     review_decision: str = ""  # APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ""
     mergeable: str = ""
     checks: str = ""  # SUCCESS | FAILURE | PENDING | ""
+    failed_checks: list[str] = field(default_factory=list)
     updated_at: str = ""
+    body: str = ""
+    head_sha: str = ""
 
 
 @dataclass
@@ -146,18 +149,30 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", slug,
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup",
             )
             p = json.loads(out)
-            checks = _rollup_state(p.get("statusCheckRollup") or [])
+            rollup = p.get("statusCheckRollup") or []
             return PRInfo(
                 number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                checks=checks, updated_at=p.get("updatedAt", ""),
+                checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
+                body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
+        info.body = p.get("body") or ""
+        info.head_sha = (p.get("head") or {}).get("sha", "")
+        if info.head_sha:
+            try:
+                runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
+                rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"), "state": c.get("status")}
+                          for c in runs.get("check_runs", [])]
+                info.checks = _rollup_state(rollup)
+                info.failed_checks = _rollup_failed(rollup)
+            except GitHubError:
+                pass
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
@@ -243,6 +258,24 @@ class GitHub:
         items.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items)
 
+    def update_pr(self, slug: str, number: int, title: str = "", body: str = "") -> None:
+        if not title and not body:
+            return
+        if self.gh:
+            args = ["pr", "edit", str(number), "-R", slug]
+            if title:
+                args += ["--title", title]
+            if body:
+                args += ["--body-file", "-"]
+            self._gh(*args, input_=body if body else None)
+            return
+        payload: dict[str, str] = {}
+        if title:
+            payload["title"] = title
+        if body:
+            payload["body"] = body
+        self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json=payload)
+
     def comment(self, slug: str, number: int, body: str) -> None:
         if self.gh:
             self._gh("pr", "comment", str(number), "-R", slug, "--body-file", "-", input_=body)
@@ -250,12 +283,21 @@ class GitHub:
             self._rest("POST", f"/repos/{slug}/issues/{number}/comments", json={"body": body})
 
 
+def _rollup_failed(rollup: list[dict[str, Any]]) -> list[str]:
+    out = []
+    for c in rollup or []:
+        s = (c.get("conclusion") or c.get("state") or "").upper()
+        if s in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"):
+            out.append(str(c.get("name") or c.get("context") or c.get("workflowName") or "check"))
+    return out
+
+
 def _rollup_state(rollup: list[dict[str, Any]]) -> str:
     if not rollup:
         return ""
     states = set()
     for c in rollup:
-        s = (c.get("conclusion") or c.get("state") or "").upper()
+        s = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
         states.add(s)
     if any(s in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") for s in states):
         return "FAILURE"

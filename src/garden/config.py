@@ -14,23 +14,28 @@ DEFAULTS: dict[str, Any] = {
     "name": "garden",
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
-    "runner": "claude-local",
-    "max_parallel": 2,
+    "runner": "local",
+    "harness": "claude",
+    "max_parallel": 10,
     "max_attempts": 2,
+    "max_revisions": 3,
+    "timeout_minutes": 90,
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,
+    "plan": {"auto_approve": True},
+    "review": {
+        "enabled": True,
+        "max_rounds": 2,          # automated review rounds per PR
+        "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
+        "harness": "",            # empty = default harness
+        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard
+    },
+    "harnesses": {},
+    "ssh": {"hosts": []},
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined
         "total_max_chars": 120000,
-    },
-    "claude": {
-        "bin": "claude",
-        "model": "",
-        "max_turns": 60,
-        "permission_mode": "acceptEdits",
-        "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "MultiEdit"],
-        "timeout_minutes": 90,
     },
     "github": {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
@@ -76,7 +81,16 @@ class Config:
         return str(self.product(name).get("base_branch") or "main")
 
     def product_runner(self, name: str) -> str:
-        return str(self.product(name).get("runner") or self.get("runner"))
+        r = str(self.product(name).get("runner") or self.get("runner"))
+        return "local" if r == "claude-local" else r
+
+    def product_harness(self, name: str) -> str:
+        return str(self.product(name).get("harness") or self.get("harness") or "claude")
+
+    def harness(self, name: str):
+        from .harness import Harness
+
+        return Harness(name, dict((self.data.get("harnesses") or {}).get(name) or {}))
 
     @property
     def garden_dir(self) -> Path:

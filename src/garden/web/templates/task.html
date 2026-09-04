@@ -13,11 +13,13 @@
   <a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">View brief</a>
   {% if task.status.value == 'changes_requested' %}<a class="btn" href="/tasks/{{ task.id }}/brief?revise=1" target="_blank">View revise brief</a>{% endif %}
   {% if runs %}<a class="btn" href="/tasks/{{ task.id }}/log" target="_blank">Latest log</a>{% endif %}
+  {% if task.pr and task.status.value in ('in_review','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button>Run automated review</button></form>{% endif %}
 </div>
 <div class="grid2">
   <div>
     <div class="panel prose">{{ body_html|safe }}</div>
     {% if state.pending_feedback %}<div class="panel"><h3 style="margin-top:0">Pending review feedback</h3><div class="prose">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
+    {% if state.last_review %}<div class="panel"><h3 style="margin-top:0">Last automated review</h3><div class="prose">{{ review_md|md|safe }}</div></div>{% endif %}
     <div class="panel">
       <h3 style="margin-top:0">Runs</h3>
       <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000">{% include "_runs.html" %}</div>
@@ -30,15 +32,16 @@
       <dl class="kv">
         <dt>file</dt><dd class="mono">{{ rel }}</dd>
         <dt>phase</dt><dd><a href="/phases/{{ task.product }}/{{ task.phase }}">{{ task.product }}/{{ task.phase }}</a></dd>
-        <dt>priority</dt><dd>{{ task.priority }}{% if task.estimate %} · {{ task.estimate }}{% endif %}</dd>
+        <dt>priority</dt><dd>{{ task.priority }}{% if task.estimate %} · {{ task.estimate }}{% endif %} · {{ task.difficulty }}{% if task.model %} · model {{ task.model }}{% endif %}</dd>
         <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>reading</dt><dd>{% for r in task.reading %}<span class="mono">{{ r }}</span><br>{% else %}<span class="muted">—</span>{% endfor %}</dd>
         <dt>branch</dt><dd class="mono">{{ task.branch or '—' }}</dd>
         <dt>PR</dt><dd>{% if task.pr %}<a href="{{ task.pr }}" target="_blank">{{ task.pr }}</a>{% else %}<span class="muted">—</span>{% endif %}</dd>
-        {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}</dd>{% endif %}
+        {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}{% if state.failed_checks %} ({{ state.failed_checks|join(', ') }}){% endif %}</dd>{% endif %}
+        {% if state.last_review %}<dt>auto review</dt><dd>{{ state.last_review.verdict }} ({{ state.review_rounds }} round{{ 's' if state.review_rounds != 1 else '' }}){% if state.review_run %} · running{% endif %}</dd>{% endif %}
         <dt>attempts</dt><dd>{{ task.attempts }}{% if state.revisions %} · {{ state.revisions }} revision(s){% endif %}</dd>
-        <dt>runner</dt><dd>{{ task.runner or 'default' }}</dd>
+        <dt>runner</dt><dd>{{ task.runner or 'default' }} / {{ task.harness or 'default harness' }}</dd>
         <dt>updated</dt><dd class="mono">{{ task.updated }}</dd>
       </dl>
     </div>

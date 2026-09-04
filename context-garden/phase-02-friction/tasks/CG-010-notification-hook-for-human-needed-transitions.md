@@ -7,6 +7,7 @@ phase: phase-02-friction
 depends_on: []
 priority: 2
 estimate: M
+difficulty: easy
 reading:
   - context-garden/phase-02-friction/specs/notifications.md
 created: '2026-09-04T00:00:00+00:00'

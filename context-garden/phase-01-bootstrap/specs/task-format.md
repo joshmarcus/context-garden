@@ -18,7 +18,10 @@ reading:                 # garden-relative paths inlined into the brief (dirs al
 repo: ""                 # optional override of the product repo
 branch: garden/cg-007-add-an-automated-review-pass   # set on first dispatch
 pr: https://github.com/...                            # set when the PR is opened
-runner: ""               # optional override: claude-local | manual
+runner: ""               # optional override: local | ssh | manual
+harness: ""              # optional override: claude | codex | ...
+difficulty: medium       # easy | medium | hard -> model tier (see harness.md)
+model: ""                # explicit model override
 attempts: 0              # work runs so far
 last_dispatched_at: ""   # ISO timestamp; review feedback newer than this is "new"
 created: 2026-09-04T00:00:00+00:00

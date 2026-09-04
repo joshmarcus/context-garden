@@ -90,7 +90,7 @@ def test_ci_failure_triggers_revise(sched, fake_github):
     pr.updated_at, pr.checks = "t2", "FAILURE"
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
-    assert "CI checks are failing" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "**CI** is failing" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
 
 
 def test_crash_retries_then_fails(sched, monkeypatch):

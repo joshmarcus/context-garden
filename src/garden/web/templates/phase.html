@@ -2,15 +2,19 @@
 {% block title %}{{ phase.key }}{% endblock %}
 {% block body %}
 <h2 style="margin:0 0 6px">{{ phase.product }} / {{ phase.name }}</h2>
-<p class="muted">fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
+<p class="muted">{{ rows|selectattr('0.pr')|list|length }} PR(s) tracked; polled every tick for merges, comments and CI · fixed brief cost for this phase (rules + digest + product + goals): ~{{ '{:,}'.format(fixed_tokens) }} tokens · <a href="/?product={{ phase.product }}&phase={{ phase.name }}">board</a> · <a href="/graph?product={{ phase.product }}&phase={{ phase.name }}">graph</a></p>
 <div class="grid2">
   <div>
     <div class="panel">
       <table>
-      <tr><th>id</th><th>status</th><th>p</th><th>title</th><th>deps</th><th>pr</th></tr>
-      {% for t, eff in rows %}
-      <tr><td class="mono"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td><td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">PR</a>{% endif %}</td></tr>
-      {% else %}<tr><td colspan="6" class="muted">no tasks yet</td></tr>{% endfor %}
+      <tr><th>id</th><th>status</th><th>p</th><th>diff</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th></tr>
+      {% for t, eff, st in rows %}
+      <tr><td class="mono"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.difficulty }}</td><td>{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
+        <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% endif %}</td>
+        <td class="muted">{% if st.last_review %}auto: {{ st.last_review.verdict.replace('_', ' ') }}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
+        <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ st.checks or '' }}</td>
+        <td class="muted">{{ st.revisions or '' }}</td></tr>
+      {% else %}<tr><td colspan="10" class="muted">no tasks yet</td></tr>{% endfor %}
       </table>
       <div class="actions" style="margin-top:10px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>

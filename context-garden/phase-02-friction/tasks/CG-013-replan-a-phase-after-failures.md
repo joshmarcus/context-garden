@@ -7,6 +7,7 @@ phase: phase-02-friction
 depends_on: [CG-008]
 priority: 3
 estimate: M
+difficulty: medium
 reading:
   - principles/agent-loop.md
 created: '2026-09-04T00:00:00+00:00'

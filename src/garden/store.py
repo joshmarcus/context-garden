@@ -146,6 +146,7 @@ class Store:
         estimate: str = "",
         status: str = "draft",
         task_id: str | None = None,
+        difficulty: str = "medium",
     ) -> Task:
         from .model import Status, slugify
 
@@ -163,6 +164,7 @@ class Store:
             priority=priority,
             estimate=estimate,
             reading=list(reading or []),
+            difficulty=difficulty,
             created=now_iso(),
             updated=now_iso(),
             body=body,

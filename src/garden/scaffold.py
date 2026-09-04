@@ -83,12 +83,18 @@ def init_garden(directory: Path, name: str) -> list[Path]:
     if not cfg.exists():
         cfg.write_text(yaml.safe_dump({
             "name": name,
-            "runner": "claude-local",
-            "max_parallel": 2,
+            "runner": "local",
+            "harness": "claude",
+            "max_parallel": 10,
             "max_attempts": 2,
             "max_revisions": 3,
+            "timeout_minutes": 90,
             "tick_interval": 60,
             "auto_revise": True,
+            "plan": {"auto_approve": True},
+            "review": {"enabled": True, "max_rounds": 2},
+            "harnesses": {"claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}}},
+            "ssh": {"hosts": []},
             "products": {},
         }, sort_keys=False))
         created.append(cfg)

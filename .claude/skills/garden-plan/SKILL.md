@@ -25,6 +25,7 @@ interactive session you *are* the planner, so do the same work here and import t
      by exact title.
    - `reading` lists only the garden files the worker needs (digest/product/goals are
      automatic).
+   - `difficulty` (`easy|medium|hard`) picks the model tier; be honest, it sets the cost.
    - Body has `## Goal`, `## Context`, `## Acceptance criteria` (testable checklist),
      `## Out of scope`.
 3. Import:
@@ -33,9 +34,9 @@ interactive session you *are* the planner, so do the same work here and import t
    garden plan <product>/<phase> --import /tmp/garden-plan.json
    ```
 
-   Tasks are created as `draft`. Show the user `garden ls -p <product> --phase <phase>` and
-   `garden graph --phase <phase>`, then ask which to approve (`garden approve <ID>...` or
-   `garden approve --all <product>/<phase>`).
+   Tasks are created `ready` (dispatched on the next tick) unless `plan.auto_approve` is
+   off or you pass `--draft`. Show the user `garden ls -p <product> --phase <phase>` and
+   `garden graph --phase <phase>`.
 
 ## Replanning
 

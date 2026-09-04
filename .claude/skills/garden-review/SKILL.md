@@ -6,7 +6,8 @@ description: Review a context-garden task's pull request against its brief and a
 # garden-review
 
 Review a garden task's PR the way a careful maintainer would, with the task brief as the
-contract.
+contract. The garden already ran an automated review (its comment is on the PR); build on
+it rather than repeating it.
 
 ## Steps
 
