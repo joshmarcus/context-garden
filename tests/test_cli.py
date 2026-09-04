@@ -179,7 +179,7 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         mock_run.side_effect = side_effect
         r = run(garden, "doctor")
         assert r.exit_code == 1, r.output
-        assert "NOT" in r.output and "LOGGED IN" in r.output
+        assert "NOT LOGGED" in r.output
 
 
 def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
