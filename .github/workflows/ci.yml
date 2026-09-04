@@ -1,0 +1,18 @@
+# CI for the context-garden repository itself. The garden tool does not depend on GitHub
+# Actions; at work, an environment overlay (garden.work.yaml) points the CI analyser elsewhere.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pytest -q

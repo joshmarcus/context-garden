@@ -139,3 +139,44 @@ def local_command_check(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[str, 
     if status == "flaky" and spec.get("retry_command"):
         out["retry_command"] = str(spec["retry_command"])
     return out
+
+
+# ---- optional: GitHub Actions analyser (needs the gh CLI; enable per environment) ----
+NOISE_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*)?(##\[|\[command\]|Post job|Cleaning up)")
+
+
+def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Fetch failed GitHub Actions job logs for the PR head and keep the lines that matter.
+    Opt in from garden.yaml (or a per-environment overlay) with
+    `python: "garden.checks:github_actions_failures"`; the garden itself never assumes
+    Actions is available."""
+    import shutil
+
+    gh = shutil.which("gh")
+    slug, branch = ctx.get("repo_slug", ""), ctx.get("branch", "")
+    if not gh or not slug or not branch:
+        return {"status": "error", "summary": "gh CLI or repo/branch context missing", "details": ""}
+    proc = subprocess.run([gh, "run", "list", "-R", slug, "--branch", branch, "--limit", "10",
+                           "--json", "databaseId,name,conclusion,headSha,status"], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return {"status": "error", "summary": proc.stderr.strip()[-300:], "details": ""}
+    runs = json.loads(proc.stdout or "[]")
+    head = ctx.get("head_sha", "")
+    failed = [r for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled") and (not head or r.get("headSha") == head)]
+    if not failed:
+        return {"status": "pass", "summary": "no failed workflow runs on this head", "details": ""}
+    details: list[str] = []
+    flaky_ids: list[int] = []
+    for r in failed:
+        log = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", slug, "--log-failed"], capture_output=True, text=True, check=False).stdout
+        clean = "\n".join(ln for ln in log.splitlines() if not NOISE_RE.match(ln))
+        details.append(f"### {r.get('name')} (run {r['databaseId']})\n" + "\n".join(interesting_lines(clean, int(spec.get("max_lines", 40)))))
+        if classify_log(clean, spec.get("flaky_patterns")) == "flaky":
+            flaky_ids.append(int(r["databaseId"]))
+    if flaky_ids and len(flaky_ids) == len(failed):
+        out: dict[str, Any] = {"status": "flaky", "summary": f"{len(flaky_ids)} run(s) matched flaky patterns", "details": "\n\n".join(details)}
+        if spec.get("rerun"):
+            out["retry_command"] = " && ".join(f"{gh} run rerun {i} -R {slug} --failed" for i in flaky_ids)
+        return out
+    return {"status": "fail", "summary": f"{len(failed)} failed workflow run(s): " + ", ".join(str(r.get("name")) for r in failed),
+            "details": "\n\n".join(details)}

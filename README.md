@@ -148,6 +148,7 @@ push; the runner does.
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
 | `garden take ID [--worktree]` / `finish ID --result '{...}'` | human-driven session path |
 | `garden pr ID URL` / `cancel ID` / `retry ID` / `set-status ID STATUS` | manual state changes |
+| `garden usage [ID or product/phase] [--by-mode]` | tokens and cost per task |
 | `garden runs [ID]` / `log ID` / `doctor` | run records, cost, diagnostics |
 
 ## The scheduler
@@ -206,8 +207,9 @@ Borrowed from graph-based agent systems; all deterministic (details in
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.
 - **Checks without tokens.** `checks.pre_pr` commands (tests, lint) gate PR creation in
   the worktree; `checks.ci` scripts or Python callables analyse red CI, feed the revise
-  brief with the lines that matter, and rerun flaky jobs instead of spending a round.
-  Nothing depends on GitHub Actions: plug in whatever CI you run.
+  brief with the lines that matter, and rerun flaky jobs instead of spending a round. A
+  GitHub Actions analyser ships as an optional plugin; per-environment overlays swap it
+  for whatever CI you run elsewhere.
 
 ## Harnesses and models
 
@@ -325,6 +327,28 @@ products:
     harness: claude
     # github: owner/name    # only if the origin remote isn't a github.com URL
 ```
+
+## Environments: home and work
+
+`garden.yaml` is the shared config. Two overlays are merged on top of it, in order:
+`garden.<GARDEN_ENV>.yaml` (for example `GARDEN_ENV=work garden serve` loads
+`garden.work.yaml`) and then `garden.local.yaml`, which is per machine and gitignored.
+Dictionary keys merge; lists and scalars replace. `examples/garden.work.yaml` shows a
+work overlay that moves workers to ssh hosts, swaps the CI analyser for a Jenkins script,
+and uses a cheaper model map. `garden doctor` prints which files were loaded.
+
+This repository's own CI is GitHub Actions, and the home config points the CI analyser at
+it. The tool itself never assumes Actions exists: the analyser is an ordinary plugin, and
+an overlay replaces it with whatever CI the environment runs.
+
+## Tokens and cost per task
+
+Every run records input, output and cache tokens plus cost. `garden usage` rolls them up
+per task (with `--by-mode` to split work, revise, review, persona and trial runs);
+`garden usage ID` shows one task; `garden usage product/phase` one phase. Task pages show
+the same as a KPI row, phase pages carry tokens and cost per row, and `garden metrics`
+gives cost per difficulty tier. Trials record tokens per contender and show **$ per
+point** (cost divided by comparison score), which is the number that picks a model.
 
 ## Keeping tokens down
 

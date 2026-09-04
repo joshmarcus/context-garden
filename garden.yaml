@@ -1,4 +1,7 @@
 # context-garden configuration. README.md documents every key.
+# Environment overlays: garden.<GARDEN_ENV>.yaml (e.g. GARDEN_ENV=work -> garden.work.yaml,
+# see examples/garden.work.yaml) and then garden.local.yaml (per machine, gitignored) are
+# merged on top of this file. Dict keys merge; lists and scalars replace.
 name: context-garden
 runner: local               # default runner: local | ssh | manual
 harness: claude             # default harness: claude | codex | any name under harnesses:
@@ -37,12 +40,16 @@ checks:
       command: 'PYTHONPATH=src "$GARDEN_ROOT/.venv/bin/python" -m pytest -q -x'
     - name: lint
       command: '"$GARDEN_ROOT/.venv/bin/ruff" check src tests'
-  ci: []                    # analysers for your CI system, e.g.
+  ci:                       # analysers for the CI this environment uses; an overlay replaces the list
+    - name: actions         # home: this repo's own CI is GitHub Actions (.github/workflows/ci.yml)
+      python: "garden.checks:github_actions_failures"
+      flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "rate limit"]
+      rerun: true
+    # work (garden.work.yaml): point this at your CI instead, e.g.
     # - name: ci-log
-    #   python: "garden.checks:local_command_check"   # or your own module:function
-    #   command: "scripts/ci_failures.sh"             # fetches the failing log; exit != 0 on failure
-    #   flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "rate limit"]
-    #   retry_command: "scripts/ci_rerun.sh"          # run once instead of a revise round when flaky
+    #   python: "garden.checks:local_command_check"
+    #   command: "scripts/ci_failures.sh"
+    #   retry_command: "scripts/ci_rerun.sh"
   timeout_seconds: 600
 
 brief:

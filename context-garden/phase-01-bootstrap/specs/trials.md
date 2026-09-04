@@ -14,6 +14,8 @@ posted on every PR; loser worktrees are removed; the task moves to `in_review` (
 comparison stands in for the automated review). A single surviving contender wins by
 default; none means `failed`.
 
-Each trial is appended to `.garden/trials.jsonl` with per-contender status, score, cost
-and PR. `garden trials` (and the Trials page) shows the leaderboard: trials, wins, win
-rate, average score and average cost per contender. Use it to decide the tier-to-model map.
+Each trial is appended to `.garden/trials.jsonl` with per-contender status, score, cost,
+input and output tokens, PR, and the comparison run's own cost. `garden trials` (and the
+Trials page) shows the leaderboard: trials, wins, win rate, average score, average cost,
+**$ per point** (cost / score) and average tokens per contender. Use $ per point, not raw
+cost, to decide the tier-to-model map.

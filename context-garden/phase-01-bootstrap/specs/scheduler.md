@@ -38,8 +38,9 @@ and the event log, which hook into the same three steps.
 ## Run records
 
 `.garden/runs/<task>/<run-id>/` holds `run.json`, `brief.md`, `stdout.json`, `stderr.log`,
-`final.md`, `exit_code`. Cost and token usage are copied from the `claude -p` JSON
-result into `run.json`, so `garden runs` and the web UI can total them.
+`final.md`, `exit_code`. Cost and token usage are copied from the harness output into
+`run.json`; `RunStore.usage_for(task)` rolls them up per task and per run mode for
+`garden usage`, task pages and phase tables.
 
 ## Worktrees
 

@@ -252,6 +252,9 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(f"[bold deep_pink3]question:[/bold deep_pink3] {st['question']}\n  answer with: garden answer {t.id} \"...\"")
     if st.get("needs_human"):
         console.print(f"[bold red]needs a human:[/bold red] {st['needs_human']}  (garden retry {t.id} to resume)")
+    u = RunStore(store.config.garden_dir).usage_for(t.id)
+    if u["runs"]:
+        console.print(f"usage: {u['runs']} run(s), in {u['input_tokens']:,} / out {u['output_tokens']:,} / cache-read {u['cache_read_input_tokens']:,} tokens, ${u['cost_usd']:.2f}")
     console.print(Markdown(t.body))
     runs = RunStore(store.config.garden_dir).runs_for(t.id)
     if runs:
@@ -670,11 +673,13 @@ def trials(task_id: str | None = typer.Argument(None, help="Show one task's tria
         console.print("no trials yet (garden trial ID -c claude:sonnet -c claude:opus)")
         return
     table = Table(title="model trials")
-    for c in ("contender", "trials", "wins", "win rate", "avg score", "avg cost", "failed"):
+    for c in ("contender", "trials", "wins", "win rate", "avg score", "avg cost", "$ / point", "avg tokens in / out", "failed"):
         table.add_column(c)
     for r in rows:
         table.add_row(r["label"], str(r["trials"]), str(r["wins"]), f"{r['win_rate']:.0%}" if r["win_rate"] is not None else "",
-                      f"{r['avg_score']:.1f}" if r["avg_score"] is not None else "", f"${r['avg_cost']:.2f}" if r["avg_cost"] is not None else "", str(r["failed"]))
+                      f"{r['avg_score']:.1f}" if r["avg_score"] is not None else "", f"${r['avg_cost']:.2f}" if r["avg_cost"] is not None else "",
+                      f"${r['cost_per_point']:.3f}" if r["cost_per_point"] is not None else "",
+                      f"{r['avg_input_tokens']:,} / {r['avg_output_tokens']:,}", str(r["failed"]))
     console.print(table)
 
 
@@ -855,6 +860,55 @@ def prs(target: str | None = typer.Argument(None, help="product/phase (default: 
 
 
 @app.command()
+def usage(
+    target: str | None = typer.Argument(None, help="task id, product/phase, or nothing for everything"),
+    by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
+):
+    """Tokens and cost per task, rolled up from every run."""
+    from .runs import RunStore
+
+    store = _store()
+    rs = RunStore(store.config.garden_dir)
+    tasks = store.tasks()
+    product = phase = None
+    if target and "/" in target:
+        product, phase = _split_target(target)
+    elif target:
+        t = _task(store, target)
+        u = rs.usage_for(t.id)
+        console.print(f"[bold]{t.id}[/bold] {t.title}  runs={u['runs']}  in={u['input_tokens']:,}  out={u['output_tokens']:,}  cache-read={u['cache_read_input_tokens']:,}  cost=${u['cost_usd']:.2f}  minutes={u['minutes']}")
+        table = Table()
+        for c in ("mode", "runs", "in", "out", "cost"):
+            table.add_column(c, justify="right" if c != "mode" else "left")
+        for mode, m in sorted(u["by_mode"].items()):
+            table.add_row(mode, str(m["runs"]), f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", f"${m['cost_usd']:.2f}")
+        console.print(table)
+        return
+    per = rs.usage_by_task()
+    table = Table(title="usage per task")
+    for c in ("task", "tier", "status", "runs", "in", "out", "cache-read", "cost", "$/run"):
+        table.add_column(c, justify="right" if c not in ("task", "tier", "status") else "left")
+    tot = {"runs": 0, "in": 0, "out": 0, "cache": 0, "cost": 0.0}
+    for tid, u in sorted(per.items()):
+        t = tasks.get(tid)
+        if product and (not t or t.product != product or t.phase != phase):
+            continue
+        table.add_row(tid, t.difficulty if t else "", _style(t.status.value) if t else "", str(u["runs"]), f"{u['input_tokens']:,}",
+                      f"{u['output_tokens']:,}", f"{u['cache_read_input_tokens']:,}", f"${u['cost_usd']:.2f}",
+                      f"${u['cost_usd'] / u['runs']:.2f}" if u["runs"] else "")
+        if by_mode:
+            for mode, m in sorted(u["by_mode"].items()):
+                table.add_row(f"  {mode}", "", "", str(m["runs"]), f"{m['input_tokens']:,}", f"{m['output_tokens']:,}", "", f"${m['cost_usd']:.2f}", "")
+        tot["runs"] += u["runs"]
+        tot["in"] += u["input_tokens"]
+        tot["out"] += u["output_tokens"]
+        tot["cache"] += u["cache_read_input_tokens"]
+        tot["cost"] += u["cost_usd"]
+    table.add_row("[bold]total[/bold]", "", "", str(tot["runs"]), f"{tot['in']:,}", f"{tot['out']:,}", f"{tot['cache']:,}", f"${tot['cost']:.2f}", "")
+    console.print(table)
+
+
+@app.command()
 def review(task_id: str):
     """Start an automated review run for a task's open PR now."""
     store = _store()
@@ -917,6 +971,7 @@ def doctor():
     store = _store()
     ok = True
     console.print(f"root: {store.root}")
+    console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     console.print(f"github: {gh.describe()}" + (f" as {gh.me()}" if gh.available and gh.me() else ""))
     if not gh.available:

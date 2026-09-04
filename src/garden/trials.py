@@ -88,11 +88,15 @@ def parse_compare(text: str) -> dict[str, Any]:
 def ranking_markdown(trial: dict[str, Any]) -> str:
     rows = sorted(trial.get("contenders", []), key=lambda c: -(c.get("score") if isinstance(c.get("score"), (int, float)) else -1))
     out = [f"🏁 **Model trial for {trial.get('task')}** — winner: **{trial.get('winner')}**", "",
-           "| contender | score | cost | PR | note |", "|---|---|---|---|---|"]
+           "| contender | score | cost | tokens in / out | $ per point | PR | note |", "|---|---|---|---|---|---|---|"]
     for c in rows:
         score = c.get("score")
         cost = f"${c['cost']:.2f}" if c.get("cost") is not None else "–"
-        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {c.get('pr') or '–'} | {c.get('summary') or c.get('status') or ''} |")
+        toks = f"{int(c.get('input_tokens') or 0):,} / {int(c.get('output_tokens') or 0):,}" if c.get("input_tokens") is not None else "–"
+        per_point = f"${c['cost'] / score:.3f}" if isinstance(score, (int, float)) and score and c.get("cost") is not None else "–"
+        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {toks} | {per_point} | {c.get('pr') or '–'} | {c.get('summary') or c.get('status') or ''} |")
+    if trial.get("compare_cost") is not None:
+        out.append(f"| _comparison run_ | | ${trial['compare_cost']:.2f} | | | | |")
     if trial.get("rationale"):
         out += ["", trial["rationale"]]
     return "\n".join(out)
@@ -120,7 +124,8 @@ class TrialLog:
         return out
 
     def leaderboard(self) -> list[dict[str, Any]]:
-        agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"trials": 0, "wins": 0, "scores": [], "costs": [], "failed": 0})
+        agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"trials": 0, "wins": 0, "scores": [], "costs": [], "failed": 0,
+                                                              "input_tokens": 0, "output_tokens": 0, "cost_per_point": []})
         for t in self.read():
             for c in t.get("contenders", []):
                 a = agg[c["label"]]
@@ -129,8 +134,12 @@ class TrialLog:
                     a["failed"] += 1
                 if isinstance(c.get("score"), (int, float)):
                     a["scores"].append(float(c["score"]))
+                    if isinstance(c.get("cost"), (int, float)) and c["score"]:
+                        a["cost_per_point"].append(float(c["cost"]) / float(c["score"]))
                 if isinstance(c.get("cost"), (int, float)):
                     a["costs"].append(float(c["cost"]))
+                a["input_tokens"] += int(c.get("input_tokens") or 0)
+                a["output_tokens"] += int(c.get("output_tokens") or 0)
                 if t.get("winner") == c["label"]:
                     a["wins"] += 1
         rows = []
@@ -140,6 +149,9 @@ class TrialLog:
                 "win_rate": round(a["wins"] / a["trials"], 2) if a["trials"] else None,
                 "avg_score": round(sum(a["scores"]) / len(a["scores"]), 2) if a["scores"] else None,
                 "avg_cost": round(sum(a["costs"]) / len(a["costs"]), 4) if a["costs"] else None,
+                "avg_input_tokens": round(a["input_tokens"] / a["trials"]) if a["trials"] else 0,
+                "avg_output_tokens": round(a["output_tokens"] / a["trials"]) if a["trials"] else 0,
+                "cost_per_point": round(sum(a["cost_per_point"]) / len(a["cost_per_point"]), 4) if a["cost_per_point"] else None,
             })
         rows.sort(key=lambda r: (-(r["avg_score"] or 0), -(r["win_rate"] or 0)))
         return rows

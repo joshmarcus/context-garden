@@ -173,6 +173,16 @@ class RunStore:
     def active(self) -> list[Run]:
         return [r for r in self.all_runs() if r.status == "running"]
 
+    def usage_for(self, task_id: str) -> dict[str, Any]:
+        """Tokens and cost across every run of one task, split by run mode."""
+        return _rollup(self.runs_for(task_id))
+
+    def usage_by_task(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, list[Run]] = {}
+        for r in self.all_runs():
+            out.setdefault(r.task_id, []).append(r)
+        return {tid: _rollup(rs) for tid, rs in out.items()}
+
     def totals(self) -> dict[str, Any]:
         runs = self.all_runs()
         cost = sum(r.cost_usd or 0.0 for r in runs)
@@ -186,3 +196,32 @@ class RunStore:
             "output_tokens": out,
             "cache_read_input_tokens": cache_read,
         }
+
+
+def _rollup(runs: list[Run]) -> dict[str, Any]:
+    tot = {"runs": len(runs), "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+           "cache_creation_input_tokens": 0, "cost_usd": 0.0, "minutes": 0.0, "by_mode": {}}
+    for r in runs:
+        u = r.usage or {}
+        inp = int(u.get("input_tokens", 0) or 0)
+        outp = int(u.get("output_tokens", 0) or 0)
+        cr = int(u.get("cache_read_input_tokens", 0) or 0)
+        cc = int(u.get("cache_creation_input_tokens", 0) or 0)
+        cost = float(r.cost_usd or 0.0)
+        tot["input_tokens"] += inp
+        tot["output_tokens"] += outp
+        tot["cache_read_input_tokens"] += cr
+        tot["cache_creation_input_tokens"] += cc
+        tot["cost_usd"] += cost
+        tot["minutes"] += r.elapsed_minutes() if r.finished_at else 0.0
+        m = tot["by_mode"].setdefault(r.mode, {"runs": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+        m["runs"] += 1
+        m["input_tokens"] += inp
+        m["output_tokens"] += outp
+        m["cost_usd"] += cost
+    tot["cost_usd"] = round(tot["cost_usd"], 4)
+    tot["minutes"] = round(tot["minutes"], 1)
+    tot["total_tokens"] = tot["input_tokens"] + tot["output_tokens"] + tot["cache_read_input_tokens"] + tot["cache_creation_input_tokens"]
+    for m in tot["by_mode"].values():
+        m["cost_usd"] = round(m["cost_usd"], 4)
+    return tot

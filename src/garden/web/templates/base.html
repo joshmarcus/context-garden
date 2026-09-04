@@ -202,7 +202,7 @@ details[open] > summary::before { content:"▾ "; }
     </div>
   </div>
   <div class="foot">
-    <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick {{ last_tick[11:19] }}Z{% endif %}</span>
+    <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick {{ last_tick[11:19] }}Z{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>

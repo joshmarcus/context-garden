@@ -108,6 +108,7 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
             "last_tick": hub.last_tick,
             "products": s.products(),
             "inbox_count": len(items),
+            "env": s.config.env,
             "running": running_now(s),
             "totals": RunStore(s.config.garden_dir).totals(),
             **kw,
@@ -179,11 +180,12 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
         st = State(s.config.garden_dir / "state.json").get(t.id)
         body, log = _split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
+        usage = RunStore(s.config.garden_dir).usage_for(t.id)
         from ..personas import DEFAULT_PERSONAS, list_personas
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
-            task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack),
+            task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), state=st, body_html=render_md(body),
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
             discovered=[x for x in tasks.values() if x.discovered_from == t.id],
@@ -284,13 +286,14 @@ def create_app(store: Store, watch: bool = False) -> FastAPI:
 
         reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
         phase_events = [e for e in EventLog(s.config.garden_dir / "events.jsonl").read() if e.get("task") in phase_tasks]
+        usage = RunStore(s.config.garden_dir).usage_by_task()
         in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             burnup=burnup_svg(phase_events, len(in_scope)), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=sched.spent_for(ph.key), metrics=m,
-            rows=[(t, effective_status(t, tasks, stack), state.get(t.id)) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {})) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed.tokens if fixed else 0,
         ))
 

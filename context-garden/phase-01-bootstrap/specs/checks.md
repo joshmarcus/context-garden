@@ -24,5 +24,13 @@ Built in helpers for writing analysers: `garden.checks:local_command_check` runs
 command of yours (e.g. a script that fetches the failing job log from your CI system)
 and turns its output into a result using `interesting_lines` (keeps error-looking lines)
 and `classify_log` (`flaky` when `flaky_patterns` match), returning `retry_command` when
-configured. The garden does not depend on GitHub Actions or any particular CI system.
-`garden check ID [--stage ci]` runs the checks by hand.
+configured. `garden.checks:github_actions_failures` is an optional analyser for GitHub Actions (needs
+`gh`); enable it only in environments that have Actions, via `garden.yaml` or an overlay.
+The garden does not depend on any particular CI system. `garden check ID [--stage ci]`
+runs the checks by hand.
+
+## Environment overlays
+
+`Config.load` merges `garden.yaml`, then `garden.<GARDEN_ENV>.yaml`, then
+`garden.local.yaml` (gitignored). Dicts merge, lists and scalars replace, so an overlay
+can swap the whole `checks.ci` list or the ssh host list without touching the shared file.

@@ -41,6 +41,14 @@
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
 <div id="trial-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/trial" class="actions"><span class="muted">Contenders (harness:model):</span><input type="text" name="note" placeholder="claude:sonnet, claude:opus" style="width:300px"><button class="primary">Start trial</button></form></div>
 
+{% if usage.runs %}
+<div class="kpis">
+  <div class="kpi"><div class="v">${{ '%.2f' % usage.cost_usd }}</div><div class="l">cost across {{ usage.runs }} run{{ 's' if usage.runs != 1 else '' }}</div></div>
+  <div class="kpi"><div class="v">{{ '{:,}'.format(usage.input_tokens) }}</div><div class="l">input tokens</div></div>
+  <div class="kpi"><div class="v">{{ '{:,}'.format(usage.output_tokens) }}</div><div class="l">output tokens</div></div>
+  <div class="kpi"><div class="v">{{ '{:,}'.format(usage.cache_read_input_tokens) }}</div><div class="l">cache reads · {{ usage.minutes }} min</div></div>
+</div>
+{% endif %}
 <div class="grid2">
   <div class="stack">
     <div class="panel prose">{{ body_html|safe }}</div>
@@ -48,6 +56,7 @@
     {% if state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
     {% if discovered %}<div class="panel"><div class="eyebrow">Discovered work</div><ul style="margin:6px 0 0;padding-left:18px">{% for d in discovered %}<li><a href="/tasks/{{ d.id }}" class="id">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
+    {% if usage.by_mode %}<div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>in</th><th>out</th><th>cost</th></tr>{% for mode, m in usage.by_mode.items()|sort %}<tr><td>{{ mode }}</td><td>{{ m.runs }}</td><td>{{ '{:,}'.format(m.input_tokens) }}</td><td>{{ '{:,}'.format(m.output_tokens) }}</td><td>${{ '%.2f' % m.cost_usd }}</td></tr>{% endfor %}</table></div>{% endif %}
     <div class="panel"><div class="eyebrow">Runs</div>
       <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000" style="margin-top:6px">{% include "_runs.html" %}</div>
     </div>

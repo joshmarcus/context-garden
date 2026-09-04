@@ -1102,6 +1102,8 @@ class Scheduler:
         run.cost_usd = collected.get("cost_usd")
         run.error = collected.get("error") or ""
         c["cost"] = run.cost_usd
+        c["input_tokens"] = int((run.usage or {}).get("input_tokens", 0) or 0)
+        c["output_tokens"] = int((run.usage or {}).get("output_tokens", 0) or 0)
         self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
                          status=str(run.result.get("status") or ("error" if run.error else "no_result")), cost_usd=run.cost_usd, usage=run.usage)
         result = run.result
@@ -1165,7 +1167,7 @@ class Scheduler:
         trial["compare_cost"] = compare_cost
         record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": winner["label"], "rationale": trial["rationale"],
                   "compare_cost": compare_cost,
-                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "score", "cost", "pr", "summary", "note")} for c in trial["contenders"]]}
+                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "score", "cost", "input_tokens", "output_tokens", "pr", "summary", "note")} for c in trial["contenders"]]}
         self.trials.record(record)
         md = ranking_markdown({"task": task.id, **record})
         slug = self.slug_for(task)

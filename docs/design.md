@@ -100,6 +100,13 @@ be the thing that spends money while nobody is watching.
 - **Personas**: a markdown file under `personas/`.
 - **Everything else is a markdown file** the planner and the briefs pick up.
 
+## Environments
+
+One shared `garden.yaml`, plus `garden.<env>.yaml` chosen by `GARDEN_ENV` and a
+gitignored `garden.local.yaml`. Home can use GitHub Actions and local workers; work can
+use ssh hosts and a different CI analyser, from the same repository. The tool never
+assumes a CI system; every CI-specific piece is a plugin named in config.
+
 ## Non-goals
 
 Hosted or multi-user operation, automatic merging, and being a general workflow engine.

@@ -56,14 +56,29 @@ DEFAULTS: dict[str, Any] = {
 class Config:
     root: Path
     data: dict[str, Any] = field(default_factory=dict)
+    sources: list[str] = field(default_factory=list)
+    env: str = ""
 
     @classmethod
-    def load(cls, root: Path) -> Config:
-        p = root / CONFIG_NAME
-        raw: dict[str, Any] = {}
-        if p.exists():
-            raw = yaml.safe_load(p.read_text()) or {}
-        return cls(root=root, data=_merge(DEFAULTS, raw))
+    def load(cls, root: Path, env: str | None = None) -> Config:
+        """garden.yaml, then garden.<env>.yaml (env from GARDEN_ENV, e.g. work/home), then
+        garden.local.yaml (per machine, gitignored). Later files override earlier keys;
+        dict values merge, lists and scalars replace."""
+        import os
+
+        env = os.environ.get("GARDEN_ENV", "") if env is None else env
+        data = dict(DEFAULTS)
+        sources: list[str] = []
+        names = [CONFIG_NAME] + ([f"garden.{env}.yaml"] if env else []) + ["garden.local.yaml"]
+        for name in names:
+            p = root / name
+            if p.exists():
+                raw = yaml.safe_load(p.read_text()) or {}
+                if not isinstance(raw, dict):
+                    raise ValueError(f"{name}: top level must be a mapping")
+                data = _merge(data, raw)
+                sources.append(name)
+        return cls(root=root, data=data, sources=sources, env=env)
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data

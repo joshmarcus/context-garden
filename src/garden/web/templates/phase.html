@@ -11,14 +11,16 @@
     <div class="panel"><div class="eyebrow">Progress</div><h3>Merged against scope</h3>{{ burnup|safe }}</div>
     <div class="panel">
       <table>
-      <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th></tr>
-      {% for t, eff, st in rows %}
+      <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>tokens</th><th>cost</th></tr>
+      {% for t, eff, st, u in rows %}
       <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="pill s-{{ eff }}">{{ eff.replace('_',' ') }}</span></td><td>{{ t.priority }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
         <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% if st.pr_draft %} <span class="badge">draft</span>{% endif %}{% endif %}</td>
         <td class="muted">{% if st.last_review %}auto: {{ st.last_review.verdict.replace('_', ' ') }}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
         <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ (st.checks or '').lower() }}</td>
-        <td class="muted">{{ st.revisions or '' }}</td></tr>
-      {% else %}<tr><td colspan="10" class="faint">no tasks yet</td></tr>{% endfor %}
+        <td class="muted">{{ st.revisions or '' }}</td>
+        <td class="muted mono" title="input / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
+        <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
+      {% else %}<tr><td colspan="12" class="faint">no tasks yet</td></tr>{% endfor %}
       </table>
       <div class="actions" style="margin-top:12px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>

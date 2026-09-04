@@ -110,9 +110,11 @@ def init_garden(directory: Path, name: str) -> list[Path]:
         digest.write_text(DIGEST_TEMPLATE)
         created.append(digest)
     gi = directory / ".gitignore"
-    if not gi.exists() or ".garden/" not in gi.read_text():
+    existing = gi.read_text() if gi.exists() else ""
+    missing = [line for line in (".garden/", "garden.local.yaml") if line not in existing]
+    if missing:
         with gi.open("a") as f:
-            f.write(".garden/\n")
+            f.write("".join(m + "\n" for m in missing))
         created.append(gi)
     return created
 
