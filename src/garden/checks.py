@@ -101,6 +101,20 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip().splitlines()[-40:])
             if proc.returncode == 0:
                 return {"name": name, "status": "pass", "summary": "ok", "details": ""}
+            # A signalled (negative return code, e.g. killed with the server) or output-less
+            # failure did not really run to a verdict. Record it as "check did not finish" so
+            # it is never mistaken for a clean failure with no text to revise against.
+            if proc.returncode < 0 or not tail.strip():
+                if proc.returncode < 0:
+                    import signal
+
+                    try:
+                        why = f"killed by {signal.Signals(-proc.returncode).name}"
+                    except ValueError:
+                        why = f"killed by signal {-proc.returncode}"
+                else:
+                    why = f"exit {proc.returncode}, no output"
+                return _trim({"name": name, "status": "error", "summary": f"check did not finish ({why})", "details": tail})
             return _trim({"name": name, "status": "fail", "summary": f"exit {proc.returncode}", "details": tail})
         return {"name": name, "status": "error", "summary": "check has neither command nor python", "details": ""}
     except subprocess.TimeoutExpired:
