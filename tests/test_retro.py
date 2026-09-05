@@ -284,7 +284,6 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     assert not rep.errors, rep.errors
     entry = sched._retro_list()[0]
     assert entry["stage"] == "reconciling"
-    wait_for_runs(sched)
     rep = sched.tick()
     assert not rep.errors, rep.errors
     assert fake_github.created, "reconciliation never dispatched once every report landed"

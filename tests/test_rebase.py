@@ -9,7 +9,6 @@ import subprocess
 from garden.events import EventLog
 from garden.events import metrics as _metrics
 from garden.model import Status
-from tests.conftest import wait_for_runs
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -21,7 +20,6 @@ def gitc(*args, cwd):
 # ---- rule 2: a diff-unchanged rebase keeps the verdict, no review ------------
 def test_clean_rebase_keeps_verdict_and_dispatches_no_review(sched, fake_github, tmp_path):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 -> in_review with a PR (review disabled so far: no review run)
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
 
@@ -45,8 +43,9 @@ def test_clean_rebase_keeps_verdict_and_dispatches_no_review(sched, fake_github,
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
     rep = sched.tick()
 
-    # no review run was dispatched, and the caps did not move
-    assert not any(r.mode == "review" for r in sched.runs.all_runs())
+    # DM-001's rebase dispatched no review, and its caps did not move (a stacked sibling
+    # reaching in_review may get its own first review; that is not the rebase path).
+    assert not any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))
     assert "DM-001(review)" not in rep.dispatched
     st = sched.state.get("DM-001")
     assert int(st.get("review_rounds", 0)) == 1  # unchanged
@@ -82,7 +81,6 @@ def test_merge_queue_merges_head_only_each_rebased_once(sched, fake_github, tmp_
     b1, b2 = "garden/dm-001-first-task", "garden/dm-002-second-task"
 
     sched.tick()  # dispatch both (max_parallel=2)
-    wait_for_runs(sched)
     sched.tick()  # both -> in_review with PRs on main
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     assert sched.store.task("DM-002").status == Status.IN_REVIEW
