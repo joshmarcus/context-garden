@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from garden.charts import cost_stack_svg
 from garden.costs import cost_series
 from garden.model import Status, Task
 
@@ -228,3 +229,30 @@ def test_costs_page_draws_a_compaction_annotation(garden):
     page = client(garden).get("/costs?since=2026-09-05T00%3A00%3A00%2B00%3A00").text
     assert "compacted" in page
 
+
+# ---- profile_changed annotations on the chart (CG-221) -----------------------------------
+
+
+def test_cost_stack_svg_marks_a_profile_change_on_its_bucket():
+    series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
+    svg = cost_stack_svg(series, annotations=[{"at": "2026-09-05T09:15:00+00:00", "from": "economy", "to": "fast"}])
+    assert "annotation" in svg
+    assert "profile changed economy → fast" in svg
+
+
+def test_cost_stack_svg_skips_an_annotation_with_no_bar_to_mark():
+    series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
+    svg = cost_stack_svg(series, annotations=[{"at": "2020-01-01T00:00:00+00:00", "from": "economy", "to": "fast"}])
+    assert "annotation" not in svg
+
+
+def test_costs_page_shows_a_profile_change_as_an_annotation(garden):
+    from tests.test_web import client
+
+    _write_events(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work",
+         "model": "sonnet", "harness": "claude", "cost_usd": 1.0, "usage": {}},
+        {"at": "2026-09-05T09:30:00+00:00", "kind": "profile_changed", "from": "economy", "to": "fast"},
+    ])
+    page = client(garden).get("/costs?since=2026-09-05T00%3A00%3A00%2B00%3A00").text
+    assert "profile changed economy → fast" in page
