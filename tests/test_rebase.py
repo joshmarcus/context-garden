@@ -51,9 +51,10 @@ def test_clean_rebase_keeps_verdict_and_dispatches_no_review(sched, fake_github,
     st = sched.state.get("DM-001")
     assert int(st.get("review_rounds", 0)) == 1  # unchanged
     assert st["last_review"]["verdict"] == "approve"  # verdict kept
+    # The verdict-kept fact rides on the rebase event, not the log prose, so this asserts on
+    # the event and the wording of the log line can change freely (CG-204).
     evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
     assert any(e.get("diff_unchanged") is True and e.get("verdict_kept") is True for e in evs)
-    assert any("rebased; diff unchanged; verdict kept" in ln for ln in sched.store.task("DM-001").body.splitlines())
 
 
 # ---- rule 3: the merge queue keeps its head, one merge per PR ----------------

@@ -49,8 +49,9 @@ def test_all_gates_green_merges_and_reaches_done(sched, fake_github):
     sched.tick()  # the existing poll now sees MERGED and finishes the task
     done = sched.store.task("DM-001")
     assert done.status == Status.DONE
-    assert "merged by the garden" in done.body.lower()
 
+    # The "merged by the garden" fact rides on the automerged event, not the log prose, so this
+    # asserts on the event and the wording of the log line can change freely (CG-204).
     events = EventLog(sched.cfg.garden_dir / "events.jsonl").read()
     d = digest(events)
     assert [e["task"] for e in d["automerged"]] == ["DM-001"]
