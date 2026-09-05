@@ -74,6 +74,16 @@ class _TaskState(dict):
                 snaps[key] = copy.deepcopy(val)
         return val
 
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        """Like dict.get, but snapshots a mutable value the same way __getitem__ does, so an
+        in-place mutation of a value read through st.get(key) is caught at save() time.
+        dict.get bypasses __getitem__ (it reads the value at the C level), which would leave
+        such a mutation invisible to save(); routing a present key back through __getitem__
+        fixes that. A missing key returns `default` and is never snapshotted."""
+        if key in self:
+            return self[key]  # __getitem__ snapshots a mutable value
+        return default
+
     def __setitem__(self, key: str, value: Any) -> None:
         super().__setitem__(key, value)
         self._written_keys.add(key)
