@@ -12,6 +12,21 @@ class GitError(Exception):
     pass
 
 
+class LeaseRejected(GitError):
+    """A `--force-with-lease` push was rejected: `origin/<branch>` no longer sits at the sha the
+    caller expected (`expected`), and now sits at `actual` (CG-220) — another writer (the merge
+    queue's rebase, an earlier revise round) pushed to the same branch meanwhile."""
+
+    def __init__(self, branch: str, expected: str, actual: str):
+        self.branch = branch
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"lease rejected on {branch}: expected origin at {expected[:12] or '(unknown)'}, "
+            f"now at {actual[:12] or '(unknown)'}"
+        )
+
+
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and proc.returncode != 0:
@@ -227,10 +242,16 @@ def _is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
     return proc.returncode == 0
 
 
-def push(worktree: Path, branch: str, force: bool = False, base: str = "") -> str:
+def push(worktree: Path, branch: str, force: bool = False, base: str = "", lease: str = "") -> str:
     """Push branch to origin. Returns a note if force-with-lease was used due to rebase detection.
 
-    When base is given and force is False, compares origin/<branch> against HEAD:
+    `lease`, when given, is the sha `origin/<branch>` is expected to still be at — the head this
+    run started from (CG-220): the push always goes as `--force-with-lease=<branch>:<lease>`, so
+    a writer that moved the branch meanwhile (another revise round, the merge queue's own rebase)
+    rejects the push with `LeaseRejected` (naming both heads) instead of silently overwriting or
+    failing with a bare "non-fast-forward". `lease` takes precedence over `force`/`base`.
+
+    Without a lease, `base` compares origin/<branch> against HEAD:
     - fast-forward (origin/<branch> is ancestor of HEAD): plain push, no note.
     - rebased (origin/<branch> not ancestor, but origin/<base> is): --force-with-lease with
       an expectation ref so we only overwrite the sha we saw; logs "rebased branch force-pushed".
@@ -240,7 +261,9 @@ def push(worktree: Path, branch: str, force: bool = False, base: str = "") -> st
         raise GitError("no origin remote to push to")
     args = ["push", "-u"]
     note = ""
-    if force:
+    if lease:
+        args.append(f"--force-with-lease={branch}:{lease}")
+    elif force:
         args.append("--force-with-lease")
     elif base:
         try:
@@ -251,8 +274,60 @@ def push(worktree: Path, branch: str, force: bool = False, base: str = "") -> st
                     note = "rebased branch force-pushed"
         except GitError:
             pass  # origin/<branch> doesn't exist yet; plain push is fine
-    git(*args, "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
+    try:
+        git(*args, "origin", f"HEAD:refs/heads/{branch}", cwd=worktree)
+    except GitError:
+        if lease:
+            git("fetch", "origin", branch, cwd=worktree, check=False)
+            try:
+                actual = git("rev-parse", f"origin/{branch}", cwd=worktree).strip()
+            except GitError:
+                actual = ""
+            raise LeaseRejected(branch, lease, actual) from None
+        raise
     return note
+
+
+def remote_head(worktree: Path, branch: str) -> str:
+    """`origin/<branch>`'s current sha, or "" when it does not exist yet (a branch never
+    pushed). Assumes a fetch already happened recently enough for the caller's purpose."""
+    try:
+        return git("rev-parse", f"origin/{branch}", cwd=worktree).strip()
+    except GitError:
+        return ""
+
+
+def sync_to_origin_head(worktree: Path, branch: str, backup_ref: str) -> list[str]:
+    """Before a revise, rebase or resume run starts (CG-220), bring `worktree` to
+    `origin/<branch>`'s head: fetch, then hard-reset onto it, so the run starts from the same
+    head any other writer already pushed (a revise dispatched moments earlier, the merge queue's
+    own rebase) instead of a stale local copy. Any commits that exist only in the worktree — a
+    killed prior run's partial progress, a hand edit — are saved to `backup_ref` first so the
+    reset never discards them silently; uncommitted edits are committed before the backup for the
+    same reason. Returns the one-line subjects of the commits that were backed up (empty when the
+    worktree already sits on origin's head, has no branch of its own on origin yet, or does not
+    exist)."""
+    if not worktree.exists() or not (worktree / ".git").exists():
+        return []
+    fetch(worktree)
+    origin_head = remote_head(worktree, branch)
+    if not origin_head:
+        return []  # nothing pushed to origin yet: nothing to sync to
+    cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=worktree).strip()
+    if cur != branch:
+        git("checkout", branch, cwd=worktree)
+    if has_uncommitted_changes(worktree):
+        commit_all(worktree, "leftover changes before syncing to origin's head")
+    local_head = git("rev-parse", "HEAD", cwd=worktree).strip()
+    if local_head == origin_head:
+        return []
+    subjects: list[str] = []
+    if not _is_ancestor(worktree, local_head, origin_head):
+        subjects = commits_between(worktree, origin_head, local_head)
+        if subjects:
+            git("branch", backup_ref, local_head, cwd=worktree)
+    git("reset", "--hard", origin_head, cwd=worktree)
+    return subjects
 
 
 def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
