@@ -43,12 +43,22 @@ def approve_phase_options(store: Store, task: Task) -> list[dict[str, Any]]:
             for ph in prod.phases if not ph.closed or ph.name == task.phase]
 
 
+def split_log(body: str) -> tuple[str, list[str]]:
+    """The body before '## Log' and its entries (each line's text, without the leading
+    '- '). Everything that reads a task's log — an Inbox card, a board row, the task page —
+    goes through this, so a bullet from Acceptance criteria or Out of scope is never mistaken
+    for a log entry."""
+    if "\n## Log" in body:
+        head, _, tail = body.partition("\n## Log")
+        lines = [ln[2:] for ln in tail.strip().splitlines() if ln.startswith("- ")]
+        return head, lines
+    return body, []
+
+
 def _last_log_line(t: Task) -> str:
-    """Return the message portion of the last log entry in the task body, or ''."""
-    for ln in reversed(t.body.splitlines()):
-        if ln.startswith("- "):
-            return ln[2:].split(" ", 1)[-1]
-    return ""
+    """Return the message portion of the last entry in the task's Log section, or ''."""
+    lines = split_log(t.body)[1]
+    return lines[-1].split(" ", 1)[-1] if lines else ""
 
 
 def _age(iso: str) -> str:

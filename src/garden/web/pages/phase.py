@@ -12,11 +12,12 @@ from fastapi.responses import HTMLResponse
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...graph import effective_status
+from ...inbox import split_log
 from ...plants import plant_info
 from ...runs import RunStore
 from ...scheduler import State
 from ...trials import TrialLog
-from ..common import Site, _split_log, render_md, tier_rows
+from ..common import Site, render_md, tier_rows
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -61,7 +62,7 @@ def register(app: FastAPI, site: Site) -> None:
 
             merged_rows = [{"t": t, "number": t.pr.rsplit("/", 1)[-1], "merged": (summary["done_at"].get(t.id) or "")[:10]}
                            for t in ph.tasks if t.pr and t.status.value == "done"]
-            unmerged_rows = [{"t": t, "why": (_split_log(t.body)[1] or ["closed unmerged"])[-1]}
+            unmerged_rows = [{"t": t, "why": (split_log(t.body)[1] or ["closed unmerged"])[-1]}
                              for t in ph.tasks if t.pr and t.status.value != "done"]
             review_heads = []
             for p in reviews:

@@ -72,6 +72,74 @@ def test_draft_card_shows_attempts_and_last_log(garden: Path, tmp_path: Path):
     assert "attempt 2 failed" in item["last_log"]
 
 
+def test_fresh_draft_shows_no_log_fragment(garden: Path):
+    """CG-195: a task with no '## Log' section yet (a fresh draft, never approved or run)
+    must never surface a bullet from Acceptance criteria or Out of scope as its last log
+    line — the Inbox card's `why` and `last_log` read only the Log section."""
+    from garden.scaffold import render_task_body
+
+    task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"
+    task_path.write_text(textwrap.dedent("""\
+        ---
+        id: DM-001
+        title: First task
+        status: draft
+        depends_on: []
+        priority: 1
+        reading: []
+        created: '2026-01-01T00:00:00+00:00'
+        updated: '2026-01-01T00:00:00+00:00'
+        ---
+
+        """) + render_task_body("Ship it", "Nothing special.", ["Tests cover the new behavior"]))
+    store = _store(garden)
+    items = build_inbox(store, _sched(garden))
+    approve = [i for i in items if i["group"] == "approve" and i["task"] == "DM-001"]
+    assert approve, "DM-001 should appear in approve group"
+    item = approve[0]
+    assert item["last_log"] == ""
+    assert "]" not in item["why"]
+    assert "Tests cover" not in item["why"]
+
+
+def test_last_log_line_ignores_acceptance_criteria_bullets(garden: Path):
+    """CG-195: when Acceptance criteria's checklist bullet is the last '- ' line before any
+    '## Log' section, it must not be mistaken for a log entry (the '] Tests cover ...'
+    fragment seen on the Inbox)."""
+    task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"
+    task_path.write_text(textwrap.dedent("""\
+        ---
+        id: DM-001
+        title: First task
+        status: draft
+        depends_on: []
+        priority: 1
+        reading: []
+        created: '2026-01-01T00:00:00+00:00'
+        updated: '2026-01-01T00:00:00+00:00'
+        ---
+
+        ## Goal
+
+        Ship it.
+
+        ## Acceptance criteria
+
+        - [ ] Tests cover the new behavior
+
+        ## Out of scope
+
+        Nothing else changes.
+        """))
+    store = _store(garden)
+    items = build_inbox(store, _sched(garden))
+    approve = [i for i in items if i["group"] == "approve" and i["task"] == "DM-001"]
+    assert approve
+    item = approve[0]
+    assert item["last_log"] == ""
+    assert "] Tests cover" not in item["why"]
+
+
 def test_retrying_group_for_ready_task_with_prior_failure(garden: Path):
     """ready task with attempts>0 appears in retrying group, not approve group."""
     task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"

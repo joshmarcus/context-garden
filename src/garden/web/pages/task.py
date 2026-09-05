@@ -11,11 +11,11 @@ from ...brief import build_brief
 from ...criteria import parse_criteria, reconcile, worker_verified
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
-from ...inbox import approve_phase_options, attention_view
+from ...inbox import approve_phase_options, attention_view, split_log
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
-from ..common import Site, _split_log, render_md
+from ..common import Site, render_md
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -34,7 +34,7 @@ def register(app: FastAPI, site: Site) -> None:
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
-        _, log = _split_log(t.body)
+        _, log = split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
         usage = rs.usage_for(t.id)
         initial_stdout = latest_run.stdout_events() if latest_run else []
