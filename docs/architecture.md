@@ -421,8 +421,11 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
 `Scheduler` (`dispatch`, `answer`, `triage`, `cancel`, `retry`, `start_trial`,
 `dispatch_persona_*`, `tick`) and render.
 
-- **CLI** (`cli.py`, Typer): every operation, scriptable; `garden inbox` and `garden
-  digest` are the text versions of the home page.
+- **CLI** (`cli/`, Typer): every operation, scriptable; `garden inbox` and `garden
+  digest` are the text versions of the home page. Split by command family, one module
+  each — `scaffold`, `views`, `state`, `loop`, `planning`, `diagnostics` — over a shared
+  `common` (the `app`, the consoles and the store/task/target helpers); `__init__`
+  imports them so their `@app.command()` decorators register and re-exports `app`/`main`.
 - **Web** (`web/`, FastAPI and Jinja templates): the Inbox, Board, Trellis, Timeline,
   Trials, Runs, task and phase pages. `web/app.py` builds the app and the template
   environment; each page family under `web/pages/` and each action module under
