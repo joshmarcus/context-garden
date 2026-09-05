@@ -40,6 +40,7 @@ from .human import HumanMixin
 from .persona import PersonaMixin
 from .poll import PollMixin
 from .reap import ReapMixin
+from .rebase import RebaseMixin
 from .report import TickReport
 from .retro import RetroMixin
 from .review import ReviewMixin
@@ -49,13 +50,14 @@ from .upgrades import UpgradeMixin
 
 __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "_TaskState"]
 
-WORKER_MODES = frozenset({"work", "revise", "resume", "trial"})  # count against max_parallel
+WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
 
 
 class Scheduler(
     BudgetMixin,
     ReapMixin,
+    RebaseMixin,
     FenceMixin,
     DiscoveredMixin,
     ReviewMixin,
@@ -284,6 +286,11 @@ class Scheduler(
                 except Exception as e:  # noqa: BLE001
                     rep.errors.append(f"{t.id}: poll failed: {e}")
                     self.log(f"{t.id}: poll failed: {e}")
+        try:
+            self._run_merge_queue(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"merge queue failed: {e}")
+            self.log(f"merge queue failed: {e}")
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():

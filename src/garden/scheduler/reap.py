@@ -425,7 +425,9 @@ class ReapMixin:
             if self._handle_failed_checks(task, run, worktree, branch, base, failed, rep, cost) != "pass":
                 return
         # Save hashes only after the round reaches the PR; failed pre-PR rounds are not recorded.
-        if diff_h is not None:
+        # A rebase round is the exception: `_rebase_review_or_keep` must compare the new diff
+        # against the reviewed hash before it is overwritten, so it owns `last_diff_hash`.
+        if diff_h is not None and run.mode != "rebase":
             st["last_diff_hash"] = diff_h
         if body_h is not None:
             st["last_pr_body_hash"] = body_h
@@ -453,7 +455,7 @@ class ReapMixin:
                 body = str(result.get("pr_body") or "")
                 title = str(result.get("pr_title") or "")
                 st["pr_draft"] = bool(existing.is_draft)
-                if run.mode in ("revise", "resume"):
+                if run.mode in ("revise", "resume", "rebase"):
                     try:
                         self.github.update_pr(slug, existing.number, title=title, body=body)
                         pr_comment = str(result.get("pr_comment") or "").strip()
@@ -493,7 +495,12 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} -> in_review (PR failed)")
             return
         self._record_friction(task, run, result)
-        self._maybe_review(task, run, rep)
+        if run.mode == "rebase":
+            # A resolved rebase keeps the verdict when it did not change the diff; only a
+            # resolution that altered the tree is reviewed again (see rule 2).
+            self._rebase_review_or_keep(task, run, base, rep)
+        else:
+            self._maybe_review(task, run, rep)
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))

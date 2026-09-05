@@ -20,10 +20,19 @@ class DispatchMixin:
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         max_rev = int(self.cfg.get("max_revisions", 3))
+        # Rebase rounds go first: they are the cheapest work and they unblock a merge. A rebase
+        # round has its own counter and is not bounded by max_revisions.
         queue: list[tuple[Task, str]] = [
+            (t, "rebase") for t in tasks.values()
+            if t.status == Status.CHANGES_REQUESTED
+            and self.state.get(t.id).get("rebase_pending")
+            and not self.state.get(t.id).get("needs_human")
+        ]
+        queue += [
             (t, "revise") for t in tasks.values()
             if t.status == Status.CHANGES_REQUESTED
             and self.state.get(t.id).get("pending_feedback")
+            and not self.state.get(t.id).get("rebase_pending")
             and not self.state.get(t.id).get("needs_human")
             and int(self.state.get(t.id).get("revisions", 0)) < max_rev
         ]
@@ -76,6 +85,8 @@ class DispatchMixin:
             elif t.id in ready_ids:
                 continue  # a work run is dispatchable (slots/pause aside)
             elif t.status == Status.CHANGES_REQUESTED:
+                if st.get("rebase_pending"):
+                    continue  # a rebase run is dispatchable (its own queue, no feedback needed)
                 has_fb = bool(str(st.get("pending_feedback") or "").strip())
                 under_cap = int(st.get("revisions", 0)) < max_rev
                 if has_fb and under_cap:
@@ -126,6 +137,7 @@ class DispatchMixin:
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
         revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
+        easy_tier = revise_easy or mode == "rebase"
         if mode == "revise":
             from ..suggestions import pending_suggestions
 
@@ -145,12 +157,19 @@ class DispatchMixin:
                     commits_ahead = commits_log.strip().split("\n")
             except gitops.GitError:
                 pass
-        brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
-        text = prompt_override or brief.text
+        if mode == "rebase":
+            from ..brief import rebase_brief
+
+            text = prompt_override or rebase_brief(
+                self.store, task, branch=branch, base=base,
+                hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []))
+        else:
+            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+            text = prompt_override or brief.text
         run = self.runs.new_run(task.id, runner.name, mode=mode)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
-        run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if revise_easy else "")
-        run.difficulty = "easy" if revise_easy else task.difficulty
+        run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
+        run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
         if session_id and st.get("session_host"):
@@ -160,7 +179,7 @@ class DispatchMixin:
         if worktree and not runner.remote:
             wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
             run.worktree = str(wt)
-        if mode in ("work", "revise", "resume"):
+        if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
             self._fence_snapshot(task)
@@ -180,11 +199,15 @@ class DispatchMixin:
             st["revisions"] = int(st.get("revisions", 0)) + 1
             st["pending_feedback"] = ""
             st.pop("pending_feedback_easy", None)
+        elif mode == "rebase":
+            # A rebase round has its own counter and never touches max_revisions.
+            st["rebases"] = int(st.get("rebases", 0)) + 1
+            st.pop("rebase_pending", None)
         where = f" on {run.host}" if run.host else ""
         model = f" model={run.model}" if run.model else ""
         how = "resumed session" if session_id else "fresh session"
         stacked = f" stacked on {stack['parent_id']}" if stack else ""
-        tier_note = ", description only; easy tier" if revise_easy else ""
+        tier_note = ", description only; easy tier" if revise_easy else (", conflict only; easy tier" if mode == "rebase" else "")
         self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
         self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}, ~{run.brief_tokens} tokens)")

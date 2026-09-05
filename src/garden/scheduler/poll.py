@@ -7,7 +7,7 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import run_checks, to_feedback
-from ..github import GitHubError, PRInfo, mark_garden_comment
+from ..github import GitHubError, PRInfo
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from .report import TickReport
@@ -174,48 +174,28 @@ class PollMixin:
         return True, ""
 
     def _maybe_automerge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
-        """When automerge is on and every gate is green, merge the PR the garden opened.
-        The next poll sees it MERGED and moves the task to `done`, restacking children."""
+        """Decide whether this PR is a merge candidate. When automerge is on and every gate is
+        green, mark it (and record when it first became ready); the merge queue then rebases and
+        merges only the head of the queue, one per tick (see RebaseMixin._run_merge_queue)."""
         if task.status != Status.IN_REVIEW:
             return  # drafts, changes_requested, etc. are not the garden's to merge
         st = self.state.get(task.id)
         if not self._automerge_enabled(task):
             st.pop("automerge_blocked", None)
+            st.pop("automerge_candidate", None)
+            st.pop("automerge_ready_at", None)
             return
         ok, reason = self._automerge_gate(task, pr)
         if not ok:
+            st.pop("automerge_candidate", None)
+            st.pop("automerge_ready_at", None)
             if st.get("automerge_blocked") != reason:
                 st["automerge_blocked"] = reason
                 self.log(f"{task.id}: automerge held: {reason}")
             return
-        slug = self.slug_for(task)
-        number = self._pr_number(task)
-        if not slug or not number:
-            return
-        method = str(self._github_cfg("automerge_method", task.product, "squash"))
-        review_run = str(st.get("last_review_run") or "")
-        try:
-            self.github.merge_pr(slug, number, method=method, delete_branch=True)
-        except GitHubError as e:
-            st["automerge_blocked"] = f"merge call failed: {e}"
-            self.log(f"{task.id}: automerge call failed: {e}")
-            rep.errors.append(f"{task.id}: automerge failed: {e}")
-            return
-        rounds = int(st.get("review_rounds", 0))
         st.pop("automerge_blocked", None)
-        st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
-                            "verdict": "approve", "review_rounds": rounds}
-        self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,
-                         verdict="approve", review_rounds=rounds)
-        self.log(f"{task.id}: merged by the garden ({method}); all gates green")
-        try:
-            body = ("Merged by the garden: every gate is green — automated review approved"
-                    + (f" (run `{review_run}`)" if review_run else "")
-                    + f", checks passing, mergeable, {rounds} review round(s), under budget.")
-            self.github.comment(slug, number, mark_garden_comment(body, review_run))
-        except GitHubError as e:
-            self.log(f"{task.id}: could not post automerge comment: {e}")
-        rep.transitions.append(f"{task.id} automerged")
+        st["automerge_candidate"] = True
+        st.setdefault("automerge_ready_at", now_iso())
 
     def _cleanup(self, task: Task) -> None:
         try:
@@ -266,10 +246,11 @@ class PollMixin:
             # Fold in any commits that only exist on origin/<branch> before rebasing, so the
             # force-push below never discards them (e.g. something merged into this branch).
             ok, files = gitops.sync_remote_branch(wt, branch)
+            hunks: dict[str, str] = {}
             if ok:
-                ok, files = gitops.rebase_onto(wt, gitops.base_ref(wt, new_base))
+                ok, files, hunks = gitops.rebase_onto_capture(wt, gitops.base_ref(wt, new_base))
         except gitops.GitError as e:
-            ok, files = False, [str(e)]
+            ok, files, hunks = False, [str(e)], {}
         if ok:
             try:
                 gitops.push(wt, branch, force=True)
@@ -280,68 +261,16 @@ class PollMixin:
             self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=False)
             rep.transitions.append(f"{child.id} restacked onto {new_base}")
             return
-        st["pending_feedback"] = (
-            f"- **garden**: the parent task {parent_id} merged into `{new_base}`, but rebasing this branch onto "
-            f"`origin/{new_base}` conflicts in: {', '.join(files) or 'unknown files'}. Run `git fetch origin && git rebase origin/{new_base}`, "
-            f"resolve the conflicts keeping the intent of both sides, and continue the rebase. The runner will force-push the rebased branch. "
-            f"Then drop from the PR description anything `{new_base}` now already contains; the description must cover only what this branch still adds. "
-            f"Put the corrected description in `pr_body` (only if it must change)."
-        )
-        st.pop("pending_feedback_easy", None)
-        st["force_push"] = True
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
-        if child.status.pr_open:
-            self._transition(child, Status.CHANGES_REQUESTED, f"parent {parent_id} merged; rebase onto {new_base} conflicts ({', '.join(files)}); revise run will resolve")
-            rep.transitions.append(f"{child.id} -> changes_requested (rebase)")
-        else:
-            child.log(f"parent {parent_id} merged; rebase onto {new_base} conflicts; next run must resolve")
-            self.store.save(child)
+        # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
+        self._dispatch_rebase_agent(child, new_base, files, hunks, rep, f"parent {parent_id} merged")
 
     def _handle_pr_conflict(self, task: Task, rep: TickReport) -> None:
-        """PR is CONFLICTING with its base: try an automatic rebase; on conflict set feedback for a revise run."""
-        st = self.state.get(task.id)
+        """PR is CONFLICTING with its base: run a rebase round. Mechanical first (no model),
+        an easy-tier agent only on a real textual conflict — never a full revise run, and never
+        against `max_revisions` (see RebaseMixin.mechanical_rebase)."""
         base = self.base_for(task)
-        branch = task.branch or task.default_branch()
-        wt = self.worktree_for(task)
-        repo = self.repo_for(task)
-        try:
-            if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, base)
-            ok, files = gitops.rebase_onto(wt, gitops.base_ref(wt, base))
-        except gitops.GitError as e:
-            ok, files = False, [str(e)]
-        self.events.emit("conflict", task.id, base=base, files=files, resolved=ok)
-        if ok:
-            try:
-                gitops.push(wt, branch, force=True)
-                task.log(f"PR conflicted with {base}; rebased automatically and force-pushed")
-                self.store.save(task)
-            except gitops.GitError as e:
-                self.log(f"{task.id}: push after conflict rebase failed: {e}")
-            return
-        st["pending_feedback"] = (
-            f"- **garden**: this PR conflicts with `{base}`. "
-            f"Run `git fetch origin && git rebase origin/{base}`, "
-            f"resolve the conflicts keeping the intent of both sides"
-            + (f" (conflicting files: {', '.join(files)})" if files else "")
-            + ". The runner will force-push the rebased branch. "
-            + f"Then drop from the PR description anything `{base}` now already contains; the description must cover only what this branch still adds. "
-            + "Put the corrected description in `pr_body` (only if it must change)."
-        )
-        st.pop("pending_feedback_easy", None)
-        st["force_push"] = True
-        max_rev = int(self.cfg.get("max_revisions", 3))
-        if int(st.get("revisions", 0)) >= max_rev:
-            reason = f"PR conflicts with {base} and {max_rev} revision rounds already used"
-            self._set_needs_human(task, "revision_cap", reason)
-            self.events.emit("needs_human", task.id, stop_kind="revision_cap", reason=reason)
-            self._transition(task, Status.CHANGES_REQUESTED,
-                             f"PR conflicts with {base} ({', '.join(files) or 'unknown files'}); revision cap reached; needs a human",
-                             needs_human=True)
-        else:
-            self._transition(task, Status.CHANGES_REQUESTED,
-                             f"PR conflicts with {base} ({', '.join(files) or 'unknown files'}); revise run will rebase and resolve")
-        rep.transitions.append(f"{task.id} -> changes_requested (conflict)")
+        self.mechanical_rebase(task, base, rep, reason=f"PR conflicts with {base}")
 
     def _on_parent_closed(self, task: Task, rep: TickReport) -> None:
         for child in self.stacked_children(task):
