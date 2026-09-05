@@ -166,7 +166,9 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | suggestions | `edit_run`, `edit_attempts` | the edit run folding pending suggestions into the task body, and how many edit runs failed (capped) |
 
 Two special entries: `_phase:<product>/<phase>` records when a budget was hit, and `_aux`
-lists comparison and persona runs still in flight.
+lists comparison and persona runs still in flight. `_retro` tracks the in-flight retro,
+`_decisions` the pending duplicate/cancel cards, and `_retro_verdicts` the phase verdicts
+keyed by phase (verdict, status, who accepted it and when, and the ids of the tasks it filed).
 
 ### A run directory
 
@@ -456,7 +458,7 @@ the marker line the scheduler looks for at the end of their output.
 | `persona` | `garden persona-review`, or `review.personas` on every PR round | the persona file plus the phase's body of work, or plus one PR's description and diff | `GARDEN_PERSONA` | `retro.difficulty` (default `hard`) | a report under `<phase>/docs/reviews/`, or a PR comment; high findings can become tasks or a revise run |
 | `trial` | `garden trial` | as `work`, once per contender on its own branch | `GARDEN_RESULT` | the contender's model | each contender pushes and gets a PR |
 | `compare` | when every contender has finished | the task brief, every contender's PR description and diff | `GARDEN_COMPARE` | review tier | the winner's branch and PR become the task's; the others are closed with the ranking posted |
-| `retro` | `garden retro`, once the phase's persona reviews are in | the harvested PR-body friction, the phase's own `## Reported` friction log, friction still sitting in marked PR comments, the persona reports (including the built-in product-manager), the phase's task list with statuses, the merged PR titles | `GARDEN_RETRO` | `retro.difficulty` (default `hard`) | the retro document, the next phase's goals draft, and a draft task per ranked feature (`discovered_from: retro:<phase>`, duplicates skipped) are rendered from the verdict list and opened as a PR to the garden's own (`self`) repo |
+| `retro` | `garden retro`, once the phase's persona reviews are in | the harvested PR-body friction, the phase's own `## Reported` friction log, friction still sitting in marked PR comments, the persona reports (including the built-in product-manager), the phase's task list with statuses, the merged PR titles | `GARDEN_RETRO` | `retro.difficulty` (default `hard`) | the retro document (with a `## Verdict` section), the next phase's goals draft, and a draft task per ranked feature (`discovered_from: retro:<phase>`, duplicates skipped) are rendered from the report and opened as a PR to the garden's own (`self`) repo. The report also carries a phase **verdict** (`close`/`close_with_followups`/`reopen`): the reap files its `followups` (drafts in the next phase) and `blocking` (live tasks in this phase, `retro_blocking: true` + freeze exception), closes the phase at once for a `close`, or records a pending decision for a `reopen` (in `_retro_verdicts` state; `retro_decide` accepts/changes it, `close-phase` follows it) |
 | planner | `garden plan` | goals, specs, docs, persona reports, existing tasks | a JSON array | `hard` | task files; the only synchronous call, made from the garden root, not a worktree |
 
 ## Interfaces

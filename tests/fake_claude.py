@@ -181,7 +181,7 @@ def retro(call: Call) -> None:
     # The phase verdict: `close` by default; a test sets FAKE_RETRO_VERDICT to drive the
     # `close_with_followups` (a follow-up in the next phase) and `reopen` (a blocking task in
     # this phase) paths.
-    verdict = os.environ.get("FAKE_RETRO_VERDICT", "close")
+    verdict = os.environ.get("FAKE_CLAUDE_RETRO_VERDICT", "close")
     followups, blocking = [], []
     if verdict == "close_with_followups":
         followups = [{"title": "Document the retro verdict flow", "difficulty": "easy", "priority": 2,
