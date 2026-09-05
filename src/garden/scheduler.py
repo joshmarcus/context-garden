@@ -2814,6 +2814,17 @@ class Scheduler:
             self._transition(task, Status.CHANGES_REQUESTED, note)
             self.state.save()
             return
+        run = self.runs.latest(task.id)
+        if run and run.status == "running":
+            # The task is being reset out from under its own active run (e.g. a human
+            # retries a task whose worker already finished but the next tick has not
+            # reaped it yet). Close the run now — once the task leaves RUNNING, nothing
+            # else will reap it, and it would otherwise sit "active" and claim a worker
+            # slot forever.
+            run.kill()
+            run.status = "cancelled"
+            run.finished_at = now_iso()
+            run.save()
         task.attempts = 0
         if task.status == Status.RUNNING:
             # Abandoning a live run for a fresh one: cancel it so its slot frees up. A run
