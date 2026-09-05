@@ -206,6 +206,7 @@ class DispatchMixin:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
         st.pop("needs_human", None)

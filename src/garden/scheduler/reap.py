@@ -635,10 +635,8 @@ class ReapMixin:
         if run.mode == "work":
             task.attempts = max(0, task.attempts - 1)
         harness_name = run.harness or ""
-        reason = f"{kind} limit hit on {harness_name or 'the harness'}"
-        if harness_name:
-            self.pause_harness(harness_name, reason, run_id=run.run_id)
-        note = f"environment stop ({kind}): {reason}; not counted as an attempt"
+        self._pause_for_env_error(run, collected)
+        note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
         if harness_name:
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
 

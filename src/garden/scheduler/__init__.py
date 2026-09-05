@@ -148,6 +148,13 @@ class Scheduler(
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         return get_runner(name, cfg, harness)
 
+    def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
+        """The harness `runner_for(task, ..., harness_name)` would resolve to, without
+        building a runner: an explicit name wins, else the task's own, else the product's
+        default. Used to check `is_harness_paused` before a dispatch that does not need a
+        runner yet (a review/persona batch still queued)."""
+        return harness_name or task.harness or self.cfg.product_harness(task.product)
+
     def model_for(self, task: Task, runner: Runner, difficulty: str = "") -> str:
         if runner.harness is None:
             return ""

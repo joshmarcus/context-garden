@@ -16,7 +16,9 @@ whether it commits, and how its final message differs from a plain "done". Add a
 adding a row, not a branch.
 
 Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no output, no exit)
-       | quota (an is_error result carrying the monthly spend-limit message, no commit)
+       | quota (an is_error result carrying the monthly spend-limit message, no commit; wins
+         over review/persona/compare/retro/edit/qa markers, since the account can go over
+         during any of those calls too)
        | noresult | plan | review-ok | review-bad | review-desc
        | review-rewrite (description-only review that returns description_rewrite)
        | review-approve-rewrite (approve verdict, description_ok false, with description_rewrite)
@@ -577,21 +579,25 @@ def handle(call: Call) -> int:
     """Dispatch one call to its mode; prints the harness output; returns the exit code.
     Raises Stall for a worker that never finishes."""
     mode = call.mode
-    # The brief's marker decides the kind of run, whatever FAKE_CLAUDE_MODE says.
-    if "GARDEN_REVIEW:" in call.brief:
-        mode = call.env.get("FAKE_CLAUDE_REVIEW", "review-ok")
-    if "GARDEN_COMPARE:" in call.brief:
-        mode = "compare"
-    if "GARDEN_PERSONA:" in call.brief:
-        mode = "persona"
-    if "GARDEN_RETRO:" in call.brief:
-        mode = "retro"
-    if "GARDEN_KICKOFF:" in call.brief:
-        mode = "kickoff"
-    if "GARDEN_EDIT:" in call.brief:
-        mode = "edit"
-    if "GARDEN_QA:" in call.brief:
-        mode = "qa"
+    # The brief's marker decides the kind of run, whatever FAKE_CLAUDE_MODE says — except
+    # `quota`, which stands for the harness's own account being out, not any one round: it
+    # can hit a review, persona or comparison call exactly as it can hit a worker round, so
+    # it wins over every marker below (CG-212).
+    if mode != "quota":
+        if "GARDEN_REVIEW:" in call.brief:
+            mode = call.env.get("FAKE_CLAUDE_REVIEW", "review-ok")
+        if "GARDEN_COMPARE:" in call.brief:
+            mode = "compare"
+        if "GARDEN_PERSONA:" in call.brief:
+            mode = "persona"
+        if "GARDEN_RETRO:" in call.brief:
+            mode = "retro"
+        if "GARDEN_KICKOFF:" in call.brief:
+            mode = "kickoff"
+        if "GARDEN_EDIT:" in call.brief:
+            mode = "edit"
+        if "GARDEN_QA:" in call.brief:
+            mode = "qa"
     call.mode = mode
     try:
         (call.cwd / "model.txt").write_text(call.model + "\n")

@@ -9,6 +9,7 @@ from typing import Any
 
 from ..model import Task, now_iso
 from ..notify import notify
+from ..runs import Run
 from .report import TickReport
 
 
@@ -48,6 +49,26 @@ class QuotaMixin:
         self.state.save()
         self.events.emit("dispatch_resumed", "", harness=name, by=by)
         self.log(f"harness {name} resumed by {by}")
+
+    def _raise_if_harness_paused(self, name: str) -> None:
+        """The gate every non-queue dispatch (a fresh trial contender, a review round, a
+        persona or comparison aux run) passes through, mirroring the ready-queue's own
+        `is_harness_paused` skip in dispatch_ready: a paused harness refuses a new run
+        instead of starting one that would only hit the same account limit again."""
+        if not name or not self.is_harness_paused(name):
+            return
+        entry = self.paused_harnesses().get(name) or {}
+        reason = entry.get("reason") or "quota limit"
+        raise RuntimeError(f"{name} is paused ({reason}); dispatch resumes automatically once a probe succeeds")
+
+    def _pause_for_env_error(self, run: Run, collected: dict[str, Any]) -> None:
+        """A review, persona, comparison or trial-contender round hit the same harness-account
+        limit a work/revise round would (see reap._handle_quota_env_error for that path):
+        pause the harness so nothing else dispatches to it either, without touching the task
+        the way an ordinary failure would."""
+        kind = str(collected.get("env_kind") or "quota")
+        if run.harness:
+            self.pause_harness(run.harness, f"{kind} limit hit on {run.harness}", run_id=run.run_id)
 
     # ---- probe -----------------------------------------------------------
     def _probe_interval_minutes(self) -> float:

@@ -3,6 +3,8 @@ the task to ready without burning an attempt (CG-212); a cheap probe resumes it 
 quota hit mid-revise or mid-rebase instead returns the task to changes_requested with its
 feedback (or pending rebase) restored, since that round always has an open PR to protect."""
 
+import pytest
+
 from garden.model import Status
 
 from .conftest import statuses
@@ -139,3 +141,160 @@ def test_codex_usage_limit_is_also_a_quota_env_error(sched, fake_github, monkeyp
     assert "DM-001 -> ready (env_error: quota)" in rep.transitions
     assert sched.is_harness_paused("codex")
     assert not sched.is_harness_paused("claude")
+
+
+# ---- quota during automated review, persona and trial rounds (CG-212 revision) -----------
+# A quota hit is not special to a work/revise/rebase round: the same account limit can be
+# hit mid-review, mid-persona-review or mid-trial (the Codex-trial incident this task cites).
+# Each of these dispatches its own claude/codex call outside dispatch_ready's queue, so each
+# needs its own gate (is_harness_paused before dispatching) and its own env_error handling
+# (pause instead of an ordinary failure) — see _raise_if_harness_paused and
+# _pause_for_env_error in scheduler/quota.py.
+
+def test_automated_review_env_error_pauses_the_harness_and_retries_the_round(sched, fake_github, monkeypatch):
+    # `sched.state` is replaced by a fresh read at the start of every tick() (so the CLI, web
+    # UI or TUI can hand it work between passes): `state.get(...)` is re-fetched after each
+    # tick below rather than reused, the same way the rest of this file does.
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()  # dispatch work (normal)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.tick()  # reap work -> push -> PR opened -> review dispatched (its own call hits quota)
+    st = sched.state.get("DM-001")
+    assert st.get("review_run")
+    assert st.get("review_rounds") == 1
+    rep = sched.tick()  # reap_review collects the quota output
+    assert sched.is_harness_paused("claude")
+    st = sched.state.get("DM-001")
+    assert st.get("review_run") == ""
+    assert st.get("review_rounds") == 0  # the round dispatch counted is given back
+    pending = st.get("pending_reviews") or []
+    assert any(p.get("kind") == "review" for p in pending)
+    assert any("review paused" in t for t in rep.transitions)
+    assert statuses(sched)["DM-001"] == "in_review"  # unaffected by the harness's own trouble
+
+    # "nocommit" (not the default "done"): the probe's cwd is not a git repo, so a mode that
+    # tries to commit fails the probe itself; the review round is protected either way, since
+    # its brief carries the `GARDEN_REVIEW:` marker the fake harness matches regardless of
+    # FAKE_CLAUDE_MODE (see handle() in fake_claude.py).
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}  # probe on every tick, for the test
+    sched.tick()  # probe resumes claude; dispatch drains the pending review in the same pass
+    assert not sched.is_harness_paused("claude")
+    st = sched.state.get("DM-001")
+    assert st.get("review_run")
+    assert st.get("review_rounds") == 1
+
+
+def test_configured_persona_env_error_pauses_the_harness_and_retries(sched, fake_github, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": False, "personas": ["user"], "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()  # dispatch work (normal)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    rep = sched.tick()  # reap work -> push -> PR opened -> persona dispatched (its own call hits quota)
+    assert "DM-001(persona:user)" in rep.dispatched
+    rep2 = sched.tick()  # reap_aux collects the quota output
+    assert sched.is_harness_paused("claude")
+    st = sched.state.get("DM-001")
+    pending = st.get("pending_reviews") or []
+    assert any(p.get("kind") == "persona" and p.get("name") == "user" for p in pending)
+    assert any("persona paused" in t for t in rep2.transitions)
+    assert statuses(sched)["DM-001"] == "in_review"
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")  # protects the probe; the persona
+    # round is protected by its own `GARDEN_PERSONA:` brief marker regardless
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    rep3 = sched.tick()
+    assert not sched.is_harness_paused("claude")
+    assert "DM-001(persona:user)" in rep3.dispatched
+
+
+def test_trial_contender_env_error_pauses_the_harness_and_is_redispatched_on_resume(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.start_trial(sched.store.task("DM-001"), ["claude:sonnet", "claude:opus"])
+    rep = sched.tick()  # reap_trial: both contenders hit the same account limit
+    assert sched.is_harness_paused("claude")
+    contenders = sched.state.get("DM-001")["trial"]["contenders"]
+    assert all(c["status"] == "paused" for c in contenders)
+    assert any("quota" in (c.get("note") or "") for c in contenders)
+    assert rep.dispatched == []  # not treated as an ordinary contender failure
+
+    # "nocommit" only for the probe tick: its cwd is not a git repo, so a mode that tries to
+    # commit fails the probe itself. The redispatched contenders need a real commit in their
+    # own worktree to reach a PR, so the mode reverts to the default ("done") once the probe
+    # (which lags a tick behind the contender redispatch: reap runs before harness_probe, so
+    # nothing dispatches to the still-paused harness in the probe's own tick) has run.
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    sched.tick()  # the probe resumes claude (reap already ran this tick with it still paused)
+    assert not sched.is_harness_paused("claude")
+    contenders = sched.state.get("DM-001")["trial"]["contenders"]
+    assert all(c["status"] == "paused" for c in contenders)  # redispatch waits for the next reap
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    sched.tick()  # reap_trial redispatches both contenders now that claude is up
+    contenders = sched.state.get("DM-001")["trial"]["contenders"]
+    assert all(c["status"] == "running" for c in contenders)
+
+    sched.tick()  # reap_trial finalizes the redispatched runs and starts the comparison
+    assert sched.state.get("DM-001")["trial"]["status"] == "comparing"
+
+    sched.tick()  # reap_aux collects the comparison verdict
+    trial = sched.state.get("DM-001")["trial"]
+    assert trial["status"] == "done"
+    assert trial["winner"] == "claude:opus"
+
+
+def test_trial_compare_env_error_pauses_the_harness_and_is_retried_on_resume(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    sched.start_trial(sched.store.task("DM-001"), ["claude:sonnet", "claude:opus"])
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    rep = sched.tick()  # reap_trial: both contenders finish normally, comparison dispatched (hits quota)
+    assert sched.state.get("DM-001")["trial"]["status"] == "comparing"
+    assert "DM-001(compare)" in rep.dispatched
+    rep2 = sched.tick()  # reap_aux collects the quota output
+    assert sched.is_harness_paused("claude")
+    trial = sched.state.get("DM-001")["trial"]
+    assert trial["status"] == "running"
+    assert trial["compare_paused"] is True
+    assert any("compare paused" in t for t in rep2.transitions)
+
+    # "nocommit" (not the default "done"): the probe's cwd is not a git repo. The retried
+    # comparison is protected by its own `GARDEN_COMPARE:` brief marker regardless.
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    sched.tick()  # probe resumes claude, too late for this tick's reap_trial pass
+    assert not sched.is_harness_paused("claude")
+
+    rep3 = sched.tick()  # reap_trial retries the comparison now that claude is up
+    assert "DM-001(compare)" in rep3.dispatched
+    sched.tick()  # reap_aux collects the real verdict
+    trial = sched.state.get("DM-001")["trial"]
+    assert trial["status"] == "done"
+    assert trial["winner"] == "claude:opus"
+
+
+def test_start_trial_refuses_a_paused_harness(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.tick()
+    sched.tick()  # DM-001 back to ready, claude paused
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    with pytest.raises(RuntimeError, match="paused"):
+        sched.start_trial(sched.store.task("DM-001"), ["claude:sonnet", "claude:opus"])
+
+
+def test_direct_review_and_aux_dispatch_refuse_a_paused_harness(sched, monkeypatch):
+    """A human-triggered round (`garden review`, `garden persona`, a trial's comparison)
+    gets the same refusal a fresh work/revise/rebase dispatch would, rather than starting a
+    run that can only hit the same account limit again."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.tick()
+    sched.tick()  # DM-001 back to ready, claude paused
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    task = sched.store.task("DM-001")
+    for attempt in (lambda: sched.dispatch_review(task),
+                    lambda: sched.dispatch_persona_pr(task, "security"),
+                    lambda: sched.dispatch_aux("compare", task, "brief", sched.worktree_for(task), {})):
+        with pytest.raises(RuntimeError, match="paused"):
+            attempt()
