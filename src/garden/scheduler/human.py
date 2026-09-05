@@ -8,7 +8,7 @@ from typing import Any
 from .. import gitops
 from ..brief import resume_prompt
 from ..github import GitHubError, mark_garden_comment
-from ..model import Status, Task, now_iso
+from ..model import Phase, Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
 from .state import _TaskState
@@ -246,6 +246,32 @@ class HumanMixin:
             task.log("nothing to fix; needs-human stop cleared by hand")
             self.store.save(task)
         self.state.save()
+
+    # ---- closing a phase ---------------------------------------------------
+    def close_phase(self, phase: Phase, force: bool = False, date: str = "") -> str:
+        """Close a phase: it leaves the rail and joins the herbarium. Refuses while it has open
+        tasks unless `force`. Returns the closing date written to goals.md ('' if it was
+        already closed)."""
+        import datetime as _dt
+
+        if phase.closed:
+            return ""
+        open_tasks = [t for t in phase.tasks if not t.status.terminal]
+        if open_tasks and not force:
+            ids = ", ".join(f"{t.id} ({t.status.value})" for t in open_tasks)
+            raise RuntimeError(f"{phase.key} still has {len(open_tasks)} open task(s): {ids}; finish or cancel them first")
+        date = date or _dt.date.today().isoformat()
+        self.store.set_phase_closed(phase, date)
+        self.events.emit("phase_closed", "", phase=phase.key, closed=date)
+        self.log(f"{phase.key} closed ({date})")
+        return date
+
+    def reopen_phase(self, phase: Phase) -> None:
+        if not phase.closed:
+            raise RuntimeError(f"{phase.key} is not closed")
+        self.store.set_phase_closed(phase, "")
+        self.events.emit("phase_reopened", "", phase=phase.key)
+        self.log(f"{phase.key} reopened")
 
     def finish_manual(self, task: Task, result: dict[str, Any]) -> TickReport:
         from ..runner.manual import ManualRunner

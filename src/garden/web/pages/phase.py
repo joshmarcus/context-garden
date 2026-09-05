@@ -15,7 +15,7 @@ from ...events import EventLog, metrics, phase_summary
 from ...graph import effective_status
 from ...plants import plant_info
 from ...runs import RunStore
-from ...scheduler import Scheduler, State
+from ...scheduler import State
 from ...trials import TrialLog
 from ..common import Site, _split_log, render_md, tier_rows
 
@@ -110,7 +110,7 @@ def register(app: FastAPI, site: Site) -> None:
     def herbarium(request: Request):
         s = hub.fresh()
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
-        sched = Scheduler(s, log=lambda m: None)
+        sched = hub.reader()
         entries = []
         for p in s.products():
             for ph in p.phases:

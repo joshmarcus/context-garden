@@ -388,14 +388,15 @@ def estimate_brief_tokens(store: Store, task: Task) -> tuple[int, int]:
     return (brief.fixed_tokens, brief.reading_tokens)
 
 
-def parse_result(output_text: str) -> dict:
-    """Find the trailing GARDEN_RESULT line in a worker's final message."""
+def parse_result(output_text: str, marker: str = RESULT_MARKER) -> dict:
+    """Find the trailing GARDEN_RESULT line (or another `marker` line, e.g. `GARDEN_QA:`)
+    in a worker's final message."""
     import json
 
     for line in reversed(output_text.splitlines()):
         line = line.strip()
-        if line.startswith(RESULT_MARKER):
-            payload = line[len(RESULT_MARKER) :].strip()
+        if line.startswith(marker):
+            payload = line[len(marker) :].strip()
             try:
                 data = json.loads(payload)
                 if isinstance(data, dict):

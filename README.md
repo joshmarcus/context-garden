@@ -178,6 +178,7 @@ push; the runner does.
 | `garden pr ID URL` / `cancel ID` / `retry ID` / `set-status ID STATUS` | manual state changes |
 | `garden usage [ID or product/phase] [--by-mode]` | tokens and cost per task |
 | `garden runs [ID]` / `log ID` / `doctor` | run records, cost, diagnostics |
+| `garden qa [--scripted] [--phase product/phase]` | an agent drives the loop end to end through the web app on a throwaway garden |
 
 ## The scheduler
 
@@ -310,6 +311,17 @@ step; fonts fall back to system faces when the font host is unreachable.
 `garden tui`: an Inbox tab and a Tasks tab (`i` switches). Keys: `w` answer, `y` ready
 for review, `n` send back, `a` approve, `d` dispatch, `e` continue, `x` cancel, `t` tick,
 `b` brief size, `l` last log, `f` toggle done/cancelled, `r` refresh, `q` quit.
+
+`garden qa` checks that a person can run the whole loop from the pages. It builds a
+throwaway garden (a demo product on a local git repo, fake workers that finish in a second,
+a pretend GitHub served by the same app), serves it, and has an agent drive nine flows
+through HTTP: add a task, approve, dispatch, answer a worker's question, send back with a
+note, triage, accept a nothing-to-change card, merge, close the phase. `--scripted` runs the
+flows as code with no model (a few seconds; what CI runs); without it the brief goes to the
+garden's harness and the agent also reports what confused it. A flow that cannot be
+completed makes the command exit non-zero with the step named. `--phase product/phase`
+files each finding as a friction report on that phase, with the page it was seen on and
+that page's HTML kept in the run directory (`.garden/qa/<time>/`), so the retro can read it.
 
 ## Configuration (`garden.yaml`)
 
@@ -460,4 +472,5 @@ MIT. See `LICENSE`.
 ```bash
 .venv/bin/pytest -q            # tests use tests/fake_claude.py and a local bare git remote
 .venv/bin/ruff check src tests
+.venv/bin/garden qa --scripted # the web app, end to end, on a throwaway garden (no tokens)
 ```

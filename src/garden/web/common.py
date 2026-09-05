@@ -47,10 +47,12 @@ def _flash_url(url: str, message: str, note: str = "") -> str:
 
 class Hub:
     """Shared state for request handlers: the store, a lock around scheduler passes, and
-    a log of recent tick results."""
+    a log of recent tick results. `github` is an optional stand-in for GitHub handed to
+    every scheduler the hub builds (`garden qa` serves a throwaway garden against one)."""
 
-    def __init__(self, store: Store, watch: bool):
+    def __init__(self, store: Store, watch: bool, github: Any | None = None):
         self.store = store
+        self.github = github
         self.lock = threading.Lock()
         self.events: list[dict[str, Any]] = []
         self.last_tick = ""
@@ -62,7 +64,15 @@ class Hub:
 
     def scheduler(self) -> Scheduler:
         self.store.invalidate()
-        return Scheduler(self.store, log=self._log)
+        return Scheduler(self.store, github=self.github, log=self._log)
+
+    def reader(self) -> Scheduler:
+        """A scheduler for a page to read through (budgets, inbox, limits); it logs nothing."""
+        return Scheduler(self.store, github=self.github, log=lambda m: None)
+
+    def stop(self) -> None:
+        """End the watch loop (a test or `garden qa` shutting the server down)."""
+        self._stop.set()
 
     def _log(self, msg: str) -> None:
         self.events.append({"at": now_iso(), "msg": msg})
@@ -118,7 +128,7 @@ class Site:
     def ctx(self, request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
         hub = self.hub
         s = hub.fresh()
-        sched = Scheduler(s, log=lambda m: None)
+        sched = hub.reader()
         items = build_inbox(s, sched)
         ctrl = sched.control()
         return {

@@ -10,6 +10,7 @@ context files. The garden that drives this tool lives in a separate repository:
 - Tests: `PYTHONPATH=src .venv/bin/pytest -q` (uses `tests/fake_claude.py` instead of the real `claude`); CI for this repo runs the same in `.github/workflows/ci.yml`
 - Config: `garden.yaml` + `garden.<GARDEN_ENV>.yaml` + `garden.local.yaml` (gitignored); see `examples/garden.work.yaml`
 - Lint: `.venv/bin/ruff check src tests`
+- Web app end to end: `.venv/bin/garden qa --scripted` drives the loop through the pages on a throwaway garden (no tokens; `tests/test_qa.py` runs the same)
 - Try it: `garden init my-garden && cd my-garden && garden serve` — or clone [joshmarcus/garden](https://github.com/joshmarcus/garden) to see a live garden
 - Worktrees: a task worktree has no `.venv` until its product's `setup.command` runs (the driving garden's `garden.yaml`, `setup` block); after that, always run tests as `PYTHONPATH=src .venv/bin/pytest -q` so they import this checkout's own `src/`, not wherever an editable install elsewhere happens to resolve `garden` to
 

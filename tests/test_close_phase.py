@@ -128,6 +128,23 @@ def test_friction_report_records_but_skips_draft_task_on_closed_phase(garden):
     assert not any(t.discovered_from == "" and t.title.startswith("the CLI") for t in Store(garden).tasks().values())
 
 
+def test_web_close_phase_refuses_open_tasks_then_closes(garden):
+    c = TestClient(create_app(Store(garden), watch=False))
+    assert "Close phase" in c.get("/phases/demo/p1").text
+    r = c.post("/phases/demo/p1/close", follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "still has 2 open task(s)" in page and "DM-001 (ready)" in page
+    assert not Store(garden).phase("demo", "p1").closed
+    finish_all(garden)
+    r = c.post("/phases/demo/p1/close", follow_redirects=False)
+    assert r.status_code == 303 and "flash" not in r.headers["location"]
+    assert Store(garden).phase("demo", "p1").closed
+    events = [json.loads(line) for line in (garden / ".garden" / "events.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == "phase_closed" and e["phase"] == "demo/p1" for e in events)
+    assert c.post("/phases/demo/nope/close").status_code == 404
+
+
 def test_web_plan_refuses_closed_phase(garden):
     assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
     c = TestClient(create_app(Store(garden), watch=False))

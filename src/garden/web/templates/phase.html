@@ -49,6 +49,7 @@
           <button class="primary" title="One model call: goals + specs + docs -> tasks">Plan phase</button>
         </form>
         {% if planning %}<span class="muted">{{ planning }}</span>{% endif %}
+        <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/close" style="margin-left:auto"><button class="quiet" title="Once every task is done or cancelled: the phase leaves the rail and joins the herbarium">Close phase</button></form>
       </div>
       <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/persona" class="actions" style="margin-top:10px">
         <span class="muted">Persona review of the body of work:</span>

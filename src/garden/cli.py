@@ -191,14 +191,11 @@ def _phase(store, product: str, phase: str):
 
 def _set_phase_closed(store, ph, closed: str) -> None:
     """Write or clear `closed:` in goals.md and record the event."""
-    from .events import EventLog
-
-    store.set_phase_closed(ph, closed)
-    log = EventLog(store.config.garden_dir / "events.jsonl")
+    sched = _scheduler(store)
     if closed:
-        log.emit("phase_closed", "", phase=ph.key, closed=closed)
+        sched.close_phase(ph, force=True, date=closed)
     else:
-        log.emit("phase_reopened", "", phase=ph.key)
+        sched.reopen_phase(ph)
 
 
 @app.command("close-phase")
@@ -1415,6 +1412,57 @@ def prs(target: str | None = typer.Argument(None, help="product/phase (default: 
                       f"{last.get('verdict', '')} ({s_.get('review_rounds', 0)})" if s_.get("review_rounds") else "",
                       (s_.get("last_polled") or "")[11:19], t.title[:40])
     console.print(table)
+
+
+@app.command()
+def qa(
+    scripted: bool = typer.Option(False, "--scripted", help="Drive the flows with the built-in script instead of an agent (no tokens)"),
+    phase: str = typer.Option("", "--phase", help="product/phase in this garden to file the findings on as friction reports"),
+    out: Path | None = typer.Option(None, "--out", help="Run directory (default: .garden/qa/<time> with --phase, else a temp dir)"),
+    keep: bool = typer.Option(False, "--keep", help="Keep the throwaway garden under the run directory"),
+    no_task: bool = typer.Option(False, "--no-task", help="File findings in friction.md only, no draft tasks"),
+    harness_name: str = typer.Option("", "--harness", help="Harness that plays the person (default: this garden's, or claude)"),
+    model: str = typer.Option("", "--model", help="Model for the agent (default: the harness's medium tier)"),
+    timeout: int = typer.Option(30, "--timeout", help="Minutes the agent may take"),
+    port: int = typer.Option(0, "--port", help="Port for the throwaway web app (default: any free port)"),
+):
+    """An agent drives the loop end to end through the web app on a throwaway garden: add a
+    task, approve, dispatch, answer a question, send back, triage, accept a nothing-to-change
+    card, merge, close the phase. Exits non-zero when a flow cannot be completed."""
+    import tempfile
+
+    from .harness import Harness
+    from .qa import file_findings, run_qa
+
+    store = None
+    if phase or not scripted or out is None:
+        try:
+            from .store import Store
+
+            store = Store()
+            store.tasks()
+        except (FileNotFoundError, ValueError) as e:
+            if phase:
+                err.print(f"[red]{e}[/red]")
+                raise typer.Exit(2) from None
+    product = phase_name = ""
+    if phase:
+        product, phase_name = _split_target(phase)
+        _phase(store, product, phase_name)
+    if out is None:
+        stamp = now_iso()[:19].replace(":", "-")
+        out = store.config.garden_dir / "qa" / stamp if store is not None else Path(tempfile.mkdtemp(prefix="garden-qa-"))
+    harness = None
+    if not scripted:
+        name = harness_name or (str(store.config.get("harness") or "claude") if store is not None else "claude")
+        harness = store.config.harness(name) if store is not None else Harness(name, {})
+    report = run_qa(out, scripted=scripted, harness=harness, model=model, timeout_minutes=timeout, keep=keep, port=port,
+                    log=lambda m: err.print(f"[dim]{m}[/dim]"))
+    if phase and report.findings:
+        report.filed = file_findings(store, product, phase_name, report.findings, draft_tasks=not no_task)
+    console.print(report.summary(), markup=False, highlight=False, soft_wrap=True)
+    if not report.ok:
+        raise typer.Exit(1)
 
 
 @app.command("friction-report")
