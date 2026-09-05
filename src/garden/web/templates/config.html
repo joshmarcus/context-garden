@@ -44,6 +44,26 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">garden observe</div>
+  <h3>Profile</h3>
+  <p style="color:var(--muted);margin:0 0 10px">
+    garden.yaml: <strong>{{ observe_profile_file or "(none — base observe: fields)" }}</strong>
+    {% if observe_profile_override %} · live override: <strong>{{ observe_profile_override }}</strong> (in effect){% else %} · no live override{% endif %}
+  </p>
+  <form method="post" action="/config/observe-profile" class="actions" data-autosave>
+    <label class="muted" for="observe-profile-override">live override</label>
+    <select id="observe-profile-override" name="value" onchange="this.form.requestSubmit()">
+      <option value="" {% if not observe_profile_override %}selected{% endif %}>none — uses {{ observe_profile_file or "the base observe: fields" }}</option>
+      {% for name in observe_profile_names %}
+      <option value="{{ name }}" {% if observe_profile_override == name %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <span class="autosave-mark" aria-live="polite"></span>
+  </form>
+  <p class="muted" style="margin:8px 0 0">A running <span class="mono">garden observe --follow</span> picks up the switch on its next pass, no restart.</p>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Config files loaded</div>
   <h3>Sources</h3>
   {% if sources %}
