@@ -620,6 +620,35 @@ def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "resume").exit_code != 0
 
 
+def test_take_finish_revise_and_cost(garden):
+    """CG-158: `garden take` on a changes_requested task dispatches a revise round (not a
+    fresh work round), and `garden finish --cost` records what the round cost so a manual
+    task counts toward the same cost metrics as a worker run."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    t = store.task("DM-001")
+    t.status = Status.CHANGES_REQUESTED
+    t.runner = "manual"
+    store.save(t)
+    sched = Scheduler(store)
+    sched.state.get("DM-001")["pending_feedback"] = "- fix this"
+    sched.state.save()
+
+    r = run(garden, "take", "DM-001")
+    assert r.exit_code == 0, r.output
+    run_rec = RunStore(garden / ".garden").latest("DM-001")
+    assert run_rec.mode == "revise"
+
+    r = run(garden, "finish", "DM-001", "--summary", "did it", "--cost", "2.5")
+    assert r.exit_code == 0, r.output
+    run_rec = RunStore(garden / ".garden").latest("DM-001")
+    assert run_rec.cost_usd == 2.5
+
+
 def test_init_keeps_claude_default_and_preserves_codex_instructions(tmp_path):
     from garden.config import Config
     from garden.scaffold import init_garden

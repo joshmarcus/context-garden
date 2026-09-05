@@ -217,6 +217,10 @@ class ReapMixin:
 
         worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
         if not worktree.exists():
+            # A manual run with no garden-managed worktree (the common `garden take`
+            # path): the human pushed and opened the PR themselves. There is no local
+            # tree to run pre-PR checks against, but the automated reviewer builds its
+            # own worktree from the pushed branch, so it still gets a look (CG-158).
             run.status = "done"
             run.save()
             pr = str(result.get("pr") or "")
@@ -224,6 +228,7 @@ class ReapMixin:
                 task.pr = pr
             self._transition(task, Status.IN_REVIEW, f"finished ({run.mode}): {result.get('summary', '')}{cost}")
             rep.transitions.append(f"{task.id} -> in_review")
+            self._maybe_review(task, run, rep)
             return
         try:
             if gitops.has_uncommitted_changes(worktree):

@@ -298,6 +298,48 @@ def test_audit_does_not_flag_dispatchable_changes_requested(sched, fake_github):
     assert not sched.state.get("DM-001").get("needs_human")
 
 
+def test_audit_flags_manual_task_with_a_revise_round_waiting(sched, fake_github):
+    """CG-158: a `runner: manual` task sent to changes_requested is never auto-dispatched
+    (dispatch_ready skips non-detached runners) — the stuck audit must not mistake its
+    waiting feedback for something the queue will pick up, or it rots silently with no
+    Inbox card and nothing telling anyone to `garden take` it."""
+    t = sched.store.task("DM-001")
+    t.runner = "manual"
+    t.status = Status.CHANGES_REQUESTED
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- fix this"
+    st["revisions"] = 0
+    sched.state.save()
+
+    rep = sched.tick()
+    assert rep.dispatched == []  # never auto-dispatched
+    st = sched.state.get("DM-001")
+    assert str(st.get("needs_human", "")).startswith("stuck:")
+    assert "manual" in st["needs_human"]
+
+
+def test_take_clears_a_stale_needs_human_flag(sched, fake_github):
+    """Taking a manual task that the stuck audit flagged is the human resolving the flag,
+    the same way retry/resume/answer already do: the Inbox card must not linger once a
+    fresh run is actually in flight."""
+    from garden.runner.manual import ManualRunner
+
+    t = sched.store.task("DM-001")
+    t.runner = "manual"
+    t.status = Status.CHANGES_REQUESTED
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- fix this"
+    st["revisions"] = 0
+    sched.state.save()
+    sched.tick()
+    assert sched.state.get("DM-001").get("needs_human")
+
+    sched.dispatch(sched.store.task("DM-001"), mode="revise", runner=ManualRunner({}), worktree=False)
+    assert not sched.state.get("DM-001").get("needs_human")
+
+
 def test_dispatch_ready_failure_does_not_abort_the_tick(sched, fake_github, monkeypatch):
     """CG-203: dispatch_ready is wrapped in the same guard as every other tick phase — an
     exception is logged with the phase name and the tick still runs the phases after it
