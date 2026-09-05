@@ -53,6 +53,16 @@ STAGE_WORD: dict[str, str] = {
     "wont_do": "set aside", "blocked": "seed, waiting",
 }
 
+# The sprout: the "ready" growth stage, the mark beside the wordmark in the web header
+# (`mark_svg`) and the favicon (`favicon_svg`). One copy of its path data so the three
+# places it's drawn can't drift apart.
+_SPROUT_PATHS = (
+    '<path d="M12 21 V12" stroke="var(--ink)" stroke-width="1.2" fill="none"/>'
+    '<path d="M12 13 C6 13 5 8 4 6 C9 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/>'
+    '<path d="M12 13 C18 13 19 8 20 6 C15 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/>'
+    '<path d="M6 21 H18" stroke="var(--ink)" stroke-width="1"/>'
+)
+
 DEFS = r'''
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -146,7 +156,7 @@ DEFS = r'''
 
 <!-- growth-stage glyphs: 24x24 -->
 <g id="st-seed"><ellipse cx="12" cy="13" rx="5" ry="7.5" transform="rotate(-25 12 13)" fill="var(--seed)" stroke="var(--ink)" stroke-width="1.1"/><path d="M9.5 9 c1.2 2 1.2 6 0 8" stroke="var(--ink)" stroke-width=".8" fill="none"/></g>
-<g id="st-sprout"><path d="M12 21 V12" stroke="var(--ink)" stroke-width="1.2" fill="none"/><path d="M12 13 C6 13 5 8 4 6 C9 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M12 13 C18 13 19 8 20 6 C15 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M6 21 H18" stroke="var(--ink)" stroke-width="1"/></g>
+<g id="st-sprout">''' + _SPROUT_PATHS + r'''</g>
 <g id="st-leaf"><path d="M4 20 C4 8 14 4 20 4 C20 12 14 20 4 20 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1"/><path d="M5 19 L17 7" stroke="var(--ink)" stroke-width=".7"/></g>
 <g id="st-bud"><path d="M12 22 V14" stroke="var(--ink)" stroke-width="1.2"/><path d="M12 14 C7 14 7 5 12 3 C17 5 17 14 12 14 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><path d="M12 14 C9 12 9 8 12 6 M12 14 C15 12 15 8 12 6" stroke="var(--ink)" stroke-width=".7" fill="none"/><path d="M12 14 C9 15 7 13 7 11 M12 14 C15 15 17 13 17 11" stroke="var(--ink)" stroke-width=".8" fill="none"/></g>
 <g id="st-flower"><ellipse cx="12" cy="6" rx="3" ry="5" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(72 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(144 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(216 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(288 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><circle cx="12" cy="12" r="2.6" fill="var(--ink)"/></g>
@@ -195,6 +205,21 @@ def stage_svg(status: str, size: int = 20, cls: str = "stage") -> str:
     word = STAGE_WORD.get(status, status)
     return (f'<svg class="{cls}" viewBox="0 0 24 24" width="{size}" height="{size}" role="img" aria-label="{word}">'
             f'<title>{word}</title><use href="#{sym}"/></svg>')
+
+
+def mark_svg(size: int = 18, cls: str = "mark") -> str:
+    """The sprout, reused as the mark beside the wordmark in the web header. Unlike
+    `stage_svg`/`plant_svg` it does not carry the `.stage`/`.plant` class, so `--ink` stays
+    the page's own ink rather than the pressed-specimen `--sp-ink` — the mark reads as part
+    of the header, not a specimen."""
+    return f'<svg class="{cls}" viewBox="0 0 24 24" width="{size}" height="{size}" aria-hidden="true"><use href="#st-sprout"/></svg>'
+
+
+def favicon_svg() -> str:
+    """The sprout mark as a standalone SVG document (the favicon). A favicon has no page to
+    inherit theme variables from, so `--ink` and `--leaf` are pinned to the light-theme values."""
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+            '<style>svg{--ink:#17201b;--leaf:#4f9a72}</style>' + _SPROUT_PATHS + '</svg>')
 
 
 def stage_word(status: str) -> str:
