@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
+from ..events import phase_summary
 from ..github import GitHubError
 from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
+from ..operator_spend import default_path as operator_spend_path
+from ..operator_spend import read_records as read_operator_records
+from ..operator_spend import total_cost as operator_total_cost
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -21,6 +25,7 @@ from ..retro import (
     flatten_findings,
     group_findings,
     next_phase_name,
+    numbers_section,
     parse_retro,
     persona_features,
     persona_reports,
@@ -384,8 +389,12 @@ class RetroMixin:
                                                persona_feats=persona_feats)
         persona_findings = self._persona_findings(phase, reports)
         filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product, prefix, num)
+        summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
+        operator_records = read_operator_records(operator_spend_path(self.store.root))
+        operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
+        numbers = numbers_section(summary["cost_usd"], operator_cost)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed, filed_findings=filed_findings,
-                                               difficulty=run.difficulty, model=run.model))
+                                               difficulty=run.difficulty, model=run.model, numbers=numbers))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
