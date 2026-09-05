@@ -61,6 +61,34 @@ def test_close_then_reopen(garden):
     assert run(garden, "reopen-phase", "demo/p1").exit_code == 1
 
 
+def test_approve_and_dispatch_refuse_closed_phase(garden):
+    """CG-148: a closed phase refuses approvals and dispatch too, the same way `new-task`
+    and `plan` already did -- there is no exception for a closed phase (only a frozen one
+    has one); reopen it first."""
+    assert run(garden, "new-task", "demo/p1", "Late arrival").exit_code == 0  # DM-003, draft
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+
+    r = run(garden, "approve", "DM-003")
+    assert r.exit_code == 0  # skips with a message rather than hard-failing
+    assert "closed" in r.output and "reopen-phase" in r.output
+    assert Store(garden).task("DM-003").status.value == "draft"
+
+    r = run(garden, "dispatch", "DM-001")
+    assert r.exit_code == 1 and "closed" in r.output and "reopen-phase" in r.output
+    assert Store(garden).task("DM-001").status.value == "ready"  # never dispatched
+
+
+def test_web_approve_and_dispatch_actions_refuse_closed_phase(garden):
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+    c = TestClient(create_app(Store(garden), watch=False))
+    r = c.post("/tasks/DM-001/dispatch", follow_redirects=True)
+    assert "closed" in r.text and "reopen-phase" in r.text
+
+
 def test_new_task_refuses_closed_phase_without_reopen(garden):
     assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
     r = run(garden, "new-task", "demo/p1", "Late arrival")
