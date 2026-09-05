@@ -400,6 +400,59 @@ def test_stacked_child_merged_into_parent_branch_stays_open_until_parent_merges(
     assert "DM-003(work)" in rep.dispatched
 
 
+def test_stacked_child_promoted_after_parent_squash_merge(sched, fake_github, tmp_path):
+    """CG-228 (review): the garden's own default `automerge_method` is squash, which folds the
+    whole parent branch into one brand-new commit on the base -- unrelated, by commit parentage,
+    to any of the branch's original commits. A promotion check that demanded a child's original
+    sha be a literal ancestor of the base's new tip could never succeed once that PR squash-merged,
+    leaving the child (and anything stacked on it) stuck forever. The fix checks ancestry against
+    the parent PR's own pre-merge head sha (as GitHub reports it, unaffected by how the merge
+    folded that branch into the base) instead of the base's tip."""
+    sched.tick()
+    sched.tick()  # DM-001 in_review + PR; DM-002 stacks and dispatches
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    parent_branch, child_branch = "garden/dm-001-first-task", "garden/dm-002-second-task"
+    assert sched.state.get("DM-002")["pr_base"] == parent_branch
+
+    # a person merges DM-002's PR straight into DM-001's branch (not main) on GitHub
+    rc = tmp_path / "remote-clone"
+    gitc("fetch", "origin", cwd=rc)
+    gitc("checkout", "-B", "tmp-parent", f"origin/{parent_branch}", cwd=rc)
+    gitc("merge", "-q", "--ff-only", f"origin/{child_branch}", cwd=rc)
+    gitc("push", "-q", "origin", f"tmp-parent:{parent_branch}", cwd=rc)
+    fake_github.prs[child_branch].state = "MERGED"
+
+    rep = sched.tick()
+    assert "DM-002 -> merged_into_parent" in rep.transitions
+    assert statuses(sched)["DM-002"] == "merged_into_parent"
+
+    # DM-001 keeps working after absorbing DM-002: one more commit on its branch
+    (rc / "more-parent-work.txt").write_text("more parent work\n")
+    gitc("add", "-A", cwd=rc)
+    gitc("commit", "-q", "-m", "more work on DM-001", cwd=rc)
+    gitc("push", "-q", "origin", f"tmp-parent:{parent_branch}", cwd=rc)
+    parent_head = gitc("rev-parse", f"origin/{parent_branch}", cwd=rc).strip()
+
+    # DM-001's own PR squash-merges into main: one brand-new commit, not a descendant (by commit
+    # parentage) of DM-001's or DM-002's original commits -- what a literal ancestor-of-the-base
+    # check cannot survive.
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("checkout", "main", cwd=repo)
+    gitc("merge", "--squash", "-q", f"origin/{parent_branch}", cwd=repo)
+    gitc("commit", "-q", "-m", "Squashed DM-001", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+    # GitHub still reports the true pre-squash head on the (now merged) PR
+    fake_github.prs[parent_branch].head_sha = parent_head
+    fake_github.prs[parent_branch].state = "MERGED"
+
+    rep = sched.tick()
+    assert "DM-001 -> done" in rep.transitions and "DM-002 -> done" in rep.transitions
+    s = statuses(sched)
+    assert s["DM-001"] == "done" and s["DM-002"] == "done"
+
+
 def test_restack_keeps_remote_only_commits(sched, fake_github, tmp_path):
     """A rebase round on the restack path folds in commits pushed only to the remote branch."""
     sched.tick()

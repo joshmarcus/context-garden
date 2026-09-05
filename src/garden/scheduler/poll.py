@@ -55,7 +55,7 @@ class PollMixin:
             by_garden = bool(st.get("automerged"))
             self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}")
             rep.transitions.append(f"{task.id} -> done")
-            self._on_merged(task, rep)
+            self._on_merged(task, rep, head_sha=pr.head_sha)
             self._cleanup(task)
             return
         if pr.state == "CLOSED":
@@ -379,22 +379,33 @@ class PollMixin:
                          f"will be done once {parent_label} reaches the base")
         rep.transitions.append(f"{task.id} -> merged_into_parent")
 
-    def _promote_if_ancestor(self, child: Task, parent: Task, rep: TickReport) -> None:
+    def _promote_if_ancestor(self, child: Task, parent: Task, rep: TickReport, parent_ref: str = "") -> None:
         """`child` already merged into `parent`'s branch (Status.MERGED_INTO_PARENT) and `parent`
         has just reached the base itself: promote `child` to `done`, but only once its commits
         (the parent branch's tip recorded at the time, see `_mark_merged_into_parent`) actually
-        show up as an ancestor of the base's new tip. Not automatic: a force-push or a rewritten
-        rebase between the two merges could in principle have dropped them."""
+        show up as an ancestor of `parent_ref` -- the parent PR's own head sha, as GitHub reported
+        it right before that PR merged, not the base's new tip. A squash or rebase merge (the
+        garden's own default `automerge_method` is squash) folds the parent's whole branch into
+        one brand-new commit on the base, so a child's original sha is never literally an ancestor
+        of the base tip even though its changes are right there in that commit's tree; the parent
+        PR's pre-merge head, by contrast, is the real, unrewritten commit the parent branch was
+        sitting on, and it still carries the child's commits as ancestors no matter which merge
+        method folded that branch into the base. Falls back to the base's tip (the original,
+        squash-unsafe check) only when no head sha was recorded. Not automatic even so: a
+        force-push or a rewritten rebase between the two merges could in principle have dropped
+        the child's commits before the parent's own merge."""
         st = self.state.get(child.id)
         info = st.get("merged_into_parent") or {}
         sha = str(info.get("sha") or "")
         final_base = self.final_base_for(child)
         repo = self.repo_for(child)
         ancestor = False
+        target = ""
         if sha:
             try:
                 gitops.fetch(repo)
-                ancestor = gitops.is_ancestor(repo, sha, gitops.base_ref(repo, final_base))
+                target = parent_ref or gitops.base_ref(repo, final_base)
+                ancestor = gitops.is_ancestor(repo, sha, target)
             except gitops.GitError:
                 ancestor = False
         if not ancestor:
@@ -406,7 +417,7 @@ class PollMixin:
         self._transition(child, Status.DONE,
                          f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}")
         rep.transitions.append(f"{child.id} -> done")
-        self._on_merged(child, rep)
+        self._on_merged(child, rep, head_sha=target)
         self._cleanup(child)
 
     # ---- stacking ----------------------------------------------------------
@@ -457,7 +468,11 @@ class PollMixin:
                 self.log(f"{child.id}: could not retarget before parent branch delete: {e}")
         return all_ok
 
-    def _on_merged(self, task: Task, rep: TickReport) -> None:
+    def _on_merged(self, task: Task, rep: TickReport, head_sha: str = "") -> None:
+        """`task` just reached the base (its PR merged there). `head_sha` is that PR's own head
+        sha as GitHub reported it right before the merge -- the real, unrewritten commit the
+        branch was sitting on, still valid to check ancestry against however a squash or rebase
+        merge folded it into the base (see `_promote_if_ancestor`)."""
         if self.cfg.product(task.product).get("provides_tool"):
             try:
                 self._note_tool_upgrade(task)
@@ -466,7 +481,7 @@ class PollMixin:
         for child in self.stacked_children(task):
             st = self.state.get(child.id)
             if child.status == Status.MERGED_INTO_PARENT:
-                self._promote_if_ancestor(child, task, rep)
+                self._promote_if_ancestor(child, task, rep, head_sha)
                 continue
             if child.status in (Status.RUNNING, Status.WAITING_HUMAN):
                 st["restack_pending"] = True
