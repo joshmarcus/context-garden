@@ -120,6 +120,95 @@ def tier_bars_svg(rows: list[dict[str, Any]], value: str = "cost_usd", fmt: str 
     return "\n".join(out)
 
 
+def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, max_groups: int = 7) -> str:
+    """Spend per bucket (day or hour), stacked by group, from `costs.cost_series`.
+
+    Colors are the fixed eight-slot categorical order (`--viz-1`, `--viz-2`,
+    `--viz-cat-3`..`--viz-cat-8`): grouped by activity, the slots follow the activity
+    vocabulary's own fixed order (`costs.ACTIVITIES`, "other" last); grouped by anything
+    else, slots go to the highest-cost groups and the rest fold into "other" so the palette
+    never grows past its eight slots no matter how many models/phases/tasks appear.
+    """
+    from .costs import ACTIVITIES
+
+    buckets = series.get("buckets") or []
+    totals = series.get("totals") or {}
+    if not buckets or not totals:
+        return '<div class="empty">No cost recorded yet.</div>'
+    if series.get("group_by") == "activity":
+        order = [g for g in ACTIVITIES if g in totals]
+        if "other" in totals:
+            order.append("other")
+    else:
+        order = list(series.get("groups") or [])
+        if len(order) > max_groups:
+            order = order[: max_groups - 1] + ["other"]
+    kept_real = set(order) - {"other"}
+    palette = ["var(--viz-1)", "var(--viz-2)", "var(--viz-cat-3)", "var(--viz-cat-4)",
+               "var(--viz-cat-5)", "var(--viz-cat-6)", "var(--viz-cat-7)", "var(--viz-cat-8)"]
+    colors = {g: palette[i % len(palette)] for i, g in enumerate(g for g in order if g != "other")}
+    colors["other"] = palette[-1]
+    other_total = sum(r["cost_usd"] for g, r in totals.items() if g not in kept_real) if "other" in order else 0.0
+
+    # per-bucket cost per kept group; anything outside `order` (only possible when a
+    # non-activity grouping was truncated to max_groups) collapses into "other"
+    rows: list[dict[str, float]] = []
+    stack_max = 0.0
+    for b in buckets:
+        row = dict.fromkeys(order, 0.0)
+        for g, r in b["groups"].items():
+            key = g if g in kept_real else "other"
+            row[key] = row.get(key, 0.0) + float(r.get("cost_usd") or 0.0)
+        rows.append(row)
+        stack_max = max(stack_max, sum(row.values()))
+    ymax = stack_max or 1.0
+
+    entry_w = 108
+    per_row = max(1, int((width - 40 - 16) // entry_w))
+    legend_rows = [order[i:i + per_row] for i in range(0, len(order), per_row)]
+    legend_h = 16 * len(legend_rows) + 4
+
+    ml, mr, mt, mb = 40, 16, legend_h + 16, 30
+    pw, ph = width - ml - mr, height - mt - mb
+    n = len(buckets)
+    bw = pw / n
+    bar_w = max(bw * 0.72, 2)
+
+    def y(v: float) -> float:
+        return mt + ph * (1 - v / ymax)
+
+    out = [f'<svg class="chart" viewBox="0 0 {width} {mt + ph + mb}" width="100%" role="img" '
+           f'aria-label="Cost by {_esc(series.get("group_by", ""))} over time">']
+    for v in sorted({0, ymax / 2, ymax}):
+        out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{y(v):.1f}" y2="{y(v):.1f}" stroke="var(--line)" stroke-width="1"/>')
+        out.append(f'<text x="{ml - 6}" y="{y(v) + 4:.1f}" text-anchor="end" fill="var(--muted)" font-size="11">${v:.0f}</text>')
+    for i, (b, row) in enumerate(zip(buckets, rows, strict=True)):
+        x0 = ml + i * bw + (bw - bar_w) / 2
+        acc = 0.0
+        for g in order:
+            v = row.get(g, 0.0)
+            if v <= 0:
+                continue
+            y0, y1 = y(acc), y(acc + v)
+            out.append(f'<rect x="{x0:.1f}" y="{y1:.1f}" width="{bar_w:.1f}" height="{max(y0 - y1, 0.5):.1f}" '
+                       f'fill="{colors[g]}"><title>{_esc(b["bucket"])} · {_esc(g)}: ${v:.2f}</title></rect>')
+            acc += v
+    out.append(f'<text x="{ml}" y="{mt + ph + mb - 6}" fill="var(--muted)" font-size="11">{_esc(buckets[0]["bucket"])}</text>')
+    out.append(f'<text x="{width - mr}" y="{mt + ph + mb - 6}" text-anchor="end" fill="var(--muted)" font-size="11">{_esc(buckets[-1]["bucket"])}</text>')
+    ly = 12
+    out.append('<g font-size="11" fill="var(--muted)">')
+    for row_groups in legend_rows:
+        for j, g in enumerate(row_groups):
+            gx = ml + j * entry_w
+            total = totals[g]["cost_usd"] if g in kept_real and g in totals else other_total
+            out.append(f'<rect x="{gx}" y="{ly - 8}" width="10" height="10" fill="{colors[g]}"/>'
+                       f'<text x="{gx + 14}" y="{ly}">{_esc(g)} (${total:.2f})</text>')
+        ly += 16
+    out.append("</g>")
+    out.append("</svg>")
+    return "\n".join(out)
+
+
 def sparkline_svg(values: list[float], width: int = 120, height: int = 28) -> str:
     if len(values) < 2:
         return ""

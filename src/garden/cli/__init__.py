@@ -14,7 +14,7 @@ from .common import app
 
 # Import the command families for their `@app.command()` side effects. The order sets the
 # order `garden --help` lists commands in, so it follows the original single-file layout.
-for _family in ("scaffold", "views", "state", "loop", "planning", "diagnostics"):
+for _family in ("scaffold", "views", "state", "loop", "planning", "diagnostics", "costs"):
     import_module(f"{__name__}.{_family}")
 
 __all__ = ["app", "main"]

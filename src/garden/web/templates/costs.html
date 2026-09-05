@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Costs{% endblock %}
+{% block body %}
+<div class="page-head"><div><h1>Costs</h1><p>Spend over time, sliced by activity, difficulty, model, harness, phase and task — the same numbers <code>garden costs</code> prints for the same filters.</p></div></div>
+<div class="panel">
+  <div class="eyebrow">Filter</div>
+  <form method="get" action="/costs" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <label class="muted" for="c-since">window</label>
+    <select id="c-since" name="since" onchange="this.form.submit()">
+      {% for v, label in [("", "all time"), ("today", "today"), ("24h", "24h"), ("3d", "3d"), ("7d", "7d"), ("30d", "30d")] %}<option value="{{ v }}"{% if since == v %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-bucket">bucket</label>
+    <select id="c-bucket" name="bucket" onchange="this.form.submit()">
+      {% for v in ("day", "hour") %}<option value="{{ v }}"{% if bucket == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-by">group by</label>
+    <select id="c-by" name="by" onchange="this.form.submit()">
+      {% for v in ("activity", "difficulty", "model", "harness", "phase", "task") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-diff">difficulty</label>
+    <select id="c-diff" name="difficulty" onchange="this.form.submit()">
+      <option value=""{% if not difficulty %} selected{% endif %}>any</option>
+      {% for v in ("easy", "medium", "hard") %}<option value="{{ v }}"{% if difficulty == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-model">model</label>
+    <select id="c-model" name="model" onchange="this.form.submit()">
+      <option value=""{% if not model %} selected{% endif %}>any</option>
+      {% for v in models %}<option value="{{ v }}"{% if model == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-harness">harness</label>
+    <select id="c-harness" name="harness" onchange="this.form.submit()">
+      <option value=""{% if not harness %} selected{% endif %}>any</option>
+      {% for v in harnesses %}<option value="{{ v }}"{% if harness == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-phase">phase</label>
+    <select id="c-phase" name="phase" onchange="this.form.submit()">
+      <option value=""{% if not phase %} selected{% endif %}>any</option>
+      {% for v in phase_keys %}<option value="{{ v }}"{% if phase == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <label class="muted" for="c-task">task</label>
+    <select id="c-task" name="task" onchange="this.form.submit()">
+      <option value=""{% if not task %} selected{% endif %}>any</option>
+      {% for v in task_ids %}<option value="{{ v }}"{% if task == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <button class="quiet">Filter</button>
+    {% if since or bucket != 'day' or by != 'activity' or difficulty or model or harness or phase or task %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
+  </form>
+</div>
+<div class="panel" style="margin-top:14px">
+  <div class="eyebrow">Spend over time, by {{ by }}</div>
+  {{ chart|safe }}
+</div>
+<div class="panel" style="margin-top:14px">
+  <div class="eyebrow">Breakdown</div>
+  {% if series.groups %}
+  <table style="margin-top:8px">
+    <tr><th>{{ by }}</th><th>runs</th><th>cost</th><th>mean/run</th><th>share</th><th>cache reads</th><th>cache writes</th></tr>
+    {% for g in series.groups %}{% set row = series.totals[g] %}
+    <tr><td class="mono">{{ g }}</td><td>{{ row.runs }}</td><td>${{ '%.2f' % row.cost_usd }}</td>
+      <td>{% if row.mean_cost_usd is not none %}${{ '%.2f' % row.mean_cost_usd }}{% endif %}</td>
+      <td>{% if row.share is not none %}{{ (row.share * 100)|round|int }}%{% endif %}</td>
+      <td class="mono">{{ '{:,}'.format(row.cache_read_tokens) }}</td>
+      <td class="mono">{{ '{:,}'.format(row.cache_write_tokens) }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted" style="margin:10px 0 0;font-size:12.5px">grand total: ${{ '%.2f' % series.grand_total.cost_usd }} over {{ series.grand_total.runs }} run{{ 's' if series.grand_total.runs != 1 else '' }}</p>
+  {% else %}<div class="empty">No cost recorded yet for this filter.</div>{% endif %}
+</div>
+{% endblock %}
