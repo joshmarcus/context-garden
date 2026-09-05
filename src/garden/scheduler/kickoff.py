@@ -89,7 +89,12 @@ class KickoffMixin:
                                    discovered_from=f"kickoff:{phase.key}")
         return {"path": path, "issue": issue, "task_id": t.id}
 
-    def _file_kickoff_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str) -> dict[str, Any]:
+    def _file_question_decision(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str,
+                                source: str, next_phase: str = "") -> dict[str, Any]:
+        """File one question as a pending decision card. Shared by the kickoff (CG-224) and the
+        retro (CG-225): `source` ("kickoff" or "retro") says which review raised it and which
+        document its eventual answer/dismissal is recorded onto; `next_phase` (retro only) is
+        where a resolution's '## Decisions' line lands, once that phase exists."""
         question = str(item.get("question") or "").strip()
         if not question:
             return {}
@@ -98,30 +103,48 @@ class KickoffMixin:
         decisions[did] = {
             "id": did, "kind": "question", "target": "", "target_title": question[:80],
             "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
-            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"kickoff:{phase.key}",
+            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"{source}:{phase.key}",
             "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
-            "discovered_from": f"kickoff:{phase.key}",
+            "discovered_from": f"{source}:{phase.key}", "source": source,
+            "blocking": bool(item.get("blocking")), "next_phase": next_phase,
         }
-        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
+        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id, source=source)
         return {"question": question, "decision_id": did}
 
-    def answer_kickoff_question(self, decision_id: str, answer: str) -> dict[str, Any]:
+    def _file_kickoff_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str) -> dict[str, Any]:
+        return self._file_question_decision(phase, item, idx, run_id, "kickoff")
+
+    def answer_kickoff_question(self, decision_id: str, answer: str, by: str = "cli") -> dict[str, Any]:
         d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "answered", answer.strip())
+        self._resolve_question_doc(d, "answered", answer.strip(), by)
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=True)
         self.state.save()
         return d
 
-    def dismiss_kickoff_question(self, decision_id: str) -> dict[str, Any]:
+    def dismiss_kickoff_question(self, decision_id: str, by: str = "cli") -> dict[str, Any]:
         d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "dismissed", "")
+        self._resolve_question_doc(d, "dismissed", "", by)
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=False)
         self.state.save()
         return d
+
+    def _resolve_question_doc(self, d: dict[str, Any], status: str, answer: str, by: str) -> None:
+        """Record a question's resolution onto the document its source writes to: the kickoff's
+        own doc (next to the question, as before), or the retro's docs/retro.md '## Answers'
+        section plus the next phase's goals.md '## Decisions' section (CG-225)."""
+        phase = self._phase_of_decision(d)
+        if phase is None:
+            return
+        if str(d.get("source") or "kickoff") == "retro":
+            from ..retro import append_goals_decision, append_retro_answer
+
+            at = now_iso()
+            append_retro_answer(phase, str(d["question"]), status, answer, by, at)
+            next_phase = self._next_phase_of_decision(d)
+            if next_phase is not None:
+                append_goals_decision(next_phase, str(d["question"]), status, answer, by, at)
+        else:
+            append_question_resolution(phase, str(d["question"]), status, answer)
 
     def _pop_kickoff_question(self, decision_id: str) -> dict[str, Any]:
         decisions = self.state.get("_decisions")
@@ -137,6 +160,18 @@ class KickoffMixin:
             return None
         try:
             return self.store.phase(product, name)
+        except KeyError:
+            return None
+
+    def _next_phase_of_decision(self, d: dict[str, Any]) -> Phase | None:
+        """The retro's next phase named on a question decision, if it exists on disk yet (it
+        may not: the retro's own PR, which drafts that phase's goals.md, may not have merged)."""
+        product, _, _ = str(d.get("phase") or "").partition("/")
+        next_name = str(d.get("next_phase") or "")
+        if not product or not next_name:
+            return None
+        try:
+            return self.store.phase(product, next_name)
         except KeyError:
             return None
 

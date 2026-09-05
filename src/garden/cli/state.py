@@ -212,10 +212,10 @@ def decide(
     sched = _scheduler(store)
     try:
         if answer is not None:
-            sched.answer_kickoff_question(decision_id, answer)
+            sched.answer_kickoff_question(decision_id, answer, by="cli")
             console.print(f"decision {decision_id} answered")
         elif dismiss:
-            sched.dismiss_kickoff_question(decision_id)
+            sched.dismiss_kickoff_question(decision_id, by="cli")
             console.print(f"decision {decision_id} dismissed")
         else:
             d = sched.resolve_decision(decision_id, accept=accept)
