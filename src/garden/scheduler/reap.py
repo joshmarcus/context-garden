@@ -20,7 +20,11 @@ from .report import TickReport
 class ReapMixin:
     # ---- reap --------------------------------------------------------------
     def reap(self, task: Task, rep: TickReport) -> bool:
-        run = self.runs.latest(task.id)
+        # Only ever the task's own worker-mode run (work/revise/resume/trial/rebase). A review
+        # or persona run dispatched for the same task — the poll re-reviewing a fresh push while
+        # a revise is still in flight (CG-177) — is left to reap_review/reap_orphaned, so its
+        # record can never be read as "no active run found" and send the task back to ready.
+        run = self.latest_worker_run(task.id)
         # garden finish is the sole finaliser of manual runs.  Skip the task
         # while a manual run is active (status "running") or while finalize()
         # has completed the run record but has not yet written the task
@@ -43,7 +47,7 @@ class ReapMixin:
                 # a second time (which would double-count the run's cost).
                 self.finalize(task, run, runner, rep, resumed=True)
             return True
-        if run is None or run.status != "running" or run.mode == "review":
+        if run is None or run.status != "running":
             # Record what happened to the run we expected to reap: if something else
             # (the orphan sweep, a crash, a manual close) finished it out from under us,
             # its run id and closer belong in the log so the next disappearance is traceable.
@@ -699,7 +703,7 @@ class ReapMixin:
                 if isinstance(c, dict) and c.get("run_id"):
                     owned.add(str(c["run_id"]))
             if t.status == Status.RUNNING:
-                latest = self.runs.latest(t.id)
+                latest = self.latest_worker_run(t.id)
                 if latest is not None:
                     owned.add(latest.run_id)
         return owned

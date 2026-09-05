@@ -6,6 +6,7 @@ import subprocess
 
 from garden.model import Status
 from garden.runner.manual import ManualRunner
+from garden.scheduler.report import TickReport
 from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
@@ -446,3 +447,75 @@ def test_no_active_run_clean_restart_has_no_progress_note(sched):
     assert "prior attempt made real progress" not in body
     event = sched.events.read(task_id="DM-001", kinds=["no_active_run"])[-1]
     assert event.get("prior_commits", 0) == 0
+
+
+def _revise_in_flight(sched, monkeypatch):
+    """Drive DM-001 to a stalled revise run: work -> PR -> triage back for changes -> a revise
+    round that goes silent and stays `running` across the next tick. Returns (task, revise_run)."""
+    sched.cfg.data["stack"] = False
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> in_review, PR opened
+    sched.triage(sched.store.task("DM-001"), changes="please revisit")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    sched.tick()  # dispatch a revise run; the worker goes silent and stays running
+    task = sched.store.task("DM-001")
+    revise_run = sched.runs.latest("DM-001")
+    assert revise_run.mode == "revise" and revise_run.status == "running"
+    assert statuses(sched)["DM-001"] == "running"
+    return task, revise_run
+
+
+def test_a_review_run_never_sends_a_running_task_back_to_ready(sched, fake_github, monkeypatch):
+    """CG-177: a revise round is in flight and a review run is dispatched for the same task
+    (as the poll re-reviewing a fresh push once did). Reap must reap the task's own worker run
+    — the newer review record must never be read as the task's active run and drive it back to
+    `ready` with its PR still open."""
+    task, revise_run = _revise_in_flight(sched, monkeypatch)
+
+    # A review is dispatched on top of the in-flight revise (the CG-177 incident). It is the
+    # newest run, so the naive `latest()` would hand reap the review record, not the revise.
+    review_run = sched.dispatch_review(task)
+    assert review_run.mode == "review"
+    assert sched.runs.latest("DM-001").run_id == review_run.run_id
+
+    rep = sched.tick()
+    assert statuses(sched)["DM-001"] == "running"  # the revise is still in flight, not reaped
+    assert not any("ready" in tr for tr in rep.transitions)
+    assert "no active run found" not in sched.store.task("DM-001").body
+
+    # When the revise finishes it is reaped exactly as usual.
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    sched.runner_for(task).wake(revise_run)
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"
+    reaped = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == revise_run.run_id)
+    assert reaped.status == "done"
+
+
+def test_review_dispatch_is_deferred_while_a_worker_run_is_in_flight(sched, fake_github, monkeypatch):
+    """CG-177: while a task has a worker-mode run in flight, a review dispatch is deferred to
+    `pending_reviews` (and logged once) instead of starting a review run that could be mistaken
+    for the task's own run. The deferred round drains once the worker finishes."""
+    logs: list[str] = []
+    sched.log = logs.append
+    task, revise_run = _revise_in_flight(sched, monkeypatch)
+
+    rep = TickReport()
+    item = {"kind": "review", "count_round": True}
+    sched._dispatch_or_defer_reviews(task, [item], rep)
+    sched._dispatch_or_defer_reviews(task, [item], rep)  # a second attempt while still in flight
+
+    st = sched.state.get("DM-001")
+    assert not any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))  # nothing dispatched
+    assert len(st.get("pending_reviews") or []) == 2  # both deferred, not lost
+    assert sum(1 for m in logs if "review deferred while a worker run is in flight" in m) == 1  # logged once
+    assert statuses(sched)["DM-001"] == "running"
+    sched.state.save()  # a real deferral happens inside a tick, which persists state at its end
+
+    # The worker finishes; the deferred reviews drain now that no worker run is in flight.
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    sched.runner_for(task).wake(revise_run)
+    sched.tick()
+    assert next(r for r in sched.runs.runs_for("DM-001") if r.run_id == revise_run.run_id).status == "done"
+    assert any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))
+    assert not sched.state.get("DM-001").get("pending_reviews")
