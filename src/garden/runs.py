@@ -25,7 +25,7 @@ class Run:
     run_id: str
     dir: str
     runner: str
-    mode: str = "work"  # work | revise | review
+    mode: str = "work"  # work | revise | resume | trial | rebase | review | persona | compare | edit | check
     harness: str = ""
     model: str = ""
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
