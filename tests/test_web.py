@@ -541,6 +541,28 @@ def test_trial_env_failed_contender_renders_on_task_and_trials_pages(sched, fake
     assert trials_page.status_code == 200 and "env failed" in trials_page.text
 
 
+def test_task_page_shows_trial_history_with_the_closed_pr_marked(sched, fake_github, monkeypatch):
+    """CG-232: once a trial concludes, its record stays visible on the task page (beside a
+    later --again's) with the losing contender's now-closed PR marked, not shown as if still
+    open."""
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    sched.tick()
+    sched.tick()
+    t = sched.store.task("DM-001")
+
+    monkeypatch.delenv("FAKE_CLAUDE_WINNER", raising=False)
+    sched.start_trial(t, ["claude:sonnet", "codex:gpt"], again=True)
+    sched.tick()
+    sched.tick()
+
+    c = TestClient(create_app(sched.store, watch=False))
+    page = c.get("/tasks/DM-001").text
+    assert page.count("Model trial for DM-001") == 2  # both the first trial and the --again rerun
+    assert "(closed)" in page  # the losing contender's PR, not shown as if still open
+
+
 def test_trials_page_and_persona_form(garden):
     c = client(garden)
     r = c.get("/trials")

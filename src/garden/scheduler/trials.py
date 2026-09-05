@@ -31,18 +31,39 @@ def _sandbox_denial(*texts: str) -> bool:
     return any(m in haystack for m in SANDBOX_DENIAL_MARKERS)
 
 
+# Cached PR/review facts an old trial's PR leaves behind on the task, cleared by `--again` so
+# the new trial starts as clean as a task that never had one. Queue state (automerge_candidate,
+# automerge_ready_at, merge_head, automerge_blocked) goes through `_queue_leave` instead, the
+# only writer of those four (CG-232).
+AGAIN_RESET_KEYS = (
+    "pr_number", "pr_state", "head_sha", "pr_draft", "pr_base", "stack_parent",
+    "review_run", "last_review", "review_rounds", "review_decision",
+    "checks", "failed_checks", "automerged",
+    "needs_human", "decision",
+    "pending_feedback", "pending_feedback_easy", "pending_feedback_rebase",
+    "worktree", "revisions",
+)
+
+
 class TrialsMixin:
     # ---- model trials ------------------------------------------------------
-    def start_trial(self, task: Task, contenders: list[str]) -> list[Run]:
-        if task.status not in (Status.READY, Status.DRAFT, Status.FAILED) or task.pr:
-            raise RuntimeError(f"{task.id} must be ready/draft/failed without a PR to start a trial (is {task.status.value})")
+    def start_trial(self, task: Task, contenders: list[str], again: bool = False, keep_prs: bool = False) -> list[Run]:
         if len(contenders) < 2:
             raise RuntimeError("a trial needs at least two contenders")
-        default_h = task.harness or self.cfg.product_harness(task.product)
         st = self.state.get(task.id)
+        prior = st.get("trial")
+        if task.status not in (Status.READY, Status.DRAFT, Status.FAILED) or task.pr:
+            if not again:
+                raise RuntimeError(f"{task.id} must be ready/draft/failed without a PR to start a trial (is {task.status.value}); "
+                                   "use --again to close its last trial's PRs and run a new one")
+            if not isinstance(prior, dict) or prior.get("status") not in ("done", "inconclusive"):
+                raise RuntimeError(f"{task.id}'s trial has not concluded yet; wait for it (or its comparison run) to finish before running --again")
+            self._reset_trial(task, prior, keep_prs=keep_prs)
+            st = self.state.get(task.id)
+        default_h = task.harness or self.cfg.product_harness(task.product)
         trial: dict[str, Any] = {"id": now_iso(), "status": "running", "contenders": []}
         runs: list[Run] = []
-        base_branch = task.branch or task.default_branch()
+        base_branch = task.default_branch()
         for spec in contenders:
             label, harness, model = parse_contender(spec, default_h)
             suffix = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
@@ -76,6 +97,52 @@ class TrialsMixin:
         self.events.emit("trial_started", task.id, contenders=[c["label"] for c in trial["contenders"]])
         self.state.save()
         return runs
+
+    def _reset_trial(self, task: Task, prior: dict[str, Any], keep_prs: bool) -> None:
+        """`--again`: close (or, with `keep_prs`, leave open) every contender PR the previous
+        trial left behind, drop their worktrees and — for the ones being closed — their remote
+        branches, then clear the task's cached PR/review facts and put it back to ready. The
+        incident behind this (CG-232): relaunching a trial by hand meant closing PRs, removing
+        worktrees and branches, and clearing state.json keys one at a time under the lock."""
+        slug = self.slug_for(task)
+        repo = self.repo_for(task)
+        closed_prs: set[str] = set()
+        for c in prior.get("contenders", []):
+            wt = c.get("worktree")
+            if wt:
+                try:
+                    gitops.remove_worktree(repo, Path(wt))
+                except Exception:  # noqa: BLE001
+                    pass
+            if keep_prs:
+                continue
+            number = c.get("pr_number")
+            branch = c.get("branch")
+            if number and slug and self.github.available:
+                try:
+                    self.github.comment(slug, number, mark_garden_comment(
+                        f"Closing this contender: {task.id}'s trial is being run again."))
+                    self.github.close_pr(slug, number)
+                    if c.get("pr"):
+                        closed_prs.add(c["pr"])
+                except GitHubError as e:
+                    self.log(f"{task.id}: could not close trial contender PR #{number}: {e}")
+            if branch and slug and self.github.available:
+                try:
+                    self.github.delete_branch(slug, branch)
+                except GitHubError as e:
+                    self.log(f"{task.id}: could not delete trial contender branch {branch}: {e}")
+        if closed_prs:
+            self.trials.mark_closed(task.id, closed_prs)
+        self._queue_leave(task)
+        st = self.state.get(task.id)
+        for key in AGAIN_RESET_KEYS:
+            st.pop(key, None)
+        task.pr = ""
+        task.branch = ""
+        self._transition(task, Status.READY, "trial reset for --again" + (" (previous PRs kept open)" if keep_prs else " (previous PRs closed)"))
+        self.events.emit("trial_reset", task.id, keep_prs=keep_prs, contenders=[c.get("label") for c in prior.get("contenders", [])])
+        self.state.save()
 
     def reap_trial(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
@@ -222,10 +289,15 @@ class TrialsMixin:
         else:
             trial["winner"] = winner["label"]
             trial.pop("kept", None)
+        contenders_out = []
+        for c in trial["contenders"]:
+            entry = {k: c.get(k) for k in ("label", "harness", "model", "status", "kind", "score", "cost",
+                                           "input_tokens", "output_tokens", "pr", "summary", "note")}
+            entry["closed"] = bool(c.get("pr_number")) and c is not winner  # this trial closes every loser's PR below
+            contenders_out.append(entry)
         record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": trial["winner"],
                   "kept": trial.get("kept", ""), "rationale": trial["rationale"], "compare_cost": compare_cost,
-                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "kind", "score", "cost",
-                                                        "input_tokens", "output_tokens", "pr", "summary", "note")} for c in trial["contenders"]]}
+                  "contenders": contenders_out}
         self.trials.record(record)
         md = ranking_markdown({"task": task.id, **record})
         slug = self.slug_for(task)

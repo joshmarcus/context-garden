@@ -100,7 +100,10 @@ def ranking_markdown(trial: dict[str, Any]) -> str:
             note = f"env_failed ({c.get('kind') or '?'}): {c.get('note') or ''}"
         else:
             note = c.get("summary") or c.get("note") or c.get("status") or ""
-        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {toks} | {per_point} | {c.get('pr') or '–'} | {note} |")
+        pr = c.get("pr") or "–"
+        if c.get("pr") and c.get("closed"):
+            pr += " (closed)"
+        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {toks} | {per_point} | {pr} | {note} |")
     if trial.get("compare_cost") is not None:
         out.append(f"| _comparison run_ | | ${trial['compare_cost']:.2f} | | | | |")
     if trial.get("rationale"):
@@ -128,6 +131,28 @@ class TrialLog:
                 except json.JSONDecodeError:
                     continue
         return out
+
+    def mark_closed(self, task_id: str, prs: set[str]) -> None:
+        """Flip `closed` on already-recorded contenders whose PR is closed after the record was
+        written — `--again` (CG-232) can close a trial's surviving PR (the winner's, kept open
+        at record time) well after `record()` ran, and the trial-history views read this file
+        back, so a rewrite is the only way to keep them honest."""
+        if not prs:
+            return
+        records = self.read()
+        changed = False
+        for t in records:
+            if t.get("task") != task_id:
+                continue
+            for c in t.get("contenders", []):
+                if c.get("pr") in prs and not c.get("closed"):
+                    c["closed"] = True
+                    changed = True
+        if not changed:
+            return
+        with self.path.open("w") as f:
+            for t in records:
+                f.write(json.dumps(t, sort_keys=True) + "\n")
 
     def leaderboard(self) -> list[dict[str, Any]]:
         agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"trials": 0, "wins": 0, "scores": [], "costs": [], "failed": 0, "env_failed": 0,

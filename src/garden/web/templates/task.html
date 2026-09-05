@@ -86,17 +86,20 @@
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
   {% if has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
-  {% if task.status.value in ('ready','draft','failed') and not task.pr %}<button class="quiet" data-toggle="trial-form">Model trial…</button>{% endif %}
+  {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
+  {% if (task.status.value in ('ready','draft','failed') and not task.pr) or trial_again %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button class="quiet">Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
 <div id="trial-form" class="panel" hidden>
-  <div class="eyebrow">Start a model trial</div>
+  <div class="eyebrow">{{ 'Run this trial again' if trial_again else 'Start a model trial' }}</div>
+  {% if trial_again %}<p class="muted" style="margin:4px 0 8px">This closes the previous trial's contender PR(s) and branches, and starts fresh contenders from <span class="mono">{{ task.default_branch() }}</span>.</p>{% endif %}
   <form method="post" action="/tasks/{{ task.id }}/trial" class="trial-form" data-trial-form data-harnesses='{{ harness_choices|default({})|tojson }}' data-default-harness="{{ default_harness }}">
     <input type="hidden" name="note">
+    {% if trial_again %}<label style="display:flex;gap:6px;align-items:center;margin:0 0 8px"><input type="checkbox" name="applies_to" value="keep_prs"> keep the previous PR(s) open</label>{% endif %}
     <div class="trial-rows"></div>
-    <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">Start trial</button></div>
+    <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">{{ 'Start trial again' if trial_again else 'Start trial' }}</button></div>
   </form>
 </div>
 <div id="suggest-form" class="panel" hidden>
@@ -155,6 +158,7 @@
     {% if state.pending_feedback and not task.status.terminal %}<div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
     {% if state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
+    {% if prior_trials %}<div class="panel"><div class="eyebrow">Trial history</div>{% for tr, md in prior_trials %}<div class="prose" style="margin-top:10px">{{ md|md|safe }}</div>{% endfor %}</div>{% endif %}
     {% if discovered %}<div class="panel"><div class="eyebrow">Discovered work</div><ul style="margin:6px 0 0;padding-left:18px">{% for d in discovered %}<li><a href="/tasks/{{ d.id }}" class="id">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
     {% if usage.by_mode %}<div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr>{% for mode, m in usage.by_mode.items()|sort %}<tr><td>{{ mode }}</td><td>{{ m.runs }}</td><td>{{ '{:,}'.format(m.input_tokens) }}</td><td>{{ '{:,}'.format(m.cache_read_input_tokens) }}</td><td>{{ '{:,}'.format(m.output_tokens) }}</td><td>${{ '%.2f' % m.cost_usd }}</td></tr>{% endfor %}</table></div>{% endif %}
     {% if task.status.value == 'running' %}
