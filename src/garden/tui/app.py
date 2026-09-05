@@ -57,6 +57,7 @@ def _fmt_tui_event(ev: dict) -> str:
 
 STATUS_COLOR = {
     "draft": "grey70", "blocked": "yellow", "ready": "cyan", "running": "blue", "in_review": "magenta",
+    "merged_into_parent": "purple4",
     "changes_requested": "dark_orange", "waiting_human": "deep_pink3", "awaiting_triage": "medium_purple", "done": "green", "failed": "red", "wont_do": "tan", "cancelled": "grey50",
 }
 

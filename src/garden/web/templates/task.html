@@ -177,6 +177,7 @@
         <dt>file</dt><dd class="mono">{{ rel }}</dd>
         {% if task.discovered_from %}<dt>discovered by</dt><dd><a href="/tasks/{{ task.discovered_from }}">{{ task.discovered_from }}</a></dd>{% endif %}
         {% if state.stack_parent %}<dt>stacked on</dt><dd><a href="/tasks/{{ state.stack_parent }}">{{ state.stack_parent }}</a> <span class="muted">(PR targets {{ state.pr_base }})</span></dd>{% endif %}
+        {% if eff == 'merged_into_parent' %}<dt>waiting on</dt><dd>merged into {% if state.merged_into_parent.parent %}<a href="/tasks/{{ state.merged_into_parent.parent }}">{{ state.merged_into_parent.parent }}</a>{% else %}<span class="mono">{{ state.merged_into_parent.branch }}</span>{% endif %}'s branch; done once it reaches the base</dd>{% endif %}
         {% if state.trial %}<dt>trial</dt><dd>{{ state.trial.status }}{% if state.trial.winner %} · winner {{ state.trial.winner }}{% endif %}<br>{% for c in state.trial.contenders %}<span class="mono">{{ c.label }}</span> {{ c.status }}{% if c.score is not none %} · {{ c.score }}/10{% endif %}{% if c.pr %} · <a href="{{ c.pr }}" target="_blank">PR</a>{% endif %}<br>{% endfor %}</dd>{% endif %}
         <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="faint">—</span>{% endfor %}</dd>
         <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="faint">—</span>{% endfor %}</dd>

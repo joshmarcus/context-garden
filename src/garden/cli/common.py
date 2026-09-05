@@ -106,6 +106,7 @@ STATUS_STYLE = {
     "running": "blue",
     "awaiting_triage": "purple",
     "in_review": "magenta",
+    "merged_into_parent": "purple4",
     "changes_requested": "dark_orange",
     "waiting_human": "deep_pink3",
     "done": "green",

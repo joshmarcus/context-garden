@@ -205,8 +205,18 @@ class Site:
             # decision if GitHub has one, else the last automated review verdict.
             rev = st.get("last_review") or {}
             review = str(st.get("review_decision") or rev.get("verdict") or "").replace("_", " ").strip()
-            cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
-                              "stack": st.get("stack_parent", ""),
+            # A merged_into_parent task's own PR is closed for good; it is not yet `done`, but it
+            # is not waiting on a human review either, so it sits with the in_review cards, tagged
+            # with a badge naming the parent it is waiting on (CG-228).
+            merged_parent = ""
+            col = eff
+            if eff == "merged_into_parent":
+                col = "in_review"
+                info = st.get("merged_into_parent") or {}
+                merged_parent = str(info.get("parent") or st.get("stack_parent") or info.get("branch") or "")
+            cols[col].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+                              "stack": "" if merged_parent else st.get("stack_parent", ""),
+                              "merged_parent": merged_parent,
                               "needs_human": "" if t.status.terminal else (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
                               "question": st.get("question", "") if eff == "waiting_human" else "",
                               "review": review if eff in ("awaiting_triage", "in_review", "changes_requested") else "",

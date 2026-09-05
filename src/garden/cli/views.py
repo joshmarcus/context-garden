@@ -29,10 +29,11 @@ def status(
     table = Table(title=f"garden: {store.config.get('name')}  ({store.root})", show_lines=False,
                   box=box.SIMPLE_HEAD, padding=(0, 1), pad_edge=False, collapse_padding=True)
     table.add_column("phase")
-    cols = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "wont_do", "failed"]
+    cols = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review",
+            "merged_into_parent", "changes_requested", "done", "wont_do", "failed"]
     short = {"draft": "df", "blocked": "bl", "ready": "rd", "running": "rn", "waiting_human": "wh",
-             "awaiting_triage": "tr", "in_review": "rv", "changes_requested": "cr", "done": "dn",
-             "wont_do": "wd", "failed": "fl"}
+             "awaiting_triage": "tr", "in_review": "rv", "merged_into_parent": "mp", "changes_requested": "cr",
+             "done": "dn", "wont_do": "wd", "failed": "fl"}
     for s in cols:
         table.add_column(short[s], justify="right")
     table.add_column("!", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
@@ -123,7 +124,7 @@ def _count(n: int, s: str) -> str:
 def ls(
     product: str | None = typer.Option(None, "--product", "-p"),
     phase: str | None = typer.Option(None, "--phase"),
-    status_: str | None = typer.Option(None, "--status", "-s", help="draft|blocked|ready|running|waiting_human|in_review|changes_requested|done|failed|cancelled"),
+    status_: str | None = typer.Option(None, "--status", "-s", help="draft|blocked|ready|running|waiting_human|in_review|merged_into_parent|changes_requested|done|failed|cancelled"),
     discovered: bool = typer.Option(False, help="Only tasks that workers discovered"),
     json_out: bool = typer.Option(False, "--json"),
 ):
