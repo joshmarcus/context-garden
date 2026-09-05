@@ -260,6 +260,27 @@ def rebase_onto(worktree: Path, onto: str) -> tuple[bool, list[str]]:
         return False, files
 
 
+def rebase_onto_capture(worktree: Path, onto: str) -> tuple[bool, list[str], dict[str, str]]:
+    """Like rebase_onto, but on a textual conflict also captures each conflicted file's contents
+    (with conflict markers) before aborting, so a rebase brief can carry the conflicting hunks.
+    Returns (ok, conflicted files, {path: file contents}); on conflict the rebase is aborted so
+    the worktree is left clean for the agent to redo the rebase and resolve it."""
+    fetch(worktree)
+    try:
+        git("rebase", onto, cwd=worktree)
+        return True, [], {}
+    except GitError:
+        files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        hunks: dict[str, str] = {}
+        for f in files:
+            try:
+                hunks[f] = (worktree / f).read_text(errors="replace")
+            except OSError:
+                hunks[f] = ""
+        git("rebase", "--abort", cwd=worktree, check=False)
+        return False, files, hunks
+
+
 def diff_hash(worktree: Path, base: str) -> str:
     import hashlib
 
