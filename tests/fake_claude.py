@@ -131,6 +131,22 @@ def persona(call: Call) -> None:
         findings = [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions",
                     "suggestion": "Add it to Quick start"}]
     rev = {"persona": name, "score": 7, "overall": f"As the {name}, mostly fine.", "findings": findings}
+    sm = re.search(r"keyed by name \(([^)]+)\)", call.brief)
+    if sm:
+        # the persona declared its own sections; the brief lists them, so report each one
+        section_names = [s.strip() for s in sm.group(1).split(",") if s.strip()]
+        sections: dict[str, object] = {}
+        for s in section_names:
+            if s == "features":
+                sections[s] = [
+                    {"title": "A form to file a task from the web", "difficulty": "medium", "priority": 2,
+                     "body": "Let a user file a task without editing markdown.", "rationale": "week-one need"},
+                    {"title": "Show cost per phase on the phase page", "difficulty": "easy", "priority": 3,
+                     "body": "A manager sees spend without reading a transcript.", "rationale": "the team next"},
+                ]
+            else:
+                sections[s] = f"The {name}'s {s} section, in its own words."
+        rev["sections"] = sections
     print(result_json("Reviewed as persona.\nGARDEN_PERSONA: " + json.dumps(rev), {"input_tokens": 1500, "output_tokens": 120}, 0.02))
 
 

@@ -317,6 +317,19 @@ def test_trials_page_and_persona_form(garden):
     assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200
 
 
+def test_phase_review_panel_shows_score_and_feature_count(garden):
+    """CG-188: the phase page's review list shows a persona's score, and for a persona whose
+    report has a `features` section, the count of features."""
+    reviews = garden / "demo" / "p1" / "docs" / "reviews"
+    reviews.mkdir(parents=True)
+    (reviews / "product-manager-2026-09-05.md").write_text(
+        "# product-manager review of demo/p1\n\n**Persona:** product-manager · **Score:** 8/10 · 2026-09-05\n\n"
+        "Solid.\n\n## Features\n\n- **A form to file a task**\n  - lets a user file without markdown\n"
+        "- **Cost per phase on the phase page**\n  - a manager sees spend\n\n## Medium\n\n- **onboarding** — needs a config file\n")
+    text = client(garden).get("/phases/demo/p1").text
+    assert "persona · product-manager · 8/10 · 2 feature(s)" in text
+
+
 def test_retro_page_renders_the_artefacts(garden):
     """CG-146: once a phase's retro has run, its page shows the reconciled document (with the
     friction verdicts), the operator retro, each persona's report with its score and high
