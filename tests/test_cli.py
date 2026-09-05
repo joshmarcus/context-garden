@@ -92,6 +92,38 @@ def test_trellis_open_filter(garden):
     assert "DM_001" not in r.output and "DM_002" in r.output
 
 
+def test_pr_attach_resets_cached_pr_state(garden):
+    """CG-174: attaching a PR by hand resets every cached PR fact so the scheduler follows the
+    newly attached PR from the next poll instead of stale state left over from an old one."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    store = Store(garden)
+    sched = Scheduler(store)
+    st = sched.state.get("DM-001")
+    st["pr_number"] = 71
+    st["pr_state"] = "CLOSED"
+    st["head_sha"] = "deadbeef"
+    st["review_run"] = "some-run-id"
+    st["automerge_blocked"] = "stale reason"
+    sched.state.save()
+
+    r = run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/99")
+    assert r.exit_code == 0 and "status=in_review" in r.output
+
+    store.invalidate()
+    t = store.task("DM-001")
+    assert t.pr == "https://github.com/test/demo/pull/99"
+    assert t.status.value == "in_review"
+    assert "pr_number 71 -> 99" in t.body
+
+    st2 = Scheduler(Store(garden)).state.get("DM-001")
+    assert st2["pr_number"] == 99
+    for key in ("pr_state", "head_sha", "review_run", "automerge_blocked"):
+        assert key not in st2
+
+
 def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
     """CG-142: done/cancelled are terminal on the CLI too. `garden set-status` is the only
     escape hatch, and it needs --force to move a task back out of one of them."""

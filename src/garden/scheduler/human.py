@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -157,7 +158,31 @@ class HumanMixin:
             return
         raise RuntimeError("triage needs --ready or --changes")
 
-    # ---- manual controls ---------------------------------------------------
+    # ---- attaching a PR by hand ---------------------------------------------
+    def attach_pr(self, task: Task, url: str) -> None:
+        """Point this task at a PR opened (or reopened) by hand -- e.g. a stacked PR GitHub
+        closed when its base branch went away, reopened under a new number. Resets every
+        cached PR fact so the next poll follows the new PR instead of stale state left over
+        from the old one: a stale `pr_number` would keep polling the old PR, and a stale
+        `review_run` would hold automerge on a run that belongs to a PR this task no longer
+        has (CG-174). Used by `garden pr` and its web equivalent, if one exists."""
+        st = self.state.get(task.id)
+        old_number = st.get("pr_number")
+        m = re.search(r"/pull/(\d+)", url)
+        new_number = int(m.group(1)) if m else None
+        task.pr = url
+        for key in ("pr_number", "pr_state", "head_sha", "review_run", "automerge_blocked"):
+            st.pop(key, None)
+        if new_number:
+            st["pr_number"] = new_number
+        if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
+            task.status = Status.IN_REVIEW
+        task.log(f"PR attached: {url} (pr_number {old_number or 'none'} -> {new_number or 'none'})")
+        self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
+        self.store.save(task)
+        self.state.save()
+
+    # ---- manual controls -----------------------------------------------------
     def _cancel_active_run(self, task: Task) -> None:
         """Kill the task's active run and mark it cancelled so it stops occupying a slot.
         Used when a task is pulled out from under a live run (cancel, or a hand retry that

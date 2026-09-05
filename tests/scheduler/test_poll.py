@@ -112,6 +112,45 @@ def test_failed_task_with_closed_pr_stays_failed(sched, fake_github):
     assert "DM-001 -> failed (PR closed)" in rep.transitions
 
 
+def test_attach_new_pr_after_old_closed_follows_new_pr(sched, fake_github):
+    """CG-174: GitHub closes the task's PR (e.g. its stacked base branch is gone) and the
+    operator opens a fresh PR and attaches it by hand. Without a reset the cached pr_number
+    keeps pointing at the dead PR, so every following poll sees it closed and fails the task
+    again -- attach_pr must reset the cache so the next poll follows the new PR instead."""
+    sched.tick()
+    sched.tick()
+    t = sched.store.task("DM-001")
+    assert t.status == Status.IN_REVIEW
+    old_number = fake_github.prs["garden/dm-001-first-task"].number
+    fake_github.close_pr("test/demo", old_number)
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "failed"
+
+    new = fake_github.create_pr("test/demo", "garden/dm-001-first-task", "main", "reopened", "")
+    t = sched.store.task("DM-001")
+    sched.attach_pr(t, new.url)
+    assert t.status == Status.IN_REVIEW and t.pr == new.url
+    assert sched.state.get("DM-001")["pr_number"] == new.number
+
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert sched._pr_number(sched.store.task("DM-001")) == new.number
+
+
+def test_pr_number_prefers_pr_url_over_a_stale_cache(sched, fake_github):
+    """CG-174: if the cached pr_number ever disagrees with the task's `pr` URL (e.g. something
+    updated the URL without also clearing the cache), `_pr_number` follows the URL and repairs
+    the cache rather than trusting the stale number."""
+    sched.tick()
+    sched.tick()
+    t = sched.store.task("DM-001")
+    st = sched.state.get(t.id)
+    stale = int(st["pr_number"])
+    t.pr = f"https://example.com/pull/{stale + 999}"
+    assert sched._pr_number(t) == stale + 999
+    assert sched.state.get("DM-001")["pr_number"] == stale + 999
+
+
 def test_untrusted_feedback_is_logged_once_and_never_dispatched(sched, fake_github):
     """CG-154: a comment from an author the garden does not trust is logged on the task (with
     an event) but never becomes a revise brief; the same comment is not logged again on the
