@@ -360,10 +360,16 @@ files under `tasks/` must not be hand-edited.
     counter (`state[task].rebases`), its own line in `garden metrics` (rebases per merge,
     rebase cost, and mechanical vs agent counted separately, all scoped to the phase filter),
     and never counts against `max_revisions` or `review.max_rounds`.
-  - **No re-review when the diff is unchanged.** After any rebase the diff against the new
-    base is compared with `last_diff_hash` from the reviewed push. When they match, the last
-    verdict is kept, `rebased; diff unchanged; verdict kept` is logged, and no review is
-    dispatched. Only a textual resolution that changed the diff is reviewed again.
+  - **No re-review when the diff is unchanged.** After any rebase, `gitops.patch_id` — the
+    branch's `git patch-id --stable` against its merge-base, a hash of the diff's own +/-
+    content that is blind to the hunk-header line numbers and context that shift whenever an
+    unrelated commit lands on the base near the branch's hunks — is compared before and after
+    (CG-210). When they match, the last verdict is kept, `rebased; patch id unchanged; verdict
+    kept` is logged, and no review is dispatched. A hash of the raw diff text would flag such a
+    rebase as changed too (the incident this fixes: every queued PR came back changed on a
+    plain merge nearby); patch id is reviewed again only when it actually differs — a textual
+    resolution, or a rebase that folds the branch's own commit away as already-applied
+    elsewhere.
   - **Automerge is a queue that keeps its head.** Approved candidates are ordered
     oldest-approved-first; only the head is rebased, checked and merged, and the next candidate
     is taken once the head is off the queue. A branch already on the base's tip is merged as it

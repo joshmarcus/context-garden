@@ -202,3 +202,72 @@ def test_sync_remote_branch_noop_without_remote_commits(origin_repo: tuple[Path,
     ok, files = gitops.sync_remote_branch(repo, "feature")  # no origin/feature yet
 
     assert ok and files == [] and _sha(repo) == head
+
+
+# ---- CG-210: patch id is blind to context/line-number churn, not to real content changes ----
+def _write_lines(path: Path, n: int) -> None:
+    path.write_text("".join(f"line{i}\n" for i in range(1, n + 1)))
+
+
+def test_patch_id_unchanged_when_base_only_shifts_context(origin_repo: tuple[Path, Path]) -> None:
+    """A base commit that inserts lines next to (not on) the branch's own changed line moves the
+    diff's hunk-header line numbers and its surrounding context, but not patch id: `diff_hash`
+    (a plain hash of the diff text) is affected by exactly this churn; patch_id must not be."""
+    repo, _ = origin_repo
+    _write_lines(repo / "shared.txt", 10)
+    _git("add", "shared.txt", cwd=repo)
+    _git("commit", "-q", "-m", "shared.txt", cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+
+    _git("checkout", "-b", "feature", cwd=repo)
+    lines = (repo / "shared.txt").read_text().splitlines()
+    lines[5] = "line6-changed"
+    (repo / "shared.txt").write_text("\n".join(lines) + "\n")
+    _git("commit", "-aq", "-m", "feature changes line6", cwd=repo)
+    before = gitops.patch_id(repo, "main")
+    assert before
+
+    _git("checkout", "main", cwd=repo)
+    text = (repo / "shared.txt").read_text().splitlines()
+    text = text[:2] + ["inserted-a", "inserted-b"] + text[2:]
+    (repo / "shared.txt").write_text("\n".join(text) + "\n")
+    _git("commit", "-aq", "-m", "main inserts lines near the hunk", cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+
+    _git("checkout", "feature", cwd=repo)
+    _git("rebase", "main", cwd=repo)
+    after = gitops.patch_id(repo, "main")
+
+    assert after == before
+
+
+def test_patch_id_changes_when_the_branchs_own_content_changes(origin_repo: tuple[Path, Path]) -> None:
+    """When the base independently carries the identical edit, a clean rebase folds the branch's
+    commit away as already-applied: the resulting diff is empty, so patch id must differ."""
+    repo, _ = origin_repo
+    _write_lines(repo / "shared.txt", 5)
+    _git("add", "shared.txt", cwd=repo)
+    _git("commit", "-q", "-m", "shared.txt", cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+
+    _git("checkout", "-b", "feature", cwd=repo)
+    lines = (repo / "shared.txt").read_text().splitlines()
+    lines[2] = "line3-changed"
+    (repo / "shared.txt").write_text("\n".join(lines) + "\n")
+    _git("commit", "-aq", "-m", "feature changes line3", cwd=repo)
+    before = gitops.patch_id(repo, "main")
+    assert before
+
+    _git("checkout", "main", cwd=repo)
+    text = (repo / "shared.txt").read_text().splitlines()
+    text[2] = "line3-changed"
+    (repo / "shared.txt").write_text("\n".join(text) + "\n")
+    _git("commit", "-aq", "-m", "main makes the identical change", cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+
+    _git("checkout", "feature", cwd=repo)
+    _git("rebase", "main", cwd=repo)
+    after = gitops.patch_id(repo, "main")
+
+    assert after != before
+    assert after == ""  # the branch's commit contributed nothing once rebased; the diff is empty
