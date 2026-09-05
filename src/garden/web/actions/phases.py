@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from ...github import GitHubError
 from ...gitops import GitError
-from ...model import Status, now_iso, phase_refusal
+from ...model import Status, now_iso
 from ..common import LOGGER, Site, _flash_url
 
 
@@ -16,24 +16,25 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/phases/{product}/{phase}/approve-all")
     def approve_all(product: str, phase: str):
-        s = hub.fresh()
         back = f"/phases/{product}/{phase}"
         try:
-            ph = s.phase(product, phase)
-        except KeyError:
-            raise HTTPException(404) from None
-        try:
             refusal = ""
-            for t in s.tasks().values():
-                if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
-                    refusal = phase_refusal(ph, t)
-                    if refusal:
-                        continue
-                    t.status = Status.READY
-                    t.log("approved (web)")
-                    s.save(t)
+            with hub.action_lock:
+                sched = hub.scheduler()
+                try:
+                    ph = sched.store.phase(product, phase)
+                except KeyError:
+                    raise HTTPException(404) from None
+                for t in list(sched.store.tasks().values()):
+                    if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
+                        try:
+                            sched.approve(t, by="web", phase=ph)
+                        except RuntimeError as e:
+                            refusal = str(e)
             if refusal:
                 return RedirectResponse(_flash_url(back, refusal), status_code=303)
+        except HTTPException:
+            raise
         except (RuntimeError, GitError, GitHubError) as e:
             message = str(e)
             hub._log(f"approve-all {product}/{phase} failed: {message}")

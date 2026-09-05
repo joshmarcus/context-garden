@@ -71,10 +71,7 @@ class RebaseMixin:
         try:
             if not wt.exists():
                 gitops.prepare_worktree(repo, wt, branch, base)
-            ok, files = gitops.sync_remote_branch(wt, branch)
-            hunks: dict[str, str] = {}
-            if ok:
-                ok, files, hunks = gitops.rebase_onto_capture(wt, gitops.base_ref(wt, base))
+            ok, files, hunks = gitops.sync_and_rebase(wt, branch, base)
         except gitops.GitError as e:
             ok, files, hunks = False, [str(e)], {}
         if not ok:
