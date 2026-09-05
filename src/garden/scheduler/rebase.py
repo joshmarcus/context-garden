@@ -195,8 +195,14 @@ class RebaseMixin:
         st = self.state.get(task.id)
         method = str(self._github_cfg("automerge_method", task.product, "squash"))
         review_run = str(st.get("last_review_run") or "")
+        # Retarget every open stacked-child PR to the final base first: deleting this branch while
+        # a child still targets it makes GitHub close the child's PR (CG-173). Keep the branch when
+        # a retarget fails, so no child is orphaned; a later pass deletes it once they are clear.
+        delete_branch = self._retarget_children_before_delete(task)
+        if not delete_branch:
+            self.log(f"{task.id}: keeping the branch on merge; a stacked child PR could not be retargeted")
         try:
-            self.github.merge_pr(slug, number, method=method, delete_branch=True)
+            self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch)
         except GitHubError as e:
             st["automerge_blocked"] = f"merge call failed: {e}"
             self.log(f"{task.id}: automerge call failed: {e}")

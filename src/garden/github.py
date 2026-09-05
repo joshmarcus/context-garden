@@ -405,6 +405,39 @@ class GitHub:
         else:
             self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "closed"})
 
+    def reopen_pr(self, slug: str, number: int) -> None:
+        """Reopen a closed PR. Raises GitHubError if GitHub refuses (e.g. the base branch is
+        gone, so the caller falls back to opening a fresh PR from the same head branch)."""
+        if self.gh:
+            self._gh("pr", "reopen", str(number), "-R", slug)
+        else:
+            self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "open"})
+
+    def branch_exists(self, slug: str, branch: str) -> bool:
+        """Whether `branch` still exists on the remote."""
+        try:
+            self._rest_or_gh_branch(slug, branch)
+            return True
+        except GitHubError:
+            return False
+
+    def _rest_or_gh_branch(self, slug: str, branch: str) -> Any:
+        if self.gh:
+            return self._gh("api", f"repos/{slug}/branches/{branch}")
+        return self._rest("GET", f"/repos/{slug}/branches/{branch}")
+
+    def base_ref_deleted(self, slug: str, number: int) -> bool:
+        """Whether GitHub closed this PR because its base branch was deleted: the PR timeline
+        carries a `base_ref_deleted` event. Best-effort — False when the timeline can't be read."""
+        try:
+            if self.gh:
+                events = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/timeline", "--paginate") or "[]")
+            else:
+                events = self._rest("GET", f"/repos/{slug}/issues/{number}/timeline", params={"per_page": 100}) or []
+        except GitHubError:
+            return False
+        return any(isinstance(e, dict) and e.get("event") == "base_ref_deleted" for e in events)
+
     def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True) -> None:
         """Merge an open PR. `method` is squash | merge | rebase. Raises GitHubError if GitHub
         refuses the merge (not mergeable, failing required checks, blocked by a review)."""

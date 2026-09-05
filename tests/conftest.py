@@ -151,6 +151,10 @@ class FakeGitHub:
         self.readied: list[int] = []
         self.merged: list[dict] = []
         self.feedback: dict[int, Feedback] = {}
+        self.reopened: list[int] = []
+        self.deleted_branches: set[str] = set()  # branches GitHub has deleted
+        self.base_deleted: set[int] = set()  # PR numbers with a base_ref_deleted timeline event
+        self.refuse_reopen: set[int] = set()  # PR numbers GitHub refuses to reopen
         self._n = 100
 
     def describe(self):
@@ -204,8 +208,27 @@ class FakeGitHub:
             if pr.number == number:
                 pr.state = "MERGED"
                 self.merged.append({"number": number, "method": method, "delete_branch": delete_branch})
+                if delete_branch:
+                    self.deleted_branches.add(pr.head)
                 return
         raise KeyError(number)
+
+    def reopen_pr(self, slug, number):
+        from garden.github import GitHubError
+        if number in self.refuse_reopen:
+            raise GitHubError("cannot reopen: base branch was deleted")
+        for pr in self.prs.values():
+            if pr.number == number:
+                pr.state = "OPEN"
+                self.reopened.append(number)
+                return
+        raise KeyError(number)
+
+    def branch_exists(self, slug, branch):
+        return branch not in self.deleted_branches
+
+    def base_ref_deleted(self, slug, number):
+        return number in self.base_deleted
 
     def update_pr(self, slug, number, title="", body="", base=""):
         for pr in self.prs.values():
