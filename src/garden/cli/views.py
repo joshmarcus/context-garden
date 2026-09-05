@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 
 import typer
+from rich import box
 from rich.table import Table
 
 from ..model import STATUS_ORDER, Status, priority_label
-from .common import _scheduler, _store, _style, _task, app, console
+from .common import PANEL_BOARD, _scheduler, _store, _style, _task, app, console
 
 
 # --------------------------------------------------------------------------- read-only views
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def status(
     product: str | None = typer.Option(None, "--product", "-p"),
     all_: bool = typer.Option(False, "--all", help="One row per closed phase too, instead of a summary line"),
@@ -23,13 +24,18 @@ def status(
 
     store = _store()
     tasks = store.tasks()
-    table = Table(title=f"garden: {store.config.get('name')}  ({store.root})", show_lines=False)
-    table.add_column("product/phase")
-    cols = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "failed"]
-    short = {"blocked": "blkd", "running": "run", "waiting_human": "wait", "awaiting_triage": "triage", "in_review": "review", "changes_requested": "chg", "failed": "fail"}
+    # Compact so a full lifecycle (now with wont_do) still fits an 80-column terminal: a
+    # minimal box, no edge padding, two-letter headers, and a legend printed underneath.
+    table = Table(title=f"garden: {store.config.get('name')}  ({store.root})", show_lines=False,
+                  box=box.SIMPLE_HEAD, padding=(0, 1), pad_edge=False, collapse_padding=True)
+    table.add_column("phase")
+    cols = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_triage", "in_review", "changes_requested", "done", "wont_do", "failed"]
+    short = {"draft": "df", "blocked": "bl", "ready": "rd", "running": "rn", "waiting_human": "wh",
+             "awaiting_triage": "tr", "in_review": "rv", "changes_requested": "cr", "done": "dn",
+             "wont_do": "wd", "failed": "fl"}
     for s in cols:
-        table.add_column(short.get(s, s), justify="right")
-    table.add_column("attn", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
+        table.add_column(short[s], justify="right")
+    table.add_column("!", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
     stack = bool(store.config.get("stack", True))
@@ -59,6 +65,8 @@ def status(
             if pending:
                 retro_waiting.append((ph.key, pending))
     console.print(table)
+    legend = "  ".join(f"{short[s]} {s}" for s in cols) + "  ! needs you"
+    console.print(f"[dim]{legend}[/dim]")
     for key, pending in retro_waiting:
         console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
     if closed_phases:
@@ -104,7 +112,7 @@ def _count(n: int, s: str) -> str:
     return _style(s, str(n)) if n else "[dim]·[/dim]"
 
 
-@app.command("ls")
+@app.command("ls", rich_help_panel=PANEL_BOARD)
 def ls(
     product: str | None = typer.Option(None, "--product", "-p"),
     phase: str | None = typer.Option(None, "--phase"),
@@ -147,7 +155,7 @@ def ls(
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verbatim")):
     """Show a task, its blockers and its runs."""
     from rich.markdown import Markdown
@@ -215,7 +223,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def ready():
     """Tasks that could be dispatched right now."""
     from ..graph import ready as _ready
@@ -225,7 +233,7 @@ def ready():
         console.print(f"{t.id}  pri={priority_label(t.priority)}  {t.title}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 @app.command("graph", hidden=True)
 def trellis(
     fmt: str = typer.Option("text", "--format", "-f", help="text|mermaid|json"),
@@ -261,7 +269,7 @@ def trellis(
         console.print(f"\ncritical path: {' -> '.join(cp)}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def validate():
     """Check the graph and reading lists for problems."""
     from ..graph import validate as _validate
@@ -281,7 +289,7 @@ def validate():
     console.print("[green]ok[/green]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def brief(
     task_id: str,
     revise: bool = typer.Option(False, help="Include pending review feedback"),

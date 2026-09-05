@@ -300,7 +300,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <div class="foot">
     {% if dispatch_paused %}
     <span style="color:var(--warn)">dispatch paused{% if pause_ctrl.by %} · by {{ pause_ctrl.by }}{% endif %}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}{% endif %}{% if pause_ctrl.reason %} · {{ pause_ctrl.reason }}{% endif %}</span>
-    <form method="post" action="/resume"><button class="quiet" style="color:var(--warn);border-color:var(--warn)">▶ Resume</button></form>
+    <form method="post" action="/resume"><button class="quiet" style="color:var(--warn);border-color:var(--warn)">▶ Resume dispatch</button></form>
     {% else %}
     <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick {{ last_tick[11:19] }}Z{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
     {% endif %}

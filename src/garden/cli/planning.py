@@ -8,11 +8,25 @@ import typer
 from rich.table import Table
 
 from ..model import now_iso
-from .common import _phase, _scheduler, _split_target, _store, _style, _task, app, console, err
+from .common import (
+    PANEL_INSIGHT,
+    PANEL_PLAN,
+    PANEL_QUALITY,
+    PANEL_REVIEW,
+    _phase,
+    _scheduler,
+    _split_target,
+    _store,
+    _style,
+    _task,
+    app,
+    console,
+    err,
+)
 
 
 # --------------------------------------------------------------------------- planning
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def plan(
     target: str = typer.Argument(..., help="product/phase"),
     dry_run: bool = typer.Option(False, help="Print the planning prompt and exit"),
@@ -67,7 +81,7 @@ def plan(
         console.print("no new tasks (all titles already existed)")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_REVIEW)
 def prs(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
     """Every tracked PR: state, review decision, CI, revisions, last poll."""
     from ..scheduler import State
@@ -94,7 +108,7 @@ def prs(target: str | None = typer.Argument(None, help="product/phase (default: 
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_QUALITY)
 def qa(
     scripted: bool = typer.Option(False, "--scripted", help="Drive the flows with the built-in script instead of an agent (no tokens)"),
     phase: str = typer.Option("", "--phase", help="product/phase in this garden to file the findings on as friction reports"),
@@ -145,7 +159,7 @@ def qa(
         raise typer.Exit(1)
 
 
-@app.command("friction-report")
+@app.command("friction-report", rich_help_panel=PANEL_QUALITY)
 def friction_report(
     target: str = typer.Argument(..., help="product/phase"),
     text: str = typer.Argument(..., help="Friction description"),
@@ -177,7 +191,7 @@ def friction_report(
             console.print(f"[dim]{ph.key} is closed; friction recorded but no draft task created[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_QUALITY)
 def friction(target: str = typer.Argument(..., help="product/phase")):
     """Write <phase>/docs/friction.md: reported friction from the record and marked PR comments,
     plus any legacy ## Friction sections in old PR bodies."""
@@ -222,7 +236,7 @@ def friction(target: str = typer.Argument(..., help="product/phase")):
     console.print(f"wrote {doc} ({n} task{'s' if n != 1 else ''} with friction{extra})")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_QUALITY)
 def retro(
     target: str = typer.Argument(..., help="product/phase"),
     personas: list[str] = typer.Option([], "--persona", "-p", help="Persona name (repeat); default: all configured/built-in"),
@@ -273,7 +287,7 @@ def retro(
     console.print("[dim]run `garden tick` (or `garden watch`) to let it finish[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_INSIGHT)
 def usage(
     target: str | None = typer.Argument(None, help="task id, product/phase, or nothing for everything"),
     by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
@@ -339,7 +353,7 @@ def usage(
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_REVIEW)
 def review(task_id: str):
     """Start an automated review run for a task's open PR now. If the task's review cap
     was already reached, this raises it by one round and clears the needs-human stop."""

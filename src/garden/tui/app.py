@@ -87,7 +87,7 @@ class GardenTUI(App):
         Binding("a", "approve", "Approve"),
         Binding("d", "dispatch", "Dispatch"),
         Binding("x", "cancel", "Cancel"),
-        Binding("e", "retry", "Reset→ready"),
+        Binding("e", "retry", "Continue loop"),
         Binding("b", "brief", "Brief size"),
         Binding("l", "log", "Log"),
         Binding("f", "filter", "Filter open/all"),

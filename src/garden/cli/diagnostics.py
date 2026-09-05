@@ -8,12 +8,11 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from .. import __version__
-from .common import _scheduler, _store, app, console, err
+from .common import PANEL_BOARD, PANEL_DIAG, _scheduler, _store, app, console, err
 
 
 # --------------------------------------------------------------------------- runs / diagnostics
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def runs(task_id: str | None = typer.Argument(None)):
     """List runs (all, or for one task)."""
     from ..runs import RunStore
@@ -33,7 +32,7 @@ def runs(task_id: str | None = typer.Argument(None)):
     console.print(table)
 
 
-@app.command("log")
+@app.command("log", rich_help_panel=PANEL_BOARD)
 def log_(task_id: str, lines: int = typer.Option(60, "-n")):
     """Tail the latest run's output for a task."""
     from ..runs import RunStore
@@ -56,7 +55,7 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         console.print(f"[red]error:[/red] {r.error}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def doctor():
     """Check config, tools (claude, gh/token), repos and the task graph."""
     import subprocess
@@ -200,7 +199,7 @@ def doctor():
     raise typer.Exit(0 if ok else 1)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8765),
@@ -215,7 +214,7 @@ def serve(
     uvicorn.run(create_app(store, watch=watch_), host=host, port=port, log_level="warning")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def tui():
     """Terminal UI."""
     from ..tui.app import GardenTUI
@@ -223,16 +222,15 @@ def tui():
     GardenTUI(_store()).run()
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def version():
     """The tool version and, for a pinned git install, the installed commit."""
-    from ..upgrade import installed_commit
+    from .common import version_string
 
-    sha = installed_commit()
-    print(f"{__version__} ({sha[:12]})" if sha else __version__)
+    print(version_string())
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def upgrade(
     restart: bool = typer.Option(False, "--restart", help="Re-exec `garden serve` on success (usually the running loop does this)"),
     force: bool = typer.Option(False, "--force", help="Reinstall even if no upgrade is recorded, using the tool product's base sha"),

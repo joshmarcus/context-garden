@@ -17,6 +17,46 @@ console = Console()
 err = Console(stderr=True)
 
 
+# The help panels `garden --help` groups its commands under. One vocabulary, one place: every
+# command names its panel from this list so the ~50 commands read as a handful of groups
+# instead of a flat wall. Rich shows the panels in the order their first command registers.
+PANEL_SETUP = "Setting up"
+PANEL_PHASES = "Phases"
+PANEL_BOARD = "Seeing the board"
+PANEL_PLAN = "Planning work"
+PANEL_LOOP = "Running the loop"
+PANEL_DECIDE = "Needs you"
+PANEL_REVIEW = "PRs and review"
+PANEL_INSIGHT = "Cost and insight"
+PANEL_QUALITY = "Quality and retros"
+PANEL_DIAG = "Diagnostics"
+
+
+def version_string() -> str:
+    """The tool version, with the installed commit for a pinned git install. One place so
+    `garden version` and `garden --version` agree."""
+    from .. import __version__
+    from ..upgrade import installed_commit
+
+    sha = installed_commit()
+    return f"{__version__} ({sha[:12]})" if sha else __version__
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        print(version_string())
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(  # noqa: ARG001 - consumed by the eager callback before the command runs
+        False, "--version", "-V", callback=_version_callback, is_eager=True,
+        help="Show the tool version and exit."),
+) -> None:
+    """Tend a context garden: plan tasks, dispatch agents, track PRs."""
+
+
 def _store(root: Path | None = None):
     from ..store import Store
 

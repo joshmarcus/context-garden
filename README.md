@@ -174,11 +174,13 @@ push; the runner does.
 | `garden check ID [--stage ci]` | run the token-free checks by hand |
 | `garden digest [--since 24h]` / `metrics [product/phase]` / `events [ID]` | what happened, how it's going, the timeline |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
+| `garden pause [--reason ...]` / `unpause` | pause and resume automatic dispatch |
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
 | `garden take ID [--worktree]` / `finish ID --result '{...}'` | human-driven session path |
-| `garden pr ID URL` / `cancel ID` / `retry ID` / `set-status ID STATUS` | manual state changes |
+| `garden retry ID` / `resume ID` | continue the loop on a task; clear a task's needs-you stop |
+| `garden pr ID URL` / `cancel ID` / `set-status ID STATUS` | manual state changes |
 | `garden usage [ID or product/phase] [--by-mode]` | tokens and cost per task |
-| `garden runs [ID]` / `log ID` / `doctor` | run records, cost, diagnostics |
+| `garden runs [ID]` / `log ID` / `doctor` / `version` (or `--version`) | run records, cost, diagnostics, version |
 | `garden qa [--scripted] [--phase product/phase]` | an agent drives the loop end to end through the web app on a throwaway garden |
 
 ## The scheduler
@@ -212,8 +214,9 @@ Borrowed from graph-based agent systems; all deterministic:
 - **Stacked dependencies.** A task whose dependency has an open PR starts on top of that
   branch instead of waiting for the merge; its PR targets the parent branch and is
   retargeted and rebased when the parent merges. Conflicts become a revise run.
-- **Pause and resume.** A worker that needs a decision reports `needs_input`; the task
-  waits (holding no slot) until `garden answer ID "..."`, then the same session resumes.
+- **A question waits for an answer.** A worker that needs a decision reports `needs_input`;
+  the task waits (holding no slot) until `garden answer ID "..."`, then the same session
+  resumes. (Pausing the whole loop is separate: `garden pause` / `garden unpause`.)
 - **Discovered work.** Workers list out-of-scope work they noticed; it becomes task files
   with `discovered_from`, ready immediately when blocking. `garden ls --discovered`.
 - **Stall detection and budgets.** A revise round that changes nothing, or a review
