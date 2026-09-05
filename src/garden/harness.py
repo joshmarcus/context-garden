@@ -24,6 +24,27 @@ from .brief import parse_result
 # the harness instead of failing the task.
 AUTH_FAILURE_MARKERS = ("not logged in", "not authenticated")
 
+# Per-model prices in USD per million tokens, keyed by field name: `input` (uncached),
+# `cached_input` (a cache hit; OpenAI prices this at 10% of the input rate), `cache_write`
+# (creating a cache entry) and `output`. `long_context_threshold`/`long_context` give an
+# alternate `input`/`output` rate for a single request whose total input tokens (uncached +
+# cached + cache write) exceed the threshold — gpt-6-astra's tier above 272K tokens/request.
+# List prices at the time this table was written (2026-09-05), from the operator's note in
+# context-garden/phase-05/specs/cost-aware-model-routing.md after the CG-225 trials; both
+# accounts bill by subscription, so this is a common measure of quota consumed, not a bill.
+# Prices change — edit `harnesses.codex.prices` (or the generic `prices:` map) in garden.yaml
+# rather than here, so a config change survives a `context-garden` upgrade.
+CODEX_PRICES: dict[str, dict[str, Any]] = {
+    "gpt-6-astra": {
+        "input": 10.0, "cached_input": 1.0, "cache_write": 12.5, "output": 50.0,
+        "long_context_threshold": 272_000,
+        "long_context": {"input": 20.0, "output": 75.0},
+    },
+    "gpt-5.6-sol": {"input": 4.0, "cached_input": 0.4, "output": 20.0},    # promotional
+    "gpt-5.6-terra": {"input": 2.0, "cached_input": 0.2, "output": 12.0},
+    "gpt-5.6-luna": {"input": 0.2, "cached_input": 0.02, "output": 1.2},
+}
+
 DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
     "claude": {
         "bin": "claude",
@@ -41,6 +62,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "models": {"easy": "gpt-5.6-luna", "medium": "gpt-5.6-terra", "hard": "gpt-5.6-sol"},
         "review_model": "",
         "resume": True,                  # `codex exec resume <id>` after a human answers
+        "prices": CODEX_PRICES,
     },
 }
 
@@ -258,13 +280,18 @@ class Harness:
         return " ".join(shlex.quote(c) for c in self.resume_command(session_id, model, final_path, difficulty))
 
     # ---- output ------------------------------------------------------------
-    def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None) -> dict[str, Any]:
-        """Normalise output to {final_text, usage, cost_usd, error, session_id, result,
-        env_error, env_kind}. `env_error` is True when the run stopped on something outside
-        the worker's control rather than the task (currently just a login failure, `env_kind`
-        "auth"); the scheduler pauses the harness instead of failing the task."""
+    def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None, model: str = "") -> dict[str, Any]:
+        """Normalise output to {final_text, usage, cost_usd, error, session_id, result, model,
+        missing_price, env_error, env_kind}. `env_error` is True when the run stopped on
+        something outside the worker's control rather than the task (currently just a login
+        failure, `env_kind` "auth"); the scheduler pauses the harness instead of failing the
+        task. `model` is the model the run was dispatched with (the resolved tier map or a
+        `-m` override); a harness whose own output reports the model it actually ran (codex)
+        confirms or overrides it with that. `missing_price` names a model that has usage but
+        no entry in this harness's `prices` table, so `cost_usd` comes back None instead of
+        silently wrong."""
         out: dict[str, Any] = {"final_text": "", "usage": {}, "cost_usd": None, "error": "", "session_id": "", "result": {},
-                               "env_error": False, "env_kind": ""}
+                               "model": model, "missing_price": "", "env_error": False, "env_kind": ""}
         if final_path is not None and final_path.exists():
             out["final_text"] = final_path.read_text()
         if self.output == "claude-json":
@@ -274,7 +301,7 @@ class Harness:
             else:
                 _parse_claude(stdout, out)
         elif self.output == "codex-jsonl":
-            _parse_codex(stdout, out)
+            _parse_codex(stdout, out, self.cfg.get("prices") or {})
         else:
             out["final_text"] = out["final_text"] or stdout
         if not out["final_text"].strip() and not out["error"]:
@@ -345,8 +372,37 @@ def _parse_claude_stream(stdout: str, out: dict[str, Any]) -> None:
     _parse_claude_dict(result_data, out)
 
 
-def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
+def _price_tier(spec: dict[str, Any], total_input_tokens: int) -> dict[str, Any]:
+    """`spec`'s prices, or its `long_context` override where given once `total_input_tokens`
+    (uncached + cached + cache write, for one request) passes `long_context_threshold`."""
+    threshold = spec.get("long_context_threshold")
+    long_context = spec.get("long_context")
+    if threshold and isinstance(long_context, dict) and total_input_tokens > threshold:
+        return {**spec, **long_context}
+    return spec
+
+
+def _usage_cost(usage: dict[str, Any], model: str, prices: dict[str, Any]) -> tuple[float | None, str]:
+    """List-price cost for one run's usage: uncached input, cached input (typically 10% of
+    the input price), cache writes and output, each at `model`'s per-million-token rate in
+    `prices`. Returns (None, model) when `model` has no entry — usage is still recorded, the
+    cost just is not, rather than silently costing it at the wrong rate."""
+    spec = prices.get(model)
+    if not isinstance(spec, dict):
+        return None, model
+    input_tok = int(usage.get("input_tokens", 0) or 0)
+    cached_tok = int(usage.get("cache_read_input_tokens", 0) or 0)
+    write_tok = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    output_tok = int(usage.get("output_tokens", 0) or 0)
+    tier = _price_tier(spec, input_tok + cached_tok + write_tok)
+    cost = (input_tok * tier.get("input", 0) + cached_tok * tier.get("cached_input", 0)
+            + write_tok * tier.get("cache_write", 0) + output_tok * tier.get("output", 0)) / 1_000_000
+    return cost, ""
+
+
+def _parse_codex(stdout: str, out: dict[str, Any], prices: dict[str, Any] | None = None) -> None:
     last_msg = ""
+    reported_model = ""
     for line in stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -357,6 +413,8 @@ def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
             continue
         if not isinstance(ev, dict):
             continue
+        if ev.get("model"):
+            reported_model = str(ev["model"])
         t = ev.get("type", "")
         if t == "item.completed":
             item = ev.get("item") or {}
@@ -367,8 +425,11 @@ def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
             out["usage"] = {
                 # Codex input includes cached tokens; garden counts them separately.
                 "input_tokens": max(0, u.get("input_tokens", 0) - u.get("cached_input_tokens", 0)),
-                "output_tokens": u.get("output_tokens", 0),
+                # Reasoning tokens are billed as output; garden's usage shape (matching
+                # claude's) has no separate field for them.
+                "output_tokens": u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0),
                 "cache_read_input_tokens": u.get("cached_input_tokens", 0),
+                "cache_creation_input_tokens": u.get("cache_write_input_tokens", 0),
             }
         elif t == "thread.started":
             out["session_id"] = str(ev.get("thread_id") or "")
@@ -376,3 +437,7 @@ def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
             out["error"] = str(ev.get("message") or ev.get("error") or "codex error")
     if not out["final_text"]:
         out["final_text"] = last_msg
+    if reported_model:
+        out["model"] = reported_model
+    if out["usage"]:
+        out["cost_usd"], out["missing_price"] = _usage_cost(out["usage"], str(out["model"]), prices or {})
