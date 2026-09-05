@@ -63,6 +63,7 @@ def doctor():
     from ..github import GitHub
     from ..graph import validate as _validate
     from ..runner import get_runner
+    from ..runner.base import scrubbed_env
 
     store = _store()
     failures: list[str] = []
@@ -105,11 +106,17 @@ def doctor():
         h = store.config.harness(hn)
         found = shutil.which(h.bin)
         if found:
-            if h.is_authenticated():
+            # Check login through the same scrubbed environment a worker gets (runner.base.
+            # scrubbed_env), not doctor's own shell: a harness reachable there is what
+            # actually dispatches. A trivial one-line prompt, not an "auth status" probe, so
+            # a custom harness with no such subcommand is checked the same way.
+            ok, detail = h.check_login(scrubbed_env(store.config.data))
+            if ok:
                 console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
+                fix = detail or f"run {h.bin}'s login command"
                 console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
-                              f"  (fix: run {h.bin}'s login command)")
+                              f"  (fix: {fix})")
                 fail(f"harness {hn}")
         else:
             console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"

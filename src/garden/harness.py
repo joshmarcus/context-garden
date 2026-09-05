@@ -15,6 +15,14 @@ from typing import Any
 
 from .brief import parse_result
 
+# Substrings (checked case-insensitively across stdout, stderr and the parsed final message)
+# that mark a run as failing for lack of a login rather than for anything the brief asked:
+# claude's own CLI prints "Not logged in · Please run /login" when the scrubbed environment's
+# CLAUDE_CONFIG_DIR carries no credentials. `Harness.parse` tags these `error_kind: "auth"`
+# so `garden doctor` (`Harness.check_login`) can report the fix, and so a real dispatch can
+# eventually be told apart from a worker's own failure (an environment stop, not a task one).
+AUTH_FAILURE_MARKERS = ("not logged in", "not authenticated")
+
 DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
     "claude": {
         "bin": "claude",
@@ -185,20 +193,43 @@ class Harness:
     def shell_command(self, model: str = "", final_path: Path | None = None, difficulty: str = "") -> str:
         return " ".join(shlex.quote(c) for c in self.command(model, final_path, difficulty))
 
-    def is_authenticated(self) -> bool:
-        if self.name == "claude":
-            try:
-                subprocess.run([self.bin, "auth", "status", "--json"], capture_output=True, text=True, check=True)
-                return True
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                return False
-        elif self.name == "codex":
-            try:
-                subprocess.run([self.bin, "exec", "auth", "status"], capture_output=True, text=True, check=True)
-                return True
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                return False
-        return True
+    def login_probe(self) -> tuple[list[str], str]:
+        """argv and stdin text for a trivial one-line prompt used only to check login —
+        `garden doctor`'s use, never a real work run. No permission flags, no fence: the
+        probe writes nothing and needs none."""
+        prompt = "Reply with the single word: ready."
+        model = self.model_for("easy")
+        if self.output == "claude-json":
+            cmd = [self.bin, "-p", "--output-format", "json"]
+            if model:
+                cmd += ["--model", model]
+            cmd.append(prompt)
+            return cmd, ""
+        if self.output == "codex-jsonl":
+            cmd = [self.bin, "exec", "--json", "--skip-git-repo-check", "-c", 'approval_policy="never"']
+            if model:
+                cmd += ["-m", model]
+            cmd.append("-")
+            return cmd, prompt
+        return [self.bin], prompt  # a fully custom harness: best effort with its default shape
+
+    def check_login(self, env: dict[str, str], timeout: int = 30) -> tuple[bool, str]:
+        """Run the one-line prompt from `login_probe` through `env` (see
+        `runner.base.scrubbed_env`) — the environment a worker actually gets, not the
+        operator's shell — and report (logged in, detail). False when `parse` classifies the
+        output as an auth failure, or the binary could not be run at all."""
+        cmd, stdin_text = self.login_probe()
+        try:
+            proc = subprocess.run(cmd, input=stdin_text, capture_output=True, text=True,
+                                  timeout=timeout, env=env, check=False)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        parsed = self.parse(proc.stdout, proc.stderr)
+        if parsed.get("error_kind") == "auth":
+            return False, parsed.get("error") or "not logged in"
+        if proc.returncode != 0:
+            return False, parsed.get("error") or f"exited {proc.returncode}"
+        return True, ""
 
     @property
     def can_resume(self) -> bool:
@@ -227,7 +258,9 @@ class Harness:
 
     # ---- output ------------------------------------------------------------
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None) -> dict[str, Any]:
-        """Normalise output to {final_text, usage, cost_usd, error, session_id, result}."""
+        """Normalise output to {final_text, usage, cost_usd, error, session_id, result}, plus
+        `error_kind: "auth"` when the output looks like a login failure rather than a worker
+        or task problem (see AUTH_FAILURE_MARKERS)."""
         out: dict[str, Any] = {"final_text": "", "usage": {}, "cost_usd": None, "error": "", "session_id": "", "result": {}}
         if final_path is not None and final_path.exists():
             out["final_text"] = final_path.read_text()
@@ -244,6 +277,11 @@ class Harness:
         if not out["final_text"].strip() and not out["error"]:
             out["error"] = (stderr.strip()[-2000:] or "worker produced no output")
         out["result"] = parse_result(out["final_text"]) or parse_result(stdout)
+        blob = f"{out['final_text']} {stdout} {stderr}".lower()
+        if any(marker in blob for marker in AUTH_FAILURE_MARKERS):
+            out["error_kind"] = "auth"
+            if not out["error"]:
+                out["error"] = "not logged in"
         return out
 
 

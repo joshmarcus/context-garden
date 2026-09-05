@@ -247,6 +247,34 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
     assert env["HOME"] == os.environ["HOME"]
 
 
+def test_scrubbed_env_carries_each_harness_config_dir_by_default(monkeypatch):
+    """CG-217: an isolated worker HOME must not also hide a harness's saved login. Each
+    harness's own config-dir variable is set to the *operator's* real home by default, even
+    though HOME itself points at the isolated scratch home."""
+    from garden.runner.base import scrubbed_env
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    env = scrubbed_env({}, worktree="/wt/T-1")
+    assert env["HOME"] != os.environ["HOME"]  # the isolated scratch home, not the operator's
+    assert env["CLAUDE_CONFIG_DIR"] == str(Path(os.environ["HOME"]) / ".claude")
+    assert env["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")
+
+    # an operator-set value passes straight through (the CLAUDE_* / CODEX_* allowlist)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/srv/claude-creds")
+    env = scrubbed_env({}, worktree="/wt/T-1")
+    assert env["CLAUDE_CONFIG_DIR"] == "/srv/claude-creds"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    # worker_env.config_dirs overrides the default, keyed by the variable name
+    env = scrubbed_env({"worker_env": {"config_dirs": {"CLAUDE_CONFIG_DIR": "/opt/claude-creds",
+                                                        "MY_HARNESS_HOME": "/opt/my-harness"}}},
+                       worktree="/wt/T-1")
+    assert env["CLAUDE_CONFIG_DIR"] == "/opt/claude-creds"
+    assert env["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")  # untouched default
+    assert env["MY_HARNESS_HOME"] == "/opt/my-harness"  # a custom harness's own documented key
+
+
 def test_run_setup_runs_in_the_scrubbed_env(tmp_path, monkeypatch):
     from garden.runner.base import run_setup
 

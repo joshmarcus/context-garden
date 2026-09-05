@@ -643,6 +643,14 @@ spending tokens; a failed flow exits non-zero and fails the job.
   variable unset, so a host's ambient tokens do not reach the worker either. Only git's own
   fetch and push on the remote keep the login environment, since the remote host does its own
   pushing.
+- That same isolated `HOME` must not hide a harness's own saved login: `scrubbed_env` sets
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` to the operator's real home by default (unless already
+  passed through, or overridden by `worker_env.config_dirs`, keyed by the variable name — a
+  custom harness names its own key there). `garden doctor` proves each configured harness can
+  actually log in through this exact environment with a trivial one-line prompt
+  (`Harness.check_login`), not an ambient "auth status" call; `Harness.parse` tags a
+  login-failure output `error_kind: "auth"` so it reads as an environment problem, not a
+  worker's own failure.
 - A check's flaky-retry command (`checks.<>.retry_command`) comes only from the operator's
   config, never from a check's own JSON output (code the branch wrote), and runs in the same
   scrubbed environment — so a check cannot smuggle a shell command out through its output.

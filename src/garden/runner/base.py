@@ -67,6 +67,19 @@ def worker_home(worktree: Path | str | None) -> str:
     return str(home)
 
 
+# The config-dir variable each built-in harness reads, and where it points by default (relative
+# to the *operator's* real home, not the worker's isolated one): CLAUDE_CONFIG_DIR is where
+# claude keeps `.credentials.json`; CODEX_HOME is codex's whole state directory. Neither is on
+# PASS_ENV by name (only the `CLAUDE_*` / `CODEX_*` prefixes are), so an isolated worker HOME
+# does not silently hide either harness's saved login — see `scrubbed_env`. A custom harness
+# reads whatever variable its own CLI defines; name it as a key under `worker_env.config_dirs`
+# in garden.yaml to have its value passed the same way (`scrubbed_env` has no default for it).
+DEFAULT_CONFIG_DIRS: dict[str, str] = {
+    "CLAUDE_CONFIG_DIR": ".claude",
+    "CODEX_HOME": ".codex",
+}
+
+
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
                  worktree: Path | str | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
@@ -74,12 +87,27 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session.
     `HOME` is not inherited: unless `worker_env.pass` restores it, it is set to an isolated
     scratch home (`worker_home`), so neither the worker nor a branch's own test suite can read
-    the operator's gh token, git credentials or ssh keys."""
+    the operator's gh token, git credentials or ssh keys.
+
+    The private HOME would also hide each harness's own saved login (claude's
+    `~/.claude/.credentials.json`, codex's `~/.codex`), so `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+    are set to the operator's real home by default, unless the operator already set them (they
+    pass straight through the `CLAUDE_*` / `CODEX_*` allowlist) or `config['worker_env']
+    ['config_dirs']` overrides them — keyed by the variable name, e.g. `{CLAUDE_CONFIG_DIR:
+    /srv/claude-creds}`. A worker's isolated HOME then carries each harness's own config without
+    exposing the rest of the operator's home."""
     patterns = pass_env_patterns(config)
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
     env.pop("CLAUDECODE", None)
     if "HOME" not in env:  # dropped from PASS_ENV; give an isolated scratch home, not the operator's
         env["HOME"] = worker_home(worktree)
+    overrides = {str(k): str(v) for k, v in (((config or {}).get("worker_env") or {}).get("config_dirs") or {}).items()}
+    real_home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+    for var, rel in DEFAULT_CONFIG_DIRS.items():
+        if var not in env:  # not already passed through by the operator's own environment
+            env[var] = overrides.get(var, str(real_home / rel))
+    for var, val in overrides.items():  # a custom harness's own key, named explicitly
+        env.setdefault(var, val)
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env
