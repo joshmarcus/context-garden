@@ -247,7 +247,7 @@ class CheckRunMixin:
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)
             return
         st.pop("needs_human", None)
-        st.pop("automerge_blocked", None)
+        self._queue_leave(task)
         self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
         task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it and the pre-PR "
                  f"checks pass now — continuing without a worker run")
@@ -283,6 +283,4 @@ class CheckRunMixin:
             st = self.state.get(task.id)
             if st.get("review_run") or st.get("needs_human"):
                 return  # the rebase changed the diff: a new review round (or a human) now owns it
-            st["merge_head"] = True
-            self.events.emit("merge_head", task.id, waiting=True, reason="rebased; awaiting rollup")
-            self.log(f"{task.id}: rebased before merge; in flight until its rollup is green")
+            self._queue_head(task, announce=True)

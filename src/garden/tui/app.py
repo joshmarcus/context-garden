@@ -369,10 +369,17 @@ class GardenTUI(App):
             return
         t = self._current()
         if t and t.status == Status.DRAFT:
-            t.status = Status.READY
-            t.log("approved (tui)")
-            self.store.save(t)
-            self._msg = f"{t.id} approved"
+            sched = self._sched()
+            t = sched.store.task(t.id)
+            try:
+                ph = sched.store.phase(t.product, t.phase)
+            except KeyError:
+                ph = None
+            try:
+                sched.approve(t, by="tui", phase=ph)
+                self._msg = f"{t.id} approved"
+            except RuntimeError as e:
+                self._msg = str(e)
         self.action_refresh()
 
     @work(thread=True, exclusive=True, group="dispatch")

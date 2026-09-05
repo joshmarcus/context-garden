@@ -16,9 +16,8 @@ def approve(
     all_in: str | None = typer.Option(None, "--all", help="Approve every draft in product/phase"),
 ):
     """draft -> ready."""
-    from ..model import phase_refusal
-
     store = _store()
+    sched = _scheduler(store)
     targets = []
     if all_in:
         product, phase = _split_target(all_in)
@@ -30,17 +29,11 @@ def approve(
         raise typer.Exit(1) from None
     phases = {p.key: p for prod in store.products() for p in prod.phases}
     for t in targets:
-        if t.status != Status.DRAFT:
-            err.print(f"[yellow]{t.id} is {t.status.value}, skipping[/yellow]")
+        try:
+            sched.approve(t, by="cli", phase=phases.get(t.key))
+        except RuntimeError as e:
+            err.print(f"[yellow]{e}[/yellow]")
             continue
-        ph = phases.get(t.key)
-        refusal = phase_refusal(ph, t) if ph else ""
-        if refusal:
-            err.print(f"[red]{t.id}: {refusal}[/red]")
-            continue
-        t.status = Status.READY
-        t.log("approved")
-        store.save(t)
         console.print(f"{t.id} -> ready")
 
 

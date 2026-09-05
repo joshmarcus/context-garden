@@ -9,13 +9,30 @@ from typing import Any
 from .. import gitops
 from ..brief import resume_prompt
 from ..github import GitHubError, mark_garden_comment
-from ..model import Phase, Status, Task, ensure_open, now_iso
+from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..runs import Run
 from .report import TickReport
 from .state import _TaskState
 
 
 class HumanMixin:
+    # ---- approving a draft --------------------------------------------------
+    def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> None:
+        """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
+        task that is not a draft, and a closed or frozen phase without a freeze exception
+        (`phase_refusal`), then logs and saves. `by` names the surface ("cli"/"web"/"tui"),
+        recorded in the log line. Raises RuntimeError on a refusal so each surface reports it in
+        its own idiom (a skipped line, a flash, a status message)."""
+        if task.status != Status.DRAFT:
+            raise RuntimeError(f"{task.id} is {task.status.value}, not draft; nothing to approve")
+        if phase is not None:
+            refusal = phase_refusal(phase, task)
+            if refusal:
+                raise RuntimeError(refusal)
+        task.status = Status.READY
+        task.log(f"approved ({by})" if by else "approved")
+        self.store.save(task)
+
     # ---- human answers -----------------------------------------------------
     def answer(self, task: Task, text: str) -> Run:
         ensure_open(task)
@@ -171,8 +188,9 @@ class HumanMixin:
         m = re.search(r"/pull/(\d+)", url)
         new_number = int(m.group(1)) if m else None
         task.pr = url
-        for key in ("pr_number", "pr_state", "head_sha", "review_run", "automerge_blocked"):
+        for key in ("pr_number", "pr_state", "head_sha", "review_run"):
             st.pop(key, None)
+        self._queue_leave(task)
         if new_number:
             st["pr_number"] = new_number
         if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):

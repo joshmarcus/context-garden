@@ -289,6 +289,21 @@ def rebase_onto_capture(worktree: Path, onto: str) -> tuple[bool, list[str], dic
         return False, files, hunks
 
 
+def sync_and_rebase(worktree: Path, branch: str, base: str) -> tuple[bool, list[str], dict[str, str]]:
+    """Bring the worktree branch onto `base`, folding in commits that live only on
+    `origin/<branch>` first (`sync_remote_branch`) so a later force-push never discards them,
+    then rebasing onto the base (`rebase_onto_capture`). This is the one sync-then-rebase
+    sequence every mechanical-rebase path shares -- the rebase mixin, the restack, the base
+    probe and the merge queue all reach it through `Scheduler._rebase_and_record`. Returns
+    (ok, conflicted files, {path: contents with markers}); on a conflict at either step the
+    rebase is aborted so the worktree is left clean, and the hunks (empty for a sync conflict)
+    carry the textual conflict for a rebase brief."""
+    ok, files = sync_remote_branch(worktree, branch)
+    if not ok:
+        return False, files, {}
+    return rebase_onto_capture(worktree, base_ref(worktree, base))
+
+
 def diff_hash(worktree: Path, base: str) -> str:
     import hashlib
 

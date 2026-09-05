@@ -400,7 +400,7 @@ class ReapMixin:
             return True
         # No checks configured: the base recovered, so clear the stop and open the PR directly.
         st.pop("needs_human", None)
-        st.pop("automerge_blocked", None)
+        self._queue_leave(task)
         self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
         task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it "
                  f"and continuing without a worker run")
