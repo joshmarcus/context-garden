@@ -12,17 +12,17 @@ from .. import gitops
 from ..kickoff import (
     KICKOFF_MARKER,
     append_goal_gaps,
-    append_question_resolution,
     kickoff_brief,
     kickoff_doc_path,
     parse_kickoff,
     render_kickoff_doc,
 )
 from ..model import Phase, Task, now_iso
+from .questions import QuestionsMixin
 from .report import TickReport
 
 
-class KickoffMixin:
+class KickoffMixin(QuestionsMixin):
     # ---- kickoff: dispatch, reap, file --------------------------------------
     def has_kickoff(self, phase: Phase) -> bool:
         return kickoff_doc_path(phase).exists()
@@ -89,57 +89,6 @@ class KickoffMixin:
                                    discovered_from=f"kickoff:{phase.key}")
         return {"path": path, "issue": issue, "task_id": t.id}
 
-    def _file_kickoff_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str) -> dict[str, Any]:
-        question = str(item.get("question") or "").strip()
-        if not question:
-            return {}
-        decisions = self.state.get("_decisions")
-        did = f"{run_id}-q{idx}"
-        decisions[did] = {
-            "id": did, "kind": "question", "target": "", "target_title": question[:80],
-            "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
-            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"kickoff:{phase.key}",
-            "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
-            "discovered_from": f"kickoff:{phase.key}",
-        }
-        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
-        return {"question": question, "decision_id": did}
-
-    def answer_kickoff_question(self, decision_id: str, answer: str) -> dict[str, Any]:
-        d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "answered", answer.strip())
-        self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=True)
-        self.state.save()
-        return d
-
-    def dismiss_kickoff_question(self, decision_id: str) -> dict[str, Any]:
-        d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "dismissed", "")
-        self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=False)
-        self.state.save()
-        return d
-
-    def _pop_kickoff_question(self, decision_id: str) -> dict[str, Any]:
-        decisions = self.state.get("_decisions")
-        d = decisions.get(decision_id)
-        if not isinstance(d, dict) or d.get("kind") != "question" or d.get("status", "pending") != "pending":
-            raise KeyError(decision_id)
-        decisions.pop(decision_id, None)
-        return d
-
-    def _phase_of_decision(self, d: dict[str, Any]) -> Phase | None:
-        product, _, name = str(d.get("phase") or "").partition("/")
-        if not product or not name:
-            return None
-        try:
-            return self.store.phase(product, name)
-        except KeyError:
-            return None
-
     def file_kickoff(self, phase: Phase, data: dict[str, Any], run_id: str, difficulty: str = "", model: str = "") -> Path:
         """File everything a kickoff verdict raised — draft tasks for design gaps and doc
         gaps, decision cards for questions, goal gaps appended to goals.md — and write the
@@ -150,7 +99,7 @@ class KickoffMixin:
                                     for it in data.get("design_needed") or [] if isinstance(it, dict)) if f]
         filed_docs = [f for f in (self._file_kickoff_doc(phase, it)
                                   for it in data.get("docs") or [] if isinstance(it, dict)) if f]
-        filed_questions = [f for f in (self._file_kickoff_question(phase, it, i, run_id)
+        filed_questions = [f for f in (self._file_question(phase, it, i, run_id)
                                        for i, it in enumerate(data.get("questions") or []) if isinstance(it, dict)) if f]
         goals_gaps = [g for g in data.get("goals_gaps") or [] if isinstance(g, dict) and str(g.get("goal") or "").strip()]
         if goals_gaps:

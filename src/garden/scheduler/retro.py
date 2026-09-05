@@ -470,7 +470,8 @@ class RetroMixin:
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, followups=followups,
                                                blocking=blocking, next_phase=next_phase,
-                                               difficulty=run.difficulty, model=run.model, numbers=numbers))
+                                               difficulty=run.difficulty, model=run.model, numbers=numbers)
+                              + f"\n<!-- retro-run:{run.run_id} -->\n")
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
@@ -523,6 +524,12 @@ class RetroMixin:
                 rep.errors.append(f"retro {phase.key}: branch pushed but PR failed: {e}")
         self.events.emit("retro_done", "", phase=phase.key, pr=pr_url, branch=branch, items=n_items, cost_usd=run.cost_usd)
         rep.transitions.append(f"retro {phase.key} -> {pr_url or branch}")
+        for i, item in enumerate(rev.get("questions") or []):
+            if isinstance(item, dict):
+                self._file_question(
+                    phase, item, i, run.run_id, source="retro", blocking=item.get("blocking") is True,
+                    next_phase=next_phase, retro_path=str(retro_path.relative_to(wt)),
+                    goals_path=str(goals_path.relative_to(wt)), worktree=str(wt), branch=branch, base=base)
         self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url)
 
     # ---- the verdict: close, close with follow-ups, or reopen --------------
@@ -611,6 +618,11 @@ class RetroMixin:
         if phase.key not in vs:
             raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
         rec = vs[phase.key]
+        unanswered = [q for q in self.retro_questions(phase.key)
+                      if q.get("blocking") and q.get("status") != "answered"]
+        if unanswered:
+            raise RuntimeError("answer the blocking retro questions first: "
+                               + ", ".join(q["id"] for q in unanswered))
         if choice == "reopen":
             if phase.closed:
                 self.reopen_phase(phase)

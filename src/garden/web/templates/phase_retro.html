@@ -6,6 +6,15 @@
     <p>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done{% if cancelled %} · {{ cancelled }} cancelled{% endif %} · {{ runs }} run(s) · spent ${{ '%.2f' % spent }}{% if phase.closed %} · closed {{ phase.closed }}{% endif %}</p></div>
   <div class="tools"><a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}">Phase page</a><a class="btn" href="/herbarium">Herbarium</a></div>
 </div>
+{% if questions %}
+<div class="panel"><h2>Questions for the owner</h2>
+{% for q in questions %}
+<p><b>{{ q.question }}</b>{% if q.blocking %} · blocking{% endif %} — {{ q.status }}</p>
+{% if q.get("answer") %}<p>{{ q.answer }} · {{ q.resolved_by }} · {{ q.resolved_at }}</p>{% endif %}
+{% if q.status == 'pending' %}<a href="/inbox">Answer in Inbox</a>{% endif %}
+{% endfor %}
+</div>
+{% endif %}
 {% if not has_retro %}
 <div class="empty">no retro yet — <code>garden retro {{ phase.key }}</code> reconciles the phase's friction and files this page</div>
 {% else %}

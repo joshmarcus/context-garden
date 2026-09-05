@@ -183,7 +183,7 @@ def register(app: FastAPI, site: Site) -> None:
             runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
-            persona_heads=persona_heads, retro_tasks=retro_tasks,
+            persona_heads=persona_heads, retro_tasks=retro_tasks, questions=sched.retro_questions(ph.key),
             retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks)))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
@@ -215,7 +215,8 @@ def _kickoff_panel(s: Any, sched: Any, ph: Any) -> dict[str, Any]:
         "running": sched.kickoff_pending(ph.key),
         "design_tasks": [t for t in filed if t.extra.get("spike")],
         "doc_tasks": [t for t in filed if not t.extra.get("spike")],
-        "questions": [d for d in sched.pending_decisions() if d.get("kind") == "question" and d.get("phase") == ph.key],
+        "questions": [d for d in sched.pending_decisions() if d.get("kind") == "question" and d.get("phase") == ph.key
+                      and d.get("source", "kickoff") == "kickoff"],
     }
 
 

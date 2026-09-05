@@ -200,10 +200,10 @@ def decide(
     decision_id: str,
     accept: bool = typer.Option(False, "--accept", help="Cancel the named task"),
     reject: bool = typer.Option(False, "--reject", help="Dismiss the card; log the disagreement"),
-    answer: str | None = typer.Option(None, "--answer", help="Answer a kickoff question card"),
-    dismiss: bool = typer.Option(False, "--dismiss", help="Dismiss a kickoff question card without answering"),
+    answer: str | None = typer.Option(None, "--answer", help="Answer a kickoff or retro question card"),
+    dismiss: bool = typer.Option(False, "--dismiss", help="Dismiss a kickoff or retro question card without answering"),
 ):
-    """Resolve a worker's decision card (a duplicate/cancel discovery), or a kickoff question
+    """Resolve a worker's decision card (a duplicate/cancel discovery), or a kickoff or retro question
     (--answer/--dismiss)."""
     if sum([accept, reject, answer is not None, dismiss]) != 1:
         err.print("[red]choose exactly one of --accept / --reject / --answer / --dismiss[/red]")
@@ -212,15 +212,18 @@ def decide(
     sched = _scheduler(store)
     try:
         if answer is not None:
-            sched.answer_kickoff_question(decision_id, answer)
+            sched.answer_question(decision_id, answer)
             console.print(f"decision {decision_id} answered")
         elif dismiss:
-            sched.dismiss_kickoff_question(decision_id)
+            sched.dismiss_question(decision_id)
             console.print(f"decision {decision_id} dismissed")
         else:
             d = sched.resolve_decision(decision_id, accept=accept)
             verb = "accepted" if accept else "rejected"
             console.print(f"decision {decision_id} {verb} (target {d.get('target', '')})")
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     except KeyError:
         err.print(f"[red]no pending decision {decision_id!r}[/red]")
         raise typer.Exit(1) from None

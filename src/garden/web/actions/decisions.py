@@ -22,11 +22,13 @@ def register(app: FastAPI, site: Site) -> None:
             sched = hub.scheduler()
             try:
                 if action == "answer":
-                    sched.answer_kickoff_question(decision_id, answer)
+                    sched.answer_question(decision_id, answer, by="web")
                 elif action == "dismiss":
-                    sched.dismiss_kickoff_question(decision_id)
+                    sched.dismiss_question(decision_id, by="web")
                 else:
                     sched.resolve_decision(decision_id, accept=(action == "accept"))
+            except RuntimeError as e:
+                raise HTTPException(409, str(e)) from None
             except KeyError:
                 raise HTTPException(404) from None
         return RedirectResponse(redirect_to, status_code=303)

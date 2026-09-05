@@ -74,6 +74,10 @@ decide a verdict and give the evidence:
 - `outdated` — it was a transient snapshot (a mid-run environment state) that no longer holds.
 - `disputed` — it was wrong, or the reviewers disagree it is friction.
 
+Report questions only a human can decide in `questions`: each has `question`, `context`,
+`options` (a list), and `blocking` (boolean). Mark a question blocking only when its
+answer is needed to accept a `reopen` verdict; other questions inform the next phase.
+
 Then draft the next phase's goals from what is *still true* plus what the personas raised.
 
 Also rank five to eight features for the next phase, drawn from the product-manager persona's
@@ -100,7 +104,7 @@ and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": false}}], "reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -503,6 +507,12 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     still_open = [str(s).strip() for s in rev.get("still_open") or [] if str(s).strip()]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
+    questions = [q for q in rev.get("questions") or [] if isinstance(q, dict) and q.get("question")]
+    if questions:
+        out += ["## Questions for the owner", ""]
+        for q in questions:
+            out += [f"- **{q['question']}**" + (" (blocking)" if q.get("blocking") else ""),
+                    str(q.get("context") or ""), ""]
     out += ["## Findings from persona reviews", "", findings_section(filed_findings or []), ""]
     out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:

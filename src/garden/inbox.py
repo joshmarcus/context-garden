@@ -388,7 +388,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 "group": "attention", "group_title": titles["attention"], "task": "",
                 "title": str(d.get("question") or ""),
                 "phase": str(d.get("phase") or ""), "status": "", "pr": "",
-                "why": f"the {d.get('phase') or 'phase'} kickoff is asking",
+                "why": f"the {d.get('phase') or 'phase'} {d.get('source') or 'kickoff'} is asking",
                 "question_context": str(d.get("context") or ""),
                 "question_options": list(d.get("options") or []),
                 "actions": [

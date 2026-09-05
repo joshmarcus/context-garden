@@ -193,6 +193,13 @@ def retro(call: Call) -> None:
            "personas": "The personas liked the onboarding.", "still_open": ["live worker output"],
            "features": features, "verdict": verdict, "followups": followups, "blocking": blocking,
            "next_goals": "# Next\n\n- Make waiting visible.\n"}
+    if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
+        rev["questions"] = [
+            {"question": "Which base should we support?", "context": "Needed to reopen safely.",
+             "options": ["stable", "latest"], "blocking": True},
+            {"question": "What should the next phase prioritize?", "context": "Owner priorities.",
+             "blocking": False},
+        ]
     print(result_json("Reconciled.\nGARDEN_RETRO: " + json.dumps(rev), {"input_tokens": 4000, "output_tokens": 300}, 0.04))
 
 

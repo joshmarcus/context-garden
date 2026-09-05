@@ -80,6 +80,7 @@ of the loop touch different files.
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
+| `scheduler/questions.py` | shared kickoff/retro question cards, answer/dismiss resolution, and retro answer documents |
 | `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
@@ -104,6 +105,19 @@ of the loop touch different files.
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
 | `canary.py` | `garden canary`: install a pinned build into a throwaway venv and drive it (the scripted QA flows plus a stacked-PR and a merge-queue scenario against the in-memory GitHub) before the pin is trusted with real PRs (CG-180) |
+
+Retrospective `questions` use the kickoff's `kind: question` decision cards, with
+`source: retro` and the originating phase/run recorded. The Inbox and `garden decide
+ID --answer "..."` / `--dismiss` resolve both kinds through the same scheduler methods.
+Blocking retro questions require a nonempty answer before `retro-decide` accepts or
+changes the verdict; they cannot be dismissed.
+
+Answers carry the deciding surface (`web` or `cli`) and timestamp under `## Answers`
+in the retro document and `## Decisions` in the next phase's goals. Before those
+documents land, resolution commits and pushes to the existing retro branch; after they
+land, it updates the live documents like kickoff resolution. Planning reads the answers
+from the goals. Resolved retro cards stay in side-state so the retro page can show answers
+even before the PR lands. A failed publication keeps the card pending and retryable.
 
 ## Where state lives
 
