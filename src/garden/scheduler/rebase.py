@@ -22,6 +22,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..github import GitHubError, PRInfo, mark_garden_comment
 from ..model import Status, Task, now_iso
+from ..notify import notify
 from ..runs import Run
 from .report import TickReport
 
@@ -118,6 +119,8 @@ class RebaseMixin:
             self.events.emit("rebase", task.id, run=run.run_id, diff_unchanged=True, verdict_kept=True)
             task.log(f"rebased; diff unchanged; verdict kept{cost}")
             self.store.save(task)
+            if st.pop("pending_triage_notify", False) and task.status == Status.AWAITING_TRIAGE:
+                notify(self.cfg.data, task.id, "awaiting_triage", f"rebased; diff unchanged; verdict kept{cost}", task.pr or "")
             rep.transitions.append(f"{task.id} rebased; verdict kept")
             return
         if diff_h:

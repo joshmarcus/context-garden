@@ -600,7 +600,10 @@ class ReapMixin:
                     except GitHubError as e:
                         self.log(f"{task.id}: could not update PR: {e}")
                 nxt = self._pr_status(task)
-                self._transition(task, nxt, f"pushed revision to {existing.url}: {summary}{cost}")
+                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st)
+                if defer_triage:
+                    st["pending_triage_notify"] = True
+                self._transition(task, nxt, f"pushed revision to {existing.url}: {summary}{cost}", notify_now=not defer_triage)
                 rep.transitions.append(f"{task.id} -> {nxt.value} (revised)")
             else:
                 title = str(result.get("pr_title") or f"{task.id}: {task.title}")
@@ -622,7 +625,11 @@ class ReapMixin:
                 st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
                 self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
                 nxt = self._pr_status(task)
-                self._transition(task, nxt, f"opened {'draft ' if st['pr_draft'] else ''}{pr.url} (base {base}): {summary}{cost}")
+                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st)
+                if defer_triage:
+                    st["pending_triage_notify"] = True
+                self._transition(task, nxt, f"opened {'draft ' if st['pr_draft'] else ''}{pr.url} (base {base}): {summary}{cost}",
+                                 notify_now=not defer_triage)
                 rep.transitions.append(f"{task.id} -> {nxt.value} ({pr.url})")
         except GitHubError as e:
             self._transition(task, Status.IN_REVIEW, f"branch pushed but PR failed ({e}); open it by hand and run `garden pr {task.id} <url>`{cost}")

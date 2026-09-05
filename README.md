@@ -376,6 +376,13 @@ review:
 checks:
   pre_pr: [{name: tests, command: "pytest -q -x"}]
   ci: [{name: ci-log, python: "garden.checks:local_command_check", command: "scripts/ci_failures.sh"}]
+notify:
+  command: ""                # shell command run whenever a task needs you (awaiting_triage — once its
+                              # review verdict is in — waiting_human, failed, a stalled/budget event);
+                              # gets GARDEN_TASK_ID/STATUS/MESSAGE/PR as env vars; empty = disabled.
+                              # `garden doctor` runs it for real with a synthetic payload; see
+                              # examples/garden.work.yaml for a working Slack-webhook example
+  timeout_seconds: 30
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000

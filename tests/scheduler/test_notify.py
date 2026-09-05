@@ -95,6 +95,44 @@ def test_no_notify_on_auto_revise_changes_requested(sched, fake_github, tmp_path
     assert not notify_file.exists()
 
 
+def test_triage_notify_waits_for_review_verdict(sched, fake_github, tmp_path):
+    """A draft PR's triage ping must wait for the automated review's verdict (phase-02
+    retro: pings fired before the verdict was known), not fire the moment the PR opens."""
+    notify_file = tmp_path / "notify.txt"
+    sched.cfg.data["notify"] = {
+        "command": f"bash -c 'echo \"task=$GARDEN_TASK_ID status=$GARDEN_STATUS\" >> {notify_file}'",
+        "timeout_seconds": 5,
+    }
+    sched.cfg.data["github"] = {"draft_pr": True}
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    sched.tick()  # dispatch
+    sched.tick()  # reap work -> draft PR opened (awaiting_triage) -> review dispatched
+    assert statuses(sched)["DM-001"] == "awaiting_triage"
+    # No ping yet: the review verdict is still outstanding.
+    assert not notify_file.exists()
+    sched.tick()  # reap review -> verdict known, task stays awaiting_triage
+    assert statuses(sched)["DM-001"] == "awaiting_triage"
+    assert notify_file.exists(), "triage ping must fire once the review verdict is known"
+    content = notify_file.read_text()
+    assert "task=DM-001" in content and "status=awaiting_triage" in content
+
+
+def test_triage_notify_fires_immediately_when_review_disabled(sched, fake_github, tmp_path):
+    """With automated review off there is no verdict to wait for, so the triage ping
+    fires on PR-open as before."""
+    notify_file = tmp_path / "notify.txt"
+    sched.cfg.data["notify"] = {
+        "command": f"bash -c 'echo \"task=$GARDEN_TASK_ID status=$GARDEN_STATUS\" >> {notify_file}'",
+        "timeout_seconds": 5,
+    }
+    sched.cfg.data["github"] = {"draft_pr": True}
+    sched.cfg.data["review"] = {"enabled": False}
+    sched.tick()
+    sched.tick()  # reap work -> draft PR opened; no review to wait for
+    assert statuses(sched)["DM-001"] == "awaiting_triage"
+    assert notify_file.exists()
+
+
 def test_notify_on_parent_closed(sched, fake_github, tmp_path):
     """Closing a parent PR without merging must notify stacked children."""
     notify_file = tmp_path / "notify.txt"

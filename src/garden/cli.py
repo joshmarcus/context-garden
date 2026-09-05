@@ -1860,7 +1860,19 @@ def doctor():
                  + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else "")
                  + f"  review_parallel={review_parallel}")
     notify_cmd = store.config.get("notify.command")
-    console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
+    if not notify_cmd:
+        console.print("[yellow]notify: not configured (set notify.command in garden.yaml so a human "
+                      "gets pinged when a task needs one)[/yellow]")
+    else:
+        from .notify import notify_test
+
+        result = notify_test(store.config.data)
+        if result is not None and result[0]:
+            console.print(f"notify: [green]configured, test ok[/green]  command={notify_cmd!r}")
+        else:
+            detail = result[1] if result else "unknown error"
+            console.print(f"notify: [red]configured but the test run failed ({detail})[/red]  command={notify_cmd!r}")
+            ok = False
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
         by = ctrl.get("by", "")
