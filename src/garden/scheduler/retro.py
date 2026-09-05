@@ -19,6 +19,7 @@ from ..personas import (
 )
 from ..retro import (
     PHASE_VERDICTS,
+    append_under_heading,
     flatten_findings,
     group_findings,
     next_phase_name,
@@ -31,6 +32,7 @@ from ..retro import (
     resolve_features,
     resolve_findings,
     resolve_retro_tasks,
+    retro_questions,
 )
 from ..runs import Run
 from .report import TickReport
@@ -403,6 +405,24 @@ class RetroMixin:
             self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
         return filed
 
+    def _file_retro_questions(self, phase: Phase, next_phase: str,
+                              rev: dict[str, Any]) -> list[dict[str, Any]]:
+        """File the reconciliation's `questions` as decision cards in state under the phase, one
+        per question, unanswered. The Inbox shows one card each (they count as decisions) and
+        the CLI/web answer them; the answer lands in the retro document and the next phase's
+        goals. Returns the normalised questions (for the retro document)."""
+        questions = retro_questions(rev)
+        rec = {
+            "phase": phase.key, "phase_name": phase.name, "product": phase.product,
+            "next_phase": next_phase, "at": now_iso(),
+            "questions": [{**q, "answer": "", "answered_by": "", "answered_at": ""} for q in questions],
+        }
+        self.state.get("_retro_questions")[phase.key] = rec
+        if questions:
+            self.events.emit("retro_questions", "", phase=phase.key,
+                             count=len(questions), keys=",".join(q["key"] for q in questions))
+        return questions
+
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
         rev = parse_retro(final)
@@ -432,9 +452,10 @@ class RetroMixin:
         filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
                                                          existing_titles, prefix, num)
         followups, num = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, prefix, num)
+        questions = self._file_retro_questions(phase, next_phase, rev)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, followups=followups,
-                                               blocking=blocking, next_phase=next_phase))
+                                               blocking=blocking, next_phase=next_phase, questions=questions))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
@@ -523,6 +544,59 @@ class RetroMixin:
                          followups=",".join(rec["followup_ids"]))
         self.state.save()
 
+    # ---- the questions the retro puts to the owner -------------------------
+    def retro_questions_for(self, phase_key: str) -> list[dict[str, Any]]:
+        """Every question the phase's retro put to the owner, each with its recorded answer (or
+        empty). A copy, so callers can't mutate the stored records; for the retro page."""
+        rec = self.state.get("_retro_questions").get(phase_key)
+        return [dict(q) for q in rec.get("questions") or []] if isinstance(rec, dict) else []
+
+    def pending_retro_questions(self) -> list[dict[str, Any]]:
+        """The retro questions still waiting for an answer, across every phase, each stamped with
+        the product/phase/next-phase needed to answer and render it. What the Inbox shows and the
+        badge counts."""
+        out: list[dict[str, Any]] = []
+        qs = self.state.get("_retro_questions")
+        for phase_key, rec in qs.items():
+            if not isinstance(rec, dict):
+                continue
+            for q in rec.get("questions") or []:
+                if isinstance(q, dict) and not str(q.get("answer") or "").strip():
+                    out.append({**q, "phase_key": phase_key, "product": rec.get("product", ""),
+                                "phase_name": rec.get("phase_name", ""), "next_phase": rec.get("next_phase", "")})
+        return sorted(out, key=lambda q: (str(q["phase_key"]), str(q["key"])))
+
+    def retro_answer(self, phase: Phase, key: str, answer: str, by: str = "cli") -> dict[str, Any]:
+        """Record the owner's answer to a retro question: stamp it with who and when in state,
+        append it under `## Answers` in the phase's `docs/retro.md` and under `## Decisions` in
+        the next phase's `goals.md` (both left uncommitted for `garden commit`), and emit a
+        `retro_answered` event. The planner and every later worker read the goals decision as
+        settled."""
+        answer = answer.strip()
+        if not answer:
+            raise RuntimeError("an answer cannot be empty")
+        qs = self.state.get("_retro_questions")
+        rec = qs.get(phase.key)
+        if not isinstance(rec, dict):
+            raise KeyError(phase.key)
+        q = next((x for x in rec.get("questions") or [] if str(x.get("key")) == key), None)
+        if q is None:
+            raise KeyError(key)
+        at = now_iso()
+        q.update(answer=answer, answered_by=by, answered_at=at)
+        qs[phase.key] = rec  # a reassignment so the in-place answer is flushed to state.json
+        line = f"- **{q['question']}** — {answer} ({by}, {at[:10]})"
+        next_phase = str(rec.get("next_phase") or next_phase_name(phase.name))
+        retro_doc = phase.path / "docs" / "retro.md"
+        goals = phase.path.parent / next_phase / "goals.md"
+        wrote_doc = append_under_heading(retro_doc, "Answers", line)
+        wrote_goals = append_under_heading(goals, "Decisions", line)
+        self.events.emit("retro_answered", "", phase=phase.key, key=key, by=by,
+                         in_retro=wrote_doc, in_goals=wrote_goals)
+        self.log(f"retro {phase.key}: answered {key!r} ({by})")
+        self.state.save()
+        return dict(q)
+
     def retro_verdict(self, phase_key: str) -> dict[str, Any] | None:
         """The recorded verdict for a phase (verdict, status, who accepted it and when, and the
         ids of the tasks it filed), or None if no retro has run. A copy, so callers can't mutate
@@ -565,6 +639,11 @@ class RetroMixin:
         vs = self.state.get("_retro_verdicts")
         if phase.key not in vs:
             raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
+        unanswered = [q for q in self.retro_questions_for(phase.key)
+                      if q.get("blocking") and not str(q.get("answer") or "").strip()]
+        if unanswered:
+            raise RuntimeError("answer the blocking question(s) first: "
+                               + "; ".join(q["question"] for q in unanswered))
         rec = vs[phase.key]
         if choice == "reopen":
             if phase.closed:
