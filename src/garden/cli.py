@@ -1883,6 +1883,20 @@ def doctor():
                           "garden's origin (a URL, or a separate clone) so a worker edits a fresh checkout, "
                           "never the live garden[/red]")
             ok = False
+    from .gitops import identity as _clone_identity
+
+    repos_dir = store.config.repos_dir
+    if repos_dir.is_dir():
+        for clone in sorted(repos_dir.iterdir()):
+            if not (clone / ".git").exists():
+                continue
+            name, email = _clone_identity(clone)
+            if not name or not email:
+                console.print(f"[red]clone {clone.name}: missing git identity ({clone}) — set "
+                              "git.user_name / git.user_email in garden.yaml, or the garden checkout's own "
+                              "git config, so a commit inside it never fails with "
+                              "\"Author identity unknown\"[/red]")
+                ok = False
     problems = _validate(store.tasks())
     for pr_ in problems:
         console.print(f"[red]graph: {pr_}[/red]")

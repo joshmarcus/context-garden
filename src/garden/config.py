@@ -54,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "harnesses": {},
     "ssh": {"hosts": []},
+    "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined
         "total_max_chars": 120000,
