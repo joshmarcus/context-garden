@@ -8,10 +8,14 @@ Three rules live here (see docs/architecture.md, beside stacking):
    that carries the conflicting hunks and the rule "resolve the conflict, change nothing else".
    A rebase round has its own counter (`state[task].rebases`) and never touches `max_revisions`
    or `review.max_rounds`.
-2. After any rebase the diff against the new base is compared with `last_diff_hash` from the
-   reviewed push; when it is unchanged the last verdict is kept, "rebased; diff unchanged;
-   verdict kept" is logged, and no review is dispatched. A textual resolution that changed the
-   diff is reviewed as usual.
+2. After any rebase the branch's `git patch-id --stable` from before the rebase is compared with
+   the one from after (CG-210): a hash of the diff's own +/- content, blind to the hunk-header
+   line numbers and context that shift whenever an unrelated commit lands on the base near the
+   branch's hunks, so a plain hash of the diff text would flag as "changed" a rebase that changed
+   nothing of the PR's own patch. When the ids match, the last verdict is kept, "rebased; patch id
+   unchanged; verdict kept" is logged, and no review is dispatched. A patch id that changed — a
+   textual conflict an agent resolved, or a rebase that folded the branch's own commit away as
+   already-applied elsewhere — is reviewed as usual.
 3. Automerge is a queue: candidates are ordered oldest-approved-first and only the head is
    rebased, checked and merged. Once the queue picks a head it keeps it: a head whose rollup
    is still running after the pre-merge rebase is "in flight" (a `merge_head` marker holding
@@ -68,9 +72,14 @@ class RebaseMixin:
         branch = task.branch or task.default_branch()
         wt = wt or self.worktree_for(task)
         repo = self.repo_for(task)
+        patch_before = ""
         try:
             if not wt.exists():
                 gitops.prepare_worktree(repo, wt, branch, base)
+            # The patch id of the branch's own diff before anything moves — compared against the
+            # same id computed after the rebase, this is how rule 2 tells a mechanical shift of
+            # line numbers and context (CG-210) apart from a genuine change to the PR's own patch.
+            patch_before = gitops.patch_id(wt, base)
             ok, files, hunks = gitops.sync_and_rebase(wt, branch, base)
         except gitops.GitError as e:
             ok, files, hunks = False, [str(e)], {}
@@ -110,6 +119,8 @@ class RebaseMixin:
         run.cost_usd = 0.0
         run.finished_at = now_iso()
         run.diff_stat = gitops.diff_stat(wt, base)
+        run.patch_id_before = patch_before
+        run.patch_id_after = gitops.patch_id(wt, base)
         run.save()
         st["rebases"] = int(st.get("rebases", 0)) + 1
         self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done", how="mechanical")
@@ -171,23 +182,32 @@ class RebaseMixin:
 
     # ---- verdict keep (rule 2) ---------------------------------------------
     def _rebase_review_or_keep(self, task: Task, run: Run, base: str, rep: TickReport, cost: str = "") -> None:
-        """After a rebase, compare the diff against the new base with `last_diff_hash` from the
-        reviewed push. When they match, keep the last verdict and dispatch no review; when the
-        resolution changed the diff, review it as usual."""
+        """After a rebase, compare the patch id of the branch's diff from before the rebase to
+        after (CG-210): matching ids mean the rebase only shifted line numbers and context around
+        someone else's commits, not the PR's own patch, so the last verdict is kept and no review
+        is dispatched. A patch id that changed — a real conflict resolution, or a rebase that
+        folded the branch's own commit away as already-applied elsewhere — is reviewed as usual.
+        A hash of the raw diff text would flag the former as changed too (the incident this
+        fixes); patch-id is blind to it because it hashes only the +/- content, not context."""
         st = self.state.get(task.id)
-        wt = self.worktree_for(task)
-        diff_h = gitops.diff_hash(wt, base) if wt.exists() else ""
-        if diff_h and diff_h == st.get("last_diff_hash"):
-            self.events.emit("rebase", task.id, run=run.run_id, diff_unchanged=True, verdict_kept=True)
-            task.log(f"rebased; diff unchanged; verdict kept{cost}")
+        verdict_kept = bool(run.patch_id_before) and run.patch_id_before == run.patch_id_after
+        if verdict_kept:
+            self.events.emit("rebase", task.id, run=run.run_id, patch_id_before=run.patch_id_before,
+                             patch_id_after=run.patch_id_after, verdict_kept=True)
+            task.log(f"rebased; patch id unchanged; verdict kept{cost}")
             self.store.save(task)
             if st.pop("pending_triage_notify", False) and task.status == Status.AWAITING_TRIAGE:
-                notify(self.cfg.data, task.id, "awaiting_triage", f"rebased; diff unchanged; verdict kept{cost}", task.pr or "")
+                notify(self.cfg.data, task.id, "awaiting_triage", f"rebased; patch id unchanged; verdict kept{cost}", task.pr or "")
             rep.transitions.append(f"{task.id} rebased; verdict kept")
             return
+        # The patch actually changed: keep `last_diff_hash` (used elsewhere for stall detection
+        # and the scratch-merge marker) in sync with the diff this rebase produced.
+        wt = self.worktree_for(task)
+        diff_h = gitops.diff_hash(wt, base) if wt.exists() else ""
         if diff_h:
             st["last_diff_hash"] = diff_h
-        self.events.emit("rebase", task.id, run=run.run_id, diff_unchanged=False, verdict_kept=False)
+        self.events.emit("rebase", task.id, run=run.run_id, patch_id_before=run.patch_id_before,
+                         patch_id_after=run.patch_id_after, verdict_kept=False)
         self._maybe_review(task, run, rep)
 
     # ---- merge queue (rule 3) ----------------------------------------------

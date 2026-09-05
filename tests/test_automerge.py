@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
+
 from garden.events import EventLog, digest
 from garden.model import Status, Task
 
 BRANCH = "garden/dm-001-first-task"
+
+
+def gitc(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
 def _in_review(sched, fake_github, *, automerge=True):
@@ -178,7 +184,7 @@ def test_gate_needs_human(sched, fake_github):
     assert not ok and "needs-human" in reason
 
 
-def test_review_cap_hit_by_rebase_holds_automerge_instead_of_merging_stale(sched, fake_github):
+def test_review_cap_hit_by_rebase_holds_automerge_instead_of_merging_stale(sched, fake_github, tmp_path):
     """CG-175: `_run_merge_queue` rebases the head of the queue right before merging it (rule
     2 in rebase.py). When that rebase changes the diff and a fresh review is due but the
     review cap is already used up, the cap sets a needs-human stop instead of dispatching a
@@ -187,8 +193,18 @@ def test_review_cap_hit_by_rebase_holds_automerge_instead_of_merging_stale(sched
     sched.cfg.data["review"]["enabled"] = True
     sched.cfg.data["review"]["max_rounds"] = 1
     st["review_rounds"] = 1  # already at the cap
-    st["last_diff_hash"] = "stale-hash-that-will-not-match-the-real-diff"
     sched.state.save()
+
+    # main independently carries the identical change the branch's own commit made: the
+    # pre-merge rebase folds the branch's commit away as already-applied, a real change to its
+    # patch (CG-210: a stale `last_diff_hash` alone no longer forces a re-review).
+    repo = tmp_path / "repo"
+    gitc("checkout", "main", cwd=repo)
+    (repo / "worker-output.txt").write_text("1\n")
+    gitc("add", "worker-output.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "main makes the identical change", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
     sched.tick()
     assert fake_github.merged == []
     assert sched.store.task("DM-001").status == Status.IN_REVIEW

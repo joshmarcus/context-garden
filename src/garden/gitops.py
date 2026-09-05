@@ -310,6 +310,23 @@ def diff_hash(worktree: Path, base: str) -> str:
     return hashlib.sha1(diff(worktree, base).encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def patch_id(worktree: Path, base: str) -> str:
+    """The stable `git patch-id` of the branch's diff against its merge-base with `base`: a hash
+    of the diff's added/removed content only, blind to the hunk-header line numbers and context
+    lines that shift whenever unrelated commits land on `base` near the branch's own hunks
+    (CG-210) — unlike a hash of the raw diff text, this stays the same across such a rebase, so
+    comparing it before and after tells whether the rebase changed anything the PR itself owns.
+    Empty when the diff is empty or the id cannot be computed."""
+    diff_text = diff(worktree, base)
+    if not diff_text.strip():
+        return ""
+    proc = subprocess.run(["git", "patch-id", "--stable"], input=diff_text, cwd=worktree,
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return ""
+    return proc.stdout.split()[0]
+
+
 def log_summary(worktree: Path, base: str, n: int = 20) -> str:
     try:
         ref = base_ref(worktree, base)

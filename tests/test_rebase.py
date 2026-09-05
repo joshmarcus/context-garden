@@ -54,7 +54,123 @@ def test_clean_rebase_keeps_verdict_and_dispatches_no_review(sched, fake_github,
     # The verdict-kept fact rides on the rebase event, not the log prose, so this asserts on
     # the event and the wording of the log line can change freely (CG-204).
     evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
-    assert any(e.get("diff_unchanged") is True and e.get("verdict_kept") is True for e in evs)
+    kept = [e for e in evs if e.get("verdict_kept") is True]
+    assert kept and kept[0]["patch_id_before"] and kept[0]["patch_id_before"] == kept[0]["patch_id_after"]
+    assert any("rebased; patch id unchanged; verdict kept" in ln for ln in sched.store.task("DM-001").body.splitlines())
+
+
+# ---- CG-210: verdict-keep is judged by patch id, not a hash of the diff text ----------------
+def test_rebase_keeps_verdict_when_main_moves_lines_near_the_branch_hunk(sched, fake_github, tmp_path):
+    """The incident: main merges land in the same file as the branch's own hunk, shifting its
+    hunk-header line numbers and surrounding context. A hash of the raw diff text flags this as
+    changed (forcing a needless re-review); patch-id hashes only the +/- content, so it must not."""
+    sched.tick()
+    sched.tick()  # DM-001 -> in_review with a PR
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW
+    branch = task.branch
+    wt = sched.worktree_for(task)
+    repo = tmp_path / "repo"
+
+    # main gets a multi-line file, the branch pulls it in and changes one line in the middle.
+    gitc("checkout", "main", cwd=repo)
+    (repo / "shared.txt").write_text("".join(f"line{i}\n" for i in range(1, 11)))
+    gitc("add", "shared.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "add shared.txt", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+    gitc("fetch", "-q", "origin", cwd=wt)
+    gitc("rebase", "-q", "origin/main", cwd=wt)
+    lines = (wt / "shared.txt").read_text().splitlines()
+    lines[5] = "line6-changed"
+    (wt / "shared.txt").write_text("\n".join(lines) + "\n")
+    gitc("add", "shared.txt", cwd=wt)
+    gitc("commit", "-q", "-m", "branch changes line6", cwd=wt)
+    gitc("push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}", cwd=wt)
+
+    # a standing approving verdict from the reviewed push
+    st = sched.state.get("DM-001")
+    st["last_review"] = {"verdict": "approve", "summary": "looks good"}
+    st["last_review_run"] = "rev-1"
+    st["review_rounds"] = 1
+    sched.state.save()
+
+    # main moves again, inserting two lines directly above the branch's hunk in the SAME file:
+    # this shifts the hunk's line numbers (and, under a raw diff-text hash, the hash itself)
+    # without touching the content the branch actually changed.
+    gitc("checkout", "main", cwd=repo)
+    text = (repo / "shared.txt").read_text().splitlines()
+    text = text[:2] + ["inserted-a", "inserted-b"] + text[2:]
+    (repo / "shared.txt").write_text("\n".join(text) + "\n")
+    gitc("add", "shared.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "main inserts lines near the hunk", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs[branch].mergeable = "CONFLICTING"
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    rep = sched.tick()
+
+    assert not any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))
+    assert "DM-001(review)" not in rep.dispatched
+    st = sched.state.get("DM-001")
+    assert int(st.get("review_rounds", 0)) == 1  # unchanged: the rebase round is not a review round
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
+    kept = [e for e in evs if e.get("verdict_kept") is True]
+    assert kept and kept[0]["patch_id_before"] and kept[0]["patch_id_before"] == kept[0]["patch_id_after"]
+
+
+def test_rebase_drops_verdict_when_the_rebase_changes_the_branchs_own_lines(sched, fake_github, tmp_path):
+    """When main independently carries the identical change the branch's own commit made, a
+    clean (non-conflicting) rebase folds the branch's commit away entirely -- git recognises it
+    as already applied. The branch's own patch genuinely changed (to nothing left to contribute),
+    so the verdict must not be kept and a fresh review is dispatched."""
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW
+    branch = task.branch
+    wt = sched.worktree_for(task)
+    repo = tmp_path / "repo"
+
+    gitc("checkout", "main", cwd=repo)
+    (repo / "shared.txt").write_text("".join(f"line{i}\n" for i in range(1, 6)))
+    gitc("add", "shared.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "add shared.txt", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+    gitc("fetch", "-q", "origin", cwd=wt)
+    gitc("rebase", "-q", "origin/main", cwd=wt)
+    lines = (wt / "shared.txt").read_text().splitlines()
+    lines[2] = "line3-changed"
+    (wt / "shared.txt").write_text("\n".join(lines) + "\n")
+    gitc("add", "shared.txt", cwd=wt)
+    gitc("commit", "-q", "-m", "branch changes line3", cwd=wt)
+    gitc("push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}", cwd=wt)
+
+    st = sched.state.get("DM-001")
+    st["last_review"] = {"verdict": "approve", "summary": "looks good"}
+    st["last_review_run"] = "rev-1"
+    st["review_rounds"] = 1
+    sched.state.save()
+
+    # main independently makes the identical change: rebasing now folds the branch's own commit
+    # away as "already applied" -- a real, clean change to the branch's own patch.
+    gitc("checkout", "main", cwd=repo)
+    text = (repo / "shared.txt").read_text().splitlines()
+    text[2] = "line3-changed"
+    (repo / "shared.txt").write_text("\n".join(text) + "\n")
+    gitc("add", "shared.txt", cwd=repo)
+    gitc("commit", "-q", "-m", "main makes the identical change", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs[branch].mergeable = "CONFLICTING"
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    rep = sched.tick()
+
+    assert "DM-001(review)" in rep.dispatched
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
+    changed = [e for e in evs if e.get("verdict_kept") is False]
+    assert changed and changed[0]["patch_id_before"] != changed[0]["patch_id_after"]
 
 
 # ---- rule 3: the merge queue keeps its head, one merge per PR ----------------

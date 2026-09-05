@@ -40,6 +40,8 @@ class Run:
     base: str = ""
     exit_code: int | None = None
     diff_stat: str = ""  # `git diff --stat base...branch` at finalize, for attention/triage evidence
+    patch_id_before: str = ""  # rebase mode only: patch id of the branch's diff before the rebase
+    patch_id_after: str = ""  # rebase mode only: patch id of the branch's diff after the rebase
     result: dict[str, Any] = field(default_factory=dict)
     usage: dict[str, Any] = field(default_factory=dict)
     cost_usd: float | None = None
