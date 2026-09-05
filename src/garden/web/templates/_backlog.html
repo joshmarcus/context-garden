@@ -1,0 +1,35 @@
+<div class="backlog">
+{% for sec in sections %}{% set ph = sec.phase %}
+  <section class="bl-section" data-phase="{{ ph.product }}/{{ ph.name }}">
+    <h3 class="bl-head">
+      <span class="bl-plant">{{ plant(ph.plant, 22, 32) }}</span>
+      <span class="bl-name">{{ ph.product }}/{{ ph.name }}</span>
+      {% if ph.frozen %}<span class="badge hot" title="frozen {{ ph.frozen }}">frozen</span>{% endif %}
+      <span class="n">{{ sec.rows|length }}</span>
+    </h3>
+    <ul class="bl-rows">
+    {% for row in sec.rows %}{% set t = row.task %}
+      <li class="bl-row" draggable="true" data-task="{{ t.id }}" data-movable="{{ '1' if row.movable else '0' }}"{% if not row.movable %} title="{{ row.move_reason }}"{% endif %}>
+        <span class="bl-grip" aria-hidden="true" title="Drag to reorder or move">⠿</span>
+        <a class="bl-main" href="/tasks/{{ t.id }}">
+          <span class="id">{{ t.id }}</span>
+          <span class="lt">{{ t.title }}{% if row.needs_human %}<span class="badge hot" title="{{ row.needs_human }}">needs you</span>{% endif %}</span>
+        </a>
+        <span class="pill s-{{ row.eff }}" title="{{ row.eff.replace('_', ' ') }}{% if row.blockers %} · waits on {{ row.blockers|join(', ') }}{% endif %}">{{ row.eff.replace('_', ' ') }}</span>
+        <span class="meta" title="{{ priority_label(t.priority) }}">{{ priority_label(t.priority) }} · {{ t.difficulty }}</span>
+        <span class="bl-ctrls">
+          <form class="inline" method="post" action="/tasks/{{ t.id }}/order"><input type="hidden" name="note" value="up"><button class="quiet" title="Move up" aria-label="Move {{ t.id }} up">↑</button></form>
+          <form class="inline" method="post" action="/tasks/{{ t.id }}/order"><input type="hidden" name="note" value="down"><button class="quiet" title="Move down" aria-label="Move {{ t.id }} down">↓</button></form>
+          {% if move_phases[t.product]|length > 1 %}
+          <form class="inline" method="post" action="/tasks/{{ t.id }}/move"><label class="muted" for="mv-{{ t.id }}">phase</label><select id="mv-{{ t.id }}" name="note" onchange="this.form.submit()"{% if not row.movable %} disabled title="{{ row.move_reason }}"{% endif %}>{% for name in move_phases[t.product] %}<option value="{{ t.product }}/{{ name }}"{% if t.phase == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></form>
+          {% endif %}
+        </span>
+      </li>
+    {% endfor %}
+    {% if not sec.rows %}<li class="bl-empty muted">no open tasks — drag one here to move it into this phase</li>{% endif %}
+    </ul>
+  </section>
+{% else %}
+  <p class="empty">No open phases to show. Pick a product above, or include closed phases.</p>
+{% endfor %}
+</div>

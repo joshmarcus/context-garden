@@ -77,6 +77,17 @@ def move(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> Non
     sched.move(t, product, phase.strip("/"))
 
 
+@action("order")
+def order(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    arg = note.strip()
+    if arg in ("up", "down"):
+        sched.reorder(t, direction=arg)
+    else:
+        # `note` is the id this row should follow ("" = top of the section); the backlog's
+        # drag script and the "move up/down" buttons both post here.
+        sched.reorder(t, after=arg)
+
+
 @action("cancel")
 def cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.cancel(t, note or "cancelled (web)")
@@ -193,7 +204,10 @@ def register(app: FastAPI, site: Site) -> None:
         if run_action is None:
             raise HTTPException(400, f"unknown action {action}")
         back = request.headers.get("referer", "")
-        redirect_to = back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}"
+        # Board actions (backlog reorder/move) return to the board so the flash and the new order
+        # show there; task-page and Inbox actions stay where they were pressed.
+        stay = back.endswith("/") or back.endswith("/inbox") or "/board" in back
+        redirect_to = back if stay else f"/tasks/{task_id}"
         try:
             with hub.action_lock:
                 sched = hub.scheduler()

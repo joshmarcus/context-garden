@@ -243,6 +243,28 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .lrow .lfact { font:12px/1.4 var(--mono); color:var(--muted); flex:0 1 auto; min-width:0; overflow-wrap:anywhere; }
 .lrow .lfact.q { color:var(--s-waiting_human); font-style:italic; font-family:var(--body); font-size:13px; }
 
+/* ---- board: backlog view (sections per phase, drag to reorder or move) ------------- */
+.backlog { display:flex; flex-direction:column; gap:18px; }
+.bl-section { border:1px solid var(--line); background:var(--surface); }
+.bl-head { display:flex; align-items:center; gap:10px; margin:0; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); font:500 15px/1.2 var(--display); }
+.bl-head .bl-plant { display:inline-flex; flex:none; }
+.bl-head .bl-name { font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+.bl-head .n { margin-left:auto; color:var(--muted); font:400 12px/1 var(--mono); }
+.bl-rows { list-style:none; margin:0; padding:0; }
+.bl-row { display:flex; align-items:center; gap:12px; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--label); cursor:grab; }
+.bl-row:last-child { border-bottom:none; }
+.bl-row.dragging { opacity:.5; }
+.bl-row .bl-grip { color:var(--faint); cursor:grab; flex:none; font-size:13px; }
+.bl-row .bl-main { display:flex; align-items:baseline; gap:10px; flex:1 1 320px; min-width:0; text-decoration:none; }
+.bl-row .bl-main:hover .lt { text-decoration:underline; text-decoration-color:var(--ink); }
+.bl-row .lt { font-size:14.5px; overflow-wrap:anywhere; }
+.bl-row .meta { font:11px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.bl-row .bl-ctrls { display:flex; align-items:center; gap:6px; flex:none; }
+.bl-row .bl-ctrls button { min-height:28px; padding:0 8px; }
+.bl-row .bl-ctrls select { padding:5px 6px; font-size:12px; }
+.bl-row[data-movable="0"] { cursor:default; }
+.bl-empty { padding:12px; font:12.5px/1.4 var(--mono); }
+
 /* ---- inbox --------------------------------------------------------------------------- */
 .group { margin-bottom:20px; border:1px solid var(--line); background:var(--label); }
 .group > header { display:flex; align-items:center; gap:12px; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); }
