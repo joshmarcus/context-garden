@@ -59,6 +59,18 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
+def complete_brief(garden_root: Path, task_id: str) -> None:
+    """Replace a draft task's placeholder acceptance criteria with a real, testable one so
+    `approve` accepts it (CG-193 refuses placeholder criteria). Used by tests that create a
+    task from the `new-task` template and then need it approved."""
+    store = Store(garden_root)
+    t = store.task(task_id)
+    if "## Acceptance criteria" not in t.body:
+        t.body = t.body.rstrip() + "\n\n## Acceptance criteria\n\n- [ ] ...\n"
+    t.body = t.body.replace("- [ ] ...", "- [ ] The thing works and is covered by a test.", 1)
+    store.save(t)
+
+
 @pytest.fixture
 def garden(tmp_path: Path) -> Path:
     """A garden with one product whose repo is a local git repo with a bare origin."""

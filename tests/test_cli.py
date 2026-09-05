@@ -145,8 +145,16 @@ def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
 
 
 def test_new_task_and_approve(garden):
+    from garden.store import Store
+    from tests.conftest import complete_brief
+
     r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
     assert r.exit_code == 0 and "DM-003" in r.output
+    # A fresh task carries the template's placeholder criteria; approve refuses it (CG-193)
+    # until the brief is filled in.
+    r = run(garden, "approve", "DM-003")
+    assert "incomplete brief" in r.output and Store(garden).task("DM-003").status.value == "draft"
+    complete_brief(garden, "DM-003")
     r = run(garden, "approve", "DM-003")
     assert "DM-003 -> ready" in r.output
     r = run(garden, "show", "DM-003")
