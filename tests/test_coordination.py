@@ -352,6 +352,54 @@ def test_stacked_child_automerges_only_after_restack(sched, fake_github, tmp_pat
     assert sched.state.get("DM-002").get("automerged")
 
 
+def test_stacked_child_merged_into_parent_branch_stays_open_until_parent_merges(sched, fake_github, tmp_path):
+    """CG-228: a person can merge a stacked child's PR straight into its parent's branch on
+    GitHub, long before the parent itself reaches main. That must not read as `done` -- a
+    dependent stacked on the child stays blocked -- until the parent's own merge actually lands
+    the child's commits on the base (CG-225: a dependent was approved against a "done" dependency
+    whose code had never reached main)."""
+    sched.tick()
+    sched.tick()  # DM-001 in_review + PR; DM-002 stacks and dispatches
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    parent_branch, child_branch = "garden/dm-001-first-task", "garden/dm-002-second-task"
+    assert sched.state.get("DM-002")["pr_base"] == parent_branch
+
+    # a person merges DM-002's PR straight into DM-001's branch (not main) on GitHub
+    rc = tmp_path / "remote-clone"
+    gitc("fetch", "origin", cwd=rc)
+    gitc("checkout", "-B", "tmp-parent", f"origin/{parent_branch}", cwd=rc)
+    gitc("merge", "-q", "--ff-only", f"origin/{child_branch}", cwd=rc)
+    gitc("push", "-q", "origin", f"tmp-parent:{parent_branch}", cwd=rc)
+    fake_github.prs[child_branch].state = "MERGED"
+
+    rep = sched.tick()
+    assert "DM-002 -> merged_into_parent" in rep.transitions
+    s = statuses(sched)
+    assert s["DM-001"] == "in_review" and s["DM-002"] == "merged_into_parent"
+    assert sched.state.get("DM-002")["merged_into_parent"]["parent"] == "DM-001"
+
+    # a task depending on DM-002 (created only now, so it never had a chance to stack on its
+    # already-closed PR) stays blocked: DM-002's branch is no longer open, and its status is not
+    # `done`, so it does not satisfy the dependency
+    sched.store.create_task("demo", "p1", "Third task", "## Goal\n\nDo the third thing.\n",
+                            depends_on=["DM-002"], status="ready", task_id="DM-003")
+    rep = sched.tick()
+    assert not any(d.startswith("DM-003") for d in rep.dispatched)
+    assert statuses(sched)["DM-003"] == "ready"
+
+    # the parent merges to the base: DM-002 (and DM-003) unblock in the same tick
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", f"origin/{parent_branch}", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs[parent_branch].state = "MERGED"
+    rep = sched.tick()
+    assert "DM-001 -> done" in rep.transitions and "DM-002 -> done" in rep.transitions
+    s = statuses(sched)
+    assert s["DM-001"] == "done" and s["DM-002"] == "done"
+    assert "DM-003(work)" in rep.dispatched
+
+
 def test_restack_keeps_remote_only_commits(sched, fake_github, tmp_path):
     """A rebase round on the restack path folds in commits pushed only to the remote branch."""
     sched.tick()
