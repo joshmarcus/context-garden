@@ -153,6 +153,18 @@ def test_new_task_and_approve(garden):
     assert "Third: thing" in r.output and "ready" in r.output
 
 
+def test_new_task_from_retro_carries_provenance(garden):
+    r = run(garden, "new-task", "demo/p1", "Retro follow-up", "--from-retro", "demo/p1")
+    assert r.exit_code == 0 and "DM-003" in r.output
+    from garden.store import Store
+
+    t = Store(garden).task("DM-003")
+    assert t.discovered_from == "retro:demo/p1"
+    # an unknown retro phase is refused up front
+    r = run(garden, "new-task", "demo/p1", "Bad", "--from-retro", "demo/nope")
+    assert r.exit_code == 1
+
+
 def test_budget_command(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store

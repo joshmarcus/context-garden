@@ -20,7 +20,8 @@
       <dt>lead time</dt><dd>{% if sm.avg_lead_hours is not none %}{{ sm.avg_lead_hours }} h avg{% else %}<span class="faint">—</span>{% endif %}</dd>
       <dt>first pass</dt><dd>{% if sm.first_pass_rate is not none %}{{ (sm.first_pass_rate * 100)|round|int }}%{% else %}<span class="faint">—</span>{% endif %}</dd>
     </dl>
-    <div class="mono" style="margin-top:10px; font-size:12px"><a href="/phases/{{ ph.product }}/{{ ph.name }}">phase page</a>{% if e.friction_url %} · <a href="{{ e.friction_url }}">friction</a>{% endif %}{% if e.closing_url %} · <a href="{{ e.closing_url }}">closing document</a>{% endif %}</div>
+    {% if e.scores %}<div class="mono muted" style="margin-top:8px; font-size:11.5px">personas: {% for sc in e.scores %}{{ sc.persona }} <span class="badge">{{ sc.score }}</span> {% endfor %}</div>{% endif %}
+    <div class="mono" style="margin-top:10px; font-size:12px"><a href="/phases/{{ ph.product }}/{{ ph.name }}">phase page</a>{% if e.retro_url %} · <a href="{{ e.retro_url }}">retro</a>{% endif %}{% if e.friction_url %} · <a href="{{ e.friction_url }}">friction</a>{% endif %}{% if e.closing_url %} · <a href="{{ e.closing_url }}">closing document</a>{% endif %}</div>
   </div>
   {% endfor %}
 </div>

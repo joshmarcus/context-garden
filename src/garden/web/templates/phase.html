@@ -11,7 +11,7 @@
       <label class="check"><input type="checkbox" name="no_budget" value="1"> no budget</label>
       <button>Set</button>
     </form></div>
-  <div class="tools"><a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
+  <div class="tools">{% if has_retro %}<a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}/retro">Retro</a>{% endif %}<a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
 </div>
 <div class="grid2">
   <div class="stack">

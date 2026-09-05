@@ -107,6 +107,7 @@ def new_task(
     difficulty: str = typer.Option("medium", help="easy|medium|hard (picks the model tier)"),
     ready: bool = typer.Option(False, help="Create as ready instead of draft"),
     reopen: bool = typer.Option(False, "--reopen", help="Reopen a closed phase to take this task"),
+    from_retro: str = typer.Option("", "--from-retro", help="Mark this task as arising from a phase's retro (product/phase); it shows on that phase's retro page"),
 ):
     """Create a task file from a template."""
     from ..scaffold import TASK_TEMPLATE
@@ -114,6 +115,11 @@ def new_task(
     store = _store()
     product, phase = _split_target(target)
     ph = _phase(store, product, phase)
+    discovered_from = ""
+    if from_retro:
+        rp, rn = _split_target(from_retro)
+        _phase(store, rp, rn)  # refuse an unknown phase up front, not at page-render time
+        discovered_from = f"retro:{rp}/{rn}"
     if ph.closed:
         if not reopen:
             err.print(f"[red]{ph.key} is closed ({ph.closed}); pass --reopen or run `garden reopen-phase {ph.key}` first[/red]")
@@ -121,7 +127,8 @@ def new_task(
         _set_phase_closed(store, ph, "")
         console.print(f"{ph.key} reopened")
     t = store.create_task(product, phase, title, TASK_TEMPLATE, depends_on=depends_on, reading=reading,
-                          priority=priority, status="ready" if ready else "draft", difficulty=difficulty)
+                          priority=priority, status="ready" if ready else "draft", difficulty=difficulty,
+                          discovered_from=discovered_from)
     console.print(f"created {t.id} at {store.rel(t.path)}")
 
 

@@ -317,6 +317,51 @@ def test_trials_page_and_persona_form(garden):
     assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200
 
 
+def test_retro_page_renders_the_artefacts(garden):
+    """CG-146: once a phase's retro has run, its page shows the reconciled document (with the
+    friction verdicts), the operator retro, each persona's report with its score and high
+    findings, and the tasks the retro filed — even ones filed into a later phase."""
+    docs = garden / "demo" / "p1" / "docs"
+    (docs / "retro").mkdir(parents=True)
+    (docs / "retro.md").write_text(
+        "# Retrospective: demo/p1\n\n## What changed\n\nHalved the hand actions.\n\n"
+        "## Friction reconciled\n\n| Friction item | Verdict |\n|---|---|\n"
+        "| worktree has no venv | fixed |\n")
+    (docs / "retro" / "operator.md").write_text(
+        "# Operator retro\n\nThe loop ran for an hour, not a night.\n")
+    (docs / "reviews").mkdir()
+    (docs / "reviews" / "designer-2026-09-05.md").write_text(
+        "# Persona review: designer\n\n**Score:** 7/10 · 2026-09-05\n\nCoherent overall.\n\n"
+        "## High\n\n- names differ across surfaces\n")
+    p2 = garden / "demo" / "p2" / "tasks"
+    p2.mkdir(parents=True)
+    (p2 / "DM-050-followup.md").write_text(
+        "---\nid: DM-050\ntitle: Retro follow-up\nstatus: draft\nproduct: demo\nphase: p2\n"
+        "discovered_from: retro:demo/p1\ncreated: '2026-09-05T00:00:00+00:00'\n"
+        "updated: '2026-09-05T00:00:00+00:00'\n---\n\n## Goal\n\nSomething the retro found.\n")
+
+    c = client(garden)
+    r = c.get("/phases/demo/p1/retro")
+    assert r.status_code == 200
+    text = r.text
+    assert "Halved the hand actions." in text  # reconciled document
+    assert "worktree has no venv" in text and "fixed" in text  # friction table with verdicts
+    assert "The loop ran for an hour" in text  # operator retro
+    assert "designer" in text and "7/10" in text  # persona table with its score
+    assert "names differ across surfaces" in text  # its high findings
+    assert "DM-050" in text and "Retro follow-up" in text  # tasks from this retro, across phases
+    # the phase page links to it
+    assert "/phases/demo/p1/retro" in c.get("/phases/demo/p1").text
+
+
+def test_retro_page_says_no_retro_yet(garden):
+    c = client(garden)
+    r = c.get("/phases/demo/p1/retro")
+    assert r.status_code == 200 and "no retro yet" in r.text
+    # and the phase page shows no retro link until the retro has run
+    assert "/phases/demo/p1/retro" not in c.get("/phases/demo/p1").text
+
+
 def test_trellis_and_phase_hide_done_toggle(garden):
     c = client(garden)
     c.post("/tasks/DM-002/cancel", follow_redirects=False)
