@@ -82,7 +82,41 @@ class ReviewMixin:
             st["pending_reviews"] = []
             self._dispatch_or_defer_reviews(task, pending, rep)
 
+    def _supersede_running_review(self, task: Task) -> None:
+        """A second review dispatched for this task (a person pressed "one more review"
+        after a push, or the poll re-reviewed a fresh push) leaves the previous round's
+        run pointed at by nothing once `review_run` is overwritten below — closing it
+        first means its process is stopped and its eventual verdict is never read, rather
+        than the CG-079 bug where the stale record stayed `running` forever and held
+        automerge on "a run is in flight" (CG-144)."""
+        st = self.state.get(task.id)
+        run_id = st.get("review_run")
+        if not run_id:
+            return
+        run = next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
+        if run is None or run.status != "running":
+            return
+        run.kill()
+        run.exit_code = run.read_exit_code()
+        if run.process_finished():
+            try:
+                runner = self.runner_for(task, run.runner, run.harness)
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+            except Exception as e:  # noqa: BLE001
+                run.error = str(e)
+        run.finished_at = now_iso()
+        run.status = "superseded"
+        note = "superseded by a newer review dispatch for the same task"
+        run.error = f"{run.error} ({note})" if run.error else note
+        run.save()
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="superseded",
+                         cost_usd=run.cost_usd, usage=run.usage)
+        self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
+
     def dispatch_review(self, task: Task, work_run: Run | None = None) -> Run:
+        self._supersede_running_review(task)
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)
         base = self.base_for(task)

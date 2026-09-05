@@ -19,6 +19,33 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
+    """CG-144: dispatching a second review while the first is still `running` (a person
+    pressed "one more review", or the poll re-reviewed a fresh push) closes the first as
+    `superseded` with its cost recorded, rather than leaving it running forever with
+    nothing left pointing at it."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> first review dispatched
+    t = sched.store.task("DM-001")
+    st = sched.state.get("DM-001")
+    run1_id = st["review_run"]
+    assert run1_id
+    run1 = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run1_id)
+    assert run1.status == "running" and run1.process_finished()  # finished, not yet reaped
+
+    run2 = sched.dispatch_review(t)
+
+    superseded = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run1_id)
+    assert superseded.status == "superseded"
+    assert superseded.finished_at
+    assert superseded.cost_usd == 0.02  # the finished run's cost is still recorded
+    assert st["review_run"] == run2.run_id != run1_id
+    # the superseded run no longer counts as active
+    assert run1_id not in {r.run_id for r in sched.runs.active()}
+
+
 def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
     """Workers can include pr_comment in the result to explain revisions."""
 

@@ -618,6 +618,66 @@ class ReapMixin:
             self._transition(task, Status.FAILED, f"attempt {task.attempts} failed: {reason}; giving up")
             rep.transitions.append(f"{task.id} -> failed")
 
+    # ---- dead-run sweep -----------------------------------------------------
+    def _owned_run_ids(self) -> set[str]:
+        """Every run id some other reap path still follows this tick: the aux list
+        (persona/compare), the retro list (phase personas + reconcile), a task's
+        `review_run`/`edit_run` pointer, a trial's per-contender runs, and — for a task
+        still `running` — whichever run `RunStore.latest` would hand to the ordinary
+        `reap()`. Anything left `running` outside this set has no path left that will
+        ever visit it again."""
+        owned = {e["run_id"] for e in self._aux_list()}
+        for entry in self._retro_list():
+            owned.update(str(v) for v in (entry.get("persona_runs") or {}).values())
+            if entry.get("recon_run_id"):
+                owned.add(str(entry["recon_run_id"]))
+        for t in self.store.tasks().values():
+            st = self.state.get(t.id)
+            for key in ("review_run", "edit_run"):
+                rid = st.get(key)
+                if rid:
+                    owned.add(str(rid))
+            for c in (st.get("trial", {}).get("contenders") or []):
+                if isinstance(c, dict) and c.get("run_id"):
+                    owned.add(str(c["run_id"]))
+            if t.status == Status.RUNNING:
+                latest = self.runs.latest(t.id)
+                if latest is not None:
+                    owned.add(latest.run_id)
+        return owned
+
+    def reap_dead_runs(self, rep: TickReport) -> None:
+        """Close any `running` run record whose process has already exited and that no
+        pointer above (`_owned_run_ids`) still leads a reap to: the generalisation of the
+        orphan sweep (CG-116) from "review/persona/compare whose task moved on" to every
+        mode and a bare pid check, so a record superseded, forgotten, or left behind by a
+        pointer that moved on is closed instead of sitting `running` forever with no
+        process behind it (CG-144)."""
+        owned = self._owned_run_ids()
+        tasks = self.store.tasks()
+        for run in self.runs.active():
+            if run.runner == "manual" or run.run_id in owned or not run.process_finished():
+                continue
+            run.exit_code = run.read_exit_code()
+            run.finished_at = now_iso()
+            probe = tasks.get(run.task_id) or Task(path=self.store.root, id=run.task_id, title="")
+            try:
+                runner = self.runner_for(probe, run.runner, run.harness)
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.error = collected.get("error") or run.error
+            except Exception as e:  # noqa: BLE001
+                run.error = run.error or str(e)
+            run.status = "done" if run.exit_code in (0, None) else "failed"
+            note = "closed: no active run pointer references it and its process has exited"
+            run.error = f"{run.error} ({note})" if run.error else note
+            run.save()
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
+                             usage=run.usage, status=run.status, dangling=True)
+            self.log(f"{run.task_id}: {run.mode} run {run.run_id} closed ({run.status}); {note}")
+            rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (dangling)")
+
     # ---- stall detection ---------------------------------------------------
     def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
         self._set_needs_human(task, "stall", reason)

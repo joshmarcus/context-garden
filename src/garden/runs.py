@@ -31,7 +31,7 @@ class Run:
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
     session_id: str = ""  # harness session, for resume
-    status: str = "running"  # running | done | blocked | failed | timeout | cancelled
+    status: str = "running"  # running | done | blocked | failed | timeout | cancelled | superseded
     pid: int | None = None
     started_at: str = ""
     finished_at: str = ""

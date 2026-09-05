@@ -74,10 +74,10 @@ of the loop touch different files.
 | `model.py`, `store.py`, `graph.py`, `brief.py` | task frontmatter and statuses; discovery of products, phases and tasks on disk; the dependency graph and ready set; the worker brief and `GARDEN_RESULT` parsing |
 | `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` and `_transition()`; `WORKER_MODES`, `REVIEW_MODES` |
 | `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` |
-| `scheduler/reap.py` | `reap`, `finalize`, the pre-PR checks and the base probe, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall |
+| `scheduler/reap.py` | `reap`, `finalize`, the pre-PR checks and the base probe, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`) |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
 | `scheduler/discovered.py` | discovered tasks, duplicate/cancel decision cards, friction and notes a worker reports |
-| `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it) and the orphan sweep |
+| `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
 | `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
@@ -462,7 +462,7 @@ a local git repo with a bare `origin`, and a fake GitHub records PRs, comments a
 in memory. That is enough to drive every state transition end to end without a network.
 The scheduler's own tests sit under `tests/scheduler/`, one file per tick phase
 (`test_reap.py`, `test_poll.py`, `test_dispatch.py`, `test_human.py`, `test_notify.py`,
-`test_orphan_sweep.py`) with shared helpers in `tests/scheduler/conftest.py`. `pytest -q`
+`test_orphan_sweep.py`, `test_dead_runs.py`) with shared helpers in `tests/scheduler/conftest.py`. `pytest -q`
 runs it all in well under a minute; CI for this repository runs the same in
 `.github/workflows/ci.yml`.
 
