@@ -387,3 +387,62 @@ def test_no_active_run_logs_run_id_and_closer(sched):
     assert f"{task.id} running -> ready (no run)" in rep.transitions
     body = sched.store.task("DM-001").body
     assert run.run_id in body and "closed by orphan sweep" in body
+
+
+def _seed_prior_progress(sched, task_id="DM-001", n=2):
+    """Leave `n` commits from an interrupted attempt on the task's branch worktree, without
+    a live run: set the task RUNNING and drop a single done run record (no finished_at) in
+    front of reap, so the next tick takes the "no active run" path with real progress present."""
+    from garden import gitops
+
+    task = sched.store.task(task_id)
+    branch = task.default_branch()
+    wt = sched.worktree_for(task)
+    gitops.prepare_worktree(sched.repo_for(task), wt, branch, "main")
+    for i in range(n):
+        write(wt / f"progress-{i}.txt", "partial\n")
+        git("add", "-A", cwd=wt)
+        git("commit", "-q", "-m", f"{task_id}: partial fix {i}", cwd=wt)
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task_id, "local", mode="work")
+    run.status = "done"
+    run.save()
+    return wt
+
+
+def test_no_active_run_distinguishes_prior_progress(sched):
+    """CG-125: when a run disappears but the worktree already holds commits from the
+    interrupted attempt, the 'back to ready' log names that real, unreported progress
+    (and the event carries the commit count) — distinct from a clean restart."""
+    from garden import gitops
+
+    sched.pause(by="test")  # keep the reset task from being re-dispatched this tick
+    wt = _seed_prior_progress(sched, n=2)
+    assert gitops.commits_ahead(wt, "main") == 2
+
+    rep = sched.tick()
+    assert "DM-001 running -> ready (no run)" in rep.transitions
+    body = sched.store.task("DM-001").body
+    assert "prior attempt made real progress" in body and "2 commits" in body
+    event = sched.events.read(task_id="DM-001", kinds=["no_active_run"])[-1]
+    assert event.get("prior_commits", 0) == 2
+
+
+def test_no_active_run_clean_restart_has_no_progress_note(sched):
+    """A run that vanished before committing anything is a clean restart: the 'back to
+    ready' log carries no progress note and the event reports zero prior commits."""
+    sched.pause(by="test")
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.status = "done"
+    run.save()
+
+    rep = sched.tick()
+    assert f"{task.id} running -> ready (no run)" in rep.transitions
+    body = sched.store.task("DM-001").body
+    assert "prior attempt made real progress" not in body
+    event = sched.events.read(task_id="DM-001", kinds=["no_active_run"])[-1]
+    assert event.get("prior_commits", 0) == 0

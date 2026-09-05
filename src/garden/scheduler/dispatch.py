@@ -165,9 +165,16 @@ class DispatchMixin:
                           + "\n".join(f"- {s.text}" for s in pend))
                 feedback = f"{feedback}\n\n{sug_fb}".strip() if feedback else sug_fb
         qa = list(st.get("qa") or [])
+        # List any commits already on the branch in the brief, so a re-dispatched worker
+        # builds on the prior attempt instead of reverse-engineering it from git. This
+        # covers a revise/resume round (whose branch has an open PR to build on) and, just
+        # as importantly, a fresh `work` round that lands on a worktree an interrupted prior
+        # attempt left with real, unreported progress — the "back to ready" case in reap
+        # (CG-125). A truly clean start has no commits ahead of base, so the section is
+        # omitted and nothing changes.
         commits_ahead = None
         wt_path = worktree_override or self.worktree_for(task)
-        if wt_path.exists() and (feedback or session_id):
+        if wt_path.exists():
             try:
                 commits_log = gitops.log_summary(wt_path, base, n=20)
                 if commits_log.strip():

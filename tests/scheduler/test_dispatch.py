@@ -69,6 +69,29 @@ def test_brief_inlines_reading_from_the_target_checkout(sched, tmp_path):
     assert "not found when the brief was built" not in brief
 
 
+def test_redispatched_work_brief_lists_prior_commits(sched):
+    """CG-125: a fresh work round that lands on a worktree an interrupted attempt left with
+    commits gets those commits listed in its brief ("Already on this branch"), so it builds
+    on the prior progress instead of reverse-engineering it from git log/diff."""
+    from garden import gitops
+    from tests.conftest import git, write
+
+    sched.cfg.data["stack"] = False
+    # Leave commits from an interrupted attempt on the branch worktree, with no live run.
+    task = sched.store.task("DM-001")
+    wt = sched.worktree_for(task)
+    gitops.prepare_worktree(sched.repo_for(task), wt, task.default_branch(), "main")
+    write(wt / "progress.txt", "partial\n")
+    git("add", "-A", cwd=wt)
+    git("commit", "-q", "-m", "DM-001: partial fix", cwd=wt)
+    assert gitops.commits_ahead(wt, "main") == 1
+
+    rep = sched.tick()  # dispatch a fresh work round onto the worktree with prior commits
+    assert "DM-001(work)" in rep.dispatched
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "## Already on this branch" in brief and "partial fix" in brief
+
+
 def test_max_parallel(sched, garden):
     for t in sched.store.tasks().values():
         t.depends_on = []

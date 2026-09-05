@@ -52,9 +52,16 @@ class ReapMixin:
             else:
                 closer = run.error.strip() or "(no closer recorded)"
                 detail = f"expected run {run.run_id} but it is {run.status} (mode {run.mode}): {closer}"
+            # Distinguish a prior attempt that made real, unreported progress from a clean
+            # restart: if the worktree already has commits ahead of base, say so in the log
+            # (and the event) rather than only "back to ready" (CG-125). The commits stay in
+            # the worktree; the re-dispatched worker's brief lists them (see dispatch's
+            # commits_ahead) so it continues from there instead of reverse-engineering git.
+            prior_commits, progress = self._prior_progress(task)
             self.events.emit("no_active_run", task.id, run=(run.run_id if run else ""),
-                             status=(run.status if run else ""), closer=(run.error if run else ""))
-            self._transition(task, Status.READY, f"no active run found; back to ready — {detail}")
+                             status=(run.status if run else ""), closer=(run.error if run else ""),
+                             prior_commits=prior_commits)
+            self._transition(task, Status.READY, f"no active run found; back to ready — {detail}{progress}")
             rep.transitions.append(f"{task.id} running -> ready (no run)")
             return True
         runner = self.runner_for(task, run.runner, run.harness)
@@ -628,6 +635,27 @@ class ReapMixin:
             self._rebase_review_or_keep(task, run, base, rep)
         else:
             self._maybe_review(task, run, rep)
+
+    def _prior_progress(self, task: Task) -> tuple[int, str]:
+        """Commits a prior, interrupted attempt already left on this task's branch. When a run
+        disappears (swept, crashed, closed out from under the reap) the task goes back to ready;
+        if its worktree already has commits ahead of base, that is real progress, not a clean
+        restart. Returns (count, note): a non-empty note is appended to the "back to ready" log
+        line so the two cases are distinguishable, and the count goes on the `no_active_run`
+        event. Empty when the worktree is missing or has no commits of its own."""
+        wt = self.worktree_for(task)
+        if not wt.exists():
+            return 0, ""
+        try:
+            n = gitops.commits_ahead(wt, self.base_for(task))
+        except gitops.GitError:
+            return 0, ""
+        if n <= 0:
+            return 0, ""
+        branch = task.branch or task.default_branch()
+        plural = "s" if n != 1 else ""
+        return n, (f"; the prior attempt made real progress — {n} commit{plural} already on `{branch}`, "
+                   f"kept in the worktree and listed for the next run to continue from")
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))
