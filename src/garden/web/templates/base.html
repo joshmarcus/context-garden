@@ -203,6 +203,28 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .card .q { display:block; color:var(--s-waiting_human); font-size:12.5px; margin-top:5px; font-style:italic; }
 .card .top { display:flex; align-items:center; gap:6px; }
 
+/* ---- board: list view ------------------------------------------------------------- */
+.viewswitch { display:flex; gap:0; }
+.viewswitch a { padding:6px 12px; border:1px solid var(--line); border-left-width:0; text-decoration:none; font:12px/1 var(--mono); color:var(--muted); background:var(--label); }
+.viewswitch a:first-child { border-left-width:1px; }
+.viewswitch a.on { border-color:var(--ink); color:var(--ink); z-index:1; }
+.board-list { display:flex; flex-direction:column; }
+.lgroup { border-top:1px solid var(--line-strong); }
+.lgroup:first-child { border-top:none; }
+.lgroup > h3 { display:flex; align-items:center; gap:8px; margin:0; padding:11px 4px 8px; font:700 11px/1 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink); }
+.lgroup > h3 .lg-name { display:inline-flex; align-items:center; gap:8px; }
+.lgroup > h3 .n { color:var(--muted); font-weight:400; margin-left:auto; }
+.lgroup-empty > h3 { color:var(--muted); }
+.lrows { list-style:none; margin:0; padding:0 0 6px; }
+.lrow { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 14px; padding:7px 6px; border-bottom:1px solid var(--line); }
+.lrow:last-child { border-bottom:none; }
+.lrow-main { display:flex; align-items:baseline; gap:10px; flex:1 1 320px; min-width:0; text-decoration:none; }
+.lrow-main:hover .lt { text-decoration:underline; text-decoration-color:var(--ink); }
+.lrow .lt { font-size:14.5px; overflow-wrap:anywhere; flex:1 1 auto; }
+.lrow .meta { font:11px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.lrow .lfact { font:12px/1.4 var(--mono); color:var(--muted); flex:0 1 auto; min-width:0; overflow-wrap:anywhere; }
+.lrow .lfact.q { color:var(--s-waiting_human); font-style:italic; font-family:var(--body); font-size:13px; }
+
 /* ---- inbox --------------------------------------------------------------------------- */
 .group { margin-bottom:20px; border:1px solid var(--line); background:var(--label); }
 .group > header { display:flex; align-items:center; gap:12px; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); }
