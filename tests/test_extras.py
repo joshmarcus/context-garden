@@ -230,6 +230,59 @@ def test_persona_phase_review_frozen_phase_sends_findings_to_the_next_phase(sche
     assert all(t.phase == "p2" for t in filed)
 
 
+def test_persona_with_declared_sections_gets_them_in_brief_and_report(sched, fake_github, monkeypatch):
+    """CG-188: a persona file may declare `sections:` in frontmatter; the brief asks for them
+    in the marker JSON and the report renders them beside the findings block."""
+    from tests.conftest import write
+
+    write(sched.store.root / "personas" / "vision-pm.md",
+          "---\nsections: [vision, features, questions]\n---\n\n# Persona: Vision PM\n\n## You are\nThe PM.\n")
+    sched.store.invalidate()
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "vision-pm")
+    brief = (run.path / "brief.md").read_text()
+    assert '"sections":' in brief and "keyed by name (vision, features, questions)" in brief
+    assert "# Persona: Vision PM" in brief and "---\nsections:" not in brief  # frontmatter stripped
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("vision-pm-*.md")).read_text()
+    assert "## Vision" in report and "## Features" in report and "## Questions" in report
+    assert "As the vision-pm, mostly fine." in report  # the overall paragraph
+    assert "A form to file a task from the web" in report  # a structured feature item
+    assert "First run needs a config file the README never mentions" in report  # findings block kept
+
+
+def test_persona_without_sections_is_unchanged(sched, fake_github, monkeypatch):
+    """A persona that declares no sections is asked for and rendered exactly as before: no
+    `sections` fragment in the brief, no extra headings in the report."""
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "security")
+    brief = (run.path / "brief.md").read_text()
+    assert '"sections":' not in brief and "keyed by name" not in brief
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("security-*.md")).read_text()
+    assert "## Medium" in report  # only the findings block (default fake severity is medium)
+    assert "## Vision" not in report and "## Features" not in report
+
+
+def test_product_manager_builtin_declares_its_sections(sched, fake_github, monkeypatch):
+    """CG-188/CG-181: the built-in product-manager persona declares vision, where-we-are,
+    features, not-now and questions, and a phase review with it produces those sections and
+    the findings block."""
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    sched.dispatch_persona_phase(ph, "product-manager")
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("product-manager-*.md")).read_text()
+    for heading in ("## Vision", "## Where we are", "## Features", "## Not now", "## Questions"):
+        assert heading in report, heading
+    assert "**Score:**" in report and "First run needs a config file" in report
+
+
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
     sched.tick()
     sched.tick()

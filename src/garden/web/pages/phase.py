@@ -99,7 +99,8 @@ def register(app: FastAPI, site: Site) -> None:
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             sheet=sheet,
             burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
-            personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
+            personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
+            reviews=[{"rel": s.rel(p), "text": p.read_text(), **_review_head(p)} for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=spent, metrics=m,
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
@@ -237,6 +238,7 @@ def _review_head(path: Path) -> dict[str, Any]:
     score = ""
     overall = ""
     highs: list[str] = []
+    features = 0
     section = ""
     for line in path.read_text().splitlines():
         stripped = line.strip()
@@ -247,10 +249,14 @@ def _review_head(path: Path) -> dict[str, Any]:
             sm = re.search(r"\*\*Score:\*\*\s*([^·]+)", stripped)
             score = sm.group(1).strip() if sm else ""
             continue
+        # a `features` section renders one top-level bullet per feature (personas.report_markdown)
+        if section == "features" and line.startswith("- "):
+            features += 1
         if not stripped or stripped.startswith("#") or stripped.startswith("_"):
             continue
         if not section and not overall:
             overall = stripped
         elif section == "high" and stripped.startswith("- "):
             highs.append(stripped[2:])
-    return {"persona": persona, "date": date, "score": score, "overall": overall, "highs": highs}
+    return {"persona": persona, "date": date, "score": score, "overall": overall, "highs": highs,
+            "features": features}

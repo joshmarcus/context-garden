@@ -103,7 +103,7 @@
     </div>
     {% for name, text in specs %}<details class="panel" {% if loop.first %}open{% endif %}><summary class="mono">{{ name }}</summary><div class="prose" style="margin-top:8px">{{ text|md|safe }}</div></details>{% endfor %}
     {% for name, text in docs %}<details class="panel"><summary class="mono">{{ name }}</summary><div class="prose" style="margin-top:8px">{{ text|md|safe }}</div></details>{% endfor %}
-    {% for name, text in reviews %}<details class="panel"><summary class="mono">persona · {{ name }}</summary><div class="prose" style="margin-top:8px">{{ text|md|safe }}</div></details>{% endfor %}
+    {% for r in reviews %}<details class="panel"><summary class="mono">persona · {{ r.persona }}{% if r.score %} · {{ r.score }}{% endif %}{% if r.features %} · {{ r.features }} feature(s){% endif %}</summary><div class="prose" style="margin-top:8px">{{ r.text|md|safe }}</div></details>{% endfor %}
   </div>
 </div>
 {% endblock %}

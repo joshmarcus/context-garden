@@ -389,6 +389,40 @@ def test_retro_files_persona_findings_merged_across_personas_by_title(tmp_path, 
     assert "3 persona finding(s) filed" in pr["body"]
 
 
+def test_retro_lifts_a_personas_structured_features_into_the_features_list(tmp_path, fake_github, monkeypatch):
+    """CG-188: a persona that declares a `features` section (the product-manager) returns
+    structured features; the retro lifts them into its own features list and files each as a
+    draft task in the next phase, naming the persona as the source in the task body."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    entry = sched.start_retro(ph, ["product-manager"], skip_personas=False)
+    assert entry["stage"] == "personas"
+    sched.tick()  # run the product-manager persona, then dispatch the reconcile run
+    rep = sched.tick()  # reap the reconcile run -> PR
+    assert not rep.errors, rep.errors
+    assert fake_github.created
+
+    from garden.model import Task as TaskModel
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    tasks_dir = wt / "gdn" / "p2" / "tasks"
+    parsed = [TaskModel.parse(p, p.read_text(), product="gdn", phase="p2") for p in tasks_dir.glob("*.md")]
+    titles = {t.title for t in parsed}
+    assert "A form to file a task from the web" in titles
+    pm_task = next(t for t in parsed if t.title == "A form to file a task from the web")
+    assert "product-manager persona" in pm_task.body
+    assert pm_task.discovered_from == "retro:gdn/p1"
+
+    retro_md = (wt / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "A form to file a task from the web" in retro_md
+
+
 def test_retro_commit_failure_becomes_a_card_not_a_silent_vanish(tmp_path, fake_github, monkeypatch):
     """CG-147: at the phase-02 retro, a commit that failed inside `reap_retro` (missing git
     identity in the retro worktree) left the rendered doc staged but uncommitted, opened no

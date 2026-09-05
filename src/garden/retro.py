@@ -201,15 +201,52 @@ def reconciliation_table(rev: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def resolve_features(rev: dict[str, Any], existing_titles: dict[str, str]) -> list[dict[str, Any]]:
+def persona_features(sections_by_persona: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The structured `features` sections of the persona reports, as retro feature candidates
+    tagged with the persona that raised them (CG-188). A persona whose `features` section is
+    plain markdown (not a list of structured items) carries nothing filable and is skipped.
+    Pure: no id assignment, no file I/O."""
+    out: list[dict[str, Any]] = []
+    for persona, sections in sections_by_persona.items():
+        feats = (sections or {}).get("features")
+        if not isinstance(feats, list):
+            continue
+        for f in feats:
+            if not isinstance(f, dict) or not str(f.get("title") or "").strip():
+                continue
+            out.append({"title": str(f["title"]).strip(), "body": str(f.get("body") or "").strip(),
+                        "difficulty": str(f.get("difficulty") or "medium").strip() or "medium",
+                        "priority": f.get("priority"), "rationale": str(f.get("rationale") or "").strip(),
+                        "duplicate_of": str(f.get("duplicate_of") or "").strip(), "source": persona})
+    return out
+
+
+def merge_features(rev: dict[str, Any], persona_feats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reconciliation's own features followed by the persona features whose title is not
+    already among them (case-insensitive): the retro deduplicates across the two sources so a
+    feature a persona named and the reconciliation also proposed is filed once."""
+    feats = [f for f in rev.get("features") or [] if isinstance(f, dict)]
+    seen = {str(f.get("title") or "").strip().lower() for f in feats}
+    for pf in persona_feats:
+        key = pf["title"].lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        feats.append(pf)
+    return feats
+
+
+def resolve_features(rev: dict[str, Any], existing_titles: dict[str, str],
+                     persona_feats: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Match each proposed feature against existing task titles (case-insensitive) or the
     retro's own `duplicate_of`, deciding which get filed as draft tasks. Pure: assigns no
     ids and touches no files, so it is testable without a live model or a worktree.
 
     `existing_titles` maps a lowercased task title to the id of the task that has it.
+    `persona_feats` (from `persona_features`) are merged in and deduplicated by title.
     """
     out: list[dict[str, Any]] = []
-    for f in rev.get("features") or []:
+    for f in merge_features(rev, persona_feats or []):
         if not isinstance(f, dict):
             continue
         title = str(f.get("title") or "").strip()
@@ -229,6 +266,7 @@ def resolve_features(rev: dict[str, Any], existing_titles: dict[str, str]) -> li
             "difficulty": str(f.get("difficulty") or "medium").strip() or "medium",
             "priority": f.get("priority"),
             "rationale": str(f.get("rationale") or "").strip(),
+            "source": str(f.get("source") or "").strip(),
             "skip": bool(reason),
             "reason": reason,
         })
