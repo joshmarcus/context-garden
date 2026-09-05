@@ -174,6 +174,38 @@ def test_pending_rollup_keeps_head_and_does_not_rotate(sched, fake_github, tmp_p
     assert len([r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]) == 1
 
 
+def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_path):
+    """CG-182: the pre-merge rebase's checks run as a detached check run, not in the tick — the
+    incident that grew ticks to a minute. The head is held until the check reaps, then merges."""
+    _independent_tasks(sched, 1)
+    sched.cfg.data["max_parallel"] = 1
+    sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
+    for _ in range(6):  # worker -> pre-PR check run -> PR (the check gates it, so an extra tick)
+        sched.tick()
+        if sched.store.task("DM-001").status == Status.IN_REVIEW:
+            break
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    b1 = sched.store.task("DM-001").branch
+    _advance_main(tmp_path, "moved")  # the branch is behind: the merge needs a rebase first
+    _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")
+    sched.state.save()
+
+    # merge queue: rebase + force-push, then start the pre-PR check as a detached check run.
+    rep = sched.tick()
+    assert "DM-001(check:merge_rebase)" in rep.dispatched
+    assert any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
+    assert fake_github.prs[b1].state != "MERGED"  # not merged: the check has not been reaped yet
+    assert not sched.state.get("DM-001").get("merge_head")  # the head is not held until checks pass
+
+    for _ in range(5):
+        sched.tick()  # reap the check -> hold the head -> merge on the green rollup
+        if fake_github.prs[b1].state == "MERGED":
+            break
+    assert fake_github.prs[b1].state == "MERGED"
+    assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
+
+
 # ---- metrics ----------------------------------------------------------------
 def test_metrics_reports_rebases_per_merge_and_cost(sched, fake_github, tmp_path):
     events = [
