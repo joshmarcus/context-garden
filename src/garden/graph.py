@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from .model import Status, Task
+from .model import Status, Task, dispatch_sort_key
 
 
 class GraphError(Exception):
@@ -79,9 +79,9 @@ def is_blocked(task: Task, tasks: dict[str, Task], stack: bool = False) -> bool:
 
 
 def ready(tasks: dict[str, Task], stack: bool = False) -> list[Task]:
-    """Tasks that can be dispatched now, best first (priority, then id)."""
+    """Tasks that can be dispatched now, best first (priority, then order, then id)."""
     out = [t for t in tasks.values() if t.status == Status.READY and not is_blocked(t, tasks, stack)]
-    return sorted(out, key=lambda t: (t.priority, t.id))
+    return sorted(out, key=dispatch_sort_key)
 
 
 def effective_status(task: Task, tasks: dict[str, Task], stack: bool = False) -> str:

@@ -129,6 +129,7 @@ class Task:
     phase: str = ""
     depends_on: list[str] = field(default_factory=list)
     priority: int = 3  # 1 = highest
+    order: int | None = None  # rank within a priority band; absent means "by id"
     estimate: str = ""  # S / M / L, informational
     reading: list[str] = field(default_factory=list)  # garden-relative paths inlined in the brief
     repo: str = ""  # override product repo (rare)
@@ -157,6 +158,7 @@ class Task:
         "phase",
         "depends_on",
         "priority",
+        "order",
         "estimate",
         "reading",
         "repo",
@@ -195,6 +197,7 @@ class Task:
             phase=str(data.get("phase") or phase),
             depends_on=[str(d) for d in (data.get("depends_on") or [])],
             priority=int(data.get("priority", 3)),
+            order=(int(data["order"]) if data.get("order") is not None else None),
             estimate=str(data.get("estimate") or ""),
             reading=[str(r) for r in (data.get("reading") or [])],
             repo=str(data.get("repo") or ""),
@@ -225,6 +228,8 @@ class Task:
             "depends_on": list(self.depends_on),
             "priority": self.priority,
         }
+        if self.order is not None:
+            data["order"] = self.order
         if self.estimate:
             data["estimate"] = self.estimate
         data["difficulty"] = self.difficulty
@@ -278,6 +283,13 @@ class Task:
 
     def touch(self) -> None:
         self.updated = now_iso()
+
+
+def dispatch_sort_key(task: Task) -> tuple[int, int, int, str]:
+    """The order the loop takes tasks in, and the backlog shows them: coarse `priority` band
+    first, then the `order` rank inside a band (a task without one sorts after those with one),
+    then id. `ready()`, `dispatch_ready` and the backlog view all sort by this."""
+    return (task.priority, 0 if task.order is not None else 1, task.order or 0, task.id)
 
 
 def _terminal_reason(task: Task) -> str:

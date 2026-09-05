@@ -15,8 +15,8 @@ from garden.graph import (
 from garden.model import Status, Task
 
 
-def T(id, deps=(), status="ready", pri=3):
-    return Task(path=Path(id), id=id, title=f"task {id}", status=Status(status), depends_on=list(deps), priority=pri)
+def T(id, deps=(), status="ready", pri=3, order=None):
+    return Task(path=Path(id), id=id, title=f"task {id}", status=Status(status), depends_on=list(deps), priority=pri, order=order)
 
 
 def test_ready_and_blocked():
@@ -25,6 +25,18 @@ def test_ready_and_blocked():
     assert blockers(tasks["C"], tasks) == ["B"]
     assert effective_status(tasks["C"], tasks) == "blocked"
     assert effective_status(tasks["E"], tasks) == "draft"
+
+
+def test_ready_sorts_by_priority_then_order_then_id():
+    # Same priority band: an explicit `order` breaks ties ahead of tasks without one (which
+    # fall back to id order); a lower priority band always dispatches first.
+    tasks = {t.id: t for t in [
+        T("C", pri=2, order=0),   # ordered rank 0 in the p2 band
+        T("A", pri=2),            # no order -> after the ordered rows, by id
+        T("B", pri=2, order=1),   # ordered rank 1
+        T("Z", pri=1),            # a lower band, first regardless
+    ]}
+    assert [t.id for t in ready(tasks)] == ["Z", "C", "B", "A"]
 
 
 def test_cycle_and_unknown():
