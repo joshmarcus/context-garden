@@ -47,8 +47,11 @@ flowchart LR
   module map below). It is called by `garden tick` (one pass), `garden watch` (a loop that
   sleeps `tick_interval` seconds between passes), `garden serve` (the same loop in a
   background thread beside the web server) and the TUI's `t` key. Every call starts by
-  re-reading the task files and `state.json` from disk, so any number of these can run
-  against one garden and the UIs can change state between passes.
+  re-reading the task files and `state.json` from disk — and `garden.yaml` (with its
+  `garden.<env>.yaml` / `garden.local.yaml` overlays) when any of them has changed since the
+  last read — so any number of these can run against one garden, the UIs can change state
+  between passes, and an edit to the config takes effect within one tick without a restart
+  (see "Configuration and environments" for the few keys that still need one).
 - **Workers** are separate operating-system processes started by a *runner*: a headless
   agent CLI (`claude -p`, `codex exec`, or any CLI described under `harnesses:` in
   `garden.yaml`) running on this machine or on a host reached over ssh. They are
@@ -460,6 +463,15 @@ lists and scalars replace, so an overlay can swap the whole `checks.ci` list or 
 host list without touching the shared file. Per-product blocks under `products:` override
 `repo`, `base_branch`, `id_prefix`, `runner`, `harness`, `budget_usd` and `github`.
 `garden doctor` prints which files were loaded and what it found.
+
+**Live reload.** `Store.invalidate` (called at the top of every tick) re-reads these files
+when any of them has changed on disk since the last read, comparing their mtimes, so an edit
+to `garden.yaml` takes effect within one tick and the changed top-level keys are logged (a
+`config_reloaded` event). A handful of keys are consumed once at startup and so are *not*
+picked up live — `config.RESTART_KEYS`: `work_dir` (fixes the `.garden` paths), `tick_interval`
+(the watch/serve loop reads it once), and the `github.*` client and `upgrade.*` installer
+settings that are built when the scheduler is constructed. The Configuration page names both
+sets, and changing a restart key needs a restart of `garden watch` / `garden serve`.
 
 Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
