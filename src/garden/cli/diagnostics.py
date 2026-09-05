@@ -155,7 +155,7 @@ def doctor():
         console.print("[yellow]notify: not configured (set notify.command in garden.yaml so a human "
                       "gets pinged when a task needs one)[/yellow]")
     else:
-        from ..notify import notify_test
+        from ..notify import notify_test, unquoted_message_warning
 
         result = notify_test(store.config.data)
         if result is not None and result[0]:
@@ -165,6 +165,9 @@ def doctor():
             console.print(f"notify: [red]configured but the test run failed ({detail})[/red]  command={notify_cmd!r}"
                           "  (fix: fix or replace notify.command in garden.yaml)")
             fail("notify")
+        warning = unquoted_message_warning(str(notify_cmd))
+        if warning:
+            console.print(f"[yellow]notify: {warning}[/yellow]")
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
         by = ctrl.get("by", "")

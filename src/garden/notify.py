@@ -10,10 +10,35 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from typing import Any
 
 LOGGER = logging.getLogger("garden.notify")
+
+# GARDEN_MESSAGE (and the other GARDEN_* env vars) carry worker-written text: they can
+# contain quotes, backslashes or newlines. A command that splices one straight into what
+# looks like a JSON literal (an escaped quote nearby, no jq/python in the pipeline) will
+# break on such a message, or let it inject extra JSON — see notify: in
+# examples/garden.work.yaml for a command that quotes correctly with `jq -n --arg`.
+_GARDEN_VARS = ("GARDEN_MESSAGE", "GARDEN_TASK_ID", "GARDEN_STATUS", "GARDEN_PR")
+_LOOKS_LIKE_JSON = re.compile(r'\\"|\{\s*\\?"')
+_HAS_QUOTING_TOOL = re.compile(r"\bjq\b|\bpython3?\s+-c\b")
+
+
+def unquoted_message_warning(command: str) -> str | None:
+    """None if `command` looks safe, else a one-line warning: a JSON-shaped payload that
+    splices a GARDEN_* var in directly, with no `jq` (or `python -c`) in the pipeline to
+    quote it properly."""
+    if not command or not _LOOKS_LIKE_JSON.search(command) or _HAS_QUOTING_TOOL.search(command):
+        return None
+    hit = next((v for v in _GARDEN_VARS if f"${v}" in command or f"${{{v}}}" in command), None)
+    if not hit:
+        return None
+    return (f"notify.command splices ${hit} into what looks like a JSON payload without a "
+            "quoting tool (jq, python -c, ...); a message containing a quote or newline will "
+            "break the JSON, or inject data. Build the payload with `jq -n --arg message "
+            '"$GARDEN_MESSAGE" ...` instead — see notify: in examples/garden.work.yaml.')
 
 
 def should_notify(status: str | None, needs_human: bool = False) -> bool:

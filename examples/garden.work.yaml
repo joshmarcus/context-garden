@@ -48,9 +48,15 @@ harnesses:
 # `garden doctor` runs this for real with a synthetic payload, so a typo or a dead webhook
 # shows up there instead of the first time a task actually needs you.
 notify:
+  # GARDEN_MESSAGE is worker-written text, so it can hold a quote, a backslash or a
+  # newline: build the JSON with `jq -n --arg` (quotes each value) rather than splicing
+  # the variables into a hand-written "{\"text\": \"...\"}" string, which a stray quote
+  # in the message would break (or use to inject extra JSON).
   command: >-
     curl -sS -X POST -H 'Content-type: application/json'
-    --data "{\"text\": \"[$GARDEN_STATUS] $GARDEN_TASK_ID: $GARDEN_MESSAGE $GARDEN_PR\"}"
+    --data "$(jq -n --arg status "$GARDEN_STATUS" --arg task "$GARDEN_TASK_ID"
+    --arg message "$GARDEN_MESSAGE" --arg pr "$GARDEN_PR"
+    '{text: "[\($status)] \($task): \($message) \($pr)"}')"
     "$SLACK_WEBHOOK_URL"
   timeout_seconds: 15
 

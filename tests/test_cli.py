@@ -511,6 +511,38 @@ def test_doctor_tests_notify_command(garden, monkeypatch):
         assert "notify" in r.output and "test ok" in r.output
 
 
+def test_doctor_warns_on_a_notify_command_that_splices_message_into_json(garden, monkeypatch):
+    """The Slack example from CG-201's provenance: GARDEN_MESSAGE spliced straight into a
+    hand-built JSON string breaks (or is exploitable) the moment a worker-written message
+    contains a quote or newline. `garden doctor` must flag it, not just report the test run
+    exited zero."""
+    import subprocess
+    from unittest import mock
+
+    bad_command = 'echo "{\\"text\\": \\"$GARDEN_MESSAGE\\"}" > /dev/null'
+    (garden / "garden.local.yaml").write_text(yaml.safe_dump({"notify": {"command": bad_command}}))
+
+    def side_effect(cmd, *args, **kwargs):
+        if isinstance(cmd, str):
+            return subprocess.CompletedProcess(cmd, 0)
+        if isinstance(cmd, list):
+            if "config" in cmd and "git" in cmd:
+                if "user.email" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                elif "user.name" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif "auth" in cmd and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            elif "api" in cmd and "user" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+        raise RuntimeError(f"Unexpected subprocess call: {cmd}")
+
+    with mock.patch("subprocess.run", side_effect=side_effect):
+        r = run(garden, "doctor")
+        assert "test ok" in r.output  # the synthetic run still exits 0
+        assert "GARDEN_MESSAGE" in r.output and "JSON" in r.output
+
+
 def test_doctor_flags_a_failing_notify_command(garden, monkeypatch):
     import subprocess
     from unittest import mock

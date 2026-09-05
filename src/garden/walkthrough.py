@@ -55,6 +55,7 @@ class WalkthroughResult:
     pages: list[PageResult] = field(default_factory=list)
     screenshots: bool = False
     browser_note: str = ""
+    include_stderr: bool = False
 
 
 # --------------------------------------------------------------------------- page selection
@@ -138,6 +139,26 @@ _BR = re.compile(r"<br\s*/?>", re.I)
 _DROP = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
 _TAG = re.compile(r"<[^>]+>")
 _BLANKS = re.compile(r"\n[ \t]*\n[ \t]*\n+")
+
+# The run page's stderr tab: raw process stderr can carry secrets a test suite printed,
+# tracebacks or other things that should never land in a committed docs/ page.
+_STDERR_NOTE = "(stderr omitted by garden walkthrough; rerun with --include-stderr to capture it)"
+_STDERR_BLOCK = re.compile(
+    r'(<div class="tab-panel" data-tab="stderr">).*?(</div>)', re.I | re.S,
+)
+
+
+def _scrub_stderr(page: str) -> str:
+    return _STDERR_BLOCK.sub(rf'\1<pre class="log">{_STDERR_NOTE}</pre>\2', page)
+
+
+def _redact_home(text: str, home: str) -> str:
+    """Replace the capturing machine's home directory with `~` wherever it appears (worktree
+    paths in briefs, transcripts and stderr are absolute and otherwise leak the operator's
+    username and directory layout into a page committed to the garden repo)."""
+    if not home or home == "/":
+        return text
+    return text.replace(home, "~")
 
 
 def html_to_text(page: str) -> str:
@@ -233,9 +254,14 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
 
 
 def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
-            base_url: str = "", log: Log | None = None) -> WalkthroughResult:
+            base_url: str = "", log: Log | None = None, include_stderr: bool = False) -> WalkthroughResult:
     """Write `<slug>.html`, `<slug>.txt` (and `<slug>.png` when a browser is available) for
-    every page, plus `index.md`, under out_dir. Returns what was captured."""
+    every page, plus `index.md`, under out_dir. Returns what was captured.
+
+    Absolute home-directory paths are redacted to `~` in every page, and the run page's
+    stderr tab is omitted unless `include_stderr` is set — this capture is committed to the
+    garden repo, so it must not carry the operator's directory layout or raw process stderr
+    (which can hold secrets a test suite printed or a traceback's local paths)."""
     log = log or (lambda _m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     specs = pages_for(store, phase)
@@ -262,9 +288,14 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
         if browser_note:
             log(browser_note)
 
-    result = WalkthroughResult(out_dir=out_dir, screenshots=bool(shot), browser_note=browser_note)
+    result = WalkthroughResult(out_dir=out_dir, screenshots=bool(shot), browser_note=browser_note,
+                               include_stderr=include_stderr)
+    home = str(Path.home())
     for s in specs:
         status, page = fetched.get(s.slug, (0, ""))
+        page = _redact_home(page, home)
+        if not include_stderr:
+            page = _scrub_stderr(page)
         (out_dir / f"{s.slug}.html").write_text(page)
         (out_dir / f"{s.slug}.txt").write_text(html_to_text(page))
         result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot))
@@ -289,6 +320,11 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
                    "does top to bottom.")
     out += ["", "Read the `.txt` for the words and the order; read the `.html` for structure, "
             "controls, forms, empty states and error text.", ""]
+    if not result.include_stderr:
+        out += ["Run page stderr is omitted (rerun `garden walkthrough` with --include-stderr to "
+                "capture it); absolute home-directory paths are redacted to `~` throughout.", ""]
+    else:
+        out += ["Absolute home-directory paths are redacted to `~` throughout.", ""]
     for pr in result.pages:
         s = pr.spec
         out.append(f"## {s.title}: `{s.url}` (HTTP {pr.status}, {pr.html_bytes // 1024} KB)")
