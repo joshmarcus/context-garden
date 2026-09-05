@@ -155,6 +155,13 @@ def _plain(html: str) -> str:
 
 
 def sources_markdown(rows: list[dict[str, Any]]) -> str:
+    import re
+
+    def cell(value: Any) -> str:
+        # Commons metadata (e.g. a multi-line Artist credit) can contain newlines, which would
+        # otherwise split one table row into two and break the rest of the table.
+        return re.sub(r"\s+", " ", str(value)).strip()
+
     lines = [
         "# Plate sources", "",
         f"Scanned plates from *{WORK}* ({ARTIST}, Gera, {YEAR}), via Wikimedia Commons. The work is in",
@@ -163,5 +170,6 @@ def sources_markdown(rows: list[dict[str, Any]]) -> str:
         "| plant | species | Commons file | artist | licence | size |", "|---|---|---|---|---|---|",
     ]
     for r in rows:
-        lines.append(f"| {r['key']} | *{r['latin']}* | [{r['title']}]({r['url']}) | {r['artist']} | {r['license']} | {r['bytes'] // 1024} KB |")
+        lines.append(f"| {cell(r['key'])} | *{cell(r['latin'])}* | [{cell(r['title'])}]({cell(r['url'])}) | "
+                      f"{cell(r['artist'])} | {cell(r['license'])} | {r['bytes'] // 1024} KB |")
     return "\n".join(lines) + "\n"

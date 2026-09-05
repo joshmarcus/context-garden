@@ -15,7 +15,6 @@ on 2026-09-04.
 | quince | *Cydonia oblonga* | [Illustration_Cydonia_oblonga0_-_clean.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Cydonia_oblonga0_-_clean.jpg) | Otto Wilhelm Thomé | Public domain | 83 KB |
 | orchid | *Cypripedium calceolus* | [Illustration_Cypripedium_calceolus0_clean.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Cypripedium_calceolus0_clean.jpg) | User:Kilom691 | Public domain | 75 KB |
 | thistle | *Carduus nutans* | [Illustration_Carduus_nutans0_white.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Carduus_nutans0_white.jpg) | Dr. Otto Wilhelm Thomé | Public domain | 79 KB |
-| snapdragon | *Antirrhinum majus* | [Illustration_Antirrhinum_majus_clean.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Antirrhinum_majus_clean.jpg) | Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé
-derivative work: Aroche (talk) | Public domain | 61 KB |
+| snapdragon | *Antirrhinum majus* | [Illustration_Antirrhinum_majus_clean.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Antirrhinum_majus_clean.jpg) | Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé derivative work: Aroche (talk) | Public domain | 61 KB |
 | adonis | *Adonis vernalis* | [Illustration_Adonis_vernalis0_clean.jpg](https://commons.wikimedia.org/wiki/File:Illustration_Adonis_vernalis0_clean.jpg) | User:Kilom691 | Public domain | 74 KB |
 | daphne | *Daphne mezereum* | [Daphne_mezereum,_Thomé-347.png](https://commons.wikimedia.org/wiki/File:Daphne_mezereum,_Thom%C3%A9-347.png) | Prof. Dr. Otto Wilhelm Thomé | Public domain | 83 KB |

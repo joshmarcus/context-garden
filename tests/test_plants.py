@@ -8,7 +8,6 @@ from garden.plants import (
     STAGE,
     assign_plant,
     plant_svg,
-    positional_plant,
     roman,
     stage_svg,
     stage_word,
@@ -20,10 +19,6 @@ def test_roman_and_assignment():
     assert [roman(n) for n in (1, 2, 4, 9, 12)] == ["I", "II", "IV", "IX", "XII"]
     assert assign_plant([]) == "pea" and assign_plant(["pea"]) == "bramble" and assign_plant([p["key"] for p in PLANTS]) == "pea"
     assert len({p["key"] for p in PLANTS}) == len(PLANTS)
-    # a phase without a plant of its own keeps its positional plant whatever the others pin
-    assert positional_plant(1, ["poppy"]) == "bramble"
-    assert positional_plant(1, ["bramble"]) == "foxglove"  # pinned elsewhere: the next free one
-    assert positional_plant(len(PLANTS), [p["key"] for p in PLANTS]) == "pea"  # wraps
 
 
 def test_drawings_cover_every_status_and_plant():
@@ -65,6 +60,20 @@ def test_phases_get_plants_by_position_or_frontmatter(garden):
     t.phase = "p2"
     assert "plant: poppy" not in build_brief(store, t).text
     assert "plant: poppy" not in plan_prompt(store, "demo", "p2")
+
+
+def test_pinning_a_plant_does_not_shift_a_colliding_position(garden):
+    store = Store(garden)
+    # p2 pins "foxglove", which is also PLANTS[2] — the plant p3's position would naturally get.
+    (garden / "demo" / "p2").mkdir()
+    (garden / "demo" / "p2" / "goals.md").write_text("---\nplant: foxglove\n---\n# p2\n\nGoals.\n")
+    (garden / "demo" / "p2" / "tasks").mkdir()
+    (garden / "demo" / "p3" / "tasks").mkdir(parents=True)
+    store.invalidate()
+    # p3 is at position 2 (index 2), same position foxglove naturally occupies. The pin on p2
+    # must not push p3 onto the next unused plant instead; the plate number distinguishes them.
+    assert store.phase("demo", "p3").plant == "foxglove"
+    assert store.phase("demo", "p3").plate == "III"
 
 
 def test_new_phase_assigns_next_plant(garden):

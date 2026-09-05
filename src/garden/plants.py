@@ -179,18 +179,6 @@ def assign_plant(taken: list[str]) -> str:
     return PLANTS[len(taken) % len(PLANTS)]["key"]
 
 
-def positional_plant(index: int, taken: list[str]) -> str:
-    """The plant for the phase at `index` when its goals.md names none: the plant at that
-    position, or the next one after it that no other phase uses, so pinning one phase's
-    plant never moves the others; wraps around when every plant is used."""
-    n = len(PLANTS)
-    for k in range(n):
-        key = PLANTS[(index + k) % n]["key"]
-        if key not in taken:
-            return key
-    return PLANTS[index % n]["key"]
-
-
 def plant_info(key: str) -> dict[str, str]:
     return PLANT_BY_KEY.get(key, PLANTS[0])
 
