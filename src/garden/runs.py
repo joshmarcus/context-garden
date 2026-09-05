@@ -38,6 +38,7 @@ class Run:
     worktree: str = ""
     branch: str = ""
     base: str = ""
+    start_head: str = ""  # origin/<branch>'s sha this run started from, for a lease-protected push (CG-220)
     exit_code: int | None = None
     diff_stat: str = ""  # `git diff --stat base...branch` at finalize, for attention/triage evidence
     patch_id_before: str = ""  # rebase mode only: patch id of the branch's diff before the rebase
@@ -185,7 +186,12 @@ class RunStore:
     def __init__(self, garden_dir: Path):
         self.dir = garden_dir / "runs"
 
-    def new_run(self, task_id: str, runner: str, mode: str = "work") -> Run:
+    def next_run_id(self, task_id: str, mode: str) -> str:
+        """Reserve the id `new_run` would generate for `task_id`/`mode` right now, without
+        creating the run — so a caller that needs the id before the run exists (e.g. to name a
+        `backup/<run-id>` ref before dispatch; CG-220) gets the same id `new_run` will use a
+        moment later, as long as no other run for this task+mode is created in between (the
+        scheduler dispatches one task at a time, so within a tick this always holds)."""
         stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
         run_id = f"{stamp}-{mode}"
         d = self.dir / task_id / run_id
@@ -194,6 +200,11 @@ class RunStore:
             n += 1
             run_id = f"{stamp}-{mode}-{n}"
             d = self.dir / task_id / run_id
+        return run_id
+
+    def new_run(self, task_id: str, runner: str, mode: str = "work", run_id: str = "") -> Run:
+        run_id = run_id or self.next_run_id(task_id, mode)
+        d = self.dir / task_id / run_id
         d.mkdir(parents=True, exist_ok=True)
         run = Run(
             task_id=task_id,
