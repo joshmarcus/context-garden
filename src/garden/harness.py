@@ -18,9 +18,10 @@ from .brief import parse_result
 # Substrings (checked case-insensitively across stdout, stderr and the parsed final message)
 # that mark a run as failing for lack of a login rather than for anything the brief asked:
 # claude's own CLI prints "Not logged in · Please run /login" when the scrubbed environment's
-# CLAUDE_CONFIG_DIR carries no credentials. `Harness.parse` tags these `error_kind: "auth"`
-# so `garden doctor` (`Harness.check_login`) can report the fix, and so a real dispatch can
-# eventually be told apart from a worker's own failure (an environment stop, not a task one).
+# CLAUDE_CONFIG_DIR carries no credentials. `Harness.parse` tags these `env_error: True,
+# env_kind: "auth"` (the same environment-stop convention a quota/spend-limit error uses) so
+# `garden doctor` (`Harness.check_login`) can report the fix, and so the scheduler can pause
+# the harness instead of failing the task.
 AUTH_FAILURE_MARKERS = ("not logged in", "not authenticated")
 
 DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
@@ -225,7 +226,7 @@ class Harness:
         except (OSError, subprocess.TimeoutExpired) as e:
             return False, str(e)
         parsed = self.parse(proc.stdout, proc.stderr)
-        if parsed.get("error_kind") == "auth":
+        if parsed.get("env_kind") == "auth":
             return False, parsed.get("error") or "not logged in"
         if proc.returncode != 0:
             return False, parsed.get("error") or f"exited {proc.returncode}"
@@ -258,10 +259,12 @@ class Harness:
 
     # ---- output ------------------------------------------------------------
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None) -> dict[str, Any]:
-        """Normalise output to {final_text, usage, cost_usd, error, session_id, result}, plus
-        `error_kind: "auth"` when the output looks like a login failure rather than a worker
-        or task problem (see AUTH_FAILURE_MARKERS)."""
-        out: dict[str, Any] = {"final_text": "", "usage": {}, "cost_usd": None, "error": "", "session_id": "", "result": {}}
+        """Normalise output to {final_text, usage, cost_usd, error, session_id, result,
+        env_error, env_kind}. `env_error` is True when the run stopped on something outside
+        the worker's control rather than the task (currently just a login failure, `env_kind`
+        "auth"); the scheduler pauses the harness instead of failing the task."""
+        out: dict[str, Any] = {"final_text": "", "usage": {}, "cost_usd": None, "error": "", "session_id": "", "result": {},
+                               "env_error": False, "env_kind": ""}
         if final_path is not None and final_path.exists():
             out["final_text"] = final_path.read_text()
         if self.output == "claude-json":
@@ -279,7 +282,8 @@ class Harness:
         out["result"] = parse_result(out["final_text"]) or parse_result(stdout)
         blob = f"{out['final_text']} {stdout} {stderr}".lower()
         if any(marker in blob for marker in AUTH_FAILURE_MARKERS):
-            out["error_kind"] = "auth"
+            out["env_error"] = True
+            out["env_kind"] = "auth"
             if not out["error"]:
                 out["error"] = "not logged in"
         return out

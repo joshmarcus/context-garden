@@ -168,17 +168,17 @@ def test_parse_classifies_not_logged_in_as_an_auth_env_error():
     login; that must read as an environment problem (env_error/auth), not a task failure."""
     h = Harness("claude", {})
     out = h.parse("", "Not logged in · Please run /login\n")
-    assert out["error_kind"] == "auth"
+    assert out["env_error"] is True and out["env_kind"] == "auth"
     assert "not logged in" in out["error"].lower()
 
     # a run that used its own explicit error message keeps it, only tagged
     tagged = Harness("codex", {}).parse('{"type":"error","message":"not authenticated: run codex login"}')
-    assert tagged["error_kind"] == "auth"
+    assert tagged["env_error"] is True and tagged["env_kind"] == "auth"
     assert tagged["error"] == "not authenticated: run codex login"
 
-    # an ordinary failure carries no error_kind at all
+    # an ordinary failure carries no env_error at all
     ordinary = h.parse("", "some other crash\n")
-    assert "error_kind" not in ordinary
+    assert ordinary["env_error"] is False and ordinary["env_kind"] == ""
 
 
 def test_login_probe_and_check_login():

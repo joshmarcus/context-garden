@@ -127,8 +127,9 @@ A custom harness reads whatever variable its own CLI defines; name that variable
 logged in through this exact scrubbed environment (`Harness.check_login`): a trivial
 one-line prompt, not an ambient "auth status" call, so the check fails the same way a real
 dispatch would if the private HOME hid the credentials. `Harness.parse` tags an output
-that looks like a login failure (`"not logged in"`) with `error_kind: "auth"`, so this is
-told apart from a worker's own failure.
+that looks like a login failure (`"not logged in"`) with `env_error: true, env_kind:
+"auth"`, so this is told apart from a worker's own failure and pauses the harness (an
+environment stop) rather than counting toward the task's attempts.
 
 `start` returns at once. The scheduler records the `running` transition, bumps
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick

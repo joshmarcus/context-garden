@@ -649,8 +649,9 @@ spending tokens; a failed flow exits non-zero and fails the job.
   custom harness names its own key there). `garden doctor` proves each configured harness can
   actually log in through this exact environment with a trivial one-line prompt
   (`Harness.check_login`), not an ambient "auth status" call; `Harness.parse` tags a
-  login-failure output `error_kind: "auth"` so it reads as an environment problem, not a
-  worker's own failure.
+  login-failure output `env_error: true, env_kind: "auth"` so it reads as an environment
+  problem, not a worker's own failure, and the scheduler pauses the harness instead of
+  failing the task.
 - A check's flaky-retry command (`checks.<>.retry_command`) comes only from the operator's
   config, never from a check's own JSON output (code the branch wrote), and runs in the same
   scrubbed environment — so a check cannot smuggle a shell command out through its output.
