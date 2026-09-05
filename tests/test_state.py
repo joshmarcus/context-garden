@@ -35,12 +35,28 @@ def test_task_state_setdefault_new_key_dirty():
     assert "runs" in ts.dirty
 
 
-def test_task_state_setdefault_existing_key_dirty():
-    # Already-present keys are also marked dirty so in-place mutations (list.append) are captured.
+def test_task_state_setdefault_existing_key_not_dirty_until_mutated():
+    # setdefault on a present key hands back the live value and snapshots it, but does
+    # not mark it dirty on its own: only an actual in-place mutation makes it dirty.
     ts = _TaskState({"runs": [1]})
     val = ts.setdefault("runs", [])
-    assert "runs" in ts.dirty
     assert val == [1]
+    assert "runs" not in ts.dirty
+    val.append(2)
+    assert "runs" in ts.dirty
+
+
+def test_task_state_read_mutable_not_dirty_without_mutation():
+    # Reading a dict/list value does not mark it dirty (the dirty-on-read clobber fix).
+    ts = _TaskState({"cfg": {"a": 1}})
+    _ = ts["cfg"]
+    assert "cfg" not in ts.dirty
+
+
+def test_task_state_in_place_mutation_marks_dirty():
+    ts = _TaskState({"cfg": {"a": 1}})
+    ts["cfg"]["a"] = 2
+    assert "cfg" in ts.dirty
 
 
 def test_task_state_list_append_survives(tmp_path):
@@ -169,12 +185,56 @@ def test_read_only_access_does_not_write(tmp_path):
 
     s = State(path)
     _ = s.get("CG-001").get("pr_number")  # read only, no __setitem__
-    # setdefault on an existing key DOES mark it dirty so we avoid it here
+    _ = s.get("CG-001")["pr_number"]      # __getitem__ of a scalar
     s.save()
 
     # File should be untouched (no dirty keys → save is a no-op)
     final = State(path)
     assert final.get("CG-001")["pr_number"] == 7
+
+
+def test_reading_mutable_does_not_clobber_concurrent_write(tmp_path):
+    """The dirty-on-read clobber: a writer that only *reads* a task's mutable value
+    (and writes some other key) must not overwrite a concurrent writer's change to the
+    key it merely read."""
+    path = tmp_path / "state.json"
+
+    init = State(path)
+    init.get("CG-001")["cfg"] = {"a": 1}
+    init.save()
+
+    # A reads cfg but does not mutate it, and writes an unrelated key.
+    state_a = State(path)
+    _ = state_a.get("CG-001")["cfg"]["a"]            # read only
+    state_a.get("CG-001")["pr_number"] = 5
+
+    # B mutates cfg in place and saves first.
+    state_b = State(path)
+    state_b.get("CG-001")["cfg"]["a"] = 2
+    state_b.save()
+
+    # A saves after B; because A only read cfg, it must not clobber B's cfg update.
+    state_a.save()
+
+    final = State(path)
+    assert final.get("CG-001")["cfg"] == {"a": 2}
+    assert final.get("CG-001")["pr_number"] == 5
+
+
+def test_in_place_mutation_of_read_value_survives(tmp_path):
+    """A mutable value read via __getitem__ and then mutated in place is persisted."""
+    path = tmp_path / "state.json"
+
+    init = State(path)
+    init.get("CG-001")["items"] = [1]
+    init.save()
+
+    s = State(path)
+    s.get("CG-001")["items"].append(2)
+    s.save()
+
+    final = State(path)
+    assert final.get("CG-001")["items"] == [1, 2]
 
 
 # ── atomic replace ──────────────────────────────────────────────────────────

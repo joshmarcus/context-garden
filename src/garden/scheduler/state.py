@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import json
 import os
@@ -10,48 +11,96 @@ from typing import Any
 
 
 class _TaskState(dict):
-    """dict subclass that records which keys have been written since creation.
+    """dict subclass that records which keys have actually changed since load.
 
-    Tracks dirty keys so State.save() can merge only changed keys back to disk,
+    Tracks changed keys so State.save() can merge only those keys back to disk,
     letting two concurrent writers update different keys of the same task without
     losing each other's changes.
+
+    Two mechanisms feed the change set:
+
+    - explicit writes (`__setitem__`, `pop`, a `setdefault` that inserts) name the
+      key directly; and
+    - a mutable value (dict/list) handed out by `__getitem__` is snapshotted, so
+      an in-place mutation of the nested object — which we cannot intercept — is
+      caught by comparing the live value against its snapshot at save() time.
+
+    Reading a key does *not* by itself mark it dirty: a read that leaves the value
+    unchanged must never clobber a concurrent writer's update to that same key.
     """
 
     def __init__(self, data: dict) -> None:
         super().__init__(data)
-        # Store _dirty in the object's __dict__, not in the dict key-value store.
-        object.__setattr__(self, "_dirty", set())
+        # Kept in the object's __dict__, not in the dict key-value store.
+        # _written: keys named by an explicit write/pop/inserting setdefault.
+        # _snapshots: key -> deep copy of a mutable value handed out by __getitem__,
+        #   used to detect in-place mutation at save() time.
+        object.__setattr__(self, "_written", set())
+        object.__setattr__(self, "_snapshots", {})
+
+    @property
+    def _written_keys(self) -> set:
+        return object.__getattribute__(self, "_written")
+
+    @property
+    def _snaps(self) -> dict:
+        return object.__getattribute__(self, "_snapshots")
 
     @property
     def dirty(self) -> set:
-        return object.__getattribute__(self, "_dirty")
+        """Keys that save() would write: explicit writes plus any snapshotted
+        mutable whose live value now differs from the snapshot taken on read."""
+        changed = set(self._written_keys)
+        snaps = self._snaps
+        for key, snap in snaps.items():
+            if key in self and dict.__getitem__(self, key) != snap:
+                changed.add(key)
+        return changed
 
     def __getitem__(self, key: str) -> Any:
         val = super().__getitem__(key)
-        # Mark mutable values (dict/list) as dirty immediately: the caller is
-        # likely to mutate the nested object in-place, and we have no way to
-        # intercept those mutations.  Scalar reads are harmless to leave clean.
+        # Snapshot mutable values so save() can tell whether the caller mutated the
+        # nested object in place: reading alone leaves the snapshot equal to the live
+        # value, so a read no longer marks the key dirty and can't clobber a
+        # concurrent writer's update to it.  Scalars need no snapshot.
         if isinstance(val, (dict, list)):
-            self.dirty.add(key)
+            snaps = self._snaps
+            if key not in snaps:
+                snaps[key] = copy.deepcopy(val)
         return val
 
     def __setitem__(self, key: str, value: Any) -> None:
         super().__setitem__(key, value)
-        self.dirty.add(key)
+        self._written_keys.add(key)
+        self._snaps.pop(key, None)
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
         result = super().pop(key, *args)
-        self.dirty.add(key)
+        self._written_keys.add(key)
+        self._snaps.pop(key, None)
         return result
 
     def setdefault(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
         if key not in self:
-            self[key] = default  # goes through __setitem__ → marks dirty
-        else:
-            # Key already present; caller may mutate the value in place (e.g. list.append).
-            # Mark it dirty so save() picks up in-place mutations.
-            self.dirty.add(key)
-        return self[key]
+            self[key] = default  # goes through __setitem__ → marks written
+        return self[key]  # goes through __getitem__ → snapshots a mutable default
+
+    def flushed(self, keys: set) -> None:
+        """Reset change tracking for `keys` that save() has just written to disk, so
+        a later save() re-writes only keys touched since now (and can't clobber a
+        concurrent writer's newer update to a key we already flushed)."""
+        written = self._written_keys
+        snaps = self._snaps
+        for key in keys:
+            written.discard(key)
+            if key in self:
+                val = dict.__getitem__(self, key)
+                if isinstance(val, (dict, list)):
+                    snaps[key] = copy.deepcopy(val)
+                else:
+                    snaps.pop(key, None)
+            else:
+                snaps.pop(key, None)
 
 
 class State:
@@ -59,12 +108,13 @@ class State:
 
     Concurrency guarantee: save() acquires an exclusive flock on a companion
     lock file, re-reads the on-disk state, and merges only the keys that this
-    process actually wrote on top of what is currently on disk.  Two concurrent
-    writers that touch different keys of the same task will both survive. The
-    new content is written to a temp file and moved into place with os.replace(),
-    so a concurrent reader (e.g. __init__ from another process, which does not
-    take the lock) always sees either the old or the new file in full, never a
-    truncated one.
+    process actually changed on top of what is currently on disk.  Two concurrent
+    writers that touch different keys of the same task will both survive, and a
+    key that was only read — never mutated — is left alone so it can't clobber a
+    concurrent writer's update to it. The new content is written to a temp file
+    and moved into place with os.replace(), so a concurrent reader (e.g. __init__
+    from another process, which does not take the lock) always sees either the
+    old or the new file in full, never a truncated one.
     """
 
     def __init__(self, path: Path):
@@ -95,9 +145,9 @@ class State:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         dirty_by_tid: dict[str, set] = {
-            tid: ts.dirty
+            tid: dirty
             for tid, ts in self.data.items()
-            if isinstance(ts, _TaskState) and ts.dirty
+            if isinstance(ts, _TaskState) and (dirty := ts.dirty)
         }
         if not dirty_by_tid:
             return
@@ -121,8 +171,8 @@ class State:
             tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))
             os.replace(tmp_path, self.path)
-            # Clear dirty keys now that they are safely on disk, so a later save() only
-            # re-writes keys touched since this write and can't clobber a concurrent
-            # writer's newer update to a key we already flushed.
-            for dirty_keys in dirty_by_tid.values():
-                dirty_keys.clear()
+            # Reset change tracking now that these keys are safely on disk, so a later
+            # save() only re-writes keys touched since this write and can't clobber a
+            # concurrent writer's newer update to a key we already flushed.
+            for tid, dirty_keys in dirty_by_tid.items():
+                self.data[tid].flushed(dirty_keys)
