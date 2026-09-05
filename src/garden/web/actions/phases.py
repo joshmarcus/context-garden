@@ -261,15 +261,36 @@ def register(app: FastAPI, site: Site) -> None:
         if errors:
             return RedirectResponse(_flash_url(f"{back}#new-task", "; ".join(errors), extra={f"nt_{k}": v for k, v in typed.items()}), status_code=303)
 
+        refusal = ""
+        warning = ""
         try:
-            if ph.closed:
-                raise RuntimeError(f"{ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)")
-            body = render_task_body(goal=goal, context=context, acceptance=_parse_acceptance(acceptance))
-            t = s.create_task(product, phase, title, body, depends_on=deps, reading=reading_list,
-                              priority=priority_n, status="ready" if ready else "draft", difficulty=difficulty)
+            with hub.action_lock:
+                sched = hub.scheduler()
+                try:
+                    ph = sched.store.phase(product, phase)
+                except KeyError:
+                    raise HTTPException(404) from None
+                if ph.closed:
+                    raise RuntimeError(f"{ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)")
+                body = render_task_body(goal=goal, context=context, acceptance=_parse_acceptance(acceptance))
+                t = sched.store.create_task(product, phase, title, body, depends_on=deps, reading=reading_list,
+                                  priority=priority_n, status="draft", difficulty=difficulty)
+                if ready:
+                    # Goes through the same gate a hand approval does (CG-238): a placeholder
+                    # acceptance criterion or an unresolved reading path leaves the task a
+                    # draft instead of dispatching a brief that isn't ready to cost a run.
+                    try:
+                        warning = sched.approve(t, by="web", phase=ph) or ""
+                    except RuntimeError as e:
+                        refusal = str(e)
+        except HTTPException:
+            raise
         except (RuntimeError, GitError, GitHubError) as e:
             return RedirectResponse(_flash_url(f"{back}#new-task", str(e), extra={f"nt_{k}": v for k, v in typed.items()}), status_code=303)
         except Exception:
             LOGGER.exception("new-task %s/%s failed", product, phase)
             return RedirectResponse(_flash_url(f"{back}#new-task", "something failed; see the log", extra={f"nt_{k}": v for k, v in typed.items()}), status_code=303)
-        return RedirectResponse(_flash_url(f"/tasks/{t.id}", f"created {t.id}"), status_code=303)
+        if refusal:
+            return RedirectResponse(_flash_url(f"/tasks/{t.id}", f"created {t.id} as a draft: {refusal} ({s.rel(t.path)})"), status_code=303)
+        message = f"created {t.id}" + (f"; {warning}" if warning else "")
+        return RedirectResponse(_flash_url(f"/tasks/{t.id}", message), status_code=303)

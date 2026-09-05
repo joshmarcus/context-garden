@@ -74,7 +74,7 @@
     </select>
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
-  {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="{{ 'primary' if task.status.value != 'draft' else '' }}" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
+  {% if task.status.value in ('ready','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}

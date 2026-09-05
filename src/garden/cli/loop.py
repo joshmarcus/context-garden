@@ -230,9 +230,19 @@ def take(
     if t.status == Status.RUNNING:
         err.print(f"[red]{t.id} is already running[/red]")
         raise typer.Exit(1) from None
-    if t.status == Status.DRAFT:
-        t.status = Status.READY
     sched = _scheduler(store)
+    if t.status == Status.DRAFT:
+        try:
+            ph = store.phase(t.product, t.phase)
+        except KeyError:
+            ph = None
+        try:
+            warning = sched.approve(t, by="cli", phase=ph)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        if warning:
+            err.print(f"[yellow]{warning}[/yellow]")
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
     try:
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree)
