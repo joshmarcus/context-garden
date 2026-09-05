@@ -306,7 +306,7 @@ class CheckRunMixin:
             gitops.remove_worktree(repo, scratch)
             st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": f"does not merge onto {base}"}
             self.events.emit("scratch_merge", task.id, resolved=False, base=base, files=files)
-            self._hold_automerge(task, f"the scratch merge onto `{base}` does not apply cleanly ({', '.join(files) or 'unknown'})")
+            self._queue_hold(task, f"the scratch merge onto `{base}` does not apply cleanly ({', '.join(files) or 'unknown'})")
             return
         self._dispatch_check_run(
             task, worktree=scratch, branch=branch, base=base, specs=specs, stage="scratch_merge", rep=rep,
@@ -329,7 +329,7 @@ class CheckRunMixin:
             names = ", ".join(str(f.get("name")) for f in failed) or "checks"
             st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": names}
             self.events.emit("scratch_merge", task.id, resolved=False, checks=len(failed))
-            self._hold_automerge(task, f"the hard-tier scratch-merge check failed ({names})")
+            self._queue_hold(task, f"the hard-tier scratch-merge check failed ({names})")
             return
         st["scratch_merge"] = {"diff": diff_h, "ok": True}
         self.events.emit("scratch_merge", task.id, resolved=True, checks=len(results))

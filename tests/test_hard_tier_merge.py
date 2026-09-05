@@ -104,12 +104,18 @@ def test_hard_tier_scratch_check_failure_holds_the_merge(sched, fake_github):
     t, st, pr = _hard_in_review(sched, fake_github)
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "false"}], "ci": []}
 
-    for _ in range(4):
-        sched.tick()
+    reps = [sched.tick() for _ in range(4)]
+    # The reap of the failing scratch check holds the merge directly; it does not raise an error
+    # that a later tick recovers from (the block reason must not be re-derived from a swallowed one).
+    assert not any(r.errors for r in reps), [r.errors for r in reps]
     assert fake_github.merged == []
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     blocked = sched.state.get("DM-001").get("automerge_blocked")
     assert blocked and "scratch-merge check failed" in blocked
+    # the reap recorded the failure and left the queue (no candidate/head lingers)
+    st_now = sched.state.get("DM-001")
+    assert st_now.get("scratch_merge", {}).get("ok") is False
+    assert "automerge_candidate" not in st_now and "merge_head" not in st_now
     assert not sched._scratch_merge_verified(sched.store.task("DM-001"))
     # the recorded failure is keyed to the reviewed diff, so it is not re-run every tick
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "check"]) == 1
