@@ -628,7 +628,12 @@ class ReapMixin:
         found it. A work round has no PR yet, so it goes back to ready. A revise or rebase
         round always has an open PR and stored feedback (or a pending rebase) that dispatch
         already cleared to start this very run; restore it from the run's `env_snapshot` and
-        go back to changes_requested instead, so the PR and the feedback survive the stop."""
+        go back to changes_requested instead, so the PR and the feedback survive the stop. A
+        resume round (the continuation `human.answer()` dispatches after a person answers a
+        worker's question, whatever round originally asked it) already cleared the pending
+        question and session out of state before this run started; restore those from the
+        same `env_snapshot` and go back to waiting_human, so the question survives the stop
+        instead of the task falling back to ready and losing the PR/feedback that led to it."""
         kind = str(collected.get("env_kind") or "quota")
         run.status = "env_error"
         run.save()
@@ -663,6 +668,13 @@ class ReapMixin:
             self.state.save()
             self._transition(task, Status.CHANGES_REQUESTED, f"{note}; will retry the rebase round")
             rep.transitions.append(f"{task.id} -> changes_requested (env_error: {kind})")
+            return
+        if run.mode == "resume":
+            st["question"] = snap.get("question", "")
+            st["session_id"] = snap.get("session_id", "")
+            self.state.save()
+            self._transition(task, Status.WAITING_HUMAN, f"{note}; the pending question and session are restored, answer again once it resumes")
+            rep.transitions.append(f"{task.id} -> waiting_human (env_error: {kind})")
             return
         self._transition(task, Status.READY, note)
         rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")

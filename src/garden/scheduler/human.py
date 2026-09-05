@@ -73,12 +73,21 @@ class HumanMixin:
         self.events.emit("answer", task.id, question=question, answer=text)
         runner = self.runner_for(task, "", str(st.get("session_harness") or ""))
         sid = str(st.get("session_id") or "")
+        # Snapshot the two fields this dispatch is about to clear from state, before it clears
+        # them, so a quota env_error on this very resume run can put them back (see
+        # reap._handle_quota_env_error's "resume" branch) instead of losing the question and
+        # sending the task to ready, which would also lose whatever PR/feedback led to it.
+        snapshot = {"question": question, "session_id": sid}
         st["question"] = ""
         st["session_id"] = ""
         if sid and runner.harness is not None and runner.harness.can_resume:
-            return self.dispatch(task, mode="resume", runner=runner, session_id=sid, prompt_override=resume_prompt(question, text))
-        # harness can't resume: a fresh run with the Q&A in its brief
-        return self.dispatch(task, mode="resume", runner=runner)
+            run = self.dispatch(task, mode="resume", runner=runner, session_id=sid, prompt_override=resume_prompt(question, text))
+        else:
+            # harness can't resume: a fresh run with the Q&A in its brief
+            run = self.dispatch(task, mode="resume", runner=runner)
+        run.env_snapshot = snapshot
+        run.save()
+        return run
 
     # ---- worker decisions: wont_do / no_change -----------------------------
     def pending_decision(self, task: Task) -> dict[str, Any] | None:
