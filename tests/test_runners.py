@@ -151,6 +151,9 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     assert seen["LC_ALL"] == "C.UTF-8"  # allowlisted locale survives
     assert seen["GARDEN_TASK_ID"] == "DM-001" and seen["GARDEN_RUN_ID"] == run.run_id
     assert seen["GARDEN_ROOT"].endswith(".garden-no-live-garden")
+    # HOME is an isolated scratch home, not the remote login's, so the worker cannot read the
+    # host's gh token, git credentials or ssh keys out of ~.
+    assert seen["HOME"].endswith(".garden-home-DM-001") and seen["HOME"] != os.environ.get("HOME")
 
 
 def test_ssh_host_capacity(sched):

@@ -38,12 +38,19 @@ A `command` check (the pre_pr `tests`/`lint` default among them) runs code the b
 itself wrote, so it gets the same scrubbed environment as the worker
 (`runner.base.scrubbed_env`, plus the `GARDEN_<KEY>` context and the `GARDEN_ROOT`
 sentinel above) rather than the scheduler's own `os.environ` — no GitHub token, cloud
-credentials or ssh agent, unless `worker_env.pass` in garden.yaml names them. Pass the
+credentials, ssh agent or the operator's `HOME` (it runs under an isolated scratch home
+beside the worktree), unless `worker_env.pass` in garden.yaml names them. Pass the
 live garden's config dict as `run_check`'s `config` argument to pick this up; callers that
 omit it get the same defaults as an unconfigured worker. A `python:` check is not scrubbed
 this way: it runs in-process in the scheduler (see the guard above), so it already has
 whatever access the scheduler process has — write one only for code you trust the way you
 trust the scheduler itself.
+
+A check's `retry_command` (run when a wholly-flaky CI verdict is retried instead of a
+revise round) comes only from the operator's `spec` in garden.yaml, never from a check's
+own JSON output: the output is written by code the branch wrote, so honouring a
+`retry_command` in it would let a branch run an arbitrary shell command. It is stripped
+from parsed output and re-applied from config, and runs scrubbed (see `checkrun.py`).
 
 A product's tests must not depend on `GARDEN_ROOT` or `GARDEN_EXEC_ROOT`: the pre_pr
 `tests` check runs them with these variables set (as above), so a suite that reads them
@@ -101,7 +108,7 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             out.setdefault("status", "pass")
             return _trim(out)
         if spec.get("command"):
-            env = scrubbed_env(config)
+            env = scrubbed_env(config, worktree=cwd)
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
             for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
                 env[str(k)] = str(v)
@@ -131,6 +138,13 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
                     if isinstance(data, dict):
                         data.setdefault("name", name)
                         data.setdefault("status", "pass" if proc.returncode == 0 else "fail")
+                        # `retry_command` runs a shell command later (checkrun.run_check_job), so
+                        # it must never come from a check's own output — code the branch wrote —
+                        # only from the operator's config (`spec`). Drop any the output injected,
+                        # then take the configured one when the check declares itself flaky.
+                        data.pop("retry_command", None)
+                        if data.get("status") == "flaky" and spec.get("retry_command"):
+                            data["retry_command"] = str(spec["retry_command"])
                         return _trim(data)
                 except json.JSONDecodeError:
                     pass

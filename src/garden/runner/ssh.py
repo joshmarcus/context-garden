@@ -61,12 +61,16 @@ GARDEN_BRIEF_EOF
 # The worker (harness) and its setup command run in an allowlisted environment, the same scrub
 # the local runner applies (runner.base.PASS_ENV plus worker_env.pass and setup.env): every
 # other variable of the remote login environment is dropped, so a remote host's ambient tokens
-# (a GitHub token, cloud credentials, an ssh agent) do not reach the worker. Only git's own
-# fetch above and push below keep the login environment, since the remote host does its own
-# pushing. GARDEN_ROOT points at a path with no garden.yaml so any `garden` command the worker
-# runs refuses: find_root() walking up from the worktree would otherwise accept the remote
-# product repo's own garden.yaml. `setup.env` rides on top, matching runner.base.scrubbed_env.
+# (a GitHub token, cloud credentials, an ssh agent) do not reach the worker. HOME is not on the
+# allowlist: unless worker_env.pass restores it, it is set to an isolated scratch home beside
+# the worktree, so the worker (and a branch's test suite) cannot read the remote login's gh
+# token, git credentials or ssh keys out of ~. Only git's own fetch above and push below keep
+# the login environment, since the remote host does its own pushing. GARDEN_ROOT points at a
+# path with no garden.yaml so any `garden` command the worker runs refuses: find_root() walking
+# up from the worktree would otherwise accept the remote product repo's own garden.yaml.
+# `setup.env` rides on top, matching runner.base.scrubbed_env.
 GARDEN_ENV_ALLOW={env_allow}
+GARDEN_WORKER_HOME="$REPO/.garden-worktrees/.garden-home-{task}"
 garden_scrub() {{
   set -f  # keep `for pat in $GARDEN_ENV_ALLOW` below from globbing a bare `*` against the worktree
   for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
@@ -76,6 +80,7 @@ garden_scrub() {{
   done
   set +f
   unset CLAUDECODE 2>/dev/null || :
+  if [ -z "${{HOME:-}}" ]; then mkdir -p "$GARDEN_WORKER_HOME" 2>/dev/null || :; export HOME="$GARDEN_WORKER_HOME"; fi
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
 }}
