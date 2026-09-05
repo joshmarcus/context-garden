@@ -716,6 +716,43 @@ def test_take_finish_revise_and_cost(garden):
     assert run_rec.cost_usd == 2.5
 
 
+def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
+    """CG-238: `garden take` used to flip a draft straight to ready by hand, skipping the
+    approve gate; a placeholder acceptance criterion (or an unresolved reading path) must
+    refuse the take and leave the task a draft, with no run dispatched."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    r = run(garden, "new-task", "demo/p1", "Untested idea")
+    assert r.exit_code == 0 and "DM-003" in r.output  # draft, template's placeholder criteria
+
+    r = run(garden, "take", "DM-003")
+    assert r.exit_code != 0
+    assert "placeholder" in r.output
+    assert Store(garden).task("DM-003").status == Status.DRAFT
+    assert RunStore(garden / ".garden").latest("DM-003") is None
+
+
+def test_take_on_a_good_draft_approves_then_dispatches(garden):
+    """CG-238: once the brief is complete, `garden take` approves the draft (the same gate
+    the web and CLI `approve` use) and then dispatches it, same as taking an already-ready
+    task."""
+    from garden.model import Status
+    from garden.store import Store
+    from tests.conftest import complete_brief
+
+    r = run(garden, "new-task", "demo/p1", "Good idea")
+    assert r.exit_code == 0 and "DM-003" in r.output
+    complete_brief(garden, "DM-003")
+
+    r = run(garden, "take", "DM-003", "-q")
+    assert r.exit_code == 0, r.output
+    t = Store(garden).task("DM-003")
+    assert t.status == Status.RUNNING
+    assert "approved (cli)" in t.body
+
+
 def test_init_keeps_claude_default_and_preserves_codex_instructions(tmp_path):
     from garden.config import Config
     from garden.scaffold import init_garden

@@ -490,6 +490,67 @@ def test_new_task_rejects_an_unresolved_reading_path(garden):
     assert "does not exist" in page and "nope.md" in page
 
 
+def test_new_task_approve_now_refusal_keeps_it_draft_and_flashes_the_gap(garden):
+    """CG-238: the new-task form's approve-now checkbox goes through Scheduler.approve, the
+    same gate a hand approval uses. Left blank, the acceptance-criteria field seeds the
+    template's placeholder ("- [ ] ..."), so brief_gaps refuses it -- the task is still
+    created, but stays a draft, and the flash names the gap and the task's file."""
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Untested idea", "difficulty": "medium", "priority": "3", "ready": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/tasks/DM-003")
+    page = c.get(r.headers["location"]).text
+    assert "placeholder" in page
+    assert "demo/p1/tasks/DM-003" in page
+
+    from garden.model import Status
+    from garden.store import Store
+
+    assert Store(garden).task("DM-003").status == Status.DRAFT
+
+
+def test_dispatch_button_is_not_offered_on_a_draft_task(garden):
+    """CG-238: dispatching a draft used to skip the approve gate entirely (a placeholder
+    brief could be dispatched silently); the only way from draft into the loop now is
+    Approve, so the button is not offered at all."""
+    from tests.test_cli import run
+
+    assert run(garden, "new-task", "demo/p1", "Idea").exit_code == 0  # DM-003, draft
+    c = client(garden)
+    page = c.get("/tasks/DM-003").text
+    assert 'action="/tasks/DM-003/dispatch"' not in page
+    assert 'action="/tasks/DM-003/approve"' in page
+
+
+def test_dispatch_action_refuses_a_run_in_flight_and_dispatches_cleanly_otherwise(garden):
+    """CG-238: a second dispatch press while a run is already in flight for the task must
+    not orphan the first one. A clean dispatch redirects without a flash (a flash means a
+    refusal throughout the app, including to `garden qa`'s scripted client) -- the new run's
+    id is already on the task page, in its Log line and its "Latest run" link."""
+    from garden.runner.manual import ManualRunner
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub
+
+    store = Store(garden)
+    sched = Scheduler(store, github=FakeGitHub())
+    sched.dispatch(store.task("DM-001"), runner=ManualRunner({}), worktree=False)
+
+    c = client(garden)
+    r = c.post("/tasks/DM-001/dispatch", follow_redirects=True)
+    assert "already has a run in flight" in r.text
+    assert Store(garden).task("DM-001").status.value == "running"
+
+    r2 = c.post("/tasks/DM-002/dispatch", follow_redirects=False)
+    assert r2.status_code == 303 and "flash=" not in r2.headers["location"]
+    latest = RunStore(garden / ".garden").latest("DM-002")
+    page = c.get(r2.headers["location"]).text
+    assert latest.run_id in page  # Log line and "Latest run" link both name it
+
+
 def test_phase_page_shows_retro_waiting_for_personas(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store

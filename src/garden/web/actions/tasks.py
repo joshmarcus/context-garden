@@ -65,6 +65,11 @@ def unapprove(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -
 
 @action("dispatch")
 def dispatch(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    if any(r.task_id == t.id for r in sched.runs.active()):
+        raise RuntimeError(f"{t.id} already has a run in flight")
+    # dispatch() itself logs "dispatched <mode> run <run_id> via ..." on the task (_transition),
+    # so the run id is already on the task page's Log and its "Latest run" link the moment this
+    # redirects back there -- no separate flash is needed for a plain success.
     sched.dispatch(t, mode="revise" if t.status == Status.CHANGES_REQUESTED else "work")
 
 
