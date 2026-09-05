@@ -104,6 +104,38 @@ def test_trial_form_picks_contenders_from_config(garden):
     assert trial and {c["label"] for c in trial["contenders"]} == {"claude:sonnet", "claude:opus"}
 
 
+def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
+    """The 'One more automated review' button on a review-capped task and the plain
+    'Automated review' button both post to /tasks/{id}/review; either way the web action
+    must go through Scheduler.review_again (not dispatch_review directly), or the cap-bypass
+    button silently fails to raise the cap or clear the needs_human stop."""
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import wait_for_runs
+
+    sched = Scheduler(Store(garden))
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/1"
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["review_rounds"] = 2  # == the default review.max_rounds; the cap has been reached
+    st["needs_human"] = {"kind": "review_cap", "reason": "2 automated review round(s) used"}
+    sched.state.save()
+
+    c = client(garden)
+    r = c.post("/tasks/DM-001/review", follow_redirects=False)
+    assert r.status_code == 303
+
+    sched2 = Scheduler(Store(garden))
+    wait_for_runs(sched2)
+    st = sched2.state.get("DM-001")
+    assert not st.get("needs_human")  # the stop is cleared, not left dangling
+    assert st["review_rounds"] == 2  # rolled back one by the bypass, then re-incremented on dispatch
+    assert st.get("review_run")
+
+
 def test_scheduler_errors_flash_a_message_instead_of_500(garden):
     """CG-092: a task whose precondition changed underneath the person (here: DM-001 is
     'ready', not 'waiting_human') must say so on the page, not 500 or silently drop the

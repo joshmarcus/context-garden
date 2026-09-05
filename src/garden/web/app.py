@@ -727,7 +727,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 elif action == "review":
                     if not t.pr:
                         raise RuntimeError(f"{t.id} has no PR yet to review")
-                    sched.dispatch_review(t)
+                    sched.review_again(t)
                 elif action == "answer":
                     if note.strip():
                         if t.status != Status.WAITING_HUMAN:
