@@ -309,7 +309,11 @@ def test_new_task_matches_cli_new_task_for_the_same_inputs(garden, monkeypatch):
     from garden.store import Store
     from tests.test_cli import run
 
+    # Store.create_task stamps created/updated via garden.store's now_iso, but Store.save
+    # calls Task.touch(), which stamps updated via garden.model's own now_iso binding; both
+    # must be frozen or the two calls' timestamps can straddle a second on a loaded CI box.
     monkeypatch.setattr("garden.store.now_iso", lambda: "2026-02-02T00:00:00+00:00")
+    monkeypatch.setattr("garden.model.now_iso", lambda: "2026-02-02T00:00:00+00:00")
 
     r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
     assert r.exit_code == 0 and "DM-003" in r.output
