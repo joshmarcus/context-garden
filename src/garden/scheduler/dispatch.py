@@ -8,7 +8,7 @@ from typing import Any
 from .. import gitops
 from ..brief import build_brief
 from ..graph import blockers, ready, stack_parents
-from ..model import Status, Task, now_iso
+from ..model import Phase, Status, Task, now_iso, phase_refusal
 from ..notify import notify
 from ..runner.base import Runner
 from ..runs import Run
@@ -17,6 +17,18 @@ from .report import TickReport
 
 class DispatchMixin:
     # ---- dispatch ----------------------------------------------------------
+    def _refuse_if_closed_or_frozen(self, task: Task) -> None:
+        """The single gate every dispatch (tick, retry, revise, trial, `garden dispatch`/`take`,
+        the web dispatch button) passes through: a closed phase always refuses; a frozen one
+        refuses unless the task carries a freeze exception."""
+        try:
+            ph: Phase | None = self.store.phase(task.product, task.phase)
+        except KeyError:
+            return
+        refusal = phase_refusal(ph, task)
+        if refusal:
+            raise RuntimeError(refusal)
+
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         max_rev = int(self.cfg.get("max_revisions", 3))
@@ -37,10 +49,11 @@ class DispatchMixin:
             and int(self.state.get(t.id).get("revisions", 0)) < max_rev
         ]
         queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
-        closed = {ph.key for p in self.store.products() for ph in p.phases if ph.closed}
+        phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
         for task, mode in queue:
-            if task.key in closed:
-                continue  # the phase is closed; nothing dispatches into it (garden reopen-phase to resume)
+            ph = phases.get(task.key)
+            if ph is not None and phase_refusal(ph, task):
+                continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.slots_free() <= 0:
                 break
             if self.budget_exceeded(task):
@@ -130,6 +143,7 @@ class DispatchMixin:
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+        self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)

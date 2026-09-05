@@ -208,6 +208,20 @@ class Store:
         _atomic_write(goals, join_frontmatter(meta, body) if meta else body)
         self.invalidate()
 
+    def set_phase_frozen(self, phase: Phase, frozen: str) -> None:
+        """Write (or, with an empty string, clear) `frozen:` in the phase's goals.md frontmatter."""
+        goals = phase.goals_path or (phase.path / "goals.md")
+        meta: dict = {}
+        body = ""
+        if goals.exists():
+            meta, body = split_frontmatter(goals.read_text())
+        if frozen:
+            meta["frozen"] = frozen
+        else:
+            meta.pop("frozen", None)
+        _atomic_write(goals, join_frontmatter(meta, body) if meta else body)
+        self.invalidate()
+
     def rel(self, path: Path) -> str:
         try:
             return str(path.resolve().relative_to(self.root))

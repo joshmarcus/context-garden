@@ -240,6 +240,51 @@ def reopen_phase(target: str = typer.Argument(..., help="product/phase")):
     console.print(f"{ph.key} reopened")
 
 
+def _set_phase_frozen(store, ph, frozen: str) -> None:
+    """Write or clear `frozen:` in goals.md and record the event."""
+    from .events import EventLog
+
+    store.set_phase_frozen(ph, frozen)
+    log = EventLog(store.config.garden_dir / "events.jsonl")
+    if frozen:
+        log.emit("phase_frozen", "", phase=ph.key, frozen=frozen)
+    else:
+        log.emit("phase_unfrozen", "", phase=ph.key)
+
+
+@app.command()
+def freeze(target: str = typer.Argument(..., help="product/phase")):
+    """Freeze a phase: approve and dispatch refuse its tasks until unfrozen, unless a task
+    carries a freeze exception."""
+    import datetime as _dt
+
+    store = _store()
+    product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    if ph.closed:
+        err.print(f"[red]{ph.key} is closed; nothing to freeze[/red]")
+        raise typer.Exit(1) from None
+    if ph.frozen:
+        console.print(f"{ph.key} is already frozen ({ph.frozen})")
+        return
+    date = _dt.date.today().isoformat()
+    _set_phase_frozen(store, ph, date)
+    console.print(f"{ph.key} frozen ({date}); approve/dispatch now refuse its tasks without a freeze exception")
+
+
+@app.command()
+def unfreeze(target: str = typer.Argument(..., help="product/phase")):
+    """Clear a phase's freeze."""
+    store = _store()
+    product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    if not ph.frozen:
+        err.print(f"[yellow]{ph.key} is not frozen[/yellow]")
+        raise typer.Exit(1) from None
+    _set_phase_frozen(store, ph, "")
+    console.print(f"{ph.key} unfrozen")
+
+
 def _split_target(target: str) -> tuple[str, str]:
     if "/" not in target:
         err.print("[red]expected product/phase[/red]")
@@ -556,6 +601,8 @@ def approve(
     all_in: str | None = typer.Option(None, "--all", help="Approve every draft in product/phase"),
 ):
     """draft -> ready."""
+    from .model import phase_refusal
+
     store = _store()
     targets = []
     if all_in:
@@ -566,9 +613,15 @@ def approve(
     if not targets:
         err.print("nothing to approve")
         raise typer.Exit(1) from None
+    phases = {p.key: p for prod in store.products() for p in prod.phases}
     for t in targets:
         if t.status != Status.DRAFT:
             err.print(f"[yellow]{t.id} is {t.status.value}, skipping[/yellow]")
+            continue
+        ph = phases.get(t.key)
+        refusal = phase_refusal(ph, t) if ph else ""
+        if refusal:
+            err.print(f"[red]{t.id}: {refusal}[/red]")
             continue
         t.status = Status.READY
         t.log("approved")
@@ -882,7 +935,11 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
         if b and mode == "work":
             err.print(f"[red]{t.id} is blocked by {', '.join(b)}; use --force[/red]")
             raise typer.Exit(1) from None
-    run = _scheduler(store).dispatch(t, mode=mode)
+    try:
+        run = _scheduler(store).dispatch(t, mode=mode)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(f"{t.id}: run {run.run_id} started (worktree {run.worktree})")
 
 
@@ -904,7 +961,11 @@ def take(
         t.status = Status.READY
     sched = _scheduler(store)
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
-    run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree)
+    try:
+        run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     brief_path = run.path / "brief.md"
     if quiet:
         print(brief_path)
