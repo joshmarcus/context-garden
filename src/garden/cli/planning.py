@@ -255,6 +255,7 @@ def retro(
     if dry_run:
         plan = sched.retro_plan(ph, names, skip_personas=skip_personas, next_phase=next_phase)
         console.print(f"[bold]retro plan for {plan['phase']}[/bold]")
+        console.print(f"  tier: {plan['difficulty']} ({plan['model'] or 'harness default'})")
         pending = sched.retro_pending(ph.key)
         if pending:
             console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")

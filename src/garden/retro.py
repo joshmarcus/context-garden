@@ -386,8 +386,10 @@ def features_section(filed: list[dict[str, Any]]) -> str:
 
 def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
                      filed: list[dict[str, Any]] | None = None,
-                     filed_findings: list[dict[str, Any]] | None = None) -> str:
-    out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}_", ""]
+                     filed_findings: list[dict[str, Any]] | None = None,
+                     difficulty: str = "", model: str = "") -> str:
+    tier = f" · {difficulty} tier ({model})" if difficulty else ""
+    out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}{tier}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
         out += ["## What changed", "", summary, ""]

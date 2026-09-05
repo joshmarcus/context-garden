@@ -249,7 +249,10 @@ Borrowed from graph-based agent systems; all deterministic:
   (`garden persona-review product/phase -p user`; the report lands in the phase's
   `docs/reviews/`, where the planner reads it) or against a PR
   (`garden persona-review ID -p security`; posted as a comment). `review.personas`
-  runs chosen personas on every new PR.
+  runs chosen personas on every new PR. Persona reviews (phase and PR) and the retro
+  reconciliation run on `retro.difficulty` (default `hard`), separate from
+  `review.difficulty`, which governs PR reviews only — a retro always gets the best
+  tier without editing config first.
 - **Walkthrough of the live web app.** A persona review reads code, PR bodies and task
   files but never sees a page. `garden walkthrough product/phase` fetches every web page —
   Inbox, Board (columns and list), Trellis, a task, a run, the phase page, the Herbarium
@@ -377,8 +380,12 @@ review:
   enabled: true
   max_rounds: 2
   max_diff_chars: 60000
-  difficulty: ""            # reviewer tier; empty = the task's
+  difficulty: ""            # reviewer tier; empty = the task's; PR reviews only
   personas: [security]      # persona reviews on every new PR round
+retro:
+  difficulty: hard           # tier for persona reviews (phase and PR) and the retro
+                             # reconciliation; separate from review.difficulty so a retro
+                             # always runs on the best tier without editing config first
 checks:
   pre_pr: [{name: tests, command: "pytest -q -x"}]
   ci: [{name: ci-log, python: "garden.checks:local_command_check", command: "scripts/ci_failures.sh"}]
