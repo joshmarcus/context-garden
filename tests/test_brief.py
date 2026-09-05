@@ -210,6 +210,18 @@ def test_brief_gaps_flags_placeholder_criteria(garden):
         assert any("placeholder" in g for g in brief_gaps(store, t)), placeholder
 
 
+def test_brief_gaps_flags_non_checkbox_criteria(garden):
+    """A plain bullet (no `- [ ] ` checkbox) is invisible to criteria.parse_criteria — the same
+    parser review, reap and the task page use — so approve must not treat it as real, either."""
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- The parser rejects an empty file.\n"
+    t = _task_with(store, body)
+    gaps = brief_gaps(store, t)
+    assert any("Acceptance criteria" in g for g in gaps)
+
+
 def test_brief_gaps_accepts_real_criteria(garden):
     from garden.brief import brief_gaps
 

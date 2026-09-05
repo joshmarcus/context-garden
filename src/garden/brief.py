@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .criteria import parse_criteria
 from .model import Task, estimate_tokens, goals_text
 from .store import Store
 
@@ -221,37 +222,17 @@ _PLACEHOLDER_CRITERION = re.compile(
 )
 
 
-def _section_lines(body: str, heading: str) -> list[str] | None:
-    """The lines under a `## heading` (case-insensitive, trailing colon ignored), up to the
-    next heading. `None` if the section is absent."""
-    out: list[str] | None = None
-    for ln in body.splitlines():
-        m = re.match(r"^#{1,6}\s+(.*?)\s*$", ln)
-        if m:
-            if out is not None:
-                break  # reached the next heading
-            if m.group(1).rstrip(":").strip().lower() == heading.lower():
-                out = []
-            continue
-        if out is not None:
-            out.append(ln)
-    return out
-
-
 def _criteria_are_placeholder(body: str) -> str:
-    """Empty if the task's `## Acceptance criteria` section holds at least one real,
-    non-placeholder criterion; otherwise the reason it does not (missing section, or every
-    item is a placeholder)."""
-    lines = _section_lines(body, "Acceptance criteria")
-    if lines is None:
-        return "no `## Acceptance criteria` section"
-    for ln in lines:
-        s = ln.strip()
-        if not s:
-            continue
-        m = re.match(r"^[-*+]\s*(?:\[[ xX]\]\s*)?(.*)$", s)
-        text = (m.group(1) if m else s).strip()
-        if text and not _PLACEHOLDER_CRITERION.match(text):
+    """Empty if `criteria.parse_criteria` finds at least one real, non-placeholder criterion in
+    the task's `## Acceptance criteria` checklist; otherwise the reason it does not (no checklist,
+    or every item is a placeholder). Uses the same parser as review, reap and the task page, so a
+    criterion that passes this gate is not invisible to them: a non-checkbox bullet counts as no
+    criteria at all, same as an empty section."""
+    items = parse_criteria(body)
+    if not items:
+        return "no `## Acceptance criteria` checklist (`- [ ] ...` items)"
+    for text in items:
+        if not _PLACEHOLDER_CRITERION.match(text.strip()):
             return ""
     return "acceptance criteria are placeholders (fill `## Acceptance criteria` with testable items)"
 
