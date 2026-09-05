@@ -273,10 +273,10 @@ class ReapMixin:
         return specs
 
     def _run_specs_in(self, task: Task, specs: list[dict[str, Any]], worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
-        """Prepare `worktree`'s environment, then run `specs` there, synchronously. Off the tick
-        path now (a check runs as a detached run record; see CheckRunMixin) — kept for `garden
-        check` and the setup tests — but the same `run_check_job` the detached job uses, so there
-        is one check-running implementation."""
+        """Prepare `worktree`'s environment, then run `specs` there, synchronously — the same
+        `run_check_job` the detached check run uses, so there is one check-running implementation.
+        Off the tick path now (a check runs as a detached run record; see CheckRunMixin); kept as
+        the synchronous entry point exercised by the setup tests."""
         from ..checkrun import run_check_job
 
         if not specs or not worktree.exists():
