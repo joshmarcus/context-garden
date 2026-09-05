@@ -142,6 +142,7 @@ class Site:
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "products": s.products(),
+            "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},
             "inbox_count": len(decisions(items)),
             "env": s.config.env,
             "running": running_now(s),
