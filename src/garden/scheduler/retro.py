@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -43,17 +44,24 @@ class RetroMixin:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
 
     def _retro_materials(self, phase: Phase, names: list[str]):
-        """Harvest what the reconciliation needs: friction from PR bodies, persona reports on
-        disk, the phase's task list with statuses, and the merged PRs."""
-        from ..friction import harvest
+        """Harvest what the reconciliation needs: friction from PR bodies, friction already
+        recorded under the phase's '## Reported' log, friction still sitting in marked PR
+        comments, persona reports on disk, the phase's task list with statuses, and the
+        merged PRs. Read-only: nothing here writes to the live garden (see module docstring
+        of `garden.retro`)."""
+        from ..friction import collect_comment_friction, extract_section, harvest
 
         prod_probe = Task(path=self.store.root, id=f"_{phase.product}", title="", product=phase.product, phase=phase.name)
         slug = self.slug_for(prod_probe)
-        friction = harvest(phase, self.runs, github=self.github if slug else None, slug=slug)
+        gh = self.github if slug else None
+        friction = harvest(phase, self.runs, github=gh, slug=slug)
+        friction_doc = phase.path / "docs" / "friction.md"
+        reported = extract_section(friction_doc.read_text(), "Reported") if friction_doc.exists() else ""
+        comment_friction = collect_comment_friction(phase, gh, slug)
         reports = persona_reports(phase, names)
         task_rows = [{"id": t.id, "title": t.title, "status": t.status.value} for t in phase.tasks]
         merged = [{"id": t.id, "title": t.title, "pr": t.pr} for t in phase.tasks if t.pr and t.status == Status.DONE]
-        return friction, reports, task_rows, merged
+        return friction, reported, comment_friction, reports, task_rows, merged
 
     def retro_plan(self, phase: Phase, personas: list[str] | None = None, skip_personas: bool = False,
                    next_phase: str = "") -> dict[str, Any]:
@@ -64,10 +72,11 @@ class RetroMixin:
         have = persona_reports(phase, names)
         reuse = [n for n in names if n in have]
         to_run = [] if skip_personas else [n for n in names if n not in have]
-        friction, reports, task_rows, merged = self._retro_materials(phase, names)
+        friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, names)
         self_prod = self._self_product()
         base = self.cfg.product_base_branch(self_prod or phase.product)
-        recon = reconcile_brief(self.store, phase, base, friction, reports, task_rows, merged, nxt)
+        recon = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
+                                reports, task_rows, merged, nxt)
         persona_toks = 0
         if to_run:
             persona_toks = estimate_tokens(phase_brief(self.store, phase, to_run[0], base, self.phase_prs(phase))) * len(to_run)
@@ -75,8 +84,11 @@ class RetroMixin:
         tot = self.runs.totals()
         seen = int(tot["input_tokens"]) + int(tot["output_tokens"])
         rate = (float(tot["cost_usd"]) / seen) if seen else 0.0
+        reported_entries = len(re.findall(r"(?m)^### ", reported))
+        comment_items = sum(len(items) for _, items in comment_friction)
         return {"phase": phase.key, "next_phase": nxt, "self_product": self_prod,
                 "personas_run": to_run, "personas_reuse": reuse, "friction": len(friction),
+                "reported": reported_entries, "comment_friction": comment_items,
                 "merged": len(merged), "tasks": len(task_rows), "est_tokens": est_tokens,
                 "est_cost": round(est_tokens * rate, 2), "have_cost_history": bool(seen)}
 
@@ -137,8 +149,9 @@ class RetroMixin:
         wt = self.cfg.worktree_path(f"_retro-{phase.product}-{phase.name}")
         gitops.fetch(repo)
         gitops.prepare_worktree(repo, wt, branch, base)
-        friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
-        text = reconcile_brief(self.store, phase, base, friction, reports, task_rows, merged, entry["next_phase"])
+        friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
+        text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
+                               reports, task_rows, merged, entry["next_phase"])
         run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("review.difficulty") or "hard"))
         entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})

@@ -109,28 +109,49 @@ def harvest(
     return results
 
 
-def _extract_reported_section(text: str) -> str:
-    """Return the raw '## Reported' section from an existing friction.md, or ''."""
+def extract_section(text: str, heading: str) -> str:
+    """Return the raw '## {heading}' section from a markdown document, or ''."""
+    if not text:
+        return ""
     lines = text.splitlines(keepends=True)
     in_section = False
     out: list[str] = []
     for line in lines:
-        if re.match(r"^##\s+Reported\s*$", line.rstrip()):
-            in_section = True
-            out.append(line)
+        if re.match(r"^##\s+\S", line) and not re.match(r"^###", line):
+            in_section = line.rstrip() == f"## {heading}"
+            if in_section:
+                out.append(line)
             continue
         if in_section:
-            if re.match(r"^##\s+\S", line) and not re.match(r"^###", line):
-                break
+            out.append(line)
+    return "".join(out).rstrip()
+
+
+def _extra_sections(text: str, generated_headings: set[str]) -> str:
+    """Return every '##' section of an existing friction.md that this write will not
+    regenerate itself: '## Reported', or anything a human added by hand (e.g. a "First live
+    run" write-up). A rewrite must never drop those just because it doesn't know their name."""
+    lines = text.splitlines(keepends=True)
+    in_section = False
+    out: list[str] = []
+    for line in lines:
+        if re.match(r"^##\s+\S", line) and not re.match(r"^###", line):
+            in_section = line.rstrip() not in generated_headings
+            if in_section:
+                out.append(line)
+            continue
+        if in_section:
             out.append(line)
     return "".join(out).rstrip()
 
 
 def write_friction_doc(path: Path, entries: list[tuple[Any, str, str]]) -> None:
-    """Write friction.md grouped by task; preserves any existing '## Reported' section."""
-    reported = ""
+    """Write friction.md grouped by task; preserves every section this write doesn't
+    generate itself (the '## Reported' record, or any hand-written section)."""
+    generated = {f"## {task.id}: {task.title}" for task, _, _ in entries}
+    extra = ""
     if path.exists():
-        reported = _extract_reported_section(path.read_text())
+        extra = _extra_sections(path.read_text(), generated)
 
     lines: list[str] = ["# Friction\n\n"]
     if not entries:
@@ -141,8 +162,8 @@ def write_friction_doc(path: Path, entries: list[tuple[Any, str, str]]) -> None:
             if pr_url:
                 lines.append(f"PR: {pr_url}\n\n")
             lines.append(text.strip() + "\n\n")
-    if reported:
-        lines.append("\n" + reported + "\n")
+    if extra:
+        lines.append("\n" + extra + "\n")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(lines))
 
