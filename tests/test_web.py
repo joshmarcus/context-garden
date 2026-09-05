@@ -613,6 +613,14 @@ def test_friction_report_web_with_task_id(garden):
     assert "Brief is too long." in text
 
 
+def test_inbox_page_head_subtitle_is_not_capped_narrow(garden):
+    """CG-184: `.page-head p` used to cap at 62ch, wrapping the Inbox subtitle onto two
+    lines on a wide screen. The left column now grows to fill the space instead."""
+    html = client(garden).get("/").text
+    assert "62ch" not in html
+    assert "Every item here is a decision only a person can make." in html
+
+
 def test_friction_form_in_inbox_and_task(garden):
     c = client(garden)
     assert "Report friction" in c.get("/").text
