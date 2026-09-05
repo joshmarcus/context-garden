@@ -40,6 +40,37 @@ def test_codex_harness_and_difficulty_model(sched, garden, fake_github):
     assert fake_github.created[0]["title"] == "Codex PR"
 
 
+def test_codex_run_prices_cost_from_usage(sched, garden, fake_github):
+    t = sched.store.task("DM-001")
+    t.harness = "codex"
+    t.model = "gpt-5.6-terra"
+    sched.store.save(t)
+    sched.tick()
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    assert run.model == "gpt-5.6-terra"
+    # fake_codex reports {input_tokens: 500, cached_input_tokens: 50, output_tokens: 80}
+    expected = (450 * 2.0 + 50 * 0.2 + 80 * 12.0) / 1_000_000
+    assert run.cost_usd == pytest.approx(expected)
+    finished = [e for e in sched.events.read() if e.get("kind") == "run_finished" and e.get("task") == "DM-001"]
+    assert finished[-1]["cost_usd"] == pytest.approx(expected)
+    assert finished[-1]["model"] == "gpt-5.6-terra"
+
+
+def test_codex_run_with_unpriced_model_leaves_cost_null_and_logs(sched, garden, fake_github, capsys):
+    t = sched.store.task("DM-001")
+    t.harness = "codex"
+    t.model = "totally-custom-model"
+    sched.store.save(t)
+    sched.tick()
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    assert run.model == "totally-custom-model" and run.cost_usd is None
+    assert run.usage.get("input_tokens") == 450
+    out = capsys.readouterr().out
+    assert "no price configured for model 'totally-custom-model'" in out
+
+
 def test_explicit_model_override(sched):
     t = sched.store.task("DM-001")
     t.model = "my-model"

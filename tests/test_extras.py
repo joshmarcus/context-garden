@@ -519,7 +519,7 @@ def test_configured_personas_run_on_every_pr(sched, fake_github):
 
 
 @pytest.mark.parametrize("judge", ["claude", "codex"])
-def test_cross_provider_trial_preserves_winner_and_unknown_cost(sched, fake_github, judge):
+def test_cross_provider_trial_preserves_winner_and_prices_codex_cost(sched, fake_github, judge):
     sched.cfg.data["review"]["harness"] = judge
     task = sched.store.task("DM-001")
     runs = sched.start_trial(task, ["claude:sonnet", "codex:gpt-5.6-terra"])
@@ -536,8 +536,10 @@ def test_cross_provider_trial_preserves_winner_and_unknown_cost(sched, fake_gith
     assert len(fake_github.closed) == 1
     rows = {r["label"]: r for r in sched.trials.leaderboard()}
     assert rows["codex:gpt-5.6-terra"]["wins"] == 1
-    assert rows["codex:gpt-5.6-terra"]["avg_cost"] is None
-    assert rows["codex:gpt-5.6-terra"]["cost_per_point"] is None
+    # gpt-5.6-terra is in the codex price table (CG-233), so its cost is now known and
+    # comparable with claude's, not stuck at None.
+    assert rows["codex:gpt-5.6-terra"]["avg_cost"] > 0
+    assert rows["codex:gpt-5.6-terra"]["cost_per_point"] > 0
     assert rows["claude:sonnet"]["avg_cost"] > 0
     revised = sched.dispatch(task, mode="revise")
     assert (revised.harness, revised.model) == ("codex", "gpt-5.6-terra")
