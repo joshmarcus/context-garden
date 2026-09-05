@@ -1,5 +1,6 @@
 import json
 
+import yaml
 from typer.testing import CliRunner
 
 from garden.cli import app
@@ -427,6 +428,63 @@ def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch):
         assert r.exit_code == 1, r.output
         assert "some-product" in r.output
         assert "missing git identity" in r.output
+
+
+def test_doctor_tests_notify_command(garden, monkeypatch):
+    """`garden doctor` actually runs a configured notify.command with a synthetic payload,
+    rather than just reporting whether the key is set."""
+    import subprocess
+    from unittest import mock
+
+    (garden / "garden.local.yaml").write_text(yaml.safe_dump({"notify": {"command": "exit 0"}}))
+
+    def side_effect(cmd, *args, **kwargs):
+        if isinstance(cmd, str):
+            assert kwargs.get("env", {}).get("GARDEN_TASK_ID") == "DOCTOR-TEST"
+            return subprocess.CompletedProcess(cmd, 0)
+        if isinstance(cmd, list):
+            if "config" in cmd and "git" in cmd:
+                if "user.email" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                elif "user.name" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif "auth" in cmd and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            elif "api" in cmd and "user" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+        raise RuntimeError(f"Unexpected subprocess call: {cmd}")
+
+    with mock.patch("subprocess.run", side_effect=side_effect):
+        r = run(garden, "doctor")
+        assert r.exit_code == 0, r.output
+        assert "notify" in r.output and "test ok" in r.output
+
+
+def test_doctor_flags_a_failing_notify_command(garden, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    (garden / "garden.local.yaml").write_text(yaml.safe_dump({"notify": {"command": "exit 1"}}))
+
+    def side_effect(cmd, *args, **kwargs):
+        if isinstance(cmd, str):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        if isinstance(cmd, list):
+            if "config" in cmd and "git" in cmd:
+                if "user.email" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                elif "user.name" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif "auth" in cmd and "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0)
+            elif "api" in cmd and "user" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+        raise RuntimeError(f"Unexpected subprocess call: {cmd}")
+
+    with mock.patch("subprocess.run", side_effect=side_effect):
+        r = run(garden, "doctor")
+        assert r.exit_code == 1, r.output
+        assert "notify" in r.output and "failed" in r.output
 
 
 def test_priority_and_difficulty_commands(garden):
