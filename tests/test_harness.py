@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,45 @@ def test_codex_command():
         "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"
     ]
     assert Harness("codex", {"models": {}}).model_for("medium") == ""  # explicit CLI default
+
+
+def test_claude_spend_limit_is_a_quota_env_error():
+    h = Harness("claude", {})
+    stdout = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                         "result": "You've hit your monthly spend limit. Upgrade your plan or wait for it to reset.",
+                         "usage": {}, "total_cost_usd": 0.0})
+    out = h.parse(stdout)
+    assert out["env_error"] is True and out["env_kind"] == "quota"
+    assert out["error"]  # still recorded, in case env_error goes unhandled somewhere
+
+
+def test_codex_usage_limit_is_a_quota_env_error():
+    h = Harness("codex", {})
+    stdout = "\n".join(json.dumps(e) for e in [
+        {"type": "thread.started", "thread_id": "th_1"},
+        {"type": "turn.failed", "message": "You've hit your usage limit. Upgrade to Pro for more access."},
+    ])
+    out = h.parse(stdout)
+    assert out["env_error"] is True and out["env_kind"] == "quota"
+
+
+def test_ordinary_error_is_not_a_quota_env_error():
+    h = Harness("claude", {})
+    stdout = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,
+                         "result": "ran out of turns", "usage": {}, "total_cost_usd": 0.01})
+    out = h.parse(stdout)
+    assert out["env_error"] is False and out["env_kind"] == ""
+
+
+def test_quota_patterns_are_configurable_per_harness():
+    h = Harness("claude", {"quota_patterns": ["custom limit reached"]})
+    stdout = json.dumps({"type": "result", "subtype": "error", "is_error": True,
+                         "result": "You've hit your monthly spend limit.", "usage": {}, "total_cost_usd": 0.0})
+    assert h.parse(stdout)["env_error"] is False  # the default phrase no longer matches
+    stdout2 = json.dumps({"type": "result", "subtype": "error", "is_error": True,
+                          "result": "Custom limit reached, try later.", "usage": {}, "total_cost_usd": 0.0})
+    out2 = h.parse(stdout2)
+    assert out2["env_error"] is True and out2["env_kind"] == "quota"
 
 
 def test_custom_harness():

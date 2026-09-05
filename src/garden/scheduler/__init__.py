@@ -44,6 +44,7 @@ from .kickoff import KickoffMixin
 from .persona import PersonaMixin
 from .poll import PollMixin
 from .queue import QueueMixin
+from .quota import QuotaMixin
 from .reap import ReapMixin
 from .rebase import RebaseMixin
 from .report import TickReport
@@ -75,6 +76,7 @@ class Scheduler(
     DispatchMixin,
     HumanMixin,
     AuxMixin,
+    QuotaMixin,
     TrialsMixin,
     PersonaMixin,
     RetroMixin,
@@ -145,6 +147,13 @@ class Scheduler(
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         return get_runner(name, cfg, harness)
+
+    def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
+        """The harness `runner_for(task, ..., harness_name)` would resolve to, without
+        building a runner: an explicit name wins, else the task's own, else the product's
+        default. Used to check `is_harness_paused` before a dispatch that does not need a
+        runner yet (a review/persona batch still queued)."""
+        return harness_name or task.harness or self.cfg.product_harness(task.product)
 
     def model_for(self, task: Task, runner: Runner, difficulty: str = "") -> str:
         if runner.harness is None:
@@ -478,6 +487,8 @@ class Scheduler(
                     self.log(f"{t.id}: base re-probe failed: {e}")
         with self._step(rep, "merge_queue"):
             self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
+        with self._step(rep, "harness_probe"):
+            self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():

@@ -108,6 +108,10 @@ def status(
             msg += f": {reason}"
         msg += ")"
         console.print(f"[yellow]{msg}[/yellow]")
+    for name, entry in sorted((ctrl.get("paused_harnesses") or {}).items()):
+        at = str(entry.get("at") or "")
+        reason = str(entry.get("reason") or "")
+        console.print(f"[yellow]harness {name} paused (at {at[11:16]}){f': {reason}' if reason else ''}[/yellow]")
     from ..gitops import is_repo, uncommitted_task_files
     if is_repo(store.root):
         dirty = uncommitted_task_files(store.root)

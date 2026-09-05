@@ -50,6 +50,10 @@ class TrialsMixin:
     def start_trial(self, task: Task, contenders: list[str], again: bool = False, keep_prs: bool = False) -> list[Run]:
         if len(contenders) < 2:
             raise RuntimeError("a trial needs at least two contenders")
+        default_h = task.harness or self.cfg.product_harness(task.product)
+        parsed = [parse_contender(spec, default_h) for spec in contenders]
+        for _label, harness, _model in parsed:
+            self._raise_if_harness_paused(harness or default_h)
         st = self.state.get(task.id)
         prior = st.get("trial")
         if task.status not in (Status.READY, Status.DRAFT, Status.FAILED) or task.pr:
@@ -63,9 +67,8 @@ class TrialsMixin:
         default_h = task.harness or self.cfg.product_harness(task.product)
         trial: dict[str, Any] = {"id": now_iso(), "status": "running", "contenders": []}
         runs: list[Run] = []
-        base_branch = task.default_branch()
-        for spec in contenders:
-            label, harness, model = parse_contender(spec, default_h)
+        base_branch = task.branch or task.default_branch()
+        for label, harness, model in parsed:
             suffix = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
             branch = f"{base_branch}-trial-{suffix}"
             wt = self.cfg.worktree_path(f"{task.id}-trial-{suffix}")
@@ -144,6 +147,18 @@ class TrialsMixin:
         self.events.emit("trial_reset", task.id, keep_prs=keep_prs, contenders=[c.get("label") for c in prior.get("contenders", [])])
         self.state.save()
 
+    def _redispatch_contender(self, task: Task, c: dict[str, Any]) -> None:
+        """A contender parked `paused` on a quota env_error tries again once its harness
+        resumes: the same branch, worktree and model as the run that hit the limit, so the
+        trial continues from where the account trouble interrupted it rather than losing the
+        contender."""
+        runner = self.runner_for(task, "local", c["harness"])
+        run = self.dispatch(task, mode="trial", runner=runner, branch_override=c["branch"],
+                            worktree_override=Path(c["worktree"]), model_override=c["model"] or None)
+        c["run_id"] = run.run_id
+        c["status"] = "running"
+        c.pop("note", None)
+
     def reap_trial(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
         trial = st["trial"]
@@ -151,6 +166,12 @@ class TrialsMixin:
             return False
         changed = False
         for c in trial["contenders"]:
+            if c["status"] == "paused":
+                if self.is_harness_paused(c["harness"]):
+                    continue  # still down; try again next tick
+                self._redispatch_contender(task, c)
+                changed = True
+                continue
             if c["status"] != "running":
                 continue
             run = next((r for r in self.runs.runs_for(task.id) if r.run_id == c["run_id"]), None)
@@ -164,18 +185,34 @@ class TrialsMixin:
                 continue
             changed = True
             self._finalize_contender(task, c, run, runner)
-        if not changed:
-            return False
         if any(c["status"] == "running" for c in trial["contenders"]):
-            return True
+            return changed
         with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
+        paused = [c for c in trial["contenders"] if c["status"] == "paused"]
+        if paused:
+            if not with_pr:
+                return changed  # nothing to fall back on yet; keep waiting for the harness
+            # A survivor already produced a PR: giving up on the account-limited contender(s)
+            # lets the trial conclude now (inconclusively, below) instead of blocking on a
+            # retry the other contender doesn't need (CG-229's inconclusive-trial path).
+            for c in paused:
+                c["status"] = "env_failed"
+                c["note"] = str(c.get("note") or "").replace("; will retry once it resumes", "")
+            changed = True
+        if not changed and not trial.get("compare_paused"):
+            return False
         base = self.base_for(task)
         if len(with_pr) >= 2:
+            harness_name = str(self.cfg.get("review.harness") or "")
+            if self.is_harness_paused(self.resolved_harness_name(task, harness_name)):
+                trial["compare_paused"] = True
+                return True  # the contenders are done; the comparison waits for the harness
+            trial.pop("compare_paused", None)
             diffs = {c["label"]: gitops.diff(Path(c["worktree"]), base) for c in with_pr}
             text = compare_brief(self.store, task, with_pr, diffs, base, int(self.cfg.get("review.max_diff_chars", 60000)))
             trial["status"] = "comparing"
             self.dispatch_aux("compare", task, text, Path(with_pr[0]["worktree"]), {"trial_id": trial["id"]},
-                              harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("review.difficulty") or "hard"))
+                              harness_name=harness_name, difficulty=str(self.effective("review.difficulty") or "hard"))
             rep.dispatched.append(f"{task.id}(compare)")
             task.log("all contenders finished; comparison run started")
             self.store.save(task)
@@ -199,6 +236,20 @@ class TrialsMixin:
         run.exit_code = run.read_exit_code()
         run.finished_at = now_iso()
         collected = runner.collect(run) if run.status != "timeout" else {"result": {}, "error": "timed out"}
+        if collected.get("env_error"):
+            # The harness's own account, not the contender: pause it and park the contender
+            # to retry once it resumes, instead of counting this as the contender's failure.
+            self._pause_for_env_error(run, collected)
+            run.status = "env_error"
+            run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
+                             status="env_error", cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
+            kind = str(collected.get("env_kind") or "quota")
+            detail = str(collected.get("error") or "").strip() or f"{kind} limit hit"
+            c["status"] = "paused"
+            c["kind"] = kind
+            c["note"] = f"{kind} limit hit on {run.harness or 'the harness'}: {detail}; will retry once it resumes"
+            return
         run.result = collected.get("result") or {}
         run.usage = collected.get("usage") or {}
         run.cost_usd = collected.get("cost_usd")

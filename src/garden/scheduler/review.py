@@ -75,9 +75,16 @@ class ReviewMixin:
                 self.log(f"{task.id}: review deferred while a worker run is in flight")
             return
         st.pop("reviews_deferred_for_worker", None)
+        # review and persona rounds share the same `review.harness` config, so one resolved
+        # name gates both kinds; a paused harness defers the round into pending_reviews
+        # instead of failing it, the same way a full review_parallel does (CG-212).
+        review_harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         deferred: list[dict[str, Any]] = []
         for item in wanted:
             if self.review_slots_free() <= 0:
+                deferred.append(item)
+                continue
+            if self.is_harness_paused(review_harness):
                 deferred.append(item)
                 continue
             kind = item["kind"]
@@ -159,9 +166,10 @@ class ReviewMixin:
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
         ensure_open(task)
-        self._supersede_running_review(task)
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
+        self._supersede_running_review(task)
         base = self.base_for(task)
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
@@ -187,6 +195,10 @@ class ReviewMixin:
                             pr_comment=pr_comment, verified=verified)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
+        # Remembered so a quota env_error on this run (reap_review, below) knows whether this
+        # dispatch actually counted a round — an after-rebase round is exempt from
+        # review.max_rounds and must not be charged for having been retried.
+        run.env_snapshot = {"count_round": count_round}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -246,6 +258,31 @@ class ReviewMixin:
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()
             collected = runner.collect(run)
+            if collected.get("env_error"):
+                # The reviewer's own account, not the PR: pause the harness, give back the
+                # round this dispatch counted (see dispatch_review's count_round, snapshotted
+                # on the run since an after-rebase round is exempt and must not be charged),
+                # and rejoin the review queue so it is retried once the harness resumes
+                # instead of the PR silently never getting a verdict for this round.
+                st["review_run"] = ""
+                pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
+                counted = bool((run.env_snapshot or {}).get("count_round", True))
+                self._pause_for_env_error(run, collected)
+                run.status = "env_error"
+                run.save()
+                self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
+                                 cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
+                if counted:
+                    st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
+                self._queue_pending_reviews(st, [{"kind": "review", "count_round": counted}])
+                note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
+                       f"{run.harness or 'the harness'}); will retry once it resumes")
+                task.log(note)
+                self.store.save(task)
+                if pending_triage:
+                    notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
+                rep.transitions.append(f"{task.id} review paused (env_error)")
+                return True
             run.usage = collected.get("usage") or {}
             run.cost_usd = collected.get("cost_usd")
             run.model = str(collected.get("model") or run.model)

@@ -667,6 +667,16 @@ def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):
         assert len(line) <= 80, repr(line)
 
 
+def test_status_shows_a_paused_harness(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    sched.pause_harness("claude", "quota limit hit on claude")
+    out = run(garden, "status").output
+    assert "harness claude paused" in out and "quota limit hit on claude" in out
+
+
 def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "pause").exit_code == 0
     assert "dispatch paused" in run(garden, "status").output

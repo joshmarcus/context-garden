@@ -134,6 +134,32 @@ def test_local_runner_harness_shell_resolves_bin(tmp_path):
     assert cmd.startswith(str(fake))
 
 
+def test_local_runner_probe_uses_the_minimal_login_probe_not_the_full_command(tmp_path):
+    """The paused-harness probe (CG-212) must never grant edit/Bash permissions: it runs the
+    same minimal, tool-less invocation `garden doctor`'s login check uses (Harness.login_probe),
+    not the full `--permission-mode`/`--allowedTools`/`--settings` command a real dispatch
+    builds."""
+    from garden.harness import Harness
+
+    h = Harness("claude", {})
+    runner = LocalRunner({}, h)
+    captured: dict = {}
+
+    def fake_probe_launch(argv, stdin_text, cwd, env):
+        captured["argv"] = argv
+        captured["stdin_text"] = stdin_text
+        return '{"type": "result", "subtype": "success", "is_error": false, "result": "ready"}', ""
+
+    with patch.object(LocalRunner, "_probe_launch", side_effect=fake_probe_launch):
+        result = runner.probe(tmp_path / "probe" / "claude")
+    argv = captured["argv"]
+    assert "--permission-mode" not in argv
+    assert "--allowedTools" not in argv
+    assert "--settings" not in argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert not result.get("env_error")
+
+
 def test_local_runner_launch_flips_process_finished(tmp_path):
     """The real LocalRunner.launch shell wrapper, end to end: it starts the harness detached
     and writes exit_code when the process ends. process_finished() is False while the process

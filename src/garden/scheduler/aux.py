@@ -19,6 +19,7 @@ class AuxMixin:
                      harness_name: str = "", difficulty: str = "") -> Run:
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner = self.runner_for(probe, "local", harness_name)
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
@@ -42,6 +43,7 @@ class AuxMixin:
                 remaining.append(entry)
                 continue
             final = ""
+            collected: dict[str, Any] = {}
             if run.status != "timeout":
                 run.exit_code = run.read_exit_code()
                 run.finished_at = now_iso()
@@ -53,8 +55,16 @@ class AuxMixin:
                 final = collected.get("final_text") or ""
                 if final and not (run.path / "final.md").exists():
                     (run.path / "final.md").write_text(final)
-                run.status = "done"
+                run.status = "env_error" if collected.get("env_error") else "done"
                 run.save()
+            if collected.get("env_error"):
+                # The harness's own account, not this round: pause it and put the request
+                # back where it can try again once it resumes, instead of a broken verdict.
+                self._pause_for_env_error(run, collected)
+                self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
+                                 usage=run.usage, status="env_error")
+                self._requeue_aux_env_error(entry, run, rep)
+                continue
             self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd, usage=run.usage, status=run.status)
             try:
                 if entry["kind"] == "compare":
@@ -66,3 +76,35 @@ class AuxMixin:
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{entry['task']}: {entry['kind']} failed: {e}")
         self.state.get("_aux")["runs"] = remaining
+
+    def _requeue_aux_env_error(self, entry: dict[str, Any], run: Run, rep: TickReport) -> None:
+        """Put a persona/compare aux request back where it can be tried again once its harness
+        resumes, instead of losing it or reporting a broken verdict for what was really the
+        harness's own account trouble. A PR-targeted persona round rejoins the review queue
+        (`_dispatch_or_defer_reviews` already gates a fresh dispatch on `is_harness_paused`); a
+        trial's comparison reopens the trial for `reap_trial` to redispatch once every
+        contender still has an open PR. A phase-level persona review (a retro, or the phase
+        "review this phase" action) has no per-task queue to rejoin, so it is dropped; whoever
+        started it re-runs it by hand once the harness is back."""
+        kind = entry.get("kind")
+        note = f"{kind} review paused ({run.harness or 'the harness'} hit its account limit); will retry once it resumes"
+        task = self.store.tasks().get(entry.get("task", ""))
+        if kind == "persona" and entry.get("target") == "pr" and task is not None:
+            st = self.state.get(task.id)
+            self._queue_pending_reviews(st, [{"kind": "persona", "name": entry.get("persona", "")}])
+            task.log(note)
+            self.store.save(task)
+            rep.transitions.append(f"{task.id} persona paused (env_error)")
+            return
+        if kind == "compare" and task is not None:
+            st = self.state.get(task.id)
+            trial = st.get("trial") or {}
+            if trial.get("status") == "comparing":
+                trial["status"] = "running"
+                trial["compare_paused"] = True
+            task.log(note)
+            self.store.save(task)
+            rep.transitions.append(f"{task.id} compare paused (env_error)")
+            return
+        self.log(f"{entry.get('task')}: {note} (not requeued: no per-task queue for a phase-level review)")
+        rep.transitions.append(f"{entry.get('task')} {kind} paused (env_error, not retried)")

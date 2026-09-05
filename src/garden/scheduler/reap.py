@@ -140,6 +140,14 @@ class ReapMixin:
             self._fence_fail(task, run, violations, rep)
             return
 
+        if collected.get("env_error"):
+            # A quota/spend-limit message from the harness's own account, not the worker's
+            # doing: close the run without counting an attempt, pause dispatch for this
+            # harness (a cheap probe resumes it later, see QuotaMixin), and put the task
+            # straight back to ready instead of burning it toward failed.
+            self._handle_quota_env_error(task, run, rep, collected)
+            return
+
         if run.exit_code not in (0, None) and not result:
             run.status = "failed"
             run.save()
@@ -612,6 +620,64 @@ class ReapMixin:
         plural = "s" if n != 1 else ""
         return n, (f"; the prior attempt made real progress — {n} commit{plural} already on `{branch}`, "
                    f"kept in the worktree and listed for the next run to continue from")
+
+    def _handle_quota_env_error(self, task: Task, run: Run, rep: TickReport, collected: dict[str, Any]) -> None:
+        """A quota/spend-limit stop: the harness's account, not the task, is at fault. Undo
+        the attempt dispatch() counted when this run started (revise/rebase/resume never
+        counted one), pause dispatch for the harness, and put the round back where dispatch
+        found it. A work round has no PR yet, so it goes back to ready. A revise or rebase
+        round always has an open PR and stored feedback (or a pending rebase) that dispatch
+        already cleared to start this very run; restore it from the run's `env_snapshot` and
+        go back to changes_requested instead, so the PR and the feedback survive the stop. A
+        resume round (the continuation `human.answer()` dispatches after a person answers a
+        worker's question, whatever round originally asked it) already cleared the pending
+        question and session out of state before this run started; restore those from the
+        same `env_snapshot` and go back to waiting_human, so the question survives the stop
+        instead of the task falling back to ready and losing the PR/feedback that led to it."""
+        kind = str(collected.get("env_kind") or "quota")
+        run.status = "env_error"
+        run.save()
+        if run.mode == "work":
+            task.attempts = max(0, task.attempts - 1)
+        harness_name = run.harness or ""
+        self._pause_for_env_error(run, collected)
+        note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
+        if harness_name:
+            note += f"; dispatch paused for {harness_name} until a probe succeeds"
+
+        st = self.state.get(task.id)
+        snap = run.env_snapshot or {}
+        if run.mode == "revise" and task.pr:
+            st["pending_feedback"] = snap.get("pending_feedback", "")
+            if snap.get("pending_feedback_easy"):
+                st["pending_feedback_easy"] = True
+            else:
+                st.pop("pending_feedback_easy", None)
+            if snap.get("pending_feedback_rebase"):
+                st["pending_feedback_rebase"] = True
+                st["rebases"] = max(0, int(st.get("rebases", 0)) - 1)
+            else:
+                st["revisions"] = max(0, int(st.get("revisions", 0)) - 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}; feedback restored, will retry the revise round")
+            rep.transitions.append(f"{task.id} -> changes_requested (env_error: {kind})")
+            return
+        if run.mode == "rebase" and task.pr:
+            st["rebase_pending"] = True
+            st["rebases"] = max(0, int(st.get("rebases", 0)) - 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}; will retry the rebase round")
+            rep.transitions.append(f"{task.id} -> changes_requested (env_error: {kind})")
+            return
+        if run.mode == "resume":
+            st["question"] = snap.get("question", "")
+            st["session_id"] = snap.get("session_id", "")
+            self.state.save()
+            self._transition(task, Status.WAITING_HUMAN, f"{note}; the pending question and session are restored, answer again once it resumes")
+            rep.transitions.append(f"{task.id} -> waiting_human (env_error: {kind})")
+            return
+        self._transition(task, Status.READY, note)
+        rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))

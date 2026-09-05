@@ -25,6 +25,7 @@ GROUPS = [
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
+    ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
     ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go.", "decision"),
     ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused.", "decision"),
 ]
@@ -442,6 +443,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Change to close", "kind": "retro-decide-close", "command": f"garden retro-decide {phase_key} close"},
             ],
         })
+
+    for name, entry in sorted(getattr(sched, "paused_harnesses", dict)().items()):
+        items.append({"group": "harness", "group_title": titles["harness"], "task": "", "title": name, "phase": "",
+                      "status": "", "pr": "", "why": str(entry.get("reason") or "paused"),
+                      "actions": [], "age": _age(str(entry.get("at") or "")), "difficulty": ""})
 
     for key in sorted({t.key for t in tasks.values()}):
         budget = sched.budget_for(key)

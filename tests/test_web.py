@@ -679,6 +679,16 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "Review and merge" in c.get("/").text
 
 
+def test_inbox_shows_a_paused_harness_notice(garden):
+    from garden.scheduler import Scheduler
+
+    sched = Scheduler(Store(garden))
+    sched.pause_harness("claude", "quota limit hit on claude")
+    c = client(garden)
+    home = c.get("/").text
+    assert "Harness paused" in home and "claude" in home and "quota limit hit on claude" in home
+
+
 def test_stdout_partial(garden):
     c = client(garden)
     r = c.get("/partials/tasks/DM-001/stdout")

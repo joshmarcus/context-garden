@@ -23,6 +23,15 @@ def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> in
     model = args[args.index("-m") + 1] if "-m" in args else ""
     if "--full-auto" in args:
         return 2
+    if env.get("FAKE_CODEX_MODE") == "quota":
+        # The account, not the worker: codex exec reports the usage-limit message and no commit.
+        events = [
+            {"type": "thread.started", "thread_id": "th_1"},
+            {"type": "turn.failed", "message": "You've hit your usage limit. Upgrade to Pro for more access."},
+        ]
+        for e in events:
+            print(json.dumps(e))
+        return 1
     if brief.startswith("# Planning request"):
         final = json.dumps([{"title": "Codex planned task", "difficulty": "medium", "reading": [],
                              "body": "## Goal\nImplement the spec.\n## Acceptance criteria\n- Tests pass."}])

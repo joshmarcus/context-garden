@@ -198,5 +198,15 @@ class Runner(ABC):
             return self.harness.shell_resume_command(run.session_id, run.model, final_path, run.difficulty)
         return self.harness.shell_command(run.model, final_path, run.difficulty)
 
+    def probe(self, cwd: Path) -> dict[str, Any]:
+        """A cheap, synchronous health check for a paused harness: the same minimal,
+        no-permissions, no-tools invocation `garden doctor`'s login check uses
+        (`Harness.login_probe`) — no run record, no worktree setup — just whether it
+        responds and how (Harness.parse's env_error classification tells the caller whether
+        it is still down). Not every runner supports this; the default says so instead of
+        raising."""
+        return {"final_text": "", "usage": {}, "cost_usd": None, "session_id": "", "result": {},
+                "error": f"the {self.name} runner does not support probing", "env_error": False, "env_kind": ""}
+
     def doctor(self) -> list[str]:
         return []

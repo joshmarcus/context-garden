@@ -54,6 +54,9 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
         "review_model": "",              # empty = the task's difficulty tier
         "resume": True,                  # `claude -p --resume <session>` after a human answers
+        # A message matching one of these (case-insensitive substring) marks the run an
+        # environment stop, not a task failure: see Harness.parse's env_error classification.
+        "quota_patterns": ["you've hit your monthly spend limit"],
     },
     "codex": {
         "bin": "codex",
@@ -63,6 +66,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "review_model": "",
         "resume": True,                  # `codex exec resume <id>` after a human answers
         "prices": CODEX_PRICES,
+        "quota_patterns": ["you've hit your usage limit"],
     },
 }
 
@@ -280,16 +284,27 @@ class Harness:
         return " ".join(shlex.quote(c) for c in self.resume_command(session_id, model, final_path, difficulty))
 
     # ---- output ------------------------------------------------------------
+    def _quota_kind(self, *texts: str) -> str:
+        """Classify a worker's error/output against this harness's `quota_patterns` (a
+        case-insensitive substring match, configurable per harness): "quota" for a monthly
+        spend-limit or usage-limit message, else "". The scheduler treats a quota match as an
+        environment stop, not a task failure (see reap.ReapMixin._handle_quota_env_error)."""
+        patterns = [str(p).lower() for p in (self.cfg.get("quota_patterns") or []) if str(p)]
+        if not patterns:
+            return ""
+        haystack = " ".join(t for t in texts if t).lower()
+        return "quota" if any(p in haystack for p in patterns) else ""
+
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None, model: str = "") -> dict[str, Any]:
         """Normalise output to {final_text, usage, cost_usd, error, session_id, result, model,
         missing_price, env_error, env_kind}. `env_error` is True when the run stopped on
-        something outside the worker's control rather than the task (currently just a login
-        failure, `env_kind` "auth"); the scheduler pauses the harness instead of failing the
-        task. `model` is the model the run was dispatched with (the resolved tier map or a
-        `-m` override); a harness whose own output reports the model it actually ran (codex)
-        confirms or overrides it with that. `missing_price` names a model that has usage but
-        no entry in this harness's `prices` table, so `cost_usd` comes back None instead of
-        silently wrong."""
+        something outside the worker's control rather than the task (a login failure,
+        `env_kind` "auth", or a quota/spend-limit message, `env_kind` "quota"); the scheduler
+        pauses the harness instead of failing the task. `model` is the model the run was
+        dispatched with (the resolved tier map or a `-m` override); a harness whose own output
+        reports the model it actually ran (codex) confirms or overrides it with that.
+        `missing_price` names a model that has usage but no entry in this harness's `prices`
+        table, so `cost_usd` comes back None instead of silently wrong."""
         out: dict[str, Any] = {"final_text": "", "usage": {}, "cost_usd": None, "error": "", "session_id": "", "result": {},
                                "model": model, "missing_price": "", "env_error": False, "env_kind": ""}
         if final_path is not None and final_path.exists():
@@ -306,6 +321,10 @@ class Harness:
             out["final_text"] = out["final_text"] or stdout
         if not out["final_text"].strip() and not out["error"]:
             out["error"] = (stderr.strip()[-2000:] or "worker produced no output")
+        kind = self._quota_kind(out["error"], out["final_text"], stdout, stderr)
+        if kind:
+            out["env_error"] = True
+            out["env_kind"] = kind
         out["result"] = parse_result(out["final_text"]) or parse_result(stdout)
         blob = f"{out['final_text']} {stdout} {stderr}".lower()
         if any(marker in blob for marker in AUTH_FAILURE_MARKERS):
