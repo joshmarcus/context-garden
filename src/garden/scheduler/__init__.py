@@ -207,6 +207,19 @@ class Scheduler(
         """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
         return [r for r in self.active_runs() if r.mode in WORKER_MODES]
 
+    def latest_worker_run(self, task_id: str) -> Run | None:
+        """The run the ordinary `reap()` should reap for a RUNNING task: the latest run whose
+        mode occupies a `max_parallel` slot (work/revise/resume/trial/rebase), preferring one
+        still running. A review or persona run dispatched for the same task — e.g. the poll
+        re-reviewing a fresh push while a revise is still in flight — is left to
+        `reap_review`/`reap_orphaned` and never mistaken for the task's own run, so a review
+        record can no longer send a running task back to `ready` (CG-177)."""
+        worker = [r for r in self.runs.runs_for(task_id) if r.mode in WORKER_MODES]
+        if not worker:
+            return None
+        active = [r for r in worker if r.status == "running"]
+        return active[-1] if active else worker[-1]
+
     def review_runs_active(self) -> list[Run]:
         """Active runs that occupy a `review_parallel` slot: review, persona, comparison."""
         return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
@@ -237,7 +250,7 @@ class Scheduler(
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()
         for t in self.store.tasks().values():
-            run = self.runs.latest(t.id)
+            run = self.latest_worker_run(t.id)
             if self._is_unreaped(t, run):
                 out.add(run.run_id)
         return out

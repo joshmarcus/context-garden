@@ -63,6 +63,17 @@ class ReviewMixin:
         on a later tick, so a full review_parallel does not lose the round — it just waits its
         turn, the same way a full max_parallel makes a work task wait in the ready queue."""
         st = self.state.get(task.id)
+        # Never dispatch a review under a worker round still in flight (work/revise/resume/rebase):
+        # its record would sit beside the worker run and could be mistaken for the task's own run,
+        # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
+        # picks it up once the worker finishes — and log it once per deferral episode.
+        if any(r.task_id == task.id for r in self.worker_runs_active()):
+            st["pending_reviews"] = list(st.get("pending_reviews") or []) + wanted
+            if not st.get("reviews_deferred_for_worker"):
+                st["reviews_deferred_for_worker"] = True
+                self.log(f"{task.id}: review deferred while a worker run is in flight")
+            return
+        st.pop("reviews_deferred_for_worker", None)
         deferred: list[dict[str, Any]] = []
         for item in wanted:
             if self.review_slots_free() <= 0:
