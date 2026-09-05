@@ -351,9 +351,11 @@ class ReapMixin:
                 self._start_check_revise(task, failed, rep, cost)
                 return "done"
             # the base branch has not moved: it is itself broken. Park the task; no revise, no spend.
+            # Remember the base and its current tip so a later tick can tell when it has moved and
+            # continue on its own (see _reprobe_base_broken), no worker and no person needed.
             reason = (f"base branch `{base}` is itself broken — pre-PR check(s) {names} fail at its own commit "
                       f"{base_sha[:12]}, not because of this branch")
-            self._set_needs_human(task, "base_broken", reason)
+            self._set_needs_human(task, "base_broken", reason, base=base, base_sha=base_sha)
             self.events.emit("needs_human", task.id, stop_kind="base_broken", reason=reason)
             self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; waiting for the base to go green, no revise round{cost}", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (base broken)")
@@ -394,6 +396,108 @@ class ReapMixin:
         else:
             self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}){note}; no PR opened yet; revise run will fix{cost}")
         rep.transitions.append(f"{task.id} -> changes_requested (checks)")
+
+    # ---- base_broken: re-probe and continue on its own --------------------
+    def _last_worker_result(self, task: Task) -> dict[str, Any]:
+        """The most recent worker run's reported result (its `pr_title`/`pr_body`/`summary`),
+        so a re-probe can open or update the PR with what the worker actually wrote. Only the
+        PR-description fields are kept: any friction or one-off `pr_comment` was already posted
+        when the run first finished and must not be replayed on the mechanical continuation."""
+        for r in reversed(self.runs.runs_for(task.id)):
+            if r.mode in ("work", "revise", "resume") and r.result:
+                return {k: r.result[k] for k in ("pr_title", "pr_body", "summary") if r.result.get(k)}
+        return {}
+
+    def _reprobe_base_broken(self, task: Task, rep: TickReport) -> bool:
+        """A task parked with the `base_broken` stop re-probes its base every tick and continues
+        by itself once the base goes green: compare the base branch's tip with the commit that was
+        broken when the task parked; while it has not moved, wait (no run, no spend). When it has
+        moved, rebase the branch onto it mechanically (the CG-141 rebase, no worker), force-push so
+        any stale CI on the branch runs again, and re-run the pre-PR checks. On green, clear the
+        stop and open or update the PR. A rebase that does not apply, or checks that still fail
+        after it, fall through to the normal revise path — and only then. Returns True when the
+        task was acted on this tick."""
+        st = self.state.get(task.id)
+        info = st.get("needs_human")
+        if not (isinstance(info, dict) and info.get("kind") == "base_broken"):
+            return False
+        if task.status.terminal or any(r.task_id == task.id for r in self.active_runs()):
+            return False
+        base = str(info.get("base") or self.base_for(task))
+        parked_sha = str(info.get("base_sha") or "")
+        branch = task.branch or task.default_branch()
+        wt = self.worktree_for(task)
+        repo = self.repo_for(task)
+        try:
+            if not wt.exists():
+                gitops.prepare_worktree(repo, wt, branch, base)
+            gitops.fetch(wt)
+            ref = gitops.base_ref(wt, base)
+            tip = gitops.rev_parse(wt, ref)
+        except gitops.GitError as e:
+            self.log(f"{task.id}: base re-probe failed ({e}); still waiting for `{base}`")
+            return False
+        if not parked_sha or tip == parked_sha:
+            return False  # the base has not moved: keep waiting, no worker, no spend
+        # The base moved. Bring the branch onto it mechanically (no worker) and re-check.
+        try:
+            ok, files = gitops.sync_remote_branch(wt, branch)
+            if ok:
+                ok, files, _ = gitops.rebase_onto_capture(wt, ref)
+        except gitops.GitError as e:
+            ok, files = False, [str(e)]
+        run = self.runs.new_run(task.id, "local", mode="rebase")
+        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+        if not ok:
+            # the rebase does not apply cleanly: hand it to the normal revise path, and only then.
+            run.status = "failed"
+            run.error = f"rebase onto {base} conflicts: {', '.join(files) or 'unknown files'}"
+            run.finished_at = now_iso()
+            run.save()
+            self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
+            st.pop("needs_human", None)
+            failed = check_failures(self._pre_pr_checks(task, wt, branch, base))
+            self._start_check_revise(task, failed, rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
+            rep.transitions.append(f"{task.id} base moved but rebase conflicted; revise")
+            return True
+        try:
+            note = gitops.push(wt, branch, force=True)
+            if note:
+                self.log(f"{task.id}: {note}")
+        except gitops.GitError as e:
+            run.status = "failed"
+            run.error = str(e)
+            run.finished_at = now_iso()
+            run.save()
+            self.log(f"{task.id}: push after base rebase failed: {e}")
+            return False
+        run.status = "done"
+        run.cost_usd = 0.0
+        run.finished_at = now_iso()
+        run.diff_stat = gitops.diff_stat(wt, base)
+        run.save()
+        st["rebases"] = int(st.get("rebases", 0)) + 1
+        self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done")
+        failed = check_failures(self._pre_pr_checks(task, wt, branch, base))
+        if failed:
+            # Still red after the rebase. Route through the normal probe: it re-parks the task
+            # (with the new base tip) if the moved base is broken too, or starts a revise round
+            # for a failure the branch now owns — and only then.
+            self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
+            st.pop("needs_human", None)
+            self._handle_failed_checks(task, run, wt, branch, base, failed, rep, "")
+            return True
+        # Green: clear the stop and open or update the PR, all without a worker run.
+        st.pop("needs_human", None)
+        st.pop("automerge_blocked", None)
+        self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
+        task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it and the pre-PR "
+                 f"checks pass now — continuing without a worker run")
+        self.store.save(task)
+        self.log(f"{task.id}: base `{base}` recovered; rebased and re-checked green, continuing on its own")
+        rep.transitions.append(f"{task.id} rebased onto recovered {base}; checks green")
+        self._open_or_update_pr(task, run, branch, base, self._last_worker_result(task), rep, "")
+        return True
 
     def _after_push(self, task: Task, run: Run, worktree: Path, branch: str, base: str, result: dict[str, Any],
                     rep: TickReport, cost: str, check_stall: bool = True) -> None:
