@@ -35,7 +35,7 @@ from ..plants import (
 from ..store import Store
 from . import actions, pages
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
-from .trust import OriginCheck, safe_json
+from .trust import OriginCheck, safe_json, server_origins
 
 __all__ = ["Hub", "Site", "create_app", "render_md"]
 
@@ -52,12 +52,17 @@ def _tojson(value: Any) -> Markup:
     return Markup(safe_json(value))
 
 
-def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None) -> FastAPI:
+def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None,
+               host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
-    scheduler the app builds will use (`garden qa` passes its pretend GitHub)."""
+    scheduler the app builds will use (`garden qa` passes its pretend GitHub). `host`/`port`
+    are the address `garden serve` binds to; they fix the origins a POST may come from."""
     app = FastAPI(title="context-garden")
     # A POST from another site (a page open in the same browser) is refused; see web/trust.py.
-    app.add_middleware(OriginCheck, trusted_origins=[str(o) for o in (store.config.get("web.trusted_origins") or [])])
+    # The allowlist is the bound address plus any web.trusted_origins; the request's Host is
+    # never trusted, so a DNS-rebound page is refused even when its Host and Origin agree.
+    allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
+    app.add_middleware(OriginCheck, allowed_origins=allowed)
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))

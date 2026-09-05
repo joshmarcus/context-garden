@@ -9,19 +9,17 @@ JSON blob safe to inline in an attribute or a script.
 
 Every state-changing route is a plain form POST with no token, and the server listens on
 localhost, so a page on any site could post a form at it from the person's browser.
-`OriginCheck` refuses a POST whose `Origin` (or, failing that, `Referer`) is not this
-server, unless `web.trusted_origins` lists it. A same-origin POST must also be addressed to
-a loopback `Host`: the garden serves on localhost, so a POST from a domain that resolves to
-127.0.0.1 (a DNS-rebinding attack, where `Origin` and `Host` match an attacker domain) is
-refused even though its origin matches its host — `web.trusted_origins` is the escape hatch
-for a reverse proxy or a LAN address. A request with neither `Origin` nor `Referer` is not
+`OriginCheck` refuses a POST whose `Origin` (or, failing that, `Referer`) is not an
+allowed origin: the origins the server binds to (`server_origins`) plus `web.trusted_origins`.
+The request's own `Host` header is never consulted — a page whose name was rebound to the
+loopback address carries the attacker's own `Origin`, which is not an allowed one, so the
+POST is refused even though `Host` and `Origin` agree. A request with neither header is not
 a browser's and is let through: there is no ambient credential to forge with.
 """
 
 from __future__ import annotations
 
 import html
-import ipaddress
 import json
 import re
 from collections.abc import Iterable
@@ -159,67 +157,55 @@ def _origin_of(url: str) -> str:
     return f"{parts.scheme.lower()}://{parts.netloc.lower()}" if parts.scheme and parts.netloc else ""
 
 
-def _is_loopback(host: str) -> bool:
-    """True when `host` (a `Host` header value, maybe with a port) names the loopback
-    interface — `localhost`, `127.0.0.0/8` or `::1`. The garden serves on loopback, so a
-    same-origin POST addressed to a non-loopback host is a DNS-rebinding attempt (an attacker
-    domain that resolves to 127.0.0.1: its `Origin` and `Host` match, but the host is not
-    loopback), which the caller refuses unless the origin is in `web.trusted_origins`."""
+# Bind addresses reachable over the loopback interface; a bind to any of these is served to
+# a browser as localhost, 127.0.0.1 or [::1], whatever address string was passed.
+_LOOPBACK_BINDS = frozenset({"", "0.0.0.0", "::", "[::]", "*", "localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+def server_origins(host: str, port: int | None = None) -> list[str]:
+    """The http origins that address `garden serve` itself, for the origin allowlist.
+
+    A loopback or wildcard bind is reached as localhost, 127.0.0.1 or [::1]; a specific host
+    is reached as itself. The request's own `Host` header is deliberately not used to derive
+    this (that is exactly what a DNS-rebound page forges), so a bind to any other name needs
+    its public origin listed in `web.trusted_origins`."""
     h = (host or "").strip().lower()
-    if not h:
-        return False
-    if h.startswith("["):  # [::1] or [::1]:port
-        h = h[1:].split("]", 1)[0]
-    elif h.count(":") == 1:  # host:port (a bare IPv6 has several colons and no port here)
-        h = h.split(":", 1)[0]
-    if h == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(h).is_loopback
-    except ValueError:
-        return False
+    hosts = ["localhost", "127.0.0.1", "[::1]"] if h in _LOOPBACK_BINDS else [h]
+    suffix = f":{port}" if port else ""
+    return [f"http://{name}{suffix}" for name in hosts]
 
 
-def origin_problem(headers: Headers, trusted: Iterable[str] = ()) -> str:
-    """Why a state-changing request must be refused, or '' when its source is this server.
+def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
+    """Why a state-changing request must be refused, or '' when its source is an allowed origin.
 
     `Origin` is checked first (browsers send it on every cross-site POST); an older browser
     without it sends `Referer`. A request with neither is not a browser's form and is
-    accepted. A trusted origin (`web.trusted_origins`, for a reverse proxy) is always
-    accepted. Otherwise the source must be the host the request was addressed to (`Host`) and
-    that host must be the loopback interface — the garden serves on localhost, so a
-    same-origin POST to a non-loopback host is a DNS-rebinding attempt and is refused (add the
-    origin to `web.trusted_origins` for a proxy or LAN address that must be allowed)."""
-    host = (headers.get("host") or "").strip().lower()
-    trusted_set = {t.strip().rstrip("/").lower() for t in trusted if t and t.strip()}
+    accepted. The source must be one of `allowed`: the origins the server binds to
+    (`server_origins`) plus `web.trusted_origins`. The request's own `Host` header is never
+    consulted, so a page whose name was rebound to the loopback address is still refused —
+    its Origin is the attacker's name, which is not an allowed origin."""
+    allowed_set = {a.strip().rstrip("/").lower() for a in allowed if a and a.strip()}
     origin = (headers.get("origin") or "").strip()
     via, source = ("Origin", origin) if origin else ("Referer", (headers.get("referer") or "").strip())
     if not source:
         return ""
     if source.lower() == "null":
         return "request refused: it comes from an opaque origin (Origin: null), not from this server"
-    src = _origin_of(source)
-    netloc = urlsplit(source).netloc.lower()
-    if src in trusted_set:
+    if _origin_of(source) in allowed_set:
         return ""
-    if src and netloc == host:
-        if _is_loopback(host):
-            return ""
-        return (f"request refused: Host {host!r} is not a loopback address; the garden serves on "
-                "localhost. Add its origin to web.trusted_origins to allow it (DNS-rebinding guard)")
-    return f"request refused: {via} {source!r} is not this server ({host or 'unknown host'}); see web.trusted_origins"
+    return f"request refused: {via} {source!r} is not this server; see web.trusted_origins"
 
 
 class OriginCheck:
-    """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is another site."""
+    """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
-    def __init__(self, app: ASGIApp, trusted_origins: Iterable[str] = ()):
+    def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = ()):
         self.app = app
-        self.trusted = [str(t) for t in trusted_origins]
+        self.allowed = [str(o) for o in allowed_origins]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and str(scope.get("method", "GET")).upper() not in SAFE_METHODS:
-            problem = origin_problem(Headers(scope=scope), self.trusted)
+            problem = origin_problem(Headers(scope=scope), self.allowed)
             if problem:
                 await PlainTextResponse(problem, status_code=403)(scope, receive, send)
                 return

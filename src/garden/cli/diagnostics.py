@@ -234,7 +234,7 @@ def serve(
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_config["loggers"]["uvicorn"]["level"] = "WARNING"
     log_config["loggers"]["uvicorn.error"]["level"] = "WARNING"
-    uvicorn.run(create_app(store, watch=watch_), host=host, port=port, log_config=log_config)
+    uvicorn.run(create_app(store, watch=watch_, host=host, port=port), host=host, port=port, log_config=log_config)
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
