@@ -376,8 +376,8 @@ class GardenTUI(App):
             except KeyError:
                 ph = None
             try:
-                sched.approve(t, by="tui", phase=ph)
-                self._msg = f"{t.id} approved"
+                warning = sched.approve(t, by="tui", phase=ph)
+                self._msg = f"{t.id} approved" + (f" — {warning}" if warning else "")
             except RuntimeError as e:
                 self._msg = str(e)
         self.action_refresh()

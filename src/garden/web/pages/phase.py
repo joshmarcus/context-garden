@@ -109,6 +109,7 @@ def register(app: FastAPI, site: Site) -> None:
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
             retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
             new_task=_new_task_prefill(request),
+            kickoff=_kickoff_panel(s, sched, ph),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
@@ -192,6 +193,24 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "doc.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, name=name, doc_html=render_md(target.read_text())))
+
+
+def _kickoff_panel(s: Any, sched: Any, ph: Any) -> dict[str, Any]:
+    """The phase page's Kickoff panel context: whether a report exists, whether a review is
+    in flight, and the live state of every item it raised (CG-224) — a draft task for each
+    design/doc gap, a decision card for each question, cross-referenced by `discovered_from`
+    and `phase` rather than trusted from the (possibly stale) committed report."""
+    from ...kickoff import kickoff_doc_path
+
+    tag = f"kickoff:{ph.key}"
+    filed = sorted((t for t in s.tasks().values() if t.discovered_from == tag), key=lambda t: (t.priority, t.id))
+    return {
+        "has_report": kickoff_doc_path(ph).exists(),
+        "running": sched.kickoff_pending(ph.key),
+        "design_tasks": [t for t in filed if t.extra.get("spike")],
+        "doc_tasks": [t for t in filed if not t.extra.get("spike")],
+        "questions": [d for d in sched.pending_decisions() if d.get("kind") == "question" and d.get("phase") == ph.key],
+    }
 
 
 def _retro_doc(ph: Any) -> Path | None:

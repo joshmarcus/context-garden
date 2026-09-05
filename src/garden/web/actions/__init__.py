@@ -14,9 +14,10 @@ from ...scheduler import Scheduler
 from ...store import Store
 from ..common import Site
 
-# (store, scheduler, task, note, applies_to) -> None; raise RuntimeError for a message the
-# person should see as a flash, HTTPException for a bad request.
-TaskAction = Callable[[Store, Scheduler, Task, str, str], None]
+# (store, scheduler, task, note, applies_to) -> an optional warning to flash after a
+# successful action; raise RuntimeError for a message the person should see instead as a
+# flash on failure, HTTPException for a bad request.
+TaskAction = Callable[[Store, Scheduler, Task, str, str], "str | None"]
 
 ACTIONS: dict[str, TaskAction] = {}
 

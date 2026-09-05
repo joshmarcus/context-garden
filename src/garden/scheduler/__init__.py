@@ -40,6 +40,7 @@ from .dispatch import DispatchMixin
 from .edits import EditsMixin
 from .fence import FenceMixin
 from .human import HumanMixin
+from .kickoff import KickoffMixin
 from .persona import PersonaMixin
 from .poll import PollMixin
 from .queue import QueueMixin
@@ -77,6 +78,7 @@ class Scheduler(
     TrialsMixin,
     PersonaMixin,
     RetroMixin,
+    KickoffMixin,
 ):
     """One class, assembled from a module per tick phase (see the package layout in
     docs/architecture.md). This file holds construction, the shared helpers, `tick()` and

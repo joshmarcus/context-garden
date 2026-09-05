@@ -382,6 +382,22 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                       "age": _age(str(up.get("at") or "")), "difficulty": ""})
 
     for d in getattr(sched, "pending_decisions", list)():
+        if d.get("kind") == "question":
+            items.append({
+                "group": "attention", "group_title": titles["attention"], "task": "",
+                "title": str(d.get("question") or ""),
+                "phase": str(d.get("phase") or ""), "status": "", "pr": "",
+                "why": f"the {d.get('phase') or 'phase'} kickoff is asking",
+                "question_context": str(d.get("context") or ""),
+                "question_options": list(d.get("options") or []),
+                "actions": [
+                    {"label": "Answer", "kind": "decision-answer", "command": f"garden decide {d['id']} --answer '...'"},
+                    {"label": "Dismiss", "kind": "decision-dismiss", "command": f"garden decide {d['id']} --dismiss"},
+                ],
+                "age": _age(str(d.get("at") or "")), "difficulty": "",
+                "decision": str(d.get("id") or ""), "decision_kind": "question",
+            })
+            continue
         target = str(d.get("target", ""))
         tgt = tasks.get(target)
         reason = str(d.get("reason") or "").strip()

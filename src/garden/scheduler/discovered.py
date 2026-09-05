@@ -263,6 +263,8 @@ class DiscoveredMixin:
         d = decisions.get(decision_id)
         if not isinstance(d, dict) or d.get("status", "pending") != "pending":
             raise KeyError(decision_id)
+        if d.get("kind") == "question":
+            raise RuntimeError(f"{decision_id} is a kickoff question; use --answer/--dismiss (garden decide), not accept/reject")
         target, kind = str(d.get("target", "")), str(d.get("kind", ""))
         proposer, run_id, reason = str(d.get("proposed_by", "")), str(d.get("run", "")), str(d.get("reason", ""))
         of = str(d.get("of") or "")

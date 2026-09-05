@@ -17,7 +17,7 @@ from . import ACTIONS, action
 
 
 @action("approve")
-def approve(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+def approve(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str | None:
     target = note.strip()
     if target:
         product, _, phase = target.partition("/")
@@ -27,7 +27,7 @@ def approve(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> 
         ph = s.phase(t.product, t.phase)
     except KeyError:
         ph = None
-    sched.approve(t, by="web", phase=ph)
+    return sched.approve(t, by="web", phase=ph) or None
 
 
 @action("priority")
@@ -213,7 +213,7 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                run_action(s, sched, t, note, applies_to)
+                warning = run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise
         except (RuntimeError, GitError, GitHubError) as e:
@@ -226,4 +226,6 @@ def register(app: FastAPI, site: Site) -> None:
             hub._log(f"{task_id}/{action} failed: unexpected error, see the log")
             note_to_keep = note if action == "answer" else ""
             return RedirectResponse(_flash_url(redirect_to, "something failed; see the log", note_to_keep), status_code=303)
+        if warning:
+            return RedirectResponse(_flash_url(redirect_to, str(warning)), status_code=303)
         return RedirectResponse(redirect_to, status_code=303)
