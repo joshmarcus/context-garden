@@ -8,7 +8,6 @@ loop runs in a background thread when `watch=True` (the `garden serve` default).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,7 @@ from ..plants import (
 from ..store import Store
 from . import actions, pages
 from .common import COLUMNS, LIST_ORDER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
+from .trust import OriginCheck, safe_json
 
 __all__ = ["Hub", "Site", "create_app", "render_md"]
 
@@ -39,11 +39,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
     scheduler the app builds will use (`garden qa` passes its pretend GitHub)."""
     app = FastAPI(title="context-garden")
+    # A POST from another site (a page open in the same browser) is refused; see web/trust.py.
+    app.add_middleware(OriginCheck, trusted_origins=[str(o) for o in (store.config.get("web.trusted_origins") or [])])
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["md"] = render_md
-    templates.env.filters["tojson"] = lambda v: Markup(json.dumps(v))
+    templates.env.filters["tojson"] = lambda v: Markup(safe_json(v))
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["list_order"] = LIST_ORDER
     templates.env.globals["statuses"] = STATUS_ORDER

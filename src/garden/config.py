@@ -77,6 +77,10 @@ DEFAULTS: dict[str, Any] = {
         "pass": [],               # extra environment variable names or globs a worker and its setup
                                   # command keep, on top of runner.base.PASS_ENV; everything else is dropped
     },
+    "web": {
+        "trusted_origins": [],    # origins besides the server's own host whose POSTs `garden serve`
+                                  # accepts, e.g. [https://garden.internal] behind a reverse proxy
+    },
     "products": {},
 }
 

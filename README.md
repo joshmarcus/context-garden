@@ -384,6 +384,9 @@ worker_env:
                             # settings and the harness's own ANTHROPIC_*/CLAUDE_*/OPENAI_*/CODEX_* variables;
                             # no GitHub token, cloud credentials or ssh agent. Add names or globs here,
                             # e.g. [AWS_*] for a Bedrock-backed harness; ["*"] passes everything
+web:
+  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is another site; list
+                            # extra origins here, e.g. [https://garden.internal], behind a proxy that rewrites Host
 harnesses:
   claude:
     bin: claude

@@ -23,6 +23,7 @@ from ..model import now_iso
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
+from .trust import sanitize_html
 
 TEMPLATES = Path(__file__).parent / "templates"
 PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
@@ -99,7 +100,9 @@ class Hub:
 
 
 def render_md(text: str) -> str:
-    return md.markdown(text, extensions=["fenced_code", "tables", "sane_lists"])
+    """Markdown to HTML, sanitised: much of what the pages render was written by an agent or
+    a PR commenter, and markdown passes raw HTML through (see web/trust.py)."""
+    return sanitize_html(md.markdown(text, extensions=["fenced_code", "tables", "sane_lists"]))
 
 
 def tier_rows(s: Store, tasks: dict[str, Any]) -> list[dict[str, Any]]:
