@@ -356,10 +356,13 @@ files under `tasks/` must not be hand-edited.
     stands — not rebased or pushed. A rebase that has to move the branch restarts its rollup, so
     the head goes **in flight** (`merge_head`, holding its `automerge_ready_at`): the queue does
     not pick another head while one is in flight, and it merges the head the moment the rollup
-    goes green. A head leaves the queue only on a conflict, a failed check, a changed diff that
-    needs a review, a closed PR or a human change request — the reason is logged and the
-    next-oldest candidate becomes head. So each PR is rebased at most once, right before it
-    merges, and a pending rollup never rotates the head.
+    goes green. The pre-merge checks run as a detached check run (CG-182), so the head is chosen
+    a tick before its `merge_head` marker is set (the reap sets it); while that check run is in
+    flight the queue treats the task as the head all the same and picks no other candidate, so
+    the one-head invariant holds across the detach window too. A head leaves the queue only on a
+    conflict, a failed check, a changed diff that needs a review, a closed PR or a human change
+    request — the reason is logged and the next-oldest candidate becomes head. So each PR is
+    rebased at most once, right before it merges, and a pending rollup never rotates the head.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is

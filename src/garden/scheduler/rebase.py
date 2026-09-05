@@ -168,6 +168,12 @@ class RebaseMixin:
         if head is not None:
             self._advance_merge_head(head, rep)
             return
+        if self._merge_head_pending():
+            # A pre-merge check dispatched for a would-be head is still in flight. Its
+            # `merge_head` marker is only set when that check reaps (`_after_merge_rebase_check`),
+            # so `_current_merge_head` cannot see it yet; picking a second candidate and rebasing
+            # it here would put two heads in flight, breaking the one-head invariant (CG-176).
+            return
         candidates: list[tuple[str, str, Task]] = []
         for t in self.store.tasks().values():
             if t.status != Status.IN_REVIEW:
@@ -182,6 +188,17 @@ class RebaseMixin:
             return
         candidates.sort(key=lambda c: (c[0], c[1]))
         self._merge_candidate(candidates[0][2], rep)
+
+    def _merge_head_pending(self) -> bool:
+        """Whether a pre-merge rebase's check run is in flight for a would-be head. Between the
+        tick that dispatches that detached check and the tick that reaps it, the task has no
+        `merge_head` marker (the reap sets it) yet is already the queue's chosen head, so the
+        queue must not pick another candidate meanwhile."""
+        for t in self.store.tasks().values():
+            info = self.state.get(t.id).get("check_run") or {}
+            if info.get("stage") == "merge_rebase" and (info.get("cont") or {}).get("merge_head"):
+                return True
+        return False
 
     def _current_merge_head(self) -> Task | None:
         """The task currently in flight (rebased, waiting for its rollup), or None. A stale marker

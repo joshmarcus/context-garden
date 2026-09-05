@@ -206,6 +206,70 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
 
+def test_in_flight_pre_merge_check_does_not_rebase_a_second_head(sched, fake_github, tmp_path, monkeypatch):
+    """CG-182 / CG-176: while the head's detached pre-merge check is in flight, the queue must
+    not pick a second candidate and rebase it — that would put two heads in flight. The
+    `merge_head` marker is only set when the check reaps, so between dispatch and reap the queue
+    keys off the in-flight check run itself. (The in-process runner normally finishes a check
+    within its tick, which is what masked this window; here the check is held open on purpose.)"""
+    from tests.inprocess import InProcessRunner
+
+    _independent_tasks(sched, 2)
+    sched.cfg.data["max_parallel"] = 2
+    sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
+
+    for _ in range(8):
+        sched.tick()
+        if all(sched.store.task(t).status == Status.IN_REVIEW for t in ("DM-001", "DM-002")):
+            break
+    b1, b2 = sched.store.task("DM-001").branch, sched.store.task("DM-002").branch
+    _advance_main(tmp_path, "moved")  # both behind: the head needs a rebase + pre-merge check
+    _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")  # older -> head
+    _approve(sched, fake_github, "DM-002", b2, "2026-09-05T03:05:00+00:00")
+    sched.state.save()
+
+    # Hold the pre-merge check open across ticks: run it but drop the completion signal, so reap
+    # leaves the check running (what a real slow suite does; the in-process runner would finish
+    # it within the same tick).
+    orig = InProcessRunner.start_checks
+
+    def start_but_dont_finish(self, run, worktree, payload):
+        orig(self, run, worktree, payload)
+        (run.path / "exit_code").unlink(missing_ok=True)
+
+    monkeypatch.setattr(InProcessRunner, "start_checks", start_but_dont_finish)
+
+    # the queue picks DM-001 (older), rebases it and starts its pre-merge check (now in flight).
+    rep = sched.tick()
+    assert "DM-001(check:merge_rebase)" in rep.dispatched
+    assert sched.state.get("DM-001").get("check_run", {}).get("stage") == "merge_rebase"
+    assert not sched.state.get("DM-001").get("merge_head")  # not set until the check reaps
+
+    # while that check is in flight, no tick may rebase DM-002 or make it a head.
+    for _ in range(3):
+        sched.tick()
+        assert not [r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]
+        assert not sched.state.get("DM-002").get("merge_head")
+        assert not sched.state.get("DM-002").get("check_run")
+        assert fake_github.merged == []
+
+    # let the head's check finish: DM-001 is held, merges, then DM-002 takes its turn — each
+    # rebased exactly once.
+    monkeypatch.setattr(InProcessRunner, "start_checks", orig)
+    info = sched.state.get("DM-001").get("check_run") or {}
+    run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == info["run_id"])
+    (run.path / "exit_code").write_text("0\n")
+    for _ in range(10):
+        sched.tick()
+        if sched.store.task("DM-002").status == Status.DONE:
+            break
+    assert sched.store.task("DM-001").status == Status.DONE
+    assert sched.store.task("DM-002").status == Status.DONE
+    assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
+    assert len([r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]) == 1
+
+
 # ---- metrics ----------------------------------------------------------------
 def test_metrics_reports_rebases_per_merge_and_cost(sched, fake_github, tmp_path):
     events = [
