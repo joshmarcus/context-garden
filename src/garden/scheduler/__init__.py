@@ -286,6 +286,14 @@ class Scheduler(
                 except Exception as e:  # noqa: BLE001
                     rep.errors.append(f"{t.id}: poll failed: {e}")
                     self.log(f"{t.id}: poll failed: {e}")
+        for t in list(tasks.values()):
+            # A task parked because its base branch was broken re-probes the base and continues
+            # on its own once it goes green — a mechanical rebase and re-check, no worker.
+            try:
+                self._reprobe_base_broken(t, rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"{t.id}: base re-probe failed: {e}")
+                self.log(f"{t.id}: base re-probe failed: {e}")
         try:
             self._run_merge_queue(rep)
         except Exception as e:  # noqa: BLE001

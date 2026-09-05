@@ -169,6 +169,57 @@ def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
     assert any(c["group"] == "attention" for c in cards)
 
 
+def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_github):
+    """CG-170: a task parked with the base_broken stop re-probes its base every tick and, the
+    moment the base branch goes green, rebases mechanically and re-runs the checks by itself —
+    the PR opens with no worker run dispatched, no person, and no revise round spent."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    _seed_base_guard(sched, "bad")  # red base the branch is cut from
+
+    sched.tick()  # dispatch DM-001 from the red base (the in-process worker finishes here)
+    sched.tick()  # reap: guard fails on the branch and at the unmoved base -> parked base_broken
+    assert statuses(sched)["DM-001"] == "changes_requested"
+    info = sched.state.get("DM-001").get("needs_human")
+    assert isinstance(info, dict) and info["kind"] == "base_broken"
+    runs_before = len(sched.runs.runs_for("DM-001"))
+
+    _seed_base_guard(sched, "ok")  # the base branch is fixed and goes green
+    rep = sched.tick()  # re-probe: base moved + green -> rebase, re-check, open PR, no worker
+
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert not sched.state.get("DM-001").get("needs_human")  # the stop is cleared
+    assert not any("DM-001" in d for d in rep.dispatched)  # no worker run was dispatched
+    assert len(fake_github.created) == 1  # the PR is open
+    assert sched.state.get("DM-001").get("revisions", 0) == 0  # no revise round spent
+    # the only run added is the no-cost mechanical rebase, not a worker run
+    added = sched.runs.runs_for("DM-001")[runs_before:]
+    assert [r.mode for r in added] == ["rebase"] and added[0].cost_usd == 0.0
+    # the rebased branch picked up the now-green base file
+    wt = sched.worktree_for(sched.store.task("DM-001"))
+    assert (wt / "sentinel.txt").read_text().strip() == "ok"
+    # a rebased_stale_base event records the automatic continuation
+    assert any(e.get("resolved") for e in sched.events.read(task_id="DM-001", kinds=["rebased_stale_base"]))
+
+
+def test_base_broken_task_stays_parked_while_base_stays_red(sched, fake_github):
+    """CG-170: while the base has not moved, the parked task re-probes cheaply and waits — no
+    rebase run, no worker, no spend — until the base actually changes."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    _seed_base_guard(sched, "bad")
+
+    sched.tick()
+    sched.tick()  # parked base_broken
+    runs_before = len(sched.runs.runs_for("DM-001"))
+
+    rep = sched.tick()  # base unchanged: the re-probe waits
+    assert statuses(sched)["DM-001"] == "changes_requested"
+    assert sched.state.get("DM-001").get("needs_human", {}).get("kind") == "base_broken"
+    assert not any("DM-001" in d for d in rep.dispatched)
+    assert len(sched.runs.runs_for("DM-001")) == runs_before  # no rebase run created while waiting
+
+
 def test_crash_retries_then_fails(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
     sched.tick()

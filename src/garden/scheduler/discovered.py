@@ -69,11 +69,13 @@ class DiscoveredMixin:
         return created
 
     # ---- needs-human stops -------------------------------------------------
-    def _set_needs_human(self, task: Task, kind: str, reason: str) -> None:
+    def _set_needs_human(self, task: Task, kind: str, reason: str, **extra: Any) -> None:
         """Record a structured stop: which decision is being asked (kind), why, and where
-        the task stood when the loop stopped — so resume_task can put it back."""
+        the task stood when the loop stopped — so resume_task can put it back. `extra` carries
+        stop-specific fields (e.g. the base branch and its probed tip for a `base_broken` stop,
+        so a later tick can tell when the base has moved and continue on its own)."""
         self.state.get(task.id)["needs_human"] = {
-            "kind": kind, "reason": reason, "prior_status": task.status.value, "at": now_iso()}
+            "kind": kind, "reason": reason, "prior_status": task.status.value, "at": now_iso(), **extra}
 
     # ---- decisions (discovered work that is a choice, not a task) -----------
     def _record_decision(self, task: Task, run: Run, kind: str, item: dict[str, Any]) -> None:
