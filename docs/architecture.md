@@ -311,7 +311,10 @@ files under `tasks/` must not be hand-edited.
 - **Draft first.** With `github.draft_pr` (default on) every PR opens as a draft and the
   task waits in `awaiting_triage` for the human's first look, while the automated review
   and any configured personas run against it. Triage marks it ready (on GitHub too) or
-  sends it back with a note that becomes the next revise brief.
+  sends it back with a note that becomes the next revise brief. When a review round is
+  still coming, the triage notification (see `notify.command` below) waits for that
+  verdict instead of firing the moment the draft opens, so the ping arrives with the
+  review's read on the PR already attached.
 - **Stacking.** A task whose one unfinished dependency has an open PR starts from that
   branch, its PR targets that branch, and `state.json` records `stack_parent` and
   `pr_base`. When the parent merges, the child's PR is retargeted to the product base and
@@ -438,6 +441,20 @@ host list without touching the shared file. Per-product blocks under `products:`
 Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
 Hitting a cap flags the task for a human instead of retrying.
+
+**`notify.command`** (`src/garden/notify.py`) is a shell command the scheduler runs
+whenever a task needs a human: `awaiting_triage` (once a pending review's verdict is
+known — see "Draft first" above), `waiting_human`, `failed`, `changes_requested` past
+`max_revisions`, plus `stalled`, `needs_human` and `budget` events. It gets the task in
+environment variables — `GARDEN_TASK_ID`, `GARDEN_STATUS`, `GARDEN_MESSAGE`, `GARDEN_PR`
+— and `notify.timeout_seconds` (default 30) bounds how long it may run. It is empty by
+default (no notifications); see `notify:` in `examples/garden.work.yaml` for a working
+example to copy. `garden doctor` runs the configured command for real, with a synthetic
+`GARDEN_TASK_ID=DOCTOR-TEST` payload, and reports whether it exited zero — a broken
+command (typo, missing binary, unreachable webhook) is caught there rather than the first
+time a task actually needs a human. At runtime, a command that exits non-zero, times out
+or fails to start does not stop the scheduler, but is logged as a warning (logger
+`garden.notify`) instead of failing silently.
 
 ## Extension points
 

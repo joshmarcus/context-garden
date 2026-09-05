@@ -33,6 +33,18 @@ harnesses:
   claude:
     models: {easy: haiku, medium: sonnet, hard: sonnet}   # cheaper tier map for work
 
+# Runs whenever a task needs you: awaiting_triage (after its review verdict is in),
+# waiting_human, failed, a changes_requested past max_revisions, or a stall/budget event.
+# Gets GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR as environment variables.
+# `garden doctor` runs this for real with a synthetic payload, so a typo or a dead webhook
+# shows up there instead of the first time a task actually needs you.
+notify:
+  command: >-
+    curl -sS -X POST -H 'Content-type: application/json'
+    --data "{\"text\": \"[$GARDEN_STATUS] $GARDEN_TASK_ID: $GARDEN_MESSAGE $GARDEN_PR\"}"
+    "$SLACK_WEBHOOK_URL"
+  timeout_seconds: 15
+
 # How each product prepares its working environment. The runner runs `setup.command` once in
 # a fresh worktree (again only when the command changes), with `setup.env` added; `test`/`lint`
 # name the commands the brief gives the worker and the commands `checks.pre_pr` runs by default.
