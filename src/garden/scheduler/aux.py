@@ -60,6 +60,8 @@ class AuxMixin:
                     self._finish_trial(entry, run, final, rep)
                 elif entry["kind"] == "persona":
                     self._finish_persona(entry, run, final, rep)
+                elif entry["kind"] == "kickoff":
+                    self._finish_kickoff(entry, run, final, rep)
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{entry['task']}: {entry['kind']} failed: {e}")
         self.state.get("_aux")["runs"] = remaining
