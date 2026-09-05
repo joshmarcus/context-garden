@@ -682,24 +682,137 @@ class Scheduler:
             specs = [{**s, "env": {**env, **(s.get("env") or {})}} for s in specs]
         return specs
 
-    def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
-        specs = self._pre_pr_specs(task)
+    def _run_specs_in(self, task: Task, specs: list[dict[str, Any]], worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
+        """Prepare `worktree`'s environment, then run `specs` there. For a local run setup
+        already ran in the branch worktree (the marker short-circuits it); for a remote run
+        the branch was just materialised into a fresh local worktree, and a base probe checks
+        out a throwaway worktree, so its setup artifacts (e.g. node_modules) are absent — run
+        setup now so the default test/lint checks find the same prepared env."""
         if not specs or not worktree.exists():
             return []
-        # Prepare this worktree's environment before the checks run. For a local run setup
-        # already ran here (the marker short-circuits it); for a remote run the branch was just
-        # materialised into a fresh local worktree, so its setup artifacts (e.g. node_modules)
-        # are absent — run setup now so the default test/lint checks find the same prepared env.
         setup = self.cfg.product_setup(task.product)
         try:
             run_setup(worktree, setup, log_path=worktree.parent / f".garden-setup-{worktree.name}.log")
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
-        results = run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
-                             timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+        return run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
+                          timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+
+    def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
+        results = self._run_specs_in(task, self._pre_pr_specs(task), worktree, branch, base)
         for r in results:
             self.events.emit("check", task.id, stage="pre_pr", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
         return results
+
+    def _probe_checks_at_base(self, task: Task, worktree: Path, branch: str, base: str,
+                              failed: list[dict[str, Any]]) -> tuple[str, bool, list[dict[str, Any]]]:
+        """Run the failed pre-PR checks at the branch's base commit (its merge base with `base`),
+        in a throwaway detached worktree. Returns (base_sha, moved, base_failures): `moved` is
+        True when the base branch's tip has advanced past that commit since the branch was cut,
+        and `base_failures` is the subset of `failed` checks that also fail at the base — empty
+        when every failure is the branch's own doing."""
+        repo = self.repo_for(task)
+        gitops.fetch(worktree)
+        ref = gitops.base_ref(worktree, base)
+        base_sha = gitops.merge_base(worktree, ref)
+        moved = bool(base_sha) and gitops.rev_parse(worktree, ref) != base_sha
+        names = {str(f.get("name")) for f in failed}
+        specs = [s for s in self._pre_pr_specs(task) if str(s.get("name")) in names]
+        probe = worktree.parent / f"{worktree.name}.base-probe"
+        gitops.remove_worktree(repo, probe)
+        try:
+            gitops.add_detached_worktree(repo, probe, base_sha)
+            results = self._run_specs_in(task, specs, probe, branch, base)
+        finally:
+            gitops.remove_worktree(repo, probe)
+        for r in results:
+            self.events.emit("check", task.id, stage="base_probe", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+        return base_sha, moved, check_failures(results)
+
+    def _handle_failed_checks(self, task: Task, run: Run, worktree: Path, branch: str, base: str,
+                              failed: list[dict[str, Any]], rep: TickReport, cost: str) -> str:
+        """Route a pre-PR check failure. Probe the branch's base first: if the same check fails
+        at the merge base too, the failure is not this branch's. A base that has moved is rebased
+        and the checks re-run without a worker (return "pass" if they go green); a base that has
+        not moved means the base branch itself is broken — the task parks on a card, no revise
+        round, no spend. Only a failure the branch actually owns starts a revise round. Returns
+        "pass" when the checks now pass and the caller should open the PR, else "done"."""
+        try:
+            base_sha, moved, base_failures = self._probe_checks_at_base(task, worktree, branch, base, failed)
+        except gitops.GitError as e:
+            self.log(f"{task.id}: base probe failed ({e}); treating the failure as this branch's")
+            base_failures = []
+        if base_failures:
+            names = ", ".join(str(f.get("name")) for f in base_failures)
+            self.events.emit("check_base", task.id, base=base_sha, checks=names, moved=moved)
+            self.log(f"{task.id}: pre-PR check(s) {names} fail at base {base_sha[:12]}; not this branch")
+            if moved:
+                try:
+                    ok, _ = gitops.rebase_onto(worktree, gitops.base_ref(worktree, base))
+                except gitops.GitError:
+                    ok = False
+                if ok:
+                    try:
+                        gitops.push(worktree, branch, force=True)
+                    except gitops.GitError as e:
+                        self.log(f"{task.id}: push after base rebase failed: {e}")
+                    rerun = check_failures(self._pre_pr_checks(task, worktree, branch, base))
+                    if not rerun:
+                        task.log(f"pre-PR check(s) {names} failed at the stale base {base_sha[:12]}; the base branch "
+                                 f"`{base}` had moved, so rebased onto it and the checks pass now — no revise round")
+                        self.store.save(task)
+                        self.events.emit("rebased_stale_base", task.id, base=base, base_sha=base_sha, resolved=True)
+                        rep.transitions.append(f"{task.id} rebased onto moved {base}; checks green")
+                        return "pass"
+                    self.events.emit("rebased_stale_base", task.id, base=base, base_sha=base_sha, resolved=False)
+                    self._start_check_revise(task, rerun, rep, cost, note=f" (still failing after a rebase onto `{base}`)")
+                    return "done"
+                # the rebase didn't apply cleanly; let a revise round resolve it
+                self._start_check_revise(task, failed, rep, cost)
+                return "done"
+            # the base branch has not moved: it is itself broken. Park the task; no revise, no spend.
+            reason = (f"base branch `{base}` is itself broken — pre-PR check(s) {names} fail at its own commit "
+                      f"{base_sha[:12]}, not because of this branch")
+            self._set_needs_human(task, "base_broken", reason)
+            self.events.emit("needs_human", task.id, stop_kind="base_broken", reason=reason)
+            self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; waiting for the base to go green, no revise round{cost}", needs_human=True)
+            rep.transitions.append(f"{task.id} -> changes_requested (base broken)")
+            return "done"
+        # the base is clean: this branch owns the failure.
+        self._start_check_revise(task, failed, rep, cost)
+        return "done"
+
+    def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "") -> None:
+        """Queue a revise round (or hand off to a human at the cap) for a pre-PR check the branch
+        actually owns. Mirrors the historic inline behaviour of `_after_push`."""
+        st = self.state.get(task.id)
+        names = ", ".join(str(f.get("name")) for f in failed)
+        feedback = to_feedback(failed, "pre-PR check")
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        if not feedback.strip():
+            # A killed or empty check leaves nothing to revise against; storing it as
+            # empty feedback would make dispatch skip the task forever. Flag it instead.
+            reason = f"pre-PR check did not finish ({names}); no output to revise against"
+            st["needs_human"] = reason
+            self.events.emit("needs_human", task.id, reason=reason)
+            self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
+            rep.transitions.append(f"{task.id} -> changes_requested (check did not finish)")
+            return
+        st["pending_feedback"] = feedback
+        if int(st.get("revisions", 0)) >= max_rev:
+            # Cap reached: hand it to a human like the review path, rather than leaving a
+            # task in changes_requested that the dispatch queue skips forever.
+            reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"
+            st["needs_human"] = reason
+            self.events.emit("needs_human", task.id, reason=reason)
+            self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
+            rep.transitions.append(f"{task.id} -> changes_requested (checks, cap)")
+            return
+        if task.pr:
+            self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}){note}; revise run will fix before the PR is updated{cost}")
+        else:
+            self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}){note}; no PR opened yet; revise run will fix{cost}")
+        rep.transitions.append(f"{task.id} -> changes_requested (checks)")
 
     def _after_push(self, task: Task, run: Run, worktree: Path, branch: str, base: str, result: dict[str, Any],
                     rep: TickReport, cost: str, check_stall: bool = True) -> None:
@@ -725,34 +838,11 @@ class Scheduler:
                     stalled = True
         failed = check_failures(self._pre_pr_checks(task, worktree, branch, base))
         if failed and not stalled:
-            names = ", ".join(str(f.get("name")) for f in failed)
-            feedback = to_feedback(failed, "pre-PR check")
-            max_rev = int(self.cfg.get("max_revisions", 3))
-            if not feedback.strip():
-                # A killed or empty check leaves nothing to revise against; storing it as
-                # empty feedback would make dispatch skip the task forever. Flag it instead.
-                reason = f"pre-PR check did not finish ({names}); no output to revise against"
-                st["needs_human"] = reason
-                self.events.emit("needs_human", task.id, reason=reason)
-                self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
-                rep.transitions.append(f"{task.id} -> changes_requested (check did not finish)")
+            # A failing check may be the branch's fault, or a stale/broken base. Probe the base
+            # before spending a revise round; only "pass" (rebased onto a moved base, now green)
+            # falls through to open the PR.
+            if self._handle_failed_checks(task, run, worktree, branch, base, failed, rep, cost) != "pass":
                 return
-            st["pending_feedback"] = feedback
-            if int(st.get("revisions", 0)) >= max_rev:
-                # Cap reached: hand it to a human like the review path, rather than leaving a
-                # task in changes_requested that the dispatch queue skips forever.
-                reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"
-                st["needs_human"] = reason
-                self.events.emit("needs_human", task.id, reason=reason)
-                self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
-                rep.transitions.append(f"{task.id} -> changes_requested (checks, cap)")
-                return
-            if task.pr:
-                self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); revise run will fix before the PR is updated{cost}")
-            else:
-                self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}); no PR opened yet; revise run will fix{cost}")
-            rep.transitions.append(f"{task.id} -> changes_requested (checks)")
-            return
         # Save hashes only after the round reaches the PR; failed pre-PR rounds are not recorded.
         if diff_h is not None:
             st["last_diff_hash"] = diff_h
