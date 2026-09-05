@@ -95,6 +95,17 @@ def test_append_goal_gaps_creates_and_dedupes_open_section(garden):
     assert text.count("**ship it**") == (ph.goals_path.read_text()).count("**ship it**")
 
 
+def test_file_kickoff_doc_is_a_note_only_when_no_task_cites_it(sched):
+    """A docs gap with no task referencing it yet is trivial: the report is the record, no
+    draft task is filed (CG-224's "a draft in the phase or a note in the report if trivial")."""
+    ph = sched.store.phase("demo", "p1")
+    before = len(sched.store.tasks())
+    filed = sched._file_kickoff_doc(ph, {"path": "docs/x.md", "issue": "stale"})
+    assert filed == {"path": "docs/x.md", "issue": "stale", "task_id": ""}
+    sched.store.invalidate()
+    assert len(sched.store.tasks()) == before
+
+
 # --------------------------------------------------------------------------- end to end
 def test_kickoff_dispatch_and_reap_files_everything(sched, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
