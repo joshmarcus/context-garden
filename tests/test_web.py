@@ -60,8 +60,11 @@ def test_actions(garden):
     r = c.post("/tasks/DM-002/cancel", follow_redirects=False)
     assert r.status_code == 303
     assert "cancelled" in c.get("/tasks/DM-002").text
-    c.post("/tasks/DM-002/retry")
-    assert "blocked" in c.get("/tasks/DM-002").text
+    # CG-142: cancelled is terminal, so a stale retry click is refused, not reopened
+    r = c.post("/tasks/DM-002/retry", follow_redirects=False)
+    assert r.status_code == 303
+    assert "DM-002 is cancelled" in c.get(r.headers["location"]).text
+    assert "cancelled" in c.get("/tasks/DM-002").text
     c.post("/tasks/DM-001/unapprove")
     assert "draft" in c.get("/api/tasks").json()[0]["status"]
     c.post("/phases/demo/p1/approve-all")
@@ -129,6 +132,34 @@ def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
     assert not st.get("needs_human")  # the stop is cleared, not left dangling
     assert st["review_rounds"] == 2  # rolled back one by the bypass, then re-incremented on dispatch
     assert st.get("review_run")
+
+
+def test_task_actions_refuse_a_merged_done_task(garden, monkeypatch):
+    """CG-142: automerge marks a task `done`; a stale page's triage-ready/review click that
+    lands afterward must be refused, named with the state and reason, not silently reopen the
+    task or dispatch a review for a PR that already merged."""
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    task.status = Status.AWAITING_TRIAGE
+    sched.store.save(task)
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    sched._transition(task, Status.DONE, f"PR merged: {task.pr}")
+
+    c = client(garden)
+    for action in ("triage-ready", "review", "retry", "dispatch"):
+        r = c.post(f"/tasks/DM-001/{action}", follow_redirects=False)
+        assert r.status_code == 303, action
+        page = c.get(r.headers["location"]).text
+        assert "DM-001 is done: #71 was merged" in page, (action, page)
+
+    assert Store(garden).task("DM-001").status == Status.DONE  # never moved back into the loop
+    assert not sched.runs.runs_for("DM-001")  # no review or work run was dispatched
 
 
 def test_scheduler_errors_flash_a_message_instead_of_500(garden):
