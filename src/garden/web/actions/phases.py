@@ -38,6 +38,7 @@ def register(app: FastAPI, site: Site) -> None:
         back = f"/phases/{product}/{phase}"
         try:
             refusal = ""
+            warning = ""
             with hub.action_lock:
                 sched = hub.scheduler()
                 try:
@@ -47,11 +48,13 @@ def register(app: FastAPI, site: Site) -> None:
                 for t in list(sched.store.tasks().values()):
                     if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
                         try:
-                            sched.approve(t, by="web", phase=ph)
+                            warning = sched.approve(t, by="web", phase=ph) or warning
                         except RuntimeError as e:
                             refusal = str(e)
             if refusal:
                 return RedirectResponse(_flash_url(back, refusal), status_code=303)
+            if warning:
+                return RedirectResponse(_flash_url(back, warning), status_code=303)
         except HTTPException:
             raise
         except (RuntimeError, GitError, GitHubError) as e:
@@ -126,6 +129,28 @@ def register(app: FastAPI, site: Site) -> None:
             hub._log(f"persona review {product}/{phase} failed: unexpected error, see the log")
             return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
+
+    @app.post("/phases/{product}/{phase}/kickoff")
+    def kickoff_phase(product: str, phase: str):
+        s = hub.fresh()
+        back = f"/phases/{product}/{phase}"
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        try:
+            with hub.action_lock:
+                sched = hub.scheduler()
+                sched.start_kickoff(ph)
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"kickoff {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("kickoff %s/%s failed", product, phase)
+            hub._log(f"kickoff {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(_flash_url(back, "kickoff review started; `garden tick` writes the report"), status_code=303)
 
     @app.post("/phases/{product}/{phase}/plan")
     def plan_phase(product: str, phase: str, background: BackgroundTasks, guidance: str = Form("")):

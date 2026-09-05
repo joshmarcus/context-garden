@@ -58,12 +58,14 @@ def approve(
     refused = False
     for t in targets:
         try:
-            sched.approve(t, by="cli", phase=phases.get(t.key))
+            warning = sched.approve(t, by="cli", phase=phases.get(t.key))
         except RuntimeError as e:
             err.print(f"[yellow]{e}[/yellow]")
             refused = True
             continue
         console.print(f"{t.id} -> ready")
+        if warning:
+            err.print(f"[yellow]{warning}[/yellow]")
     if refused:
         raise typer.Exit(1) from None
 
@@ -198,19 +200,30 @@ def decide(
     decision_id: str,
     accept: bool = typer.Option(False, "--accept", help="Cancel the named task"),
     reject: bool = typer.Option(False, "--reject", help="Dismiss the card; log the disagreement"),
+    answer: str | None = typer.Option(None, "--answer", help="Answer a kickoff question card"),
+    dismiss: bool = typer.Option(False, "--dismiss", help="Dismiss a kickoff question card without answering"),
 ):
-    """Resolve a worker's decision card (a duplicate/cancel discovery)."""
-    if accept == reject:
-        err.print("[red]choose exactly one of --accept / --reject[/red]")
+    """Resolve a worker's decision card (a duplicate/cancel discovery), or a kickoff question
+    (--answer/--dismiss)."""
+    if sum([accept, reject, answer is not None, dismiss]) != 1:
+        err.print("[red]choose exactly one of --accept / --reject / --answer / --dismiss[/red]")
         raise typer.Exit(1) from None
     store = _store()
+    sched = _scheduler(store)
     try:
-        d = _scheduler(store).resolve_decision(decision_id, accept=accept)
+        if answer is not None:
+            sched.answer_kickoff_question(decision_id, answer)
+            console.print(f"decision {decision_id} answered")
+        elif dismiss:
+            sched.dismiss_kickoff_question(decision_id)
+            console.print(f"decision {decision_id} dismissed")
+        else:
+            d = sched.resolve_decision(decision_id, accept=accept)
+            verb = "accepted" if accept else "rejected"
+            console.print(f"decision {decision_id} {verb} (target {d.get('target', '')})")
     except KeyError:
         err.print(f"[red]no pending decision {decision_id!r}[/red]")
         raise typer.Exit(1) from None
-    verb = "accepted" if accept else "rejected"
-    console.print(f"decision {decision_id} {verb} (target {d.get('target', '')})")
 
 
 @app.command("commit", rich_help_panel=PANEL_LOOP)

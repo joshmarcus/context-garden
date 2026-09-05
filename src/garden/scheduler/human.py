@@ -26,14 +26,16 @@ from .state import _TaskState
 
 class HumanMixin:
     # ---- approving a draft --------------------------------------------------
-    def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> None:
+    def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
         task that is not a draft, a closed or frozen phase without a freeze exception
         (`phase_refusal`), and a brief that would cost a run without being ready to work —
         placeholder acceptance criteria or a reading-list path that names no file
         (`brief_gaps`) — then logs and saves. `by` names the surface ("cli"/"web"/"tui"),
         recorded in the log line. Raises RuntimeError on a refusal so each surface reports it in
-        its own idiom (a skipped line, a flash, a status message)."""
+        its own idiom (a skipped line, a flash, a status message). Returns a warning (never a
+        refusal) when this is the phase's first task approved and the phase has no kickoff
+        report (CG-224) — the phase is otherwise left free to start."""
         if task.status != Status.DRAFT:
             raise RuntimeError(f"{task.id} is {task.status.value}, not draft; nothing to approve")
         if phase is not None:
@@ -45,9 +47,20 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id} has an incomplete brief; fix it before approving: " + "; ".join(gaps)
             )
+        warning = ""
+        if phase is not None and self._is_phase_start(phase, task) and not self.has_kickoff(phase):
+            warning = f"{phase.key} has no kickoff report; run `garden kickoff {phase.key}` before starting work"
         task.status = Status.READY
         task.log(f"approved ({by})" if by else "approved")
+        if warning:
+            task.log(f"no kickoff report for {phase.key}")
         self.store.save(task)
+        return warning
+
+    def _is_phase_start(self, phase: Phase, task: Task) -> bool:
+        """True when no other task in `phase` has ever left draft: approving `task` would be
+        the phase's first task moving into the loop."""
+        return not any(t.status != Status.DRAFT for t in phase.tasks if t.id != task.id)
 
     # ---- human answers -----------------------------------------------------
     def answer(self, task: Task, text: str) -> Run:
