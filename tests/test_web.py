@@ -929,6 +929,24 @@ def test_scanned_plates_replace_the_drawing_when_present(garden, tmp_path):
     assert 'src="/static/plates/pea-thumb.webp"' in c.get("/").text
 
 
+def test_specimen_label_names_the_plates_own_species_when_it_differs(garden, tmp_path):
+    # The bramble plant is the R. fruticosus aggregate, but its actual plate is Thomé's Tafel
+    # 398, Rubus thyrsoideus — the label names the plate's own species alongside the plant's.
+    (garden / "demo" / "p2").mkdir()
+    (garden / "demo" / "p2" / "goals.md").write_text("---\nplant: bramble\nplate: II\n---\n# p2\n\nGoals.\n")
+    (garden / "demo" / "p2" / "tasks").mkdir()
+    plates = tmp_path / "plates"
+    c = TestClient(create_app(Store(garden), watch=False, plates_dir=plates))
+    (plates / "bramble.webp").write_bytes(b"RIFF....WEBP")
+    html = c.get("/phases/demo/p2").text
+    assert "plate: Thomé, Flora von Deutschland, 1885, Tafel 398, Rubus thyrsoideus" in html
+    # a plant whose plate matches its own species names nothing extra
+    (plates / "pea.webp").write_bytes(b"RIFF....WEBP")
+    html = c.get("/phases/demo/p1").text
+    assert html.count("plate: Thomé, Flora von Deutschland, 1885") == 1
+    assert "Tafel" not in html
+
+
 def test_friction_report_web(garden):
     c = client(garden)
     r = c.post(

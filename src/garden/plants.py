@@ -15,10 +15,11 @@ from typing import Any
 # wraps around (the plate number still distinguishes them).
 PLANTS: list[dict[str, str]] = [
     {"key": "pea", "latin": "Pisum sativum", "common": "garden pea", "note": "a climber: it needs the trellis it is given"},
-    {"key": "bramble", "latin": "Rubus fruticosus", "common": "bramble", "note": "thorns first, fruit after"},
+    {"key": "bramble", "latin": "Rubus fruticosus agg.", "common": "bramble", "note": "thorns first, fruit after",
+     "plate_note": "Tafel 398, Rubus thyrsoideus"},
     {"key": "foxglove", "latin": "Digitalis purpurea", "common": "foxglove", "note": "tall, and every bell in its turn"},
     {"key": "fern", "latin": "Dryopteris filix-mas", "common": "male fern", "note": "unfurls one frond at a time"},
-    {"key": "poppy", "latin": "Papaver rhoeas", "common": "corn poppy", "note": "short-lived flower, long-lived seed"},
+    {"key": "poppy", "latin": "Papaver argemone", "common": "prickly poppy", "note": "short-lived flower, long-lived seed"},
     {"key": "peony", "latin": "Paeonia mascula", "common": "peony", "note": "big first, before anything else opens"},
     {"key": "quince", "latin": "Cydonia oblonga", "common": "quince", "note": "blossoms early, fruit takes all season"},
     {"key": "orchid", "latin": "Cypripedium calceolus", "common": "lady's slipper orchid", "note": "one pouch, waiting for the right bee"},

@@ -3,7 +3,7 @@
 import pytest
 
 from garden.plants import PLANTS
-from garden.platefetch import CANDIDATES, pick_file, prepare, sources_markdown
+from garden.platefetch import CANDIDATES, _editor, pick_file, prepare, sources_markdown
 
 
 def test_every_plant_has_commons_candidates_and_a_file_is_chosen_sensibly():
@@ -20,23 +20,44 @@ def test_every_plant_has_commons_candidates_and_a_file_is_chosen_sensibly():
 
 def test_sources_markdown_lists_each_plate():
     md = sources_markdown([{"key": "pea", "latin": "Pisum sativum", "title": "Illustration_Pisum_sativum0_clean.jpg",
-                            "url": "https://commons.wikimedia.org/wiki/File:x", "artist": "Otto Wilhelm Thomé", "license": "Public domain", "bytes": 150000}])
-    assert "| pea | *Pisum sativum* | [Illustration_Pisum_sativum0_clean.jpg](https://commons.wikimedia.org/wiki/File:x) | Otto Wilhelm Thomé | Public domain | 146 KB |" in md
+                            "url": "https://commons.wikimedia.org/wiki/File:x", "illustrator": "Otto Wilhelm Thomé",
+                            "source": "Wikimedia Commons", "editor": "User:Kilom691", "license": "Public domain", "bytes": 150000}])
+    assert ("| pea | *Pisum sativum* | [Illustration_Pisum_sativum0_clean.jpg](https://commons.wikimedia.org/wiki/File:x) | "
+            "Otto Wilhelm Thomé | Wikimedia Commons | User:Kilom691 | Public domain | 146 KB |") in md
     assert "1885" in md
 
 
-def test_sources_markdown_collapses_a_multiline_artist_credit():
-    # Commons attributes some derivative files (e.g. the snapdragon plate) with a multi-line
-    # credit; a raw newline in a cell would split the row and break the rest of the table.
+def test_sources_markdown_marks_a_plate_with_no_credited_editor():
+    md = sources_markdown([{"key": "bramble", "latin": "Rubus fruticosus agg.", "title": "Illustration_Rubus_candidans0.jpg",
+                            "url": "https://commons.wikimedia.org/wiki/File:x", "illustrator": "Otto Wilhelm Thomé",
+                            "source": "Wikimedia Commons", "editor": "", "license": "Public domain", "bytes": 96000}])
+    assert "| Otto Wilhelm Thomé | Wikimedia Commons | — | Public domain | 93 KB |" in md
+
+
+def test_sources_markdown_collapses_a_multiline_credit():
+    # Commons attributes some files with a multi-line credit; a raw newline in a cell would
+    # split the row and break the rest of the table.
     md = sources_markdown([{"key": "snapdragon", "latin": "Antirrhinum majus", "title": "Illustration_Antirrhinum_majus_clean.jpg",
-                            "url": "https://commons.wikimedia.org/wiki/File:x",
-                            "artist": "Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé\nderivative work: Aroche (talk)",
+                            "url": "https://commons.wikimedia.org/wiki/File:x", "illustrator": "Otto Wilhelm Thomé",
+                            "source": "Wikimedia Commons",
+                            "editor": "Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé\nderivative work: Aroche (talk)",
                             "license": "Public domain", "bytes": 62000}])
     rows = [line for line in md.splitlines() if line.startswith("|")]
     assert len(rows) == 3  # header, separator, one data row for the one plate
     assert rows[-1] == ("| snapdragon | *Antirrhinum majus* | [Illustration_Antirrhinum_majus_clean.jpg]"
-                         "(https://commons.wikimedia.org/wiki/File:x) | Illustration_Antirrhinum_majus0.jpg: "
-                         "Prof. Dr. Otto Wilhelm Thomé derivative work: Aroche (talk) | Public domain | 60 KB |")
+                         "(https://commons.wikimedia.org/wiki/File:x) | Otto Wilhelm Thomé | Wikimedia Commons | "
+                         "Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé derivative work: Aroche (talk) "
+                         "| Public domain | 60 KB |")
+
+
+def test_editor_is_verified_from_the_files_own_artist_field_not_assumed():
+    # A plain Thomé credit names no separate editor, even on a "_clean"/"_white" file, unless
+    # the file's own Artist field actually names someone else.
+    assert _editor("") == ""
+    assert _editor("Prof. Dr. Otto Wilhelm Thomé") == ""
+    assert _editor("Migula, Walter; Thomé, Otto W.") == ""  # the fern: no cleaned derivative involved
+    assert _editor("User:Kilom691") == "User:Kilom691"
+    assert _editor("Illustration_Antirrhinum_majus0.jpg: Prof. Dr. Otto Wilhelm Thomé\nderivative work: Aroche (talk)") == "Aroche"
 
 
 def test_prepare_crops_margins_and_makes_a_thumbnail():

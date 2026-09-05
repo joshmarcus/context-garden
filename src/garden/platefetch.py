@@ -30,10 +30,16 @@ YEAR = "1885"
 
 # Commons names Thomé's plates "Illustration <Genus> <species>0.jpg" (and "... clean.jpg" for
 # the background-removed version). Three plants have no plate under their own name: Thomé drew
-# no corn poppy, so the poppy is his prickly poppy (Tafel 260); the bramble is his Tafel 398,
-# Rubus thyrsoideus Wimm. of the R. fruticosus aggregate, filed under a misspelt "candidans"; and
-# the male fern (Tafel 10) is missing from the plate-only set, so it comes from the Biodiversity
-# Heritage Library's scan of the 1903 printing, which Commons files under Thomé's Flora as well.
+# no corn poppy, so the poppy plate is his prickly poppy, Papaver argemone (Tafel 260); the
+# bramble is his Tafel 398, Rubus thyrsoideus Wimm. of the R. fruticosus aggregate, filed under a
+# misspelt "candidans"; and the male fern (Tafel 10) is missing from the plate-only set, so it
+# comes from the Biodiversity Heritage Library's scan of the 1903 printing, which Commons files
+# under Thomé's Flora as well.
+#
+# The foxglove prefix pins the original public-domain scan ("Digitalis_purpurea0.jpg"), not the
+# "_clean" background-removed derivative, which Commons licenses CC BY-SA 3.0 as the editor's own
+# work rather than a faithful reproduction of Thomé's plate: this repository is MIT-licensed and
+# ships no share-alike material.
 #
 # The seven below are picked from Commons' "Thomé, Flora von Deutschland (modified)" category for
 # colour that pops against the other five's greens and dusty pinks: peony's deep magenta, quince's
@@ -43,7 +49,7 @@ YEAR = "1885"
 CANDIDATES: dict[str, list[str]] = {
     "pea": ["Illustration_Pisum_sativum"],
     "bramble": ["Illustration_Rubus_candidans0."],
-    "foxglove": ["Illustration_Digitalis_purpurea"],
+    "foxglove": ["Illustration_Digitalis_purpurea0."],
     "fern": ["Prof._Dr._Thomé's_Flora_von_Deutschland,_Österreich_und_der_Schweiz,_in_Wort_und_Bild,"
              "_für_Schule_und_Haus;_mit_..._Tafeln_..._von_Walter_Müller_(Pl._10)_(7845241910)"],
     "poppy": ["Illustration_Papaver_argemone0."],
@@ -55,6 +61,15 @@ CANDIDATES: dict[str, list[str]] = {
     "adonis": ["Illustration_Adonis_vernalis0_clean."],
     "daphne": ["Daphne_mezereum,_Thomé-347."],
 }
+
+# The edition's own title names a different plate illustrator than the work's author (Thomé):
+# only the fern, whose plate is from the 1903 printing's Biodiversity Heritage Library scan,
+# credited on its title page to Walter Müller (not "Migula, Walter", the 1903 text's reviser,
+# who Commons' own Artist field lists alongside Thomé for that file).
+ILLUSTRATOR: dict[str, str] = {"fern": "Walter Müller"}
+
+# Where a plate did not come from a direct Commons upload of the scan.
+SOURCE: dict[str, str] = {"fern": "Biodiversity Heritage Library"}
 
 
 def pick_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -132,9 +147,12 @@ def fetch_all(out_dir: Path, keys: list[str] | None = None, height: int = 900, l
             (staging / f"{key}.webp").write_bytes(main)
             (staging / f"{key}-thumb.webp").write_bytes(thumb)
             meta = f.get("extmetadata") or {}
+            raw_artist = _plain(meta.get("Artist", {}).get("value", ""))
             rows.append({
                 "key": key, "latin": p["latin"], "title": f["name"], "url": f.get("descriptionurl") or f["url"],
-                "artist": _plain(meta.get("Artist", {}).get("value", "")) or ARTIST,
+                "illustrator": ILLUSTRATOR.get(key, ARTIST),
+                "source": SOURCE.get(key, "Wikimedia Commons"),
+                "editor": _editor(raw_artist),
                 "license": _plain(meta.get("LicenseShortName", {}).get("value", "")) or "Public domain",
                 "bytes": len(main),
             })
@@ -154,6 +172,22 @@ def _plain(html: str) -> str:
     return re.sub(r"<[^>]+>", "", html).strip()
 
 
+def _editor(raw_artist: str) -> str:
+    """The Commons-credited editor of a cleaned derivative, verified from the file's own Artist
+    metadata rather than assumed from a "_clean"/"_white" filename: most such files still name
+    only Thomé as Artist (no separate editor is credited on the page), and a few explicitly
+    credit a "derivative work" editor or a Commons username in place of Thomé."""
+    import re
+
+    for line in raw_artist.splitlines():
+        line = line.strip()
+        if line.lower().startswith("derivative work:"):
+            return re.sub(r"\(talk\)\s*$", "", line.split(":", 1)[1], flags=re.I).strip()
+    if raw_artist and "thom" not in raw_artist.lower():
+        return raw_artist.strip()
+    return ""
+
+
 def sources_markdown(rows: list[dict[str, Any]]) -> str:
     import re
 
@@ -166,10 +200,15 @@ def sources_markdown(rows: list[dict[str, Any]]) -> str:
         "# Plate sources", "",
         f"Scanned plates from *{WORK}* ({ARTIST}, Gera, {YEAR}), via Wikimedia Commons. The work is in",
         "the public domain; the files here are cropped, downsampled WebP copies made by `garden plants --fetch`",
-        f"on {dt.date.today().isoformat()}.", "",
-        "| plant | species | Commons file | artist | licence | size |", "|---|---|---|---|---|---|",
+        f"on {dt.date.today().isoformat()}. Roles below are as verified on each file's own Commons page: the",
+        "plate's illustrator (Thomé unless the edition names another), the scan's source, and the editor of a",
+        "cleaned derivative where the file page credits one (a Commons username is an editor, not an artist).",
+        "",
+        "| plant | species | Commons file | illustrator | source | editor | licence | size |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(f"| {cell(r['key'])} | *{cell(r['latin'])}* | [{cell(r['title'])}]({cell(r['url'])}) | "
-                      f"{cell(r['artist'])} | {cell(r['license'])} | {r['bytes'] // 1024} KB |")
+                      f"{cell(r['illustrator'])} | {cell(r['source'])} | {cell(r['editor']) or '—'} | "
+                      f"{cell(r['license'])} | {r['bytes'] // 1024} KB |")
     return "\n".join(lines) + "\n"
