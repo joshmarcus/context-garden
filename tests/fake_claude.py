@@ -6,6 +6,8 @@ FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
 Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) | noresult | plan | review-ok | review-bad | review-desc
        | review-rewrite (description-only review that returns description_rewrite)
+       | review-approve-rewrite (approve verdict, description_ok false, with description_rewrite)
+       | review-approve-desc (approve verdict, description_ok false, no rewrite: dispatches a description round)
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | discover-kinds (done + a task, a duplicate + cancel decision, and a note)
        | friction (done + a friction list in the result, none in the body)
@@ -125,6 +127,17 @@ if mode.startswith("review"):
         rev = {"verdict": "request_changes", "summary": "only the description", "description_ok": False,
                "description_feedback": "give the reader context",
                "description_rewrite": "## What\n\nThe corrected description.", "findings": []}
+    elif mode == "review-approve-rewrite":
+        # code approved, description flagged, corrected body supplied: applied directly, no
+        # pending feedback, task stays in_review.
+        rev = {"verdict": "approve", "summary": "code is correct, description needs work", "description_ok": False,
+               "description_feedback": "give the reader context",
+               "description_rewrite": "## What\n\nThe corrected description.", "findings": []}
+    elif mode == "review-approve-desc":
+        # code approved, description flagged, no rewrite supplied: a description-only revise
+        # round is dispatched instead of leaving feedback parked on an in_review task.
+        rev = {"verdict": "approve", "summary": "code is correct, description needs work", "description_ok": False,
+               "description_feedback": "explain why, drop 'as requested'", "findings": []}
     else:
         rev = {"verdict": "approve", "summary": "looks good", "description_ok": True, "description_feedback": "", "findings": []}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev),

@@ -1340,23 +1340,38 @@ class Scheduler:
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         st["last_findings"] = keys
-        if verdict == "request_changes" and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
+        if task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             # Only the description is wrong (no blocking finding) and the reviewer supplied the
             # corrected body: apply it directly instead of spending a revise round on wording.
+            # This applies whether the code itself was approved or sent back.
             rewrite = str(review.get("description_rewrite") or "").strip()
-            if not keys and not bool(review.get("description_ok", True)) and rewrite:
+            description_only = review_is_description_only(review)
+            if description_only and rewrite:
                 self._apply_description_rewrite(task, run, rewrite, rep, cost)
                 return True
-            if repeated and bool(self.cfg.get("stall.enabled", True)):
-                self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
-                return True
-            fb = feedback_from_review(review)
-            if fb and bool(self.cfg.get("auto_revise", True)):
-                st["pending_feedback"] = fb
-                st["pending_feedback_easy"] = review_is_description_only(review)
-                self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
-                rep.transitions.append(f"{task.id} -> changes_requested (review)")
-                return True
+            if verdict == "request_changes":
+                if repeated and bool(self.cfg.get("stall.enabled", True)):
+                    self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
+                    return True
+                fb = feedback_from_review(review)
+                if fb and bool(self.cfg.get("auto_revise", True)):
+                    st["pending_feedback"] = fb
+                    st["pending_feedback_easy"] = review_is_description_only(review)
+                    self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
+                    rep.transitions.append(f"{task.id} -> changes_requested (review)")
+                    return True
+            elif verdict == "approve" and description_only:
+                # Approved, but the description still needs work and the reviewer gave no
+                # rewrite to apply directly: dispatch a description-only revise round rather
+                # than leaving the flagged description sitting on an in_review task forever.
+                fb = feedback_from_review(review)
+                if fb and bool(self.cfg.get("auto_revise", True)):
+                    st["pending_feedback"] = fb
+                    st["pending_feedback_easy"] = True
+                    self._transition(task, Status.CHANGES_REQUESTED,
+                                      f"automated review approved but flagged the description: {review.get('description_feedback', '') or review.get('summary', '')}{cost}")
+                    rep.transitions.append(f"{task.id} -> changes_requested (description round)")
+                    return True
         task.log(f"automated review: {verdict} — {review.get('summary', '')}{cost}")
         self.store.save(task)
         rep.transitions.append(f"{task.id} review: {verdict}")
@@ -1909,12 +1924,17 @@ class Scheduler:
             if (t.id in active or st.get("review_run")
                     or st.get("trial", {}).get("status") in ("running", "comparing")):
                 continue  # a run is on it
+            # A stored pending_feedback always comes with the changes_requested transition
+            # (CG-140): nothing dispatches from in_review, so feedback parked there while the
+            # task stays in_review would sit forever and hold automerge silently.
+            if t.status == Status.IN_REVIEW and str(st.get("pending_feedback") or "").strip():
+                reason = "pending feedback recorded but the task is in_review, not changes_requested"
             # These statuses wait on a human or GitHub and have their own Inbox handling.
-            if t.status in (Status.WAITING_HUMAN, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.FAILED, Status.DRAFT, Status.READY):
+            elif t.status in (Status.WAITING_HUMAN, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.FAILED, Status.DRAFT, Status.READY):
                 continue  # (a ready task not in the ready set is blocked by deps, i.e. waiting)
-            if t.id in ready_ids:
+            elif t.id in ready_ids:
                 continue  # a work run is dispatchable (slots/pause aside)
-            if t.status == Status.CHANGES_REQUESTED:
+            elif t.status == Status.CHANGES_REQUESTED:
                 has_fb = bool(str(st.get("pending_feedback") or "").strip())
                 under_cap = int(st.get("revisions", 0)) < max_rev
                 if has_fb and under_cap:

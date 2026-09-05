@@ -171,6 +171,50 @@ def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatc
     assert "description only; easy tier" not in task.body
 
 
+def test_approve_with_description_rewrite_applies_directly(sched, fake_github, monkeypatch):
+    """CG-140: an approve verdict with description_ok false and a rewrite applies the
+    rewrite through the GitHub API and stores no pending feedback; the task stays
+    in_review with no revise round."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-rewrite")
+    sched.tick()
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched
+    assert "DM-001(review)" in rep.dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap review -> approve, apply the rewrite, no round
+    assert any("description rewritten by the reviewer" in t for t in rep.transitions)
+    assert "DM-001(revise)" not in rep.dispatched
+    assert not any("changes_requested" in t for t in rep.transitions)
+    assert fake_github.updated and fake_github.updated[-1]["body"] == "## What\n\nThe corrected description."
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.status.value == "in_review"
+    assert not str(sched.state.get("DM-001").get("pending_feedback") or "").strip()
+
+
+def test_approve_with_empty_rewrite_dispatches_description_round(sched, fake_github, monkeypatch):
+    """CG-140: an approve verdict with description_ok false and no rewrite dispatches a
+    description-only revise round instead of leaving feedback parked on an in_review task."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-desc")
+    sched.tick()
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched
+    assert "DM-001(review)" in rep.dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap review -> approve but description flagged -> revise dispatched
+    assert "DM-001 -> changes_requested (description round)" in rep.transitions
+    assert "DM-001(revise)" in rep.dispatched
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "revise"
+    assert run.difficulty == "easy"  # description-only: the easy tier, not the task's own
+
+
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     from tests.conftest import wait_for_runs
 
