@@ -23,6 +23,19 @@ def register(app: FastAPI, site: Site) -> None:
             task = s.task(task_id)
         except KeyError:
             task = None
+        # A mechanical rebase is git-only: no harness, no model, no cost, and no transcript. Its
+        # page says what it is and what git did, and finds the pre-PR check run that followed it
+        # (the check runs as its own record; the nearest later `check` run is that result).
+        mechanical = run.mode == "rebase" and not run.harness
+        check_result = None
+        if mechanical:
+            later = sorted((r for r in rs.runs_for(task_id)
+                            if r.mode == "check" and r.started_at >= run.started_at),
+                           key=lambda r: r.started_at)
+            if later:
+                cr = later[0]
+                check_result = {"run_id": cr.run_id, "status": cr.status,
+                                "checks": (cr.result or {}).get("checks", [])}
         events = run.stdout_events(n=None)
         # A streamed transcript is claude's stream-json (assistant/user turns + a final result);
         # plain claude-json is one result object with no turns. Trust the harness config when it
@@ -45,7 +58,7 @@ def register(app: FastAPI, site: Site) -> None:
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
-            stderr_text=run.stderr_text()))
+            stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result))
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):

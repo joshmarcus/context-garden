@@ -236,6 +236,40 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             "discuss": discuss_prompt(t, info, evidence, actions)}
 
 
+def merge_queue_view(store: Store, state: Any, drop_events: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """What the merge queue is doing, for the Board/Inbox: the in-flight head (rebased, waiting
+    for its rollup) and whether it is still waiting on CI, the candidates queued behind it with
+    why each is held, and the last head that left the queue with its reason. Reads only queue
+    state (written by `scheduler/queue.py`) and the `merge_head` events. Returns None when the
+    queue is empty and nothing has ever dropped, so the panel stays hidden until it has news."""
+    tasks = store.tasks()
+    head: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = []
+    for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
+        if t.status != Status.IN_REVIEW:
+            continue
+        st = state.get(t.id)
+        if st.get("merge_head"):
+            checks = str(st.get("checks") or "").upper()
+            head = {"task": t.id, "title": t.title, "pr": t.pr,
+                    "checks": checks.lower(), "waits_on_ci": checks in ("", "PENDING"),
+                    "ready_at": str(st.get("automerge_ready_at") or "")}
+        elif st.get("automerge_candidate"):
+            candidates.append({"task": t.id, "title": t.title, "pr": t.pr,
+                               "ready_at": str(st.get("automerge_ready_at") or ""),
+                               "blocked": str(st.get("automerge_blocked") or "")})
+    candidates.sort(key=lambda c: (c["ready_at"], c["task"]))
+    last_drop: dict[str, str] | None = None
+    for ev in reversed(drop_events or []):
+        if ev.get("kind") == "merge_head" and ev.get("left"):
+            last_drop = {"task": str(ev.get("task") or ""), "reason": str(ev.get("reason") or ""),
+                         "at": str(ev.get("at") or "")}
+            break
+    if head is None and not candidates and last_drop is None:
+        return None
+    return {"head": head, "candidates": candidates, "last_drop": last_drop}
+
+
 def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     tasks = store.tasks()
     state = sched.state
