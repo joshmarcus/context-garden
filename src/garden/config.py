@@ -107,6 +107,16 @@ DEFAULTS: dict[str, Any] = {
                                   # `garden serve` accepts, e.g. [https://garden.internal] behind a
                                   # reverse proxy, or a LAN address the browser reaches it by
     },
+    "observe": {
+        "interval": "30m",        # `garden observe --follow`: seconds between passes (30m, 2h, ... or a bare number of seconds)
+        "digest_window": "30m",   # how far back each pass's digest looks
+        "events": ["question", "needs_human", "failed"],  # kinds (or aliases; see garden.observe) `--follow` streams between passes
+        "stuck_after": "15m",     # a running run with no output for this long is a stuck card
+        "line_width": 160,        # wrap width for the text output
+        "phases": "open",         # "open", or a list of "product/phase" keys, scoping the status line's counts
+        "profile": "",            # one of the built-ins (quiet, watch, debug) or a name from `profiles`; empty = the fields above as-is
+        "profiles": {},           # name -> partial override of interval/digest_window/events/stuck_after/line_width/phases
+    },
     "products": {},
 }
 

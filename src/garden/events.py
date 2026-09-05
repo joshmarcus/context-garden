@@ -73,6 +73,21 @@ def parse_since(text: str) -> str:
     return text
 
 
+_DURATION_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_duration(text: str) -> int:
+    """'30m', '2h', '1d', '1w' -> seconds; a bare number is already seconds. The sibling of
+    `parse_since`: that returns a cutoff timestamp for a "since" window, this returns a length
+    for a sleep or a staleness threshold (`garden observe`'s interval, digest_window,
+    stuck_after)."""
+    text = str(text).strip()
+    m = re.fullmatch(r"(\d+)([mhdw])", text)
+    if m:
+        return int(m.group(1)) * _DURATION_UNIT_SECONDS[m.group(2)]
+    return int(float(text))
+
+
 # The event kinds that mean a person's call is needed and so are worth a browser
 # notification (CG-208): a worker's question, a won't-do or nothing-to-change, a
 # discovered-work decision, a review/revision cap or a broken base, a stall, a retro verdict

@@ -1009,6 +1009,32 @@ def test_max_parallel_override_from_config_page(garden):
     assert c.post("/config/max-parallel", data={"value": "0"}).status_code == 400
 
 
+def test_observe_profile_override_from_config_page(garden):
+    """CG-219: the Config page can switch `garden observe`'s profile live, the same way it
+    overrides max_parallel — a running `--follow` reads the override on its next pass."""
+    from garden.observe import resolve
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    c = client(garden)
+    config_page = c.get("/config").text
+    assert "no live override" in config_page
+    for name in ("quiet", "watch", "debug"):
+        assert f'value="{name}"' in config_page and f'>{name}</option>' in config_page
+
+    r = c.post("/config/observe-profile", data={"value": "watch"}, follow_redirects=False)
+    assert r.status_code == 303
+    config_page = c.get("/config").text
+    assert "live override: <strong>watch</strong>" in config_page
+
+    sched = Scheduler(Store(garden), log=print)
+    assert resolve(sched.cfg, sched).profile == "watch"
+
+    r = c.post("/config/observe-profile", data={"value": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "no live override" in c.get("/config").text
+
+
 def test_priority_and_difficulty_from_the_task_page(garden):
     from garden.model import PRIORITY_SCALE
     from garden.store import Store

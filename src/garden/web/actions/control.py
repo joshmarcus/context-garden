@@ -74,6 +74,23 @@ def register(app: FastAPI, site: Site) -> None:
                 hub._log(f"max_parallel set to {parsed} via web")
         return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
 
+    @app.post("/config/observe-profile")
+    def web_set_observe_profile(request: Request, value: str = Form("")):
+        """Switch `garden observe`'s profile live (see garden.observe.resolve): a running
+        `garden observe --follow` re-reads this override every pass, so the switch takes
+        effect on its next tick without a restart. An empty value clears it, back to
+        `observe.profile` in garden.yaml."""
+        value = value.strip()
+        with hub.action_lock:
+            sched = hub.scheduler()
+            if not value:
+                sched.clear_override("observe.profile", by="web")
+                hub._log("observe.profile override cleared via web")
+            else:
+                sched.set_override("observe.profile", value, by="web")
+                hub._log(f"observe.profile set to {value} via web")
+        return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
+
     @app.post("/upgrade")
     def web_upgrade(request: Request):
         back = request.headers.get("referer", "/")
