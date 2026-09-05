@@ -243,6 +243,13 @@ def test_friction_report_preserves_harvested(garden):
 def test_init_scaffold(tmp_path):
     r = runner.invoke(app, ["init", str(tmp_path / "g"), "--name", "x"])
     assert r.exit_code == 0 and (tmp_path / "g" / "garden.yaml").exists()
+
+    skills = tmp_path / "g" / ".claude" / "skills"
+    for slug in ("garden-take", "garden-plan", "garden-review", "garden-operate"):
+        assert (skills / slug / "SKILL.md").exists()
+    operate = (skills / "garden-operate" / "SKILL.md").read_text()
+    assert "joshmarcus/context-garden" in operate
+
     import os
 
     cwd = os.getcwd()
