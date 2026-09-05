@@ -92,7 +92,26 @@ def test_question_dismissal_and_failed_write_keep_state(tmp_path, fake_github, m
         sched.dismiss_question(question["id"])
     assert any(q["id"] == question["id"] for q in sched.pending_decisions())
     monkeypatch.setattr(gitops, "push", push)
-    result = sched.dismiss_question(question["id"])
-    assert result["status"] == "dismissed"
+    monkeypatch.setattr("garden.cli.state._store", lambda: Store(root))
+    result = CliRunner().invoke(app, ["decide", question["id"], "--dismiss"])
+    assert result.exit_code == 0, result.output
+    sched = Scheduler(Store(root), github=fake_github)
+    resolved = next(q for q in sched.retro_questions("gdn/p1") if q["id"] == question["id"])
+    assert resolved["status"] == "dismissed"
     wt = sched.cfg.worktree_path("_retro-gdn-p1")
     assert (wt / question["retro_path"]).read_text().count(f"<!-- decision:{question['id']} -->") == 1
+
+
+def test_answer_append_preserves_goal_sections_and_is_idempotent(tmp_path):
+    from garden.scheduler.questions import append_resolution
+
+    path = tmp_path / "goals.md"
+    path.write_text("---\nplant: oak\n---\n# Goals\n\n## Decisions\n\nExisting answer.\n\n## Later\n\nKeep this.\n")
+    decision = {"id": "r-q0", "question": "Which?", "status": "answered", "answer": "Stable.",
+                "resolved_by": "web", "resolved_at": "2026-09-05T12:00:00Z"}
+    append_resolution(path, "## Decisions", decision)
+    append_resolution(path, "## Decisions", decision)
+    text = path.read_text()
+    assert text.startswith("---\nplant: oak\n---")
+    assert text.index("Existing answer.") < text.index("Stable.") < text.index("## Later")
+    assert text.count("Stable.") == 1 and "Keep this." in text
