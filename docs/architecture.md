@@ -308,7 +308,12 @@ files under `tasks/` must not be hand-edited.
   worktree apart from the live checkout: `garden doctor` refuses a `work_dir` inside the
   live garden (and a `self` repo that resolves to the live garden root), so the clone and
   worktrees sit outside it; and the fence (`find_root`) resolves a worker's garden worktree
-  to that worktree's own `garden.yaml`, never the enclosing live garden.
+  to that worktree's own `garden.yaml`, never the enclosing live garden. On top of the
+  HEAD/working-tree snapshot of the two guarded git repos, the fence hashes the live garden's
+  `garden*.yaml` and `.garden/state.json` at dispatch and re-checks them at reap, so a worker
+  write to the config or the scheduler's own side-store (where an approve verdict lives) is
+  caught even though those files are gitignored or the scheduler's own — closing the
+  self-approve-then-automerge path (`docs/worker-protocol.md` §2a).
 - **Branches and worktrees.** A task's branch is `garden/<id>-<slug>`. Its worktree is
   created from `origin/<base>` (or the local base when there is no remote) and reused
   across runs of the same task. The worker only ever commits in the worktree; the
@@ -382,6 +387,11 @@ files under `tasks/` must not be hand-edited.
     round (a changed diff) re-runs it, and a failure holds the merge until the diff changes. With
     no pre-PR checks configured there is nothing to run, so the check is satisfied at once. Set
     `automerge_hard_tier: false` to keep hard-tier merges by hand.
+  - **A diff that touches the loop's own rules is held for a person.** The automerge gate
+    refuses (with `automerge_blocked` naming the paths) when the PR's diff touches
+    `garden*.yaml`, any `**/tasks/` file, `.github/` or `principles/`, so a self-approved PR
+    cannot quietly rewrite the config, the task files, the CI or the principles unattended;
+    those merge by hand.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is
@@ -457,8 +467,11 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
   (task bodies, PR feedback, review verdicts, persona reports, specs) is reduced to an
   allowlist of tags and attributes with safe link targets, since much of it was written by
   an agent or a commenter; and a POST whose `Origin` (or `Referer`) is another site is
-  refused with 403, so a page open elsewhere in the same browser cannot press the buttons
-  (`web.trusted_origins` lists any extra origin a reverse proxy presents).
+  refused with 403, so a page open elsewhere in the same browser cannot press the buttons. A
+  same-origin POST must also be addressed to a loopback `Host` (the garden serves on
+  localhost), so a domain that resolves to 127.0.0.1 (a DNS-rebinding attack, `Origin`
+  matching `Host`) is refused too. `web.trusted_origins` lists any extra origin — a reverse
+  proxy or a LAN address — that must be allowed.
 - **TUI** (`tui/app.py`, Textual): an Inbox tab and a Tasks tab with the same actions,
   refreshing every few seconds so it can sit beside a `garden watch`.
 - **Skills** (`.claude/skills/`, written by `garden init`): `garden-take`, `garden-plan`
@@ -555,9 +568,16 @@ spending tokens; a failed flow exits non-zero and fails the job.
   (it only commits a worker's leftover changes before pushing).
 - A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
   scheduler's variables (`runner.base.PASS_ENV`, widened by `worker_env.pass`) plus the
-  product's `setup.env`, never its GitHub token, cloud credentials or ssh agent. The ssh
-  runner's remote worker gets the same allowlist applied to the remote login environment: its
-  remote script runs the harness and the setup command with every other variable unset, so a
-  host's ambient tokens do not reach the worker either. Only git's own fetch and push on the
-  remote keep the login environment, since the remote host does its own pushing.
+  product's `setup.env`, never its GitHub token, cloud credentials or ssh agent, and never
+  the operator's `HOME` — a worker (and a branch's own `command` checks) run under an
+  isolated scratch home beside the worktree, so they cannot read the gh token, git
+  credentials or ssh keys out of `~` (`worker_env.pass: [HOME]` restores it). The ssh
+  runner's remote worker gets the same allowlist and scratch home applied to the remote login
+  environment: its remote script runs the harness and the setup command with every other
+  variable unset, so a host's ambient tokens do not reach the worker either. Only git's own
+  fetch and push on the remote keep the login environment, since the remote host does its own
+  pushing.
+- A check's flaky-retry command (`checks.<>.retry_command`) comes only from the operator's
+  config, never from a check's own JSON output (code the branch wrote), and runs in the same
+  scrubbed environment — so a check cannot smuggle a shell command out through its output.
 - No model runs in the tick. Waiting is a sleeping Python process.

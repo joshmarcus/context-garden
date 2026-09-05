@@ -111,6 +111,55 @@ def test_scheduler_task_file_edits_do_not_trip_the_fence(sched, garden, monkeypa
     assert not _attention_card(sched, "DM-001")
 
 
+# ---- the config/state hash-check (CG-194) ---------------------------------
+
+def test_worker_writing_garden_yaml_is_caught_by_hash_check_without_git(sched, garden, monkeypatch):
+    """The live garden is not a git repo here, so the git-based fence guards nothing; the
+    hash-check still catches (and reverts) a worker write to garden.yaml."""
+    before_cfg = (garden / "garden.yaml").read_text()
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_COMMIT", "0")  # no repo to commit into
+
+    sched.tick()
+    sched.tick()
+
+    assert sched.store.task("DM-001").status.value == "failed"
+    assert (garden / "garden.yaml").read_text() == before_cfg  # reverted from the snapshot
+    card = _attention_card(sched, "DM-001")
+    assert "live garden" in card and "garden.yaml" in card
+    assert not sched.github.created
+
+
+def test_worker_writing_state_json_is_caught_and_fails(sched, garden, monkeypatch):
+    """A worker that forges into .garden/state.json is detected (the scheduler owns the file,
+    so it is not reverted, but the run fails and the card names it for a person)."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", ".garden/state.json")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_COMMIT", "0")
+
+    sched.tick()
+    sched.tick()
+
+    assert sched.store.task("DM-001").status.value == "failed"
+    assert "state.json" in _attention_card(sched, "DM-001")
+    full = sched.state.get("DM-001")["needs_human"]
+    assert "state.json" in full and "inspect" in full.lower()
+    assert not sched.github.created
+
+
+def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):
+    """A well-behaved worker leaves garden.yaml and state.json alone: no false positive."""
+    _init_repo(garden)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    sched.tick()
+    sched.tick()
+    assert sched.store.task("DM-001").status.value != "failed"
+    assert not _attention_card(sched, "DM-001")
+
+
 def _run_naming(sched, task_id: str, *paths: str):
     """A fake run whose stdout.json names the given paths, as a real worker's transcript
     (Edit/Write file_path, Bash commands, final message) would."""

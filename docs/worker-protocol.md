@@ -99,13 +99,19 @@ echo $? > /garden/.garden/runs/WID-003/20260904T120000Z-work/exit_code
 The exact command is saved as `command.txt` next to the brief. The environment is
 **scrubbed**, not inherited: of the scheduler's variables the worker (and the product's
 `setup.command`, which runs in the worktree first) keeps only an allowlist
-(`runner.base.PASS_ENV`: `PATH`, `HOME`, the locale, proxy and CA settings, and the
+(`runner.base.PASS_ENV`: `PATH`, the locale, proxy and CA settings, and the
 harness's own `ANTHROPIC_*`/`CLAUDE_*`/`OPENAI_*`/`CODEX_*`), plus whatever
 `worker_env.pass` in `garden.yaml` names, plus the product's `setup.env`; then
 `GARDEN_TASK_ID`, `GARDEN_RUN_ID` and the `GARDEN_ROOT` sentinel are set. No GitHub
 token, cloud credential or ssh agent reaches the worker: it commits in its worktree and
-the scheduler pushes. (`CLAUDECODE` is dropped so a garden can be driven from inside
-another Claude Code session.) The shell's pid is stored in `run.json`. For Codex the inner command is `codex exec --json --skip-git-repo-check
+the scheduler pushes. **`HOME` is *not* on the allowlist**: the worker runs under an
+isolated scratch home beside its worktree (`.garden-home-<id>`), not the operator's, so it
+cannot read the gh token, git credentials or ssh keys out of `~` (merely unsetting `HOME`
+would not do — glibc and `expanduser` fall back to the passwd entry, the operator's real
+home, so it is *set* to somewhere empty). A tool that genuinely needs the operator's home
+gets it back with `worker_env.pass: [HOME]`. (`CLAUDECODE` is dropped so a garden can be
+driven from inside another Claude Code session.) The shell's pid is stored in `run.json`.
+For Codex the inner command is `codex exec --json --skip-git-repo-check
 --full-auto -m <model> --output-last-message final.md -`, with the same wrapper; a custom
 harness is whatever `command:` template the config gives, with `{model}` and `{final}`
 filled in.
@@ -130,6 +136,18 @@ It is enforced in two layers:
   needs no prompt while an edit *outside* it is refused — and in `-p` mode there is no one
   to approve a prompt, so a refused edit simply fails. The forbidden directories travel on
   the run as `fence_paths`, set at dispatch.
+- **The garden's own config and side-store are hash-checked too.** The two guarded repos
+  are git checkouts, but the garden's `garden*.yaml` (config) and `.garden/state.json` (the
+  scheduler's side-store, where an approve verdict lives) are gitignored or otherwise the
+  scheduler's own, so the HEAD/working-tree snapshot above would miss a worker writing to
+  them. At dispatch the fence also hashes each of these files into the run directory (keeping
+  a copy of the config files). On reap, a hash that changed *and whose path the worker's
+  transcript names* is an escape: a `garden*.yaml` is restored from its snapshot; `state.json`
+  is the scheduler's to rewrite every tick and is not reverted, but the run still fails and
+  the Inbox card names it for a person to inspect. A change the worker did not name is the
+  scheduler's own `state.json` write, or an operator editing config by hand — left alone.
+  This is what stops a worker forging its own approve verdict into `state.json` and, with
+  automerge on, self-merging.
 - **Belt and braces — the runner reverts what the worker itself wrote.** At dispatch the
   scheduler snapshots the HEAD and working tree of the live garden and the product clone.
   On reap, `finalize` compares them and reverts a change *only when the worker's own
@@ -329,8 +347,10 @@ stdin, commits leftovers and pushes the branch itself (the host has push access;
 scheduler's machine may not). The harness and the setup command run under the same
 allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
 `setup.env`), applied in shell: every other variable of the remote login environment is
-unset before they run, so a host's ambient tokens do not reach the worker either — only
-the git fetch and push keep the login environment, since the host does its own pushing.
+unset before they run, so a host's ambient tokens do not reach the worker either, and (as
+locally) `HOME` is set to an isolated scratch home so the worker cannot read the host
+login's gh token, git credentials or ssh keys — only the git fetch and push keep the login
+environment, since the host does its own pushing.
 The harness's stdout comes back over the ssh connection into
 the same `stdout.json`, and the same `exit_code` file is written locally. On reap the
 scheduler fetches the branch, requires commits ahead of the base, and materialises a

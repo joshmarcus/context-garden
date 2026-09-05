@@ -39,7 +39,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if cwd is not None and cwd.exists():
         try:
             run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
-                      env=scrubbed_env(config, setup))
+                      env=scrubbed_env(config, setup, worktree=cwd))
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
     elif cwd is not None and not cwd.exists():
@@ -52,9 +52,15 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
         nonpass = [r for r in results if r.get("status") != "pass"]
         flaky_results = [r for r in results if r.get("status") == "flaky"]
         if flaky_results and len(flaky_results) == len(nonpass):
+            # The retry command comes only from config (checks.run_check strips any that a
+            # check's output injected) and runs scrubbed — no GitHub token, cloud credentials
+            # or the operator's HOME unless `worker_env.pass` names them — so a flaky rerun
+            # cannot become a channel for a branch to run a privileged shell command.
+            retry_env = scrubbed_env(config, worktree=cwd)
             for r in flaky_results:
                 if r.get("retry_command"):
-                    subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True, timeout=120)
+                    subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True,
+                                   timeout=120, cwd=str(cwd) if cwd else None, env=retry_env)
                     r["reran"] = True
     return results
 

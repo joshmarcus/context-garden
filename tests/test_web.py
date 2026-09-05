@@ -5,7 +5,9 @@ from garden.web.app import create_app
 
 
 def client(garden):
-    return TestClient(create_app(Store(garden), watch=False))
+    # base_url is a loopback host: the garden serves on localhost and POSTs require a
+    # loopback Host (the DNS-rebinding guard in web.trust.origin_problem).
+    return TestClient(create_app(Store(garden), watch=False), base_url="http://127.0.0.1")
 
 
 def test_pages_render(garden):
@@ -559,10 +561,10 @@ def test_inbox_triage_flow(garden, monkeypatch):
     sched = Scheduler(store, github=gh)
     sched.tick()
     sched.tick()
-    c = TestClient(create_app(store, watch=False))
+    c = TestClient(create_app(store, watch=False), base_url="http://127.0.0.1")
     home = c.get("/").text
     assert "Triage a draft PR" in home and "DM-001" in home and "Ready for review" in home
-    r = c.post("/tasks/DM-001/triage-changes", data={"note": "tighten the tests"}, headers={"referer": "http://testserver/"}, follow_redirects=False)
+    r = c.post("/tasks/DM-001/triage-changes", data={"note": "tighten the tests"}, headers={"referer": "http://127.0.0.1/"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].endswith("/")
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "changes_requested"
     sched.tick()
@@ -1000,10 +1002,20 @@ def test_posts_from_another_origin_are_refused(garden):
     # GETs are never blocked, whatever their Origin.
     assert c.get("/board", headers={"Origin": "http://evil.example"}).status_code == 200
     # The server's own pages post with its Origin (or Referer); a script with neither is not a browser.
-    assert c.post("/tasks/DM-001/unapprove", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
-    assert c.post("/tasks/DM-001/approve", headers={"Referer": "http://testserver/tasks/DM-001"}, follow_redirects=False).status_code == 303
+    assert c.post("/tasks/DM-001/unapprove", headers={"Origin": "http://127.0.0.1"}, follow_redirects=False).status_code == 303
+    assert c.post("/tasks/DM-001/approve", headers={"Referer": "http://127.0.0.1/tasks/DM-001"}, follow_redirects=False).status_code == 303
     assert c.post("/tasks/DM-002/cancel", follow_redirects=False).status_code == 303
     assert c.get("/api/tasks").json()[1]["status"] == "cancelled"
+
+
+def test_dns_rebinding_to_a_non_loopback_host_is_refused(garden):
+    """A DNS-rebinding attack points an attacker domain at 127.0.0.1: its Origin and Host
+    match, but the Host is not loopback, so a same-origin POST to it is refused."""
+    c = TestClient(create_app(Store(garden), watch=False), base_url="http://evil.example")
+    r = c.post("/tick", headers={"Origin": "http://evil.example"}, follow_redirects=False)
+    assert r.status_code == 403 and "loopback" in r.text
+    # a GET is never blocked
+    assert c.get("/board", headers={"Origin": "http://evil.example"}).status_code == 200
 
 
 def test_trusted_origins_from_config_are_accepted(garden):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -43,9 +45,11 @@ class FenceMixin:
             body = body.split(" -> ", 1)[1]
         return body.strip().strip('"')
 
-    def _fence_snapshot(self, task: Task) -> None:
+    def _fence_snapshot(self, task: Task, run: Run | None = None) -> None:
         """Record HEAD and working-tree state of the guarded repos at dispatch, so finalize
-        can tell what a worker changed."""
+        can tell what a worker changed. Also hash the live garden's config and side-store
+        (garden*.yaml and .garden/state.json) into the run directory, so a worker write to
+        them is caught even though they are gitignored / owned by the scheduler."""
         snap = {str(path): {"label": label, "head": gitops.head_sha(path), "status": gitops.status_lines(path)}
                 for label, path in self._fence_repos(task)}
         st = self.state.get(task.id)
@@ -53,6 +57,90 @@ class FenceMixin:
             st["fence"] = snap
         else:
             st.pop("fence", None)
+        self._fence_guard_snapshot(run)
+
+    def _fence_guard_targets(self) -> list[tuple[str, Path, bool]]:
+        """(relative path, absolute path, is_config) for the live garden files a worker must
+        never write: every garden*.yaml at the root and .garden/state.json. Config files are
+        snapshotted with their content so a write can be reverted; state.json (which the
+        scheduler rewrites every tick) is hash-checked for a worker write but not reverted."""
+        root = self.store.root
+        out: list[tuple[str, Path, bool]] = [(p.name, p, True) for p in sorted(root.glob("garden*.yaml"))]
+        state_path = self.state.path
+        try:
+            rel = str(state_path.relative_to(root))
+        except ValueError:
+            rel = state_path.name
+        out.append((rel, state_path, False))
+        return out
+
+    def _fence_guard_snapshot(self, run: Run | None) -> None:
+        """Hash garden*.yaml and .garden/state.json at dispatch into a manifest beside the run,
+        keeping a copy of each config file for revert. A no-op with no run (a snapshot taken by
+        a test without a run record)."""
+        if run is None:
+            return
+        manifest: list[dict[str, Any]] = []
+        guard_dir = run.path / "fence_guard"
+        for rel, path, is_config in self._fence_guard_targets():
+            if not path.exists():
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            snap = ""
+            if is_config:
+                guard_dir.mkdir(parents=True, exist_ok=True)
+                snap = rel.replace("/", "__")
+                (guard_dir / snap).write_bytes(data)
+            manifest.append({"rel": rel, "abs": str(path), "config": is_config, "snap": snap,
+                             "sha": hashlib.sha256(data).hexdigest()})
+        if manifest:
+            (run.path / "fence_guard.json").write_text(json.dumps(manifest))
+
+    def _fence_guard_check(self, task: Task, run: Run | None) -> list[dict[str, Any]]:
+        """Compare garden*.yaml and .garden/state.json against the dispatch hashes. A change
+        the worker's own transcript names is an escape: a config file is restored from its
+        snapshot; state.json is left as the scheduler owns it but the run still fails and the
+        card names it for a person to inspect. A change the worker did not name is the
+        scheduler's own state.json write (every tick) or an operator's config edit — ignored."""
+        if run is None:
+            return []
+        manifest_path = run.path / "fence_guard.json"
+        if not manifest_path.exists():
+            return []
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        transcript = run.stdout_text()
+        worktree = self.worktree_for(task)
+        root = self.store.root
+        violations: list[dict[str, Any]] = []
+        for entry in manifest:
+            path = Path(entry["abs"])
+            rel = str(entry["rel"])
+            try:
+                now_sha = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
+            except OSError:
+                continue
+            if now_sha == entry.get("sha"):
+                continue  # unchanged
+            if not self._worker_named(transcript, root, rel, worktree):
+                continue  # the scheduler's own state.json write, or a person's config edit
+            reverted = False
+            if entry.get("config") and entry.get("snap"):
+                snap_file = run.path / "fence_guard" / str(entry["snap"])
+                try:
+                    if snap_file.exists():
+                        path.write_bytes(snap_file.read_bytes())
+                        reverted = True
+                except OSError as e:  # noqa: BLE001
+                    self.log(f"fence: could not restore {rel}: {e}")
+            violations.append({"label": "the live garden", "path": str(path), "commits": [],
+                               "files": [rel], "foreign": [], "reverted": reverted})
+        return violations
 
     @staticmethod
     def _worker_named(transcript: str, repo: Path, rel: str, worktree: Path | None = None) -> bool:
@@ -90,9 +178,10 @@ class FenceMixin:
         garden while a run is live, or a HEAD the scheduler's own `git fetch` advanced. Only a
         path the worker's transcript names is reverted; a moved HEAD alone is not an escape, so
         an un-attributed change is reported on the card and left in place."""
+        guard = self._fence_guard_check(task, run)
         snap = self.state.get(task.id).pop("fence", None)
         if not snap:
-            return []
+            return guard
         transcript = run.stdout_text() if run is not None else ""
         worktree = self.worktree_for(task)
         violations: list[dict[str, Any]] = []
@@ -124,8 +213,8 @@ class FenceMixin:
             commits = gitops.commits_between(path, head_before, head_now) if reset else []
             self._fence_revert(path, head_before, reset, attributed)
             violations.append({"label": str(before.get("label") or path.name), "path": path_str,
-                               "commits": commits, "files": attributed, "foreign": foreign})
-        return violations
+                               "commits": commits, "files": attributed, "foreign": foreign, "reverted": True})
+        return guard + violations
 
     def _fence_revert(self, repo: Path, head_before: str, reset: bool, touched: list[str]) -> None:
         """Undo a worker's escape: drop its commits (keeping unrelated in-flight edits) and
@@ -144,11 +233,14 @@ class FenceMixin:
     def _fence_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
         parts = []
         foreign_seen = False
+        kept_seen = False
         for v in violations:
             # Lead with the operator-critical facts (which repo, which files) and put the
             # long absolute path last, so a truncated Inbox card still names what was touched.
             bits = []
             if v["files"]:
+                if not v.get("reverted", True):
+                    kept_seen = True
                 bits.append("wrote " + ", ".join(v["files"]))
             if v["commits"]:
                 bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
@@ -158,6 +250,8 @@ class FenceMixin:
                             + ", ".join(v["foreign"]))
             parts.append(f"{v['label']}: " + " and ".join(bits) + f" ({v['path']})")
         card = "worker wrote outside its worktree; the writes it made were reverted. Touched " + " | ".join(parts)
+        if kept_seen:
+            card += " — some paths the scheduler owns (e.g. .garden/state.json) could not be reverted; inspect them."
         if foreign_seen:
             card += " — the un-attributed changes were left for a person to check."
         self.state.get(task.id)["needs_human"] = card

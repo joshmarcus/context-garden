@@ -41,14 +41,16 @@ class LocalRunner(Runner):
         """`harness_argv` as one shell-quoted command line."""
         return " ".join(shlex.quote(c) for c in self.harness_argv(run, worktree, final_path))
 
-    def worker_env(self, run: Run, setup: dict[str, Any]) -> dict[str, str]:
+    def worker_env(self, run: Run, setup: dict[str, Any], worktree: Path | None = None) -> dict[str, str]:
         """The environment a worker runs in: the scrubbed one (`runner.base.scrubbed_env`:
         an allowlist of this process's variables plus `worker_env.pass` and the product's
-        `setup.env`, never the scheduler's GitHub token or cloud credentials), plus the
-        run's identity and a GARDEN_ROOT that keeps `garden` commands off the live garden:
-        any `garden` command run inside the worktree hits find_root(), which checks this
-        variable and fails loudly because the path below does not contain a garden.yaml."""
-        env = scrubbed_env(self.config, setup)
+        `setup.env`, never the scheduler's GitHub token, cloud credentials or home directory —
+        HOME is an isolated scratch home beside the worktree), plus the run's identity and a
+        GARDEN_ROOT that keeps `garden` commands off the live garden: any `garden` command run
+        inside the worktree hits find_root(), which checks this variable and fails loudly
+        because the path below does not contain a garden.yaml."""
+        wt = worktree if worktree is not None else (Path(run.worktree) if run.worktree else None)
+        env = scrubbed_env(self.config, setup, worktree=wt)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
         env["GARDEN_ROOT"] = no_live_garden_root(run.path)
@@ -61,7 +63,7 @@ class LocalRunner(Runner):
         setup = dict(self.config.get("setup") or {})
         # The scrubbed environment (see worker_env): what the setup command and the worker
         # get, and nothing else of the scheduler's.
-        env = self.worker_env(run, setup)
+        env = self.worker_env(run, setup, worktree)
         run_setup(worktree, setup, log_path=d / "setup.log", env=env)  # prepare the env before the worker starts
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)

@@ -19,11 +19,15 @@ class RunnerError(Exception):
 # The scheduler's environment variables a worker keeps, and the setup command that prepares
 # its worktree with it. Everything else is dropped: a worker inherits no GitHub token, no
 # cloud credentials, no ssh agent and no `GARDEN_*` of the live garden, because it only
-# commits in its worktree and the scheduler does the pushing. A trailing `*` matches a
-# prefix. `worker_env.pass` in garden.yaml adds names (`AWS_*` for a Bedrock-backed
-# harness, a private registry token for `setup.command`); `"*"` restores full inheritance.
+# commits in its worktree and the scheduler does the pushing. `HOME` is *not* on this list:
+# a worker (and a branch's own test suite) runs under an isolated scratch home instead of the
+# operator's, so it cannot read `~/.config/gh`, `~/.git-credentials`, `~/.ssh` or the like
+# (see `worker_home` and `scrubbed_env`). A trailing `*` matches a prefix. `worker_env.pass`
+# in garden.yaml adds names (`AWS_*` for a Bedrock-backed harness, a private registry token
+# for `setup.command`, or `HOME` to restore the operator's home); `"*"` restores full
+# inheritance.
 PASS_ENV: tuple[str, ...] = (
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "COLUMNS", "LINES",
+    "PATH", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "COLUMNS", "LINES",
     "LANG", "LANGUAGE", "LC_*", "TZ", "TMPDIR", "TMP", "TEMP", "XDG_*",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
@@ -41,13 +45,41 @@ def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
     return [*PASS_ENV, *extra]
 
 
-def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None) -> dict[str, str]:
+def worker_home(worktree: Path | str | None) -> str:
+    """An isolated `HOME` for a worker or check: a scratch directory, never the operator's
+    real home, so a worker (or a branch's test suite) cannot read the operator's gh token,
+    git credentials or ssh keys out of `~`. Merely unsetting HOME is not enough: glibc and
+    `os.path.expanduser` fall back to the passwd entry, which is the operator's real home, so
+    HOME must be *set* to somewhere empty. It sits beside the worktree (not inside it, so
+    `git add -A` cannot commit it) and persists per task, so tool caches (npm, uv, pip)
+    survive across runs. With no worktree known, a shared throwaway directory under TMPDIR."""
+    if worktree is not None:
+        wt = Path(worktree)
+        home = wt.parent / f".garden-home-{wt.name}"
+    else:
+        import tempfile
+
+        home = Path(tempfile.gettempdir()) / "garden-worker-home"
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(home)
+
+
+def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
+                 worktree: Path | str | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
     the names or globs under `config['worker_env']['pass']`, then `setup['env']` on top.
-    `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session."""
+    `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session.
+    `HOME` is not inherited: unless `worker_env.pass` restores it, it is set to an isolated
+    scratch home (`worker_home`), so neither the worker nor a branch's own test suite can read
+    the operator's gh token, git credentials or ssh keys."""
     patterns = pass_env_patterns(config)
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
     env.pop("CLAUDECODE", None)
+    if "HOME" not in env:  # dropped from PASS_ENV; give an isolated scratch home, not the operator's
+        env["HOME"] = worker_home(worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env
@@ -78,7 +110,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     stamp = setup_stamp(command)
     if marker.exists() and marker.read_text().strip() == stamp:
         return
-    env = dict(env) if env is not None else scrubbed_env({}, setup)
+    env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     timeout = int((setup or {}).get("timeout_seconds") or 600)

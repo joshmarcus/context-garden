@@ -240,3 +240,36 @@ def test_red_ci_holds_the_merge_with_reason_on_the_task(sched, fake_github):
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     blocked = sched.state.get("DM-001").get("automerge_blocked")
     assert blocked and "checks" in blocked
+
+
+# ---- guarded-path hold (CG-194) ---------------------------------------------
+def _commit_in_worktree(wt, rel, content="x\n"):
+    import subprocess
+    p = wt / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    for args in (["add", "-A"], ["commit", "-q", "-m", f"touch {rel}"]):
+        subprocess.run(["git", "-c", "user.email=t@e", "-c", "user.name=t", *args],
+                       cwd=wt, check=True, capture_output=True, text=True)
+
+
+def test_automerge_holds_when_diff_touches_guarded_paths(sched, fake_github):
+    """A PR whose diff touches garden*.yaml, **/tasks/, .github/ or principles/ is too
+    sensitive to merge unattended: automerge holds it for a person even with every gate green."""
+    t, st, pr = _in_review(sched, fake_github)
+    _commit_in_worktree(sched.worktree_for(t), ".github/workflows/ci.yml", "on: push\n")
+    sched.tick()
+    assert fake_github.merged == []
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    blocked = sched.state.get("DM-001").get("automerge_blocked")
+    assert blocked and "guarded paths" in blocked and ".github/workflows/ci.yml" in blocked
+
+
+def test_touches_guarded_path_predicate():
+    from garden.scheduler.poll import _touches_guarded_path
+    for p in ("garden.yaml", "garden.local.yaml", "sub/garden.work.yaml",
+              "demo/p1/tasks/x.md", ".github/workflows/ci.yml", "principles/00-index.md"):
+        assert _touches_guarded_path(p), p
+    for p in ("src/garden/foo.py", "README.md", "docs/tasks.md", "principles.md",
+              "not_garden.yaml.txt"):
+        assert not _touches_guarded_path(p), p

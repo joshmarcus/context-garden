@@ -225,18 +225,26 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
-    env = scrubbed_env({}, {"env": {"WIDGET_HOME": "/opt/widget"}})
+    env = scrubbed_env({}, {"env": {"WIDGET_HOME": "/opt/widget"}}, worktree="/wt/T-1")
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "GARDEN_ENV", "CLAUDECODE"):
         assert name not in env, name
     assert env["ANTHROPIC_API_KEY"] == "sk-ant" and env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-    assert env["LC_ALL"] == "C.UTF-8" and env["PATH"] == os.environ["PATH"] and env["HOME"] == os.environ["HOME"]
+    assert env["LC_ALL"] == "C.UTF-8" and env["PATH"] == os.environ["PATH"]
+    # HOME is not the operator's: it is an isolated scratch home beside the worktree, so the
+    # worker cannot read ~/.config/gh, ~/.git-credentials or ~/.ssh.
+    assert env["HOME"] != os.environ["HOME"]
+    assert env["HOME"] == "/wt/.garden-home-T-1"
     assert env["WIDGET_HOME"] == "/opt/widget"  # setup.env rides on top
     # worker_env.pass adds names and globs; "*" restores full inheritance
-    env = scrubbed_env({"worker_env": {"pass": ["AWS_*", "SSH_AUTH_SOCK"]}})
+    env = scrubbed_env({"worker_env": {"pass": ["AWS_*", "SSH_AUTH_SOCK"]}}, worktree="/wt/T-1")
     assert env["AWS_SECRET_ACCESS_KEY"] == "aws_secret" and env["SSH_AUTH_SOCK"] == "/tmp/agent.sock"
     assert "GITHUB_TOKEN" not in env
-    env = scrubbed_env({"worker_env": {"pass": ["*"]}})
+    env = scrubbed_env({"worker_env": {"pass": ["*"]}}, worktree="/wt/T-1")
     assert env["GITHUB_TOKEN"] == "ghp_secret" and "CLAUDECODE" not in env
+    assert env["HOME"] == os.environ["HOME"]  # "*" (or "HOME") restores the operator's home
+    # naming HOME explicitly restores it too
+    env = scrubbed_env({"worker_env": {"pass": ["HOME"]}}, worktree="/wt/T-1")
+    assert env["HOME"] == os.environ["HOME"]
 
 
 def test_run_setup_runs_in_the_scrubbed_env(tmp_path, monkeypatch):
@@ -321,4 +329,39 @@ def test_local_worker_does_not_inherit_the_schedulers_credentials(sched, monkeyp
         assert name not in env, name
     assert env["ANTHROPIC_API_KEY"] == "sk-ant" and env["GARDEN_RUN_ID"]
     assert "GARDEN_ROOT" in env and not (Path(env["GARDEN_ROOT"]) / "garden.yaml").exists()
+    # HOME is an isolated scratch home beside the worktree, never the operator's
+    assert env["HOME"] != os.environ.get("HOME") and ".garden-home-" in env["HOME"]
     assert (sched.runs.latest("DM-001").path / "exit_code").read_text().strip() == "0"
+
+
+def test_check_command_runs_under_an_isolated_home(tmp_path, monkeypatch):
+    """CG-194: a `command` check runs the branch's own code, so HOME must be an isolated
+    scratch home beside the worktree, not the operator's — a branch's test suite cannot read
+    ~/.config/gh, ~/.git-credentials or ~/.ssh."""
+    from garden.checks import run_check
+
+    worktree = tmp_path / "worktrees" / "T-1"
+    worktree.mkdir(parents=True)
+    result = run_check(
+        {"name": "home-probe",
+         "command": "python3 -c \"import os, json; print(json.dumps({'summary': os.environ.get('HOME', '')}))\""},
+        {"branch": "feat"}, cwd=worktree,
+    )
+    assert result["status"] == "pass"
+    assert result["summary"] != os.environ.get("HOME")
+    assert result["summary"] == str(tmp_path / "worktrees" / ".garden-home-T-1")
+
+
+def test_check_command_home_restored_by_worker_env_pass(tmp_path, monkeypatch):
+    """`worker_env.pass: [HOME]` restores the operator's home for checks, the escape hatch for
+    a tool that needs it."""
+    from garden.checks import run_check
+
+    worktree = tmp_path / "worktrees" / "T-1"
+    worktree.mkdir(parents=True)
+    result = run_check(
+        {"name": "home-probe",
+         "command": "python3 -c \"import os, json; print(json.dumps({'summary': os.environ.get('HOME', '')}))\""},
+        {"branch": "feat"}, cwd=worktree, config={"worker_env": {"pass": ["HOME"]}},
+    )
+    assert result["status"] == "pass" and result["summary"] == os.environ.get("HOME")
