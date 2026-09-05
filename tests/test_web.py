@@ -777,6 +777,16 @@ def test_config_page_renders(garden):
     assert "Config" in r.text
 
 
+def test_config_page_names_live_and_restart_keys(garden):
+    """CG-192: the page says config is re-read each tick without a restart, and names the
+    keys that still need one (RESTART_KEYS)."""
+    c = client(garden)
+    text = c.get("/config").text
+    assert "within one tick" in text and "no restart" in text
+    assert "Needs a restart" in text
+    assert "work_dir" in text and "tick_interval" in text
+
+
 def test_pause_resume_web(garden):
     c = client(garden)
     # not paused by default

@@ -330,7 +330,14 @@ class Scheduler(
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
-        self.store.invalidate()
+        self.store.invalidate()  # re-reads task files, and garden.yaml if it changed (CG-192)
+        self.cfg = self.store.config  # pick up a live garden.yaml edit without a restart
+        changed = self.store.last_config_change
+        if changed:
+            self.store.last_config_change = {}  # consumed: log it once
+            keys = ", ".join(sorted(changed))
+            self.log(f"garden.yaml reloaded; changed: {keys}")
+            self.events.emit("config_reloaded", "", keys=sorted(changed))
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         with self._step(rep, "reap"):
             try:
