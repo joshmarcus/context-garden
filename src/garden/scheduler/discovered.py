@@ -42,14 +42,20 @@ class DiscoveredMixin:
             body = str(item.get("body") or "").strip() or f"## Goal\n\n{title}\n"
             body += f"\n\n## Provenance\n\nDiscovered by {task.id} ({task.title}) during run `{run.run_id}`."
             diff = str(item.get("difficulty") or "medium")
+            try:
+                deferred = bool(self.store.phase(task.product, task.phase).frozen)
+            except KeyError:
+                deferred = False
             t = self.store.create_task(
                 task.product, task.phase, title, body,
                 priority=int(item.get("priority") or task.priority), reading=[str(r) for r in (item.get("reading") or [])] or list(task.reading),
-                status="ready" if (blocking and auto_blocking) else "draft",
+                status="draft" if deferred else ("ready" if (blocking and auto_blocking) else "draft"),
                 difficulty=diff if diff in DIFFICULTIES else "medium",
             )
             t.discovered_from = task.id
-            t.log(f"discovered by {task.id}" + (" (blocking)" if blocking else ""))
+            note = f"discovered by {task.id}"
+            note += "; deferred by the freeze" if deferred else (" (blocking)" if blocking else "")
+            t.log(note)
             self.store.save(t)
             existing.add(title.lower())
             created.append(t)
