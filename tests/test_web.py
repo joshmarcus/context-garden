@@ -178,6 +178,32 @@ def test_scheduler_errors_flash_a_message_instead_of_500(garden):
     assert "has no pending worker decision to reject" in c.get(r.headers["location"]).text
 
 
+def test_a_page_render_exception_flashes_instead_of_500(garden, monkeypatch, caplog):
+    """CG-185: a GET whose page handler raises while building the page (here, forced by a
+    broken markdown renderer — a stand-in for any template/render-time failure, the same
+    failure mode as the tojson-on-Undefined incident) must show the person a page with the
+    header and navigation still up and a flash explaining something went wrong, not a bare 500
+    with a traceback body — and the traceback must reach the log with the request path."""
+    import logging
+
+    from garden.web.pages import task as task_page
+
+    def boom(text):
+        raise RuntimeError("boom: broken markdown render")
+
+    monkeypatch.setattr(task_page, "render_md", boom)
+    # ServerErrorMiddleware always re-raises after handing our handler's response to the
+    # client (so a real server still logs it); TestClient must not re-raise it into the test.
+    c = TestClient(create_app(Store(garden), watch=False), raise_server_exceptions=False)
+    with caplog.at_level(logging.ERROR, logger="garden.web"):
+        r = c.get("/tasks/DM-001")
+    assert r.status_code == 500
+    assert "Something went wrong rendering this page" in r.text
+    assert "Inbox" in r.text and "wordmark" in r.text  # the shell (nav/header) still renders
+    assert "Traceback" not in r.text and "RuntimeError" not in r.text  # no raw traceback to the person
+    assert any("/tasks/DM-001" in rec.message and rec.exc_info for rec in caplog.records)
+
+
 def test_unexpected_action_exception_shows_a_generic_message(garden, monkeypatch):
     from garden.scheduler import Scheduler
 
@@ -307,6 +333,21 @@ def test_phase_page_shows_retro_waiting_for_personas(garden):
 
     c = client(garden)
     assert "retro: waiting for personas (0 of 3)" in c.get("/phases/demo/p1").text
+
+
+def test_inbox_and_trials_render_with_no_products_or_trials(tmp_path):
+    """CG-185: the strict template environment means a page that forgets a context value a
+    `tojson` site (or anything else) needs raises instead of silently defaulting — so these
+    two edge-case renders (an inbox on a garden with no products at all, and the trials
+    leaderboard with nothing recorded) are the cheapest proof that every page still supplies
+    what its templates need on the empty path, not only the happy one with fixture data."""
+    from garden.store import Store
+
+    c = TestClient(create_app(Store(tmp_path), watch=False))
+    home = c.get("/")
+    assert home.status_code == 200 and "Inbox zero" in home.text
+    trials = c.get("/trials")
+    assert trials.status_code == 200 and "No trials yet" in trials.text
 
 
 def test_trials_page_and_persona_form(garden):
