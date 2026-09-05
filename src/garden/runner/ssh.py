@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runs import Run
-from .base import Runner, RunnerError, pass_env_patterns, setup_stamp
+from .base import Runner, RunnerError, config_dir_env, pass_env_patterns, setup_stamp
 
 REMOTE_SCRIPT = r"""
 set -e
@@ -81,6 +81,12 @@ garden_scrub() {{
   set +f
   unset CLAUDECODE 2>/dev/null || :
   if [ -z "${{HOME:-}}" ]; then mkdir -p "$GARDEN_WORKER_HOME" 2>/dev/null || :; export HOME="$GARDEN_WORKER_HOME"; fi
+  # The isolated HOME above would also hide each harness's own saved login (claude's
+  # ~/.claude/.credentials.json, codex's ~/.codex): default each to the value
+  # runner.base.config_dir_env resolves (the operator's real home, or a worker_env.config_dirs
+  # override), unless the remote login environment already carries it through the CLAUDE_* /
+  # CODEX_* allowlist above.
+{config_dirs}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
 }}
@@ -165,11 +171,15 @@ class SSHRunner(Runner):
         setup_env = "\n".join(
             f"  export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
         )
+        config_dirs = "\n".join(
+            f'  if [ -z "${{{var}:-}}" ]; then export {var}={shlex.quote(val)}; fi'
+            for var, val in config_dir_env(self.config).items()
+        )
         env_allow = shlex.quote(" ".join(pass_env_patterns(self.config)))
         script = REMOTE_SCRIPT.format(
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
             brief=brief_text, harness=harness_cmd, run_id=run.run_id, env_allow=env_allow,
-            setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
+            config_dirs=config_dirs, setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
             setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
         )

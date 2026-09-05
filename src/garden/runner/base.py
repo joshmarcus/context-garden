@@ -80,6 +80,22 @@ DEFAULT_CONFIG_DIRS: dict[str, str] = {
 }
 
 
+def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
+    """The `CLAUDE_CONFIG_DIR` / `CODEX_HOME` defaults `scrubbed_env` applies — each built-in
+    harness's config-dir variable, defaulting to the *operator's* real home, overridden by
+    `worker_env.config_dirs` — keyed by variable name. Factored out so the ssh runner's remote
+    script (`runner/ssh.py`) can thread the same resolved values in as `export` lines: the
+    remote login environment cannot compute "the operator's real home" itself, and a custom
+    `worker_env.config_dirs` path is exactly what a remote host needs when its credentials
+    live somewhere other than the default."""
+    overrides = {str(k): str(v) for k, v in (((config or {}).get("worker_env") or {}).get("config_dirs") or {}).items()}
+    real_home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+    env = {var: overrides.get(var, str(real_home / rel)) for var, rel in DEFAULT_CONFIG_DIRS.items()}
+    for var, val in overrides.items():  # a custom harness's own key, named explicitly
+        env.setdefault(var, val)
+    return env
+
+
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
                  worktree: Path | str | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
@@ -101,13 +117,8 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     env.pop("CLAUDECODE", None)
     if "HOME" not in env:  # dropped from PASS_ENV; give an isolated scratch home, not the operator's
         env["HOME"] = worker_home(worktree)
-    overrides = {str(k): str(v) for k, v in (((config or {}).get("worker_env") or {}).get("config_dirs") or {}).items()}
-    real_home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
-    for var, rel in DEFAULT_CONFIG_DIRS.items():
-        if var not in env:  # not already passed through by the operator's own environment
-            env[var] = overrides.get(var, str(real_home / rel))
-    for var, val in overrides.items():  # a custom harness's own key, named explicitly
-        env.setdefault(var, val)
+    for var, val in config_dir_env(config).items():
+        env.setdefault(var, val)  # not already passed through by the operator's own environment
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env
