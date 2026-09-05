@@ -256,15 +256,37 @@ class ReapMixin:
         st = self.state.get(task.id)
         force = bool(st.pop("force_push", False))
         try:
-            note = gitops.push(worktree, branch, force=force, base=base)
+            note = gitops.push(worktree, branch, force=force, base=base, lease=run.start_head)
             if note:
                 self.log(f"{task.id}: {note}")
+        except gitops.LeaseRejected as e:
+            if not self._retry_lease_push(task, run, worktree, base, e):
+                self._transition(task, Status.FAILED, f"push failed: {e}{cost}")
+                rep.transitions.append(f"{task.id} -> failed (push)")
+                return
         except gitops.GitError as e:
             self._transition(task, Status.FAILED, f"push failed: {e}{cost}")
             rep.transitions.append(f"{task.id} -> failed (push)")
             return
         task.branch = branch
         self._after_push(task, run, worktree, branch, base, result, rep, cost)
+
+    def _retry_lease_push(self, task: Task, run: Run, worktree: Path, base: str, err: gitops.LeaseRejected) -> bool:
+        """A push after a worker run was rejected: `origin/<branch>` moved past the head this run
+        started from — another writer (an earlier revise round, the merge queue's own rebase)
+        pushed to the same branch meanwhile (CG-220). The worker's own commits are real, finished
+        work; only the base under them moved, so bring them onto the new head mechanically (no
+        model — the same rebase-and-record helper every other mechanical rebase shares) and push
+        once more. Returns True when that resolved cleanly and the caller should carry on to the
+        PR as usual; False (a genuine conflict, or a second failure) and the caller fails the task
+        the way a plain push failure always has."""
+        self.events.emit("lease_rejected", task.id, run=run.run_id, branch=err.branch,
+                         expected=err.expected, actual=err.actual)
+        self.log(f"{task.id}: push rejected on {err.branch} (expected origin at {err.expected[:12] or '?'}, "
+                 f"now at {err.actual[:12] or '?'}); rebasing this run's commits onto the new head and retrying once")
+        outcome = self._rebase_and_record(task, base, wt=worktree,
+                                          reason=f"push rejected; origin/{err.branch} moved during this run")
+        return outcome.status == "clean"
 
     def _pre_pr_specs(self, task: Task) -> list[dict[str, Any]]:
         """The pre-PR checks for this product: the configured `checks.pre_pr`, or — when none
