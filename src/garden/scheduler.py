@@ -2231,13 +2231,19 @@ class Scheduler:
         raise RuntimeError("triage needs --ready or --changes")
 
     # ---- manual controls ---------------------------------------------------
-    def cancel(self, task: Task, note: str = "cancelled") -> None:
+    def _cancel_active_run(self, task: Task) -> None:
+        """Kill the task's active run and mark it cancelled so it stops occupying a slot.
+        Used when a task is pulled out from under a live run (cancel, or a hand retry that
+        abandons the current run for a fresh one)."""
         run = self.runs.latest(task.id)
         if run and run.status == "running":
             run.kill()
             run.status = "cancelled"
             run.finished_at = now_iso()
             run.save()
+
+    def cancel(self, task: Task, note: str = "cancelled") -> None:
+        self._cancel_active_run(task)
         self._transition(task, Status.CANCELLED, note)
 
     def _grant_one_more_review_round(self, st: _TaskState) -> bool:
@@ -2275,6 +2281,11 @@ class Scheduler:
             self.state.save()
             return
         task.attempts = 0
+        if task.status == Status.RUNNING:
+            # Abandoning a live run for a fresh one: cancel it so its slot frees up. A run
+            # that already finished on disk but has not been reaped is still "running" here
+            # and would otherwise hold a slot until the next reap, blocking the new dispatch.
+            self._cancel_active_run(task)
         self._transition(task, Status.READY, "reset to ready by hand")
         self.state.save()
 
