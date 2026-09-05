@@ -19,11 +19,49 @@ class Store:
         self.config = config or Config.load(self.root)
         self._tasks: dict[str, Task] | None = None
         self._products: list[Product] | None = None
+        self._config_sig = self._config_signature()
+        # keys whose value changed in the most recent reload, so the scheduler can log them once.
+        # Set only when a reload actually happens (never cleared by a no-op invalidate), so a
+        # reload triggered by an action's invalidate still gets logged by the next tick that
+        # consumes it. The scheduler clears it after logging.
+        self.last_config_change: dict[str, tuple[object, object]] = {}
 
     # ---- discovery ---------------------------------------------------------
     def invalidate(self) -> None:
+        self.reload_config_if_changed()
         self._tasks = None
         self._products = None
+
+    def _config_signature(self) -> dict[str, int]:
+        """The mtime (nanoseconds) of each garden*.yaml file that currently exists, keyed by
+        name. A new or removed file changes the key set; an edit changes an mtime — either way
+        the signature differs and reload_config_if_changed() re-reads the config."""
+        sig: dict[str, int] = {}
+        for name in self.config.source_names():
+            try:
+                sig[name] = (self.root / name).stat().st_mtime_ns
+            except OSError:
+                pass
+        return sig
+
+    def reload_config_if_changed(self) -> dict[str, tuple[object, object]]:
+        """Re-read garden.yaml (and its env/local overlays) from disk when any of them has
+        changed since the last read, so an edit takes effect within one tick without a restart
+        (see docs/architecture.md and RESTART_KEYS for the keys this does *not* cover). Returns
+        (and records on `last_config_change`) the top-level keys whose value changed, so the
+        caller can log them; returns an empty mapping when nothing changed."""
+        sig = self._config_signature()
+        if sig == self._config_sig:
+            return {}
+        old = self.config.data
+        self.config = Config.load(self.root, env=self.config.env)
+        self._config_sig = sig
+        new = self.config.data
+        changed = {k: (old.get(k), new.get(k)) for k in set(old) | set(new) if old.get(k) != new.get(k)}
+        self.last_config_change = changed
+        self._tasks = None
+        self._products = None
+        return changed
 
     def products(self) -> list[Product]:
         if self._products is None:

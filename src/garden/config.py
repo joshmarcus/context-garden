@@ -10,6 +10,18 @@ import yaml
 
 CONFIG_NAME = "garden.yaml"
 
+# Config keys read once at startup — either when the Scheduler is constructed or when the
+# watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
+# garden.yaml reload (see Store.reload_config_if_changed). Changing one needs a restart;
+# everything else takes effect on the next tick. The Configuration page names both sets.
+RESTART_KEYS: list[str] = [
+    "work_dir",        # fixes the .garden state/run/worktree/repo paths at construction
+    "tick_interval",   # garden watch / serve reads it once when the loop starts
+    "github.use_gh", "github.bot_logins", "github.bot_notice_patterns",
+    "github.trusted_authors", "github.reviewers",  # baked into the GitHub client at construction
+    "upgrade.package", "upgrade.pip",  # baked into the pinned-tool installer at construction
+]
+
 NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
 
 
@@ -103,8 +115,7 @@ class Config:
         env = os.environ.get("GARDEN_ENV", "") if env is None else env
         data = dict(DEFAULTS)
         sources: list[str] = []
-        names = [CONFIG_NAME] + ([f"garden.{env}.yaml"] if env else []) + ["garden.local.yaml"]
-        for name in names:
+        for name in _source_names(env):
             p = root / name
             if p.exists():
                 raw = yaml.safe_load(p.read_text()) or {}
@@ -113,6 +124,12 @@ class Config:
                 data = _merge(data, raw)
                 sources.append(name)
         return cls(root=root, data=data, sources=sources, env=env)
+
+    def source_names(self) -> list[str]:
+        """The garden.yaml / garden.<env>.yaml / garden.local.yaml file names this config is
+        layered from, in load order (whether or not each exists). Store watches their mtimes
+        to reload on change."""
+        return _source_names(self.env)
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data
@@ -244,6 +261,10 @@ class Config:
         if new != old and old.exists() and not new.exists():
             return old
         return new
+
+
+def _source_names(env: str) -> list[str]:
+    return [CONFIG_NAME] + ([f"garden.{env}.yaml"] if env else []) + ["garden.local.yaml"]
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
