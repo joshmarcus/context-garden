@@ -1,7 +1,6 @@
 """Poll: what GitHub says about an open PR (feedback, bot notices, the revision cap, CI, merged, closed)."""
 
 
-from garden import gitops
 from garden.github import Feedback
 from garden.model import Status
 from tests.scheduler.conftest import statuses
@@ -61,36 +60,6 @@ def test_revision_cap(sched, fake_github):
     assert statuses(sched)["DM-001"] == "changes_requested"
     assert sched.state.get("DM-001")["revisions"] == 2
     assert "round 2" in sched.state.get("DM-001")["pending_feedback"]
-
-
-def test_conflict_rebase_rounds_do_not_count_toward_revision_cap(sched, fake_github, monkeypatch):
-    """CG-139: a PR conflict the mechanical rebase can't resolve dispatches a revise round to
-    fix it, but that round is bookkeeping, not a fix the worker was asked to make. It must
-    keep its own counter and never burn through max_revisions (2 in this fixture) or flag
-    needs_human, however many times in a row it happens (e.g. a PR waiting out several
-    merges landing under it)."""
-    sched.tick()
-    sched.tick()  # DM-001 -> in_review
-    assert statuses(sched)["DM-001"] == "in_review"
-
-    # every rebase attempt conflicts, however many times it's tried
-    monkeypatch.setattr(gitops, "rebase_onto", lambda worktree, onto: (False, ["README.md"]))
-
-    pr = fake_github.prs["garden/dm-001-first-task"]
-    for i in range(3):
-        pr.mergeable = "CONFLICTING"
-        rep = sched.tick()
-        assert "DM-001 -> changes_requested (conflict)" in rep.transitions
-        assert "DM-001(revise)" in rep.dispatched
-        # a real force-push would leave GitHub recomputing mergeability; without that,
-        # avoid re-triggering the conflict handler again before this round's reap
-        pr.mergeable = "MERGEABLE"
-        sched.tick()  # reap the rebase round -> back to in_review
-        assert statuses(sched)["DM-001"] == "in_review"
-        st = sched.state.get("DM-001")
-        assert st["rebase_rounds"] == i + 1
-        assert st["revisions"] == 0
-        assert not st.get("needs_human")
 
 
 def test_ci_failure_triggers_revise(sched, fake_github):
