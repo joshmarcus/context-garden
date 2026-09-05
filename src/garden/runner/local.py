@@ -118,7 +118,7 @@ class LocalRunner(Runner):
 
     def collect(self, run: Run) -> dict[str, Any]:
         assert self.harness is not None
-        return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md")
+        return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md", model=run.model)
 
     def doctor(self) -> list[str]:
         if os.name == "nt":

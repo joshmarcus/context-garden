@@ -202,6 +202,7 @@ class TrialsMixin:
         run.result = collected.get("result") or {}
         run.usage = collected.get("usage") or {}
         run.cost_usd = collected.get("cost_usd")
+        run.model = str(collected.get("model") or run.model)
         run.error = collected.get("error") or ""
         c["cost"] = run.cost_usd
         c["input_tokens"] = int((run.usage or {}).get("input_tokens", 0) or 0)

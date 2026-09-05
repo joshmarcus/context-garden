@@ -109,8 +109,11 @@ class ReapMixin:
         run.result = collected.get("result") or {}
         run.usage = collected.get("usage") or {}
         run.cost_usd = collected.get("cost_usd")
+        run.model = str(collected.get("model") or run.model)
         run.error = collected.get("error") or ""
         run.session_id = str(collected.get("session_id") or run.session_id or "")
+        if collected.get("missing_price"):
+            self.log(f"{task.id}: no price configured for model {collected['missing_price']!r}; cost_usd left null")
         final_text = collected.get("final_text") or ""
         if final_text and not (run.path / "final.md").exists():
             (run.path / "final.md").write_text(final_text)
@@ -673,7 +676,10 @@ class ReapMixin:
                 collected = runner.collect(run)
                 run.usage = collected.get("usage") or {}
                 run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
                 run.error = collected.get("error") or run.error
+                if collected.get("missing_price"):
+                    self.log(f"{run.task_id}: no price configured for model {collected['missing_price']!r}; cost_usd left null")
             except Exception as e:  # noqa: BLE001
                 run.error = run.error or str(e)
             run.status = "done" if run.exit_code in (0, None) else "failed"

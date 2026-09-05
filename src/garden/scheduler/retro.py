@@ -264,6 +264,7 @@ class RetroMixin:
                     collected = runner.collect(run)
                     run.usage = collected.get("usage") or {}
                     run.cost_usd = collected.get("cost_usd")
+                    run.model = str(collected.get("model") or run.model)
                     run.error = collected.get("error") or ""
                     final = collected.get("final_text") or ""
                     if final and not (run.path / "final.md").exists():
