@@ -239,3 +239,45 @@ def test_brief_gaps_flags_unresolved_reading_path(garden):
     gaps = brief_gaps(store, t)
     assert any("missing.md" in g for g in gaps)
     assert not any("spec.md`" in g for g in gaps)  # the resolvable one is not flagged
+
+
+# ---- resolve_reading refuses absolute and parent-escaping paths (CG-239) ----
+
+
+def test_resolve_reading_refuses_an_absolute_path(garden):
+    from garden.brief import resolve_reading
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    p, base = resolve_reading(store, task, "/etc/passwd")
+    assert p is None and base is None
+
+
+def test_resolve_reading_refuses_a_parent_escape(garden):
+    from garden.brief import resolve_reading
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    (garden.parent / "outside.md").write_text("secret\n")
+    p, base = resolve_reading(store, task, "../outside.md")
+    assert p is None and base is None
+
+
+def test_brief_gaps_flags_an_absolute_reading_entry(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works and is tested.\n"
+    t = _task_with(store, body, reading=["/etc/passwd"])
+    gaps = brief_gaps(store, t)
+    assert any("/etc/passwd" in g for g in gaps)
+
+
+def test_brief_gaps_flags_a_parent_escaping_reading_entry(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works and is tested.\n"
+    t = _task_with(store, body, reading=["../outside.md"])
+    gaps = brief_gaps(store, t)
+    assert any("../outside.md" in g for g in gaps)
