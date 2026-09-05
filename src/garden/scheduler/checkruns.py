@@ -199,19 +199,15 @@ class CheckRunMixin:
             self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; waiting for the base to go green, no revise round{cost}", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (base broken)")
             return
-        # The base moved: rebase onto it (git, cheap) and re-run the checks as a fresh check run.
-        try:
-            ok, _ = gitops.rebase_onto(worktree, gitops.base_ref(worktree, base))
-        except gitops.GitError:
-            ok = False
-        if not ok:
+        # The base moved: rebase onto it (git, cheap) through the one rebase-and-record helper
+        # (CG-197, so the rebase is counted) and re-run the checks as a fresh check run.
+        outcome = self._rebase_and_record(task, base, wt=worktree)
+        if outcome.status == "conflict":
             # the rebase didn't apply cleanly; let a revise round resolve it (not a revision, CG-131).
             self._start_check_revise(task, failed, rep, cost, is_rebase=True)
             return
-        try:
-            gitops.push(worktree, branch, force=True)
-        except gitops.GitError as e:
-            self.log(f"{task.id}: push after base rebase failed: {e}")
+        if outcome.status == "error":
+            return  # push failure already logged by the helper
         self._dispatch_check_run(
             task, worktree=worktree, branch=branch, base=base, specs=self._pre_pr_specs(task),
             stage="rebase_recheck", rep=rep,

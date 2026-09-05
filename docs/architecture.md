@@ -343,9 +343,13 @@ files under `tasks/` must not be hand-edited.
     is the whole round: a `rebase` run record with no harness call, a force-push with a
     lease and a re-run of the pre-PR checks. Only a textual conflict starts an agent, on the
     easy tier, with a minimal brief carrying the conflicting hunks, the task's goal and the
-    rule "resolve the conflict, change nothing else". A rebase round has its own counter
-    (`state[task].rebases`), its own line in `garden metrics` (rebases per merge, rebase
-    cost), and never counts against `max_revisions` or `review.max_rounds`.
+    rule "resolve the conflict, change nothing else". Every mechanical path — a conflict
+    rebase, the pre-merge rebase, a stacked-child restack and a moved-base re-check — goes
+    through one recorded helper (`RebaseMixin._rebase_and_record`) so each records a `rebase`
+    run (marked `how="mechanical"`) and none is left uncounted. A rebase round has its own
+    counter (`state[task].rebases`), its own line in `garden metrics` (rebases per merge,
+    rebase cost, and mechanical vs agent counted separately, all scoped to the phase filter),
+    and never counts against `max_revisions` or `review.max_rounds`.
   - **No re-review when the diff is unchanged.** After any rebase the diff against the new
     base is compared with `last_diff_hash` from the reviewed push. When they match, the last
     verdict is kept, `rebased; diff unchanged; verdict kept` is logged, and no review is

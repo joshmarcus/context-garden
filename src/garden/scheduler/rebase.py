@@ -24,6 +24,9 @@ Three rules live here (see docs/architecture.md, beside stacking):
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from pathlib import Path
+
 from .. import gitops
 from ..github import GitHubError, PRInfo, mark_garden_comment
 from ..model import Status, Task, now_iso
@@ -32,8 +35,89 @@ from ..runs import Run
 from .report import TickReport
 
 
+@dataclass
+class RebaseOutcome:
+    """The result of the one mechanical-rebase primitive (`_rebase_and_record`). `status` is
+    `clean` (rebased, force-pushed, a `rebase` run recorded in `run`), `conflict` (a textual
+    conflict; `files`/`hunks` carry it, nothing pushed, no run), `error` (the force-push failed;
+    `run` is the failed record) or `current` (skip_if_current and the branch is already on the
+    base's tip with the reviewed diff; nothing pushed, no run)."""
+
+    status: str
+    wt: Path
+    branch: str
+    run: Run | None = None
+    files: list[str] = field(default_factory=list)
+    hunks: dict[str, str] = field(default_factory=dict)
+
+
 class RebaseMixin:
-    # ---- mechanical rebase (rule 1) ----------------------------------------
+    # ---- the one mechanical-rebase primitive (rule 1) ----------------------
+    def _rebase_and_record(self, task: Task, base: str, *, wt: Path | None = None,
+                           skip_if_current: bool = False, reason: str = "") -> RebaseOutcome:
+        """Bring `task`'s branch onto `base` with no model, and on a clean apply force-push with a
+        lease and record a token-free `rebase` run — so every rebase path is counted (CG-197). This
+        is the single recorded helper the four rebase sequences share (a plain conflict rebase, the
+        pre-merge rebase, a stacked-child restack and a moved-base re-check); each caller acts on the
+        returned `RebaseOutcome` and owns its own domain events and continuation. Commits that live
+        only on `origin/<branch>` are folded in first so the force-push never discards them. The
+        recorded run is emitted with `how="mechanical"` so metrics can tell it apart from an agent
+        rebase. `skip_if_current` returns `current` (no push, no run) when the branch already sits on
+        the base's tip with the reviewed diff, so the same head is never needlessly re-pushed."""
+        st = self.state.get(task.id)
+        branch = task.branch or task.default_branch()
+        wt = wt or self.worktree_for(task)
+        repo = self.repo_for(task)
+        try:
+            if not wt.exists():
+                gitops.prepare_worktree(repo, wt, branch, base)
+            ok, files = gitops.sync_remote_branch(wt, branch)
+            hunks: dict[str, str] = {}
+            if ok:
+                ok, files, hunks = gitops.rebase_onto_capture(wt, gitops.base_ref(wt, base))
+        except gitops.GitError as e:
+            ok, files, hunks = False, [str(e)], {}
+        if not ok:
+            return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks)
+        if skip_if_current:
+            # A branch already on the base's tip whose diff is exactly what was reviewed: the
+            # rebase above was a no-op, origin already holds this head, and the verdict still
+            # applies. Nothing to rebase or push (a force-push would only re-push the same sha and
+            # needlessly restart the rollup). A diff that no longer matches the reviewed hash falls
+            # through to the push, which re-reviews it.
+            try:
+                head_now = gitops.rev_parse(wt, "HEAD")
+                remote_now = gitops.rev_parse(wt, f"origin/{branch}")
+                diff_h = gitops.diff_hash(wt, base)
+            except gitops.GitError:
+                head_now, remote_now, diff_h = "", "", ""
+            if head_now and head_now == remote_now and diff_h and diff_h == st.get("last_diff_hash"):
+                if reason:
+                    task.log(f"{reason}; already on {base}'s tip; not rebased or pushed")
+                    self.store.save(task)
+                return RebaseOutcome("current", wt, branch)
+        run = self.runs.new_run(task.id, "local", mode="rebase")
+        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+        try:
+            note = gitops.push(wt, branch, force=True)
+            if note:
+                self.log(f"{task.id}: {note}")
+        except gitops.GitError as e:
+            run.status = "failed"
+            run.error = str(e)
+            run.finished_at = now_iso()
+            run.save()
+            self.log(f"{task.id}: rebase push failed: {e}")
+            return RebaseOutcome("error", wt, branch, run=run)
+        run.status = "done"
+        run.cost_usd = 0.0
+        run.finished_at = now_iso()
+        run.diff_stat = gitops.diff_stat(wt, base)
+        run.save()
+        st["rebases"] = int(st.get("rebases", 0)) + 1
+        self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done", how="mechanical")
+        return RebaseOutcome("clean", wt, branch, run=run)
+
     def mechanical_rebase(self, task: Task, base: str, rep: TickReport, *, reason: str,
                           skip_if_current: bool = False, merge_head: bool = False) -> str:
         """Try to bring `task`'s branch onto `base` with no model. On a clean apply: record a
@@ -47,61 +131,14 @@ class RebaseMixin:
         only when `skip_if_current`), `conflict` (an agent was dispatched), `error` (the push
         failed). `merge_head` marks the pre-merge rebase: its continuation holds the head in
         flight until its rollup goes green."""
-        st = self.state.get(task.id)
-        branch = task.branch or task.default_branch()
-        wt = self.worktree_for(task)
-        repo = self.repo_for(task)
-        try:
-            if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, base)
-            # Fold in commits that exist only on origin/<branch> first, so the force-push below
-            # never discards them (mirrors the restack path).
-            ok, files = gitops.sync_remote_branch(wt, branch)
-            hunks: dict[str, str] = {}
-            if ok:
-                ok, files, hunks = gitops.rebase_onto_capture(wt, gitops.base_ref(wt, base))
-        except gitops.GitError as e:
-            ok, files, hunks = False, [str(e)], {}
-        if not ok:
-            self.events.emit("rebase", task.id, base=base, files=files, resolved=False, how="agent")
-            self._dispatch_rebase_agent(task, base, files, hunks, rep, reason)
+        outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
+        if outcome.status == "conflict":
+            self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")
+            self._dispatch_rebase_agent(task, base, outcome.files, outcome.hunks, rep, reason)
             return "conflict"
-        if skip_if_current:
-            # A branch already on the base's tip whose diff is exactly what was reviewed: the
-            # rebase above was a no-op, origin already holds this head, and the verdict still
-            # applies. Nothing to rebase or push (a force-push would only re-push the same sha and
-            # needlessly restart the rollup), so merge it as it stands. A diff that no longer
-            # matches the reviewed hash falls through to the normal path, which re-reviews it.
-            try:
-                head_now = gitops.rev_parse(wt, "HEAD")
-                remote_now = gitops.rev_parse(wt, f"origin/{branch}")
-                diff_h = gitops.diff_hash(wt, base)
-            except gitops.GitError:
-                head_now, remote_now, diff_h = "", "", ""
-            if head_now and head_now == remote_now and diff_h and diff_h == st.get("last_diff_hash"):
-                task.log(f"{reason}; already on {base}'s tip; not rebased or pushed")
-                self.store.save(task)
-                return "current"
-        run = self.runs.new_run(task.id, "local", mode="rebase")
-        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
-        try:
-            note = gitops.push(wt, branch, force=True)
-            if note:
-                self.log(f"{task.id}: {note}")
-        except gitops.GitError as e:
-            run.status = "failed"
-            run.error = str(e)
-            run.finished_at = now_iso()
-            run.save()
-            self.log(f"{task.id}: rebase push failed: {e}")
-            return "error"
-        run.status = "done"
-        run.cost_usd = 0.0
-        run.finished_at = now_iso()
-        run.diff_stat = gitops.diff_stat(wt, base)
-        run.save()
-        st["rebases"] = int(st.get("rebases", 0)) + 1
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done")
+        if outcome.status in ("current", "error"):
+            return outcome.status
+        run, wt, branch = outcome.run, outcome.wt, outcome.branch
         self.events.emit("rebase", task.id, base=base, files=[], resolved=True, how="mechanical", run=run.run_id)
         task.log(f"{reason}; rebased onto {base} mechanically and force-pushed")
         self.store.save(task)

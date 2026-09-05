@@ -112,13 +112,15 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     first_review: dict[str, str] = {}
     cost: dict[str, float] = defaultdict(float)
     runs: dict[str, int] = defaultdict(int)
-    rebases = 0
+    rebases_mechanical = 0
+    rebases_agent = 0
     rebase_cost = 0.0
     merges = 0
+    task_ids = set(tasks)  # scope every count (rebases and merges included) to the phase filter
     for ev in events:
         t = ev.get("task", "")
         k = ev.get("kind")
-        if not t:
+        if not t or t not in task_ids:
             continue
         if k == "dispatch":
             first_dispatch.setdefault(t, ev["at"])
@@ -133,8 +135,14 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         elif k == "run_finished":
             cost[t] += float(ev.get("cost_usd") or 0.0)
             if ev.get("mode") == "rebase":
-                rebases += 1
                 rebase_cost += float(ev.get("cost_usd") or 0.0)
+                # A mechanical (git-only) rebase records its run with how="mechanical"; an agent
+                # rebase run has no such marker. Splitting them keeps the free git rebases from
+                # hiding the ones that cost a model run (CG-197).
+                if ev.get("how") == "mechanical":
+                    rebases_mechanical += 1
+                else:
+                    rebases_agent += 1
     per_task = []
     for tid, task in tasks.items():
         if tid not in first_dispatch:
@@ -166,8 +174,11 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         d["first_pass_rate"] = round(d["first_pass_approve"] / d["reviewed"], 2) if d["reviewed"] else None
         d["avg_revisions"] = round(d["revisions"] / d["tasks"], 2) if d["tasks"] else 0
         del d["lead_hours"]
+    rebases = rebases_mechanical + rebases_agent
     rebase = {
         "rebases": rebases,
+        "mechanical": rebases_mechanical,
+        "agent": rebases_agent,
         "cost_usd": round(rebase_cost, 4),
         "merges": merges,
         "per_merge": round(rebases / merges, 2) if merges else None,

@@ -372,55 +372,31 @@ class ReapMixin:
             return False
         if not parked_sha or tip == parked_sha:
             return False  # the base has not moved: keep waiting, no worker, no spend
-        # The base moved. Bring the branch onto it mechanically (no worker) and re-check.
-        try:
-            ok, files = gitops.sync_remote_branch(wt, branch)
-            if ok:
-                ok, files, _ = gitops.rebase_onto_capture(wt, ref)
-        except gitops.GitError as e:
-            ok, files = False, [str(e)]
-        run = self.runs.new_run(task.id, "local", mode="rebase")
-        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+        # The base moved. Bring the branch onto it mechanically (no worker) through the one
+        # rebase-and-record helper (CG-197) and re-check.
+        outcome = self._rebase_and_record(task, base, wt=wt)
+        run = outcome.run
         specs = self._pre_pr_specs(task)
-        cont = self._pre_pr_cont(run, wt, branch, base, "")
-        if not ok:
+        if outcome.status == "conflict":
             # the rebase does not apply cleanly: hand it to the normal revise path, and only then.
-            run.status = "failed"
-            run.error = f"rebase onto {base} conflicts: {', '.join(files) or 'unknown files'}"
-            run.finished_at = now_iso()
-            run.save()
             self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
             st.pop("needs_human", None)
             if specs:
                 self._dispatch_check_run(task, worktree=wt, branch=branch, base=base, specs=specs,
-                                         stage="reprobe_conflict", rep=rep, cont=cont)
+                                         stage="reprobe_conflict", rep=rep,
+                                         cont=self._pre_pr_cont(None, wt, branch, base, ""))
             else:
                 self._start_check_revise(task, [], rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
             rep.transitions.append(f"{task.id} base moved but rebase conflicted; revise")
             return True
-        try:
-            note = gitops.push(wt, branch, force=True)
-            if note:
-                self.log(f"{task.id}: {note}")
-        except gitops.GitError as e:
-            run.status = "failed"
-            run.error = str(e)
-            run.finished_at = now_iso()
-            run.save()
-            self.log(f"{task.id}: push after base rebase failed: {e}")
-            return False
-        run.status = "done"
-        run.cost_usd = 0.0
-        run.finished_at = now_iso()
-        run.diff_stat = gitops.diff_stat(wt, base)
-        run.save()
-        st["rebases"] = int(st.get("rebases", 0)) + 1
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done")
+        if outcome.status == "error":
+            return False  # push failure already logged by the helper
         if specs:
             # Re-run the pre-PR checks as a detached check run; the continuation (`_after_reprobe_check`)
             # opens the PR on green or routes a failure through the base probe.
             self._dispatch_check_run(task, worktree=wt, branch=branch, base=base, specs=specs,
-                                     stage="reprobe", rep=rep, cont={**cont, "base_sha": tip})
+                                     stage="reprobe", rep=rep,
+                                     cont={**self._pre_pr_cont(run, wt, branch, base, ""), "base_sha": tip})
             return True
         # No checks configured: the base recovered, so clear the stop and open the PR directly.
         st.pop("needs_human", None)
