@@ -69,6 +69,161 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
+def test_trial_with_one_contender_shows_a_message_not_a_500(garden):
+    c = client(garden)
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "a trial needs at least two contenders, e.g. claude:sonnet, claude:opus" in page
+
+
+def test_trial_form_picks_contenders_from_config(garden):
+    """CG-087: the trial form seeds harness/model selects from garden.yaml's harnesses (here
+    claude and codex, see the `garden` fixture) instead of a free-text harness:model field."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import wait_for_runs
+
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert "data-trial-form" in page and "trial-rows" in page and "+ Add contender" in page
+    assert '"claude"' in page and '"codex"' in page  # harness_choices embedded for the JS selects to read
+    assert '"sonnet"' in page and '"gpt-std"' in page  # each harness's tier map
+
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet, claude:sonnet"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "must be distinct" in page
+
+    r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet, claude:opus"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "flash" not in r.headers["location"]
+    sched = Scheduler(Store(garden))
+    wait_for_runs(sched)
+    trial = sched.state.get("DM-001").get("trial")
+    assert trial and {c["label"] for c in trial["contenders"]} == {"claude:sonnet", "claude:opus"}
+
+
+def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
+    """The 'One more automated review' button on a review-capped task and the plain
+    'Automated review' button both post to /tasks/{id}/review; either way the web action
+    must go through Scheduler.review_again (not dispatch_review directly), or the cap-bypass
+    button silently fails to raise the cap or clear the needs_human stop."""
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import wait_for_runs
+
+    sched = Scheduler(Store(garden))
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/1"
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["review_rounds"] = 2  # == the default review.max_rounds; the cap has been reached
+    st["needs_human"] = {"kind": "review_cap", "reason": "2 automated review round(s) used"}
+    sched.state.save()
+
+    c = client(garden)
+    r = c.post("/tasks/DM-001/review", follow_redirects=False)
+    assert r.status_code == 303
+
+    sched2 = Scheduler(Store(garden))
+    wait_for_runs(sched2)
+    st = sched2.state.get("DM-001")
+    assert not st.get("needs_human")  # the stop is cleared, not left dangling
+    assert st["review_rounds"] == 2  # rolled back one by the bypass, then re-incremented on dispatch
+    assert st.get("review_run")
+
+
+def test_scheduler_errors_flash_a_message_instead_of_500(garden):
+    """CG-092: a task whose precondition changed underneath the person (here: DM-001 is
+    'ready', not 'waiting_human') must say so on the page, not 500 or silently drop the
+    submitted text."""
+    c = client(garden)
+    r = c.post("/tasks/DM-001/answer", data={"note": "SQLite, please"}, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "no longer waiting for you" in page
+    assert "SQLite, please" in page  # the typed answer is preserved, not lost
+
+    r = c.post("/tasks/DM-001/reject", data={"note": "no"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "has no pending worker decision to reject" in c.get(r.headers["location"]).text
+
+
+def test_unexpected_action_exception_shows_a_generic_message(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+
+    def boom(self, task, note="cancelled"):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(Scheduler, "cancel", boom)
+    c = client(garden)
+    r = c.post("/tasks/DM-001/cancel", follow_redirects=False)
+    assert r.status_code == 303
+    assert "something failed; see the log" in c.get(r.headers["location"]).text
+
+
+def test_phase_and_global_actions_flash_a_message_instead_of_500(garden, monkeypatch):
+    """CG-122: extend the flash pattern from task_action to friction-report and the
+    phase/global actions (approve-all, persona, plan, pause, resume, upgrade)."""
+    from garden.scheduler import Scheduler
+
+    def boom(self, *a, **k):
+        raise RuntimeError("boom")
+
+    c = client(garden)
+
+    monkeypatch.setattr(Scheduler, "pause", boom)
+    r = c.post("/pause", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "resume", boom)
+    r = c.post("/resume", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "upgrade", boom)
+    r = c.post("/upgrade", follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+    monkeypatch.setattr(Scheduler, "dispatch_persona_phase", boom)
+    r = c.post("/phases/demo/p1/persona", data={"personas": "security"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "boom" in c.get(r.headers["location"]).text
+
+
+def test_persona_and_friction_report_404_on_unknown_phase(garden):
+    c = client(garden)
+    assert c.post("/phases/demo/nope/persona", data={"personas": "security"}).status_code == 404
+    assert c.post("/phases/demo/nope/plan").status_code == 404
+    assert c.post("/friction-report", data={"product": "demo", "phase": "nope", "text": "slow"}).status_code == 404
+
+
+def test_approve_all_flashes_a_message_instead_of_500(garden, monkeypatch):
+    from garden.store import Store
+
+    c = client(garden)
+    c.post("/tasks/DM-001/unapprove")  # DM-001 is now draft, so approve-all has work to do
+
+    def boom(self, task):
+        raise RuntimeError("save boom")
+
+    monkeypatch.setattr(Store, "save", boom)
+    r = c.post("/phases/demo/p1/approve-all", follow_redirects=False)
+    assert r.status_code == 303
+    assert "save boom" in c.get(r.headers["location"]).text
+
+
+def test_friction_report_files_and_redirects(garden):
+    c = client(garden)
+    r = c.post("/friction-report", data={"product": "demo", "phase": "p1", "text": "the brief was confusing"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
 def test_events_page_and_answer_flow(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store

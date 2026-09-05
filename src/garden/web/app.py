@@ -6,11 +6,13 @@ The scheduler loop runs in a background thread when `watch=True` (the `garden se
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import markdown as md
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
@@ -22,6 +24,8 @@ from markupsafe import Markup
 from ..brief import build_brief
 from ..charts import burnup_svg, tier_bars_svg
 from ..events import EventLog, digest, metrics, parse_since, phase_summary
+from ..github import GitHubError
+from ..gitops import GitError
 from ..graph import (
     blockers,
     critical_path,
@@ -49,7 +53,7 @@ from ..review import review_to_markdown
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
-from ..trials import TrialLog, ranking_markdown
+from ..trials import TrialLog, parse_contender, ranking_markdown
 
 TEMPLATES = Path(__file__).parent / "templates"
 PLATES_DIR = Path(__file__).parent / "static" / "plates"  # scanned plates, written by `garden plants --fetch`
@@ -58,6 +62,18 @@ COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_tr
 # then what is in flight, then what is waiting or settled. Covers every board column
 # (cancelled is dropped like the columns view).
 LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed", "running", "in_review", "ready", "blocked", "draft", "done", "wont_do"]
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _flash_url(url: str, message: str, note: str = "") -> str:
+    """Append a flash message (and, for the answer form, the typed note) to a redirect target."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    query["flash"] = message
+    if note:
+        query["flash_note"] = note
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 class Hub:
@@ -112,6 +128,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     hub = Hub(store, watch)
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["md"] = render_md
+    templates.env.filters["tojson"] = lambda v: Markup(json.dumps(v))
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["list_order"] = LIST_ORDER
     templates.env.globals["statuses"] = STATUS_ORDER
@@ -161,6 +178,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "pause_ctrl": ctrl,
             "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
             "max_parallel": sched.effective_max_parallel(),
+            "flash": request.query_params.get("flash", ""),
+            "flash_note": request.query_params.get("flash_note", ""),
             **kw,
         }
 
@@ -268,6 +287,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             friction_text=friction_text,
             initial_stdout=initial_stdout,
             attention=attention_view(t, st, rs),
+            harness_choices=s.config.harness_choices(),
+            default_harness=t.harness or s.config.product_harness(t.product),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -387,11 +408,20 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             request, page="runs", runs=list(reversed(rs.all_runs())), events=list(reversed(hub.events))[:100]))
 
     @app.get("/trials", response_class=HTMLResponse)
-    def trials_page(request: Request):
+    def trials_page(request: Request, harness: str = "", model: str = ""):
         s = hub.fresh()
         log = TrialLog(s.config.garden_dir / "trials.jsonl")
+        rows = log.leaderboard()
+        trials = [(t, ranking_markdown(t)) for t in reversed(log.read())]
+        if harness:
+            def matches(label: str) -> bool:
+                return label == f"{harness}:{model}" if model else label == harness or label.startswith(f"{harness}:")
+
+            rows = [r for r in rows if matches(r["label"])]
+            trials = [(t, md) for t, md in trials if any(matches(c["label"]) for c in t.get("contenders", []))]
         return templates.TemplateResponse(request, "trials.html", ctx(
-            request, page="trials", rows=log.leaderboard(), trials=[(t, ranking_markdown(t)) for t in reversed(log.read())]))
+            request, page="trials", rows=rows, trials=trials, harness_choices=s.config.harness_choices(),
+            filter_harness=harness, filter_model=model))
 
     @app.get("/events", response_class=HTMLResponse)
     def events_page(request: Request, since: str = "24h"):
@@ -567,19 +597,39 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.post("/pause")
     def web_pause(request: Request, reason: str = Form("")):
-        with hub.lock:
-            sched = hub.scheduler()
-            sched.pause(by="web", reason=reason.strip())
-        hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                sched.pause(by="web", reason=reason.strip())
+            hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"pause failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("pause failed")
+            hub._log("pause failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/resume")
     def web_resume(request: Request):
-        with hub.lock:
-            sched = hub.scheduler()
-            sched.resume(by="web")
-        hub._log("dispatch resumed via web")
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                sched.resume(by="web")
+            hub._log("dispatch resumed via web")
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"resume failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("resume failed")
+            hub._log("resume failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/config/max-parallel")
     def web_set_max_parallel(request: Request, value: int = Form(...)):
@@ -599,12 +649,25 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.post("/upgrade")
     def web_upgrade(request: Request):
-        with hub.lock:
-            sched = hub.scheduler()
-            result = sched.upgrade(restart=True)
-        hub._log("tool upgrade: " + ("restarting" if result.get("ok") else f"failed ({result.get('reason')})"))
+        back = request.headers.get("referer", "/")
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                result = sched.upgrade(restart=True)
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"tool upgrade failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("tool upgrade failed")
+            hub._log("tool upgrade failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         # On success the process re-execs and never reaches here; a failure falls through.
-        return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
+        reason = result.get("reason") or "see the log"
+        hub._log("tool upgrade: " + ("restarting" if result.get("ok") else f"failed ({reason})"))
+        if not result.get("ok"):
+            return RedirectResponse(_flash_url(back, f"upgrade failed: {reason}"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form("")):
@@ -613,81 +676,109 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             t = s.task(task_id)
         except KeyError:
             raise HTTPException(404) from None
-        with hub.lock:
-            sched = hub.scheduler()
-            t = sched.store.task(task_id)
-            if action == "approve":
-                if t.status == Status.DRAFT:
+        back = request.headers.get("referer", "")
+        redirect_to = back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}"
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                t = sched.store.task(task_id)
+                if action == "approve":
+                    if t.status != Status.DRAFT:
+                        raise RuntimeError(f"{t.id} is {t.status.value}, not draft; nothing to approve")
                     t.status = Status.READY
                     t.log("approved (web)")
                     s.save(t)
-            elif action == "priority":
-                old = t.priority
-                try:
-                    t.priority = int(note.strip())
-                except ValueError:
-                    raise HTTPException(400, "priority must be an integer") from None
-                t.log(f"priority {old} -> {t.priority} (web)")
-                s.save(t)
-            elif action == "difficulty":
-                from ..harness import DIFFICULTIES
+                elif action == "priority":
+                    old = t.priority
+                    try:
+                        t.priority = int(note.strip())
+                    except ValueError:
+                        raise HTTPException(400, "priority must be an integer") from None
+                    t.log(f"priority {old} -> {t.priority} (web)")
+                    s.save(t)
+                elif action == "difficulty":
+                    from ..harness import DIFFICULTIES
 
-                tier = note.strip()
-                if tier not in DIFFICULTIES:
-                    raise HTTPException(400, f"difficulty must be one of {', '.join(DIFFICULTIES)}")
-                old = t.difficulty
-                t.difficulty = tier
-                t.log(f"difficulty {old} -> {tier} (web)")
-                s.save(t)
-            elif action == "unapprove":
-                if t.status == Status.READY:
+                    tier = note.strip()
+                    if tier not in DIFFICULTIES:
+                        raise HTTPException(400, f"difficulty must be one of {', '.join(DIFFICULTIES)}")
+                    old = t.difficulty
+                    t.difficulty = tier
+                    t.log(f"difficulty {old} -> {tier} (web)")
+                    s.save(t)
+                elif action == "unapprove":
+                    if t.status != Status.READY:
+                        raise RuntimeError(f"{t.id} is {t.status.value}, not ready; nothing to send back to draft")
                     t.status = Status.DRAFT
                     t.log("back to draft (web)")
                     s.save(t)
-            elif action == "dispatch":
-                sched.dispatch(t, mode="revise" if t.status == Status.CHANGES_REQUESTED else "work")
-            elif action == "cancel":
-                sched.cancel(t, note or "cancelled (web)")
-            elif action == "retry":
-                sched.retry(t)
-            elif action == "resume":
-                sched.resume_task(t)
-            elif action == "done":
-                t.status = Status.DONE
-                t.log(note or "marked done (web)")
-                s.save(t)
-            elif action == "review":
-                if t.pr:
+                elif action == "dispatch":
+                    sched.dispatch(t, mode="revise" if t.status == Status.CHANGES_REQUESTED else "work")
+                elif action == "cancel":
+                    sched.cancel(t, note or "cancelled (web)")
+                elif action == "retry":
+                    sched.retry(t)
+                elif action == "resume":
+                    sched.resume_task(t)
+                elif action == "done":
+                    t.status = Status.DONE
+                    t.log(note or "marked done (web)")
+                    s.save(t)
+                elif action == "review":
+                    if not t.pr:
+                        raise RuntimeError(f"{t.id} has no PR yet to review")
                     sched.review_again(t)
-            elif action == "answer":
-                if t.status == Status.WAITING_HUMAN and note.strip():
-                    sched.answer(t, note.strip())
-            elif action == "accept":
-                if sched.pending_decision(t):
+                elif action == "answer":
+                    if note.strip():
+                        if t.status != Status.WAITING_HUMAN:
+                            raise RuntimeError(f"{t.id} is no longer waiting for you (now {t.status.value}); your answer was not sent")
+                        sched.answer(t, note.strip())
+                elif action == "accept":
+                    if not sched.pending_decision(t):
+                        raise RuntimeError(f"{t.id} has no pending worker decision to accept")
                     sched.accept_decision(t, note.strip())
-            elif action == "reject":
-                if sched.pending_decision(t):
+                elif action == "reject":
+                    if not sched.pending_decision(t):
+                        raise RuntimeError(f"{t.id} has no pending worker decision to reject")
                     sched.reject_decision(t, note.strip() or "please carry out the task as originally asked")
-            elif action == "triage-ready":
-                sched.triage(t, ready=True)
-            elif action == "triage-changes":
-                sched.triage(t, changes=note.strip() or "please revisit; see the PR")
-            elif action == "persona":
-                for name in [n.strip() for n in note.split(",") if n.strip()]:
-                    sched.dispatch_persona_pr(t, name)
-            elif action == "trial":
-                contenders = [n.strip() for n in note.split(",") if n.strip()]
-                sched.start_trial(t, contenders)
-            elif action == "reset-revisions":
-                st = sched.state.get(t.id)
-                st["revisions"] = 0
-                sched.state.save()
-                t.log("revision counter reset (web)")
-                s.save(t)
-            else:
-                raise HTTPException(400, f"unknown action {action}")
-        back = request.headers.get("referer", "")
-        return RedirectResponse(back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}", status_code=303)
+                elif action == "triage-ready":
+                    sched.triage(t, ready=True)
+                elif action == "triage-changes":
+                    sched.triage(t, changes=note.strip() or "please revisit; see the PR")
+                elif action == "persona":
+                    for name in [n.strip() for n in note.split(",") if n.strip()]:
+                        sched.dispatch_persona_pr(t, name)
+                elif action == "trial":
+                    contenders = [n.strip() for n in note.split(",") if n.strip()]
+                    if len(contenders) < 2:
+                        raise RuntimeError("a trial needs at least two contenders, e.g. claude:sonnet, claude:opus")
+                    default_h = t.harness or sched.cfg.product_harness(t.product)
+                    labels = [parse_contender(c, default_h)[0] for c in contenders]
+                    dupe = next((label for label in labels if labels.count(label) > 1), "")
+                    if dupe:
+                        raise RuntimeError(f"contenders must be distinct; {dupe} was picked more than once")
+                    sched.start_trial(t, contenders)
+                elif action == "reset-revisions":
+                    st = sched.state.get(t.id)
+                    st["revisions"] = 0
+                    sched.state.save()
+                    t.log("revision counter reset (web)")
+                    s.save(t)
+                else:
+                    raise HTTPException(400, f"unknown action {action}")
+        except HTTPException:
+            raise
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"{task_id}/{action} failed: {message}")
+            note_to_keep = note if action == "answer" else ""
+            return RedirectResponse(_flash_url(redirect_to, message, note_to_keep), status_code=303)
+        except Exception:
+            LOGGER.exception("action %s on %s failed", action, task_id)
+            hub._log(f"{task_id}/{action} failed: unexpected error, see the log")
+            note_to_keep = note if action == "answer" else ""
+            return RedirectResponse(_flash_url(redirect_to, "something failed; see the log", note_to_keep), status_code=303)
+        return RedirectResponse(redirect_to, status_code=303)
 
     @app.post("/decisions/{decision_id}/{action}")
     def decision_action(request: Request, decision_id: str, action: str):
@@ -705,12 +796,22 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.post("/phases/{product}/{phase}/approve-all")
     def approve_all(product: str, phase: str):
         s = hub.fresh()
-        for t in s.tasks().values():
-            if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
-                t.status = Status.READY
-                t.log("approved (web)")
-                s.save(t)
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        back = f"/phases/{product}/{phase}"
+        try:
+            for t in s.tasks().values():
+                if t.key == f"{product}/{phase}" and t.status == Status.DRAFT:
+                    t.status = Status.READY
+                    t.log("approved (web)")
+                    s.save(t)
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"approve-all {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("approve-all %s/%s failed", product, phase)
+            hub._log(f"approve-all {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/phases/{product}/{phase}/budget")
     def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
@@ -732,23 +833,39 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.post("/phases/{product}/{phase}/persona")
     def persona_phase(product: str, phase: str, personas: str = Form(""), file_tasks: str = Form("")):
         s = hub.fresh()
-        ph = s.phase(product, phase)
-        with hub.lock:
-            sched = hub.scheduler()
-            for name in [n.strip() for n in personas.split(",") if n.strip()]:
-                sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        back = f"/phases/{product}/{phase}"
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                for name in [n.strip() for n in personas.split(",") if n.strip()]:
+                    sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"persona review {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("persona review %s/%s failed", product, phase)
+            hub._log(f"persona review {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/phases/{product}/{phase}/plan")
     def plan_phase(product: str, phase: str, background: BackgroundTasks, guidance: str = Form("")):
         key = f"{product}/{phase}"
+        back = f"/phases/{product}/{phase}"
         if hub.planning.get(key, "").startswith("running"):
-            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
-        s = hub.fresh()
-        ph = s.phase(product, phase)
+            return RedirectResponse(back, status_code=303)
+        try:
+            ph = hub.fresh().phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
         if ph.closed:
             hub.planning[key] = f"failed {now_iso()}: {ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)"
-            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+            return RedirectResponse(back, status_code=303)
         hub.planning[key] = f"running since {now_iso()}"
 
         def job() -> None:
@@ -763,7 +880,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 hub.planning[key] = f"failed {now_iso()}: {e}"
 
         background.add_task(job)
-        return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/friction-report")
     def friction_report_web(
@@ -779,19 +896,28 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         from ..friction import append_friction_report, create_friction_draft_task
 
         s = hub.fresh()
+        back = request.headers.get("referer", "/")
         try:
             ph = s.phase(product, phase)
         except KeyError:
             raise HTTPException(404) from None
-        doc = ph.path / "docs" / "friction.md"
-        provenance = page or "web"
-        if task_id:
-            provenance = f"{page} ({task_id})" if page else task_id
-        date = _dt.date.today().isoformat()
-        append_friction_report(doc, text, provenance, date)
-        create_friction_draft_task(s, product, phase, text, provenance, date)
-        s.invalidate()
-        back = request.headers.get("referer", "/")
+        try:
+            doc = ph.path / "docs" / "friction.md"
+            provenance = page or "web"
+            if task_id:
+                provenance = f"{page} ({task_id})" if page else task_id
+            date = _dt.date.today().isoformat()
+            append_friction_report(doc, text, provenance, date)
+            create_friction_draft_task(s, product, phase, text, provenance, date)
+            s.invalidate()
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"friction report {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("friction report %s/%s failed", product, phase)
+            hub._log(f"friction report {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 
     # ---- json --------------------------------------------------------------
