@@ -276,6 +276,10 @@ class Scheduler(
             self.reap_orphaned(rep)
         except Exception as e:  # noqa: BLE001
             rep.errors.append(f"orphan reap failed: {e}")
+        try:
+            self.reap_dead_runs(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"dead-run reap failed: {e}")
         self.store.invalidate()
         tasks = self.store.tasks()
         for t in list(tasks.values()):
