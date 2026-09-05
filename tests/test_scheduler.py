@@ -53,6 +53,48 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     assert not sched.worktree_for(sched.store.task("DM-001")).exists()
 
 
+def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
+    """CG-083: a crash between the run record's final-status write and the task
+    transition / push / PR step must not strand the finished run. Simulate the
+    crash by making the push step (which runs right after `run.status = "done"`
+    is saved, but before the PR is opened and the task is transitioned) blow up
+    with an unhandled error, then tick again."""
+    from garden import gitops
+
+    sched.tick()
+    wait_for_runs(sched)
+
+    real_push = gitops.push
+    calls = {"n": 0}
+
+    def flaky_push(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash mid-reap")
+        return real_push(*a, **k)
+
+    monkeypatch.setattr(gitops, "push", flaky_push)
+
+    rep = sched.tick()
+    assert any("DM-001" in e for e in rep.errors)
+    assert statuses(sched)["DM-001"] == "running"  # never transitioned
+    run = sched.runs.latest("DM-001")
+    assert run.status == "done"  # the run record was already finalized on disk
+    assert not fake_github.created  # no PR was opened yet
+
+    # `garden runs` must surface this as finished-but-unreaped, not just "done"
+    assert run.run_id in sched.unreaped_run_ids()
+
+    monkeypatch.setattr(gitops, "push", real_push)
+    rep = sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert len(fake_github.created) == 1  # the finished run was reaped, not redispatched
+    assert "DM-001(work)" not in rep.dispatched  # DM-001 itself was not redispatched
+    all_runs = sched.runs.runs_for("DM-001")
+    assert len(all_runs) == 1 and all_runs[0].run_id == run.run_id  # still the same single run
+    assert not sched.unreaped_run_ids()
+
+
 def test_feedback_triggers_revise_round(sched, fake_github):
     sched.tick()
     wait_for_runs(sched)
