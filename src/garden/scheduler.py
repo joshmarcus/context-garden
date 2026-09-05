@@ -1362,6 +1362,10 @@ class Scheduler:
         The task must be `in_review` before this is called (a draft, a stall or a pending
         revise round have already taken it elsewhere)."""
         st = self.state.get(task.id)
+        final_base = self.final_base_for(task)
+        if pr.base and pr.base != final_base:
+            parent = st.get("stack_parent") or pr.base
+            return False, f"stacked on {parent}; waits for the restack"
         tiers = [str(x) for x in (self._github_cfg("automerge_tiers", task.product, ["easy", "medium"]) or [])]
         if task.difficulty not in tiers:
             return False, f"tier `{task.difficulty}` is not in automerge_tiers ({', '.join(tiers) or 'none'})"
@@ -1476,7 +1480,11 @@ class Scheduler:
         try:
             if not wt.exists():
                 gitops.prepare_worktree(repo, wt, branch, new_base)
-            ok, files = gitops.rebase_onto(wt, gitops.base_ref(wt, new_base))
+            # Fold in any commits that only exist on origin/<branch> before rebasing, so the
+            # force-push below never discards them (e.g. something merged into this branch).
+            ok, files = gitops.sync_remote_branch(wt, branch)
+            if ok:
+                ok, files = gitops.rebase_onto(wt, gitops.base_ref(wt, new_base))
         except gitops.GitError as e:
             ok, files = False, [str(e)]
         if ok:

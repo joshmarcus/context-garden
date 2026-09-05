@@ -169,6 +169,33 @@ def push(worktree: Path, branch: str, force: bool = False, base: str = "") -> st
     return note
 
 
+def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
+    """Before a rebase round, fold in commits that exist only on `origin/<branch>`.
+
+    A rebase round rewrites the branch in the worktree and force-pushes it. If the remote
+    branch has moved on (someone merged into it) those commits are not in the worktree, so
+    the force-push would discard them. Rebasing the worktree's local commits onto
+    `origin/<branch>` first keeps them. Returns (ok, conflicted files); on conflict the
+    rebase is aborted so the worktree is left clean and the round resolves it like any other.
+    """
+    fetch(worktree)
+    if not remote_url(worktree):
+        return True, []
+    try:
+        git("rev-parse", "--verify", f"origin/{branch}", cwd=worktree)
+    except GitError:
+        return True, []  # no remote branch yet: nothing to fold in
+    if _is_ancestor(worktree, f"origin/{branch}", "HEAD"):
+        return True, []  # the remote holds nothing the worktree lacks
+    try:
+        git("rebase", f"origin/{branch}", cwd=worktree)
+        return True, []
+    except GitError:
+        files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        git("rebase", "--abort", cwd=worktree, check=False)
+        return False, files
+
+
 def rebase_onto(worktree: Path, onto: str) -> tuple[bool, list[str]]:
     """Rebase the worktree branch onto `onto` (e.g. origin/main). Returns (ok, conflicted files);
     on conflict the rebase is aborted so the worktree is left clean."""

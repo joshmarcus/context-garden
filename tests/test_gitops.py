@@ -104,3 +104,40 @@ def test_diverged_not_rebased_fails(origin_repo: tuple[Path, Path]) -> None:
 
     # Origin was NOT updated
     assert _sha(remote, "refs/heads/feature") != _sha(repo)
+
+
+def test_sync_remote_branch_folds_in_remote_only_commits(origin_repo: tuple[Path, Path]) -> None:
+    """A commit that exists only on origin/<branch> is rebased into HEAD before a rebase round."""
+    repo, remote = origin_repo
+
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "feature work", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+    local_before = _sha(repo)
+
+    # a second checkout pushes an extra commit straight to origin/feature
+    other = repo.parent / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    _git("checkout", "feature", cwd=other)
+    _git("commit", "--allow-empty", "-q", "-m", "remote-only", cwd=other)
+    _git("push", "-q", "origin", "feature", cwd=other)
+    remote_sha = _sha(other)
+
+    ok, files = gitops.sync_remote_branch(repo, "feature")
+
+    assert ok and files == []
+    # HEAD now includes the remote-only commit (it was behind, so it fast-forwarded)
+    assert _sha(repo) == remote_sha
+    assert local_before != remote_sha
+
+
+def test_sync_remote_branch_noop_without_remote_commits(origin_repo: tuple[Path, Path]) -> None:
+    """When the remote branch holds nothing extra (or does not exist), HEAD is untouched."""
+    repo, _ = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "feature work", cwd=repo)
+    head = _sha(repo)
+
+    ok, files = gitops.sync_remote_branch(repo, "feature")  # no origin/feature yet
+
+    assert ok and files == [] and _sha(repo) == head

@@ -278,6 +278,19 @@ files under `tasks/` must not be hand-edited.
   `pr_base`. When the parent merges, the child's PR is retargeted to the product base and
   its branch rebased and force-pushed; a conflict becomes feedback for a revise run. A
   parent closed without merging flags the children for a human.
+  - **Automerge only into the product base.** Automerge (see below) merges a PR only when
+    its base is the product's base branch. A stacked child (its base is the parent's
+    branch) is held with the reason `stacked on <parent>; waits for the restack`: it must
+    wait for the parent to merge and for its own branch to be restacked onto the base
+    before it can automerge. Merging a child into the parent's branch would put commits
+    there that the parent's worktree does not have, and the parent's next rebase round
+    would force-push them away.
+  - **A rebase round keeps remote-only commits.** A rebase round rewrites a branch in the
+    worktree and force-pushes it, so before rebasing (in the restack path) the scheduler
+    folds in any commits that exist only on `origin/<branch>` by rebasing the worktree's
+    commits onto it first. This means a force-push never discards work that reached the
+    remote branch by another route (someone merged into it). If those commits conflict, the
+    round resolves them like any other conflict.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
   `last_dispatched_at` count, minus the garden's own login (the `gh` user or the token's
   user) and `[bot]` accounts, so the scheduler's own review comments never trigger a
