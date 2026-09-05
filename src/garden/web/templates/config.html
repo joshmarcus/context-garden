@@ -33,16 +33,14 @@
     garden.yaml: <strong>{{ max_parallel_file }}</strong>
     {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
   </p>
-  <form method="post" action="/config/max-parallel" class="actions">
-    <input type="number" name="value" min="1" placeholder="new max_parallel" style="width:160px" required>
-    <button class="primary">Set</button>
+  <form method="post" action="/config/max-parallel" class="actions" data-autosave>
+    <label class="muted" for="max-parallel-override">live override</label>
+    <input type="number" id="max-parallel-override" name="value" min="1" placeholder="none — uses {{ max_parallel_file }}"
+      value="{{ max_parallel_override if max_parallel_override is not none else '' }}"
+      onblur="this.form.requestSubmit()" style="width:160px">
+    <span class="autosave-mark" aria-live="polite"></span>
   </form>
-  {% if max_parallel_override is not none %}
-  <form method="post" action="/config/max-parallel/clear" class="actions" style="margin-top:6px">
-    <button>Clear override</button>
-  </form>
-  {% endif %}
-  <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it.</p>
+  <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
