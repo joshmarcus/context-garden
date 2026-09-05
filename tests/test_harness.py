@@ -18,7 +18,7 @@ def test_claude_command_and_models():
 def test_codex_command():
     h = Harness("codex", {})
     cmd = h.command("gpt-x", Path("/tmp/f.md"))
-    assert cmd[:3] == ["codex", "exec", "--json"] and "--full-auto" in cmd
+    assert cmd[:3] == ["codex", "exec", "--json"] and 'sandbox_mode="workspace-write"' in cmd
     assert cmd[cmd.index("-m") + 1] == "gpt-x" and cmd[-1] == "-"
     assert "--output-last-message" in cmd
     assert h.model_for("medium") == ""  # cli default
@@ -141,3 +141,20 @@ def test_turn_cap_is_optional_and_off_by_default():
     assert "--max-turns" not in Harness("claude", {"bin": "/x/claude", "max_turns": 0}).command()
     capped = Harness("claude", {"bin": "/x/claude", "max_turns": 80}).command()
     assert capped[capped.index("--max-turns") + 1] == "80"
+
+
+def test_codex_resume_and_permissions():
+    h = Harness("codex", {})
+    assert h.can_resume
+    cmd = h.resume_command("thread-123", "gpt-test", Path("/tmp/final.md"))
+    assert cmd[:4] == ["codex", "exec", "resume", "thread-123"]
+    assert cmd[-1] == "-" and 'approval_policy="never"' in cmd
+    assert "--full-auto" not in cmd
+    assert Harness("codex", {"permission_mode": "full-auto"}).command() == h.command()
+    assert 'sandbox_mode="read-only"' in Harness("codex", {"permission_mode": "read-only"}).command()
+    assert "--dangerously-bypass-approvals-and-sandbox" in Harness("codex", {"permission_mode": "bypass"}).command()
+
+
+def test_codex_usage_does_not_double_count_cache():
+    parsed = Harness("codex", {}).parse('{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}')
+    assert parsed["usage"] == {"input_tokens": 8, "cache_read_input_tokens": 2, "output_tokens": 3}
