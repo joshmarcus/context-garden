@@ -330,6 +330,19 @@ first tick's events look sane, and the worker count did not drop.
 
 ## Moving the pin (the garden runs a pinned install of the tool)
 
+**Run the canary before you move the pin.** It installs the candidate build into a throwaway
+venv and drives it end to end — the scripted QA flows plus a stacked-PR and a merge-queue
+scenario against an in-memory GitHub that behaves like the real one (a pushed rollup is
+PENDING for a poll or two; deleting a branch closes a child PR that still targets it). Those
+are the two ways the fake used to lie, and three green-tested builds still broke the live loop
+within the hour on 2026-09-05.
+
+```bash
+garden canary <sha>                   # non-zero exit = do NOT move the pin
+```
+
+Only once it passes:
+
 ```bash
 chmod -R u+w .venv/bin .venv/lib      # the lock is recursive
 .venv/bin/pip install --force-reinstall --no-deps "context-garden[dev,plates] @ git+https://github.com/joshmarcus/context-garden@<sha>"

@@ -1,4 +1,4 @@
-"""`garden` runs and diagnostics: runs, log, doctor, serve, tui, version, upgrade."""
+"""`garden` runs and diagnostics: runs, log, doctor, serve, tui, version, upgrade, canary."""
 
 from __future__ import annotations
 
@@ -266,3 +266,52 @@ def upgrade(
         if result.get("output"):
             print(str(result["output"])[-2000:])
         raise typer.Exit(1) from None
+
+
+@app.command()
+def canary(
+    sha: str = typer.Argument("", help="git commit to install and check (default: the pending tool upgrade)"),
+    url: str = typer.Option("", "--url", help="git URL or local path to install from (default: the tool product's repo)"),
+    out: Path | None = typer.Option(None, "--out", help="Run directory (default: .garden/canary/<sha>, else a temp dir)"),
+    keep: bool = typer.Option(False, "--keep", help="Keep the throwaway venv and gardens"),
+    skip_install: bool = typer.Option(False, "--skip-install", help="Check the current build instead of installing a pin"),
+    self_check: bool = typer.Option(False, "--self-check", hidden=True, help="Run the checks in this interpreter (used inside the throwaway venv)"),
+):
+    """Check a freshly-pinned build before trusting it with real PRs: install it into a throwaway
+    venv and drive the scripted QA flows plus a stacked-PR and a merge-queue scenario against an
+    in-memory GitHub that behaves like the real one. Exits non-zero on any failure. Run it before
+    moving the pin (see the garden-operate skill)."""
+    from ..canary import run_canary
+
+    store = None
+    try:
+        from ..store import Store
+
+        store = Store()
+    except (FileNotFoundError, ValueError):
+        store = None
+    in_process = self_check or skip_install
+    if not in_process and not sha and store is not None:
+        pending = _scheduler(store).upgrade_available()
+        if pending:
+            sha = str(pending.get("sha") or "")
+            url = url or str(pending.get("url") or "")
+    if not in_process and sha and not url and store is not None:
+        product = store.config.tool_product()
+        if product:
+            url = str(store.config.product_repo(product))
+    if not in_process and not sha:
+        err.print("[red]no build to check: pass a SHA, or --skip-install to check the current build[/red]")
+        raise typer.Exit(2) from None
+    if out is None:
+        import tempfile
+
+        if store is not None and sha:
+            out = store.config.garden_dir / "canary" / sha[:12]
+        else:
+            out = Path(tempfile.mkdtemp(prefix="garden-canary-"))
+    report = run_canary(sha, url=url, out=out, keep=keep, skip_install=in_process,
+                        log=lambda m: err.print(f"[dim]{m}[/dim]"))
+    console.print(report.summary(), markup=False, highlight=False, soft_wrap=True)
+    if not report.ok:
+        raise typer.Exit(1)
