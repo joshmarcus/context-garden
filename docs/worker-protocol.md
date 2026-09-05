@@ -131,11 +131,21 @@ The last line of the worker's final message is the contract:
 GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change",
                 "summary": "1-3 sentences", "question": "only for needs_input",
                 "reason": "only for wont_do / no_change",
-                "pr_title": "...", "pr_body": "markdown", "notes": "...",
+                "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
+                "friction": ["short item"], "notes": "...",
                 "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
+- `pr_body` is the permanent description of the change for a reader without the task file:
+  what it does, why, how it was verified, follow-ups. It never narrates the process — rounds,
+  rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
+  description itself must change (the current one then stays). Process narration goes in
+  `pr_comment`, posted as a PR comment.
+- `friction` is a list of short items (missing context, a confusing spec, tooling pain). The
+  scheduler posts them as one marked PR comment and appends them to the phase's friction
+  record; `garden friction` harvests them for the next planning round. Friction never goes in
+  `pr_body`.
 - `needs_input`: the worker committed what it had and stopped on a decision only a person
   can make; `question` is the one thing it needs.
 - `blocked`: it cannot proceed at all; the task fails with the reason in its log.
