@@ -90,6 +90,26 @@ def test_move_up_down_buttons_reorder_without_js(garden):
     assert p1_order(garden, priority=3) == ["DM-003", "DM-004"]
 
 
+def test_reorder_only_touches_the_destination_band(garden):
+    # order only ranks within a priority band: reordering a priority-3 pair must not rewrite
+    # DM-001 (priority 1) or DM-002 (priority 2), which sit in unrelated bands of the same
+    # section.
+    assert run(garden, "new-task", "demo/p1", "Alpha").exit_code == 0  # DM-003, priority 3
+    assert run(garden, "new-task", "demo/p1", "Beta").exit_code == 0   # DM-004, priority 3
+    for tid in ("DM-003", "DM-004"):
+        assert run(garden, "approve", tid).exit_code == 0
+    before1 = Store(garden).task("DM-001").path.read_text()
+    before2 = Store(garden).task("DM-002").path.read_text()
+
+    c = client(garden)
+    r = c.post("/tasks/DM-004/order", data={"note": "up"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert p1_order(garden, priority=3) == ["DM-004", "DM-003"]
+    # the priority-3 drop touched only its own band's files, not the other bands' tasks
+    assert Store(garden).task("DM-001").path.read_text() == before1
+    assert Store(garden).task("DM-002").path.read_text() == before2
+
+
 def test_drag_into_another_phase_moves_the_task(garden):
     assert run(garden, "new-phase", "demo", "p2").exit_code == 0
     c = client(garden)

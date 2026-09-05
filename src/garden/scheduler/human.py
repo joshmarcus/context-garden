@@ -266,10 +266,12 @@ class HumanMixin:
     def reorder(self, task: Task, after: str | None = None, direction: str = "") -> None:
         """Reorder a task within its own phase section (the backlog). `after` is the id the task
         should follow, "" for the top of the section; `direction` ('up'/'down') is the no-JS
-        equivalent, resolved against the section's current order. Writes `order` on every row
-        whose rank changes and, when the task crosses a priority band, sets its `priority` to the
-        band it landed in. Unlike `move`, a running or in-review task may be reordered. A drop
-        that leaves the arrangement unchanged is a no-op."""
+        equivalent, resolved against the section's current order. Writes `order` on the moved row
+        and, within its destination priority band only, on whichever band-mates now collide with
+        its rank; other bands in the section are untouched. When the task crosses a priority
+        band, its `priority` is set to the band it landed in. Unlike `move`, a running or
+        in-review task may be reordered. A drop that leaves the arrangement unchanged is a
+        no-op."""
         ensure_open(task)
         tasks = self.store.tasks()
         moved = tasks.get(task.id)
@@ -307,15 +309,20 @@ class HumanMixin:
         lo = prev.priority if prev is not None else -(10**9)
         hi = nxt.priority if nxt is not None else 10**9
         band = min(max(moved.priority, lo), hi)
-        original = {t.id: (t.priority, t.order) for t in section}
-        for rank, tid in enumerate(rest):
-            tasks[tid].order = rank
-        old_pri, old_order = original[moved.id]
+        old_pri, old_order = moved.priority, moved.order
+        # `order` only ranks within a priority band (dispatch_sort_key compares priority first),
+        # so a drop needs to touch only the destination band: the moved row and whichever of its
+        # new band-mates now collide with its rank. Band-mates before the insertion point keep
+        # their rank and are left untouched; other priority bands in the section never enter
+        # into it at all.
+        band_ids = [tid for tid in rest if tid == moved.id or tasks[tid].priority == band]
         moved.priority = band
-        for tid in rest:
+        for rank, tid in enumerate(band_ids):
             t = tasks[tid]
-            if t.id != moved.id and (t.priority, t.order) != original[t.id]:
-                self.store.save(t)
+            if t.order != rank:
+                t.order = rank
+                if t.id != moved.id:
+                    self.store.save(t)
         band_note = f", priority {priority_label(old_pri)} -> {priority_label(band)}" if band != old_pri else ""
         moved.log(f"reordered in {moved.key} (order {old_order} -> {moved.order}{band_note}) (web)")
         self.store.save(moved)
