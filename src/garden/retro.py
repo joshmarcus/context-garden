@@ -84,6 +84,14 @@ already exists (check the phase task list and the titles of tasks in other phase
 as part of the persona reports and task list above), say so by putting that task's id in
 `duplicate_of` instead of proposing it again; do not guess an id that is not shown to you.
 
+When the phase's outcome turns on a decision only the owner can make — a policy, a budget, a
+trade-off the evidence does not settle — put it to them as a question rather than guessing.
+Each question needs a short stable `key`, the `question` itself, the `context` that prompted it,
+the `options` when you can name them (empty otherwise) and the `default` you would pick (or
+empty). Mark a question `blocking` only when the phase cannot close until it is answered. The
+owner answers each on the Inbox; the answer lands in the retro document and the next phase's
+goals, so the planner and every later worker read it as settled.
+
 Finally, end the retro with a verdict on the phase itself — the one decision the whole
 retrospective is for:
 
@@ -100,7 +108,7 @@ and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "questions": [{{"key": "<short stable slug>", "question": "<the question to the owner>", "context": "<why you are asking, one or two sentences>", "options": ["<option>"] or [], "default": "<the option you would pick, or empty>", "blocking": true | false}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -207,6 +215,78 @@ def parse_retro(text: str) -> dict[str, Any]:
                 except json.JSONDecodeError:
                     continue
     return {}
+
+
+def retro_questions(rev: dict[str, Any]) -> list[dict[str, Any]]:
+    """The owner-facing questions the reconciliation raised, normalised. Each carries a stable
+    `key` (falls back to q1, q2, ... when the model named none), the question, the context, any
+    options and the default; `blocking` marks a question that must be answered before the
+    verdict card can be accepted. Pure: no id assignment, no file I/O, so it is testable
+    without a live model or a worktree."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, q in enumerate(rev.get("questions") or [], 1):
+        if not isinstance(q, dict):
+            continue
+        question = str(q.get("question") or "").strip()
+        if not question:
+            continue
+        raw_key = str(q.get("key") or "").strip()
+        key = slugify(raw_key) if raw_key else f"q{i}"
+        while key in seen:  # a stable, unique key per question so an answer names exactly one
+            key = f"{key}-{i}"
+        seen.add(key)
+        out.append({
+            "key": key,
+            "question": question,
+            "context": str(q.get("context") or "").strip(),
+            "options": [str(o).strip() for o in (q.get("options") or []) if str(o).strip()],
+            "default": str(q.get("default") or "").strip(),
+            "blocking": bool(q.get("blocking")),
+        })
+    return out
+
+
+def questions_section(questions: list[dict[str, Any]]) -> str:
+    """Render '## Questions for the human': every question the retro put to the owner, with its
+    context and options. Answers are appended under '## Answers' as they come in on the Inbox."""
+    if not questions:
+        return "_The retro put no questions to the owner._"
+    out: list[str] = []
+    for q in questions:
+        head = f"- **{q['question']}**"
+        if q.get("blocking"):
+            head += " _(blocks closing until answered)_"
+        out.append(head)
+        if q.get("context"):
+            out.append(f"  - {q['context']}")
+        if q.get("options"):
+            out.append("  - options: " + ", ".join(q["options"]))
+        if q.get("default"):
+            out.append(f"  - suggested: {q['default']}")
+    return "\n".join(out)
+
+
+def append_under_heading(path: Path, heading: str, line: str) -> bool:
+    """Append `line` under a `## <heading>` section of an existing markdown file, creating the
+    section at the end when it is absent. Returns False (writing nothing) if the file does not
+    exist yet — the caller records the answer in state regardless. Used to land a retro answer
+    in `docs/retro.md` (## Answers) and the next phase's `goals.md` (## Decisions)."""
+    if not path.exists():
+        return False
+    marker = f"## {heading}"
+    lines = path.read_text().splitlines()
+    idx = next((i for i, ln in enumerate(lines) if ln.strip() == marker), -1)
+    if idx == -1:
+        text = "\n".join(lines).rstrip() + f"\n\n{marker}\n\n{line}\n"
+    else:
+        end = next((j for j in range(idx + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
+        while end > idx + 1 and not lines[end - 1].strip():
+            end -= 1  # insert after the last content line of the section, before trailing blanks
+        lines.insert(end, line)
+        text = "\n".join(lines).rstrip() + "\n"
+    path.write_text(text)
+    return True
 
 
 def _verdict_word(v: str) -> str:
@@ -434,7 +514,8 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
                      filed_findings: list[dict[str, Any]] | None = None,
                      followups: list[dict[str, Any]] | None = None,
                      blocking: list[dict[str, Any]] | None = None,
-                     next_phase: str = "") -> str:
+                     next_phase: str = "",
+                     questions: list[dict[str, Any]] | None = None) -> str:
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
@@ -450,6 +531,10 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
     out += ["## Findings from persona reviews", "", findings_section(filed_findings or []), ""]
+    if questions is None:
+        questions = retro_questions(rev)
+    if questions:
+        out += ["## Questions for the human", "", questions_section(questions), ""]
     out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:
         out += ["## Persona reports", ""] + [f"- [{name}]({store.rel(path)})" for name, path in reports.items()] + [""]
