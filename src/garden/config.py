@@ -68,7 +68,10 @@ DEFAULTS: dict[str, Any] = {
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
-        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge; hard waits for a person
+        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
+        "automerge_hard_tier": True,             # also merge hard-tier PRs, after two approving review
+                                                 # rounds and the garden's own scratch-merge check; off to
+                                                 # keep hard-tier merges by hand
     },
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled

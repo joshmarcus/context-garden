@@ -368,6 +368,16 @@ files under `tasks/` must not be hand-edited.
     conflict, a failed check, a changed diff that needs a review, a closed PR or a human change
     request — the reason is logged and the next-oldest candidate becomes head. So each PR is
     rebased at most once, right before it merges, and a pending rollup never rotates the head.
+  - **The hard tier merges after two rounds and a scratch-merge check.** With
+    `github.automerge_hard_tier` on (the default), a `hard`-tier PR is an automerge candidate
+    too, but with two extra gates on top of the usual ones: at least **two** approving review
+    rounds, and the garden's **own scratch-merge check** — the pre-PR suite run on the branch
+    rebased onto the base tip in a throwaway worktree, not trusting the GitHub rollup alone. The
+    check is dispatched (as a detached `scratch_merge` check run) once every other gate is green,
+    and its result is recorded keyed to the reviewed diff: a clean rebase keeps the pass, a revise
+    round (a changed diff) re-runs it, and a failure holds the merge until the diff changes. With
+    no pre-PR checks configured there is nothing to run, so the check is satisfied at once. Set
+    `automerge_hard_tier: false` to keep hard-tier merges by hand.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is

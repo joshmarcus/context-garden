@@ -224,8 +224,11 @@ Borrowed from graph-based agent systems; all deterministic:
   verdict is `approve`, at least `automerge_min_review_rounds` review rounds ran, no
   feedback is pending and no revise run is in flight, the PR's checks rollup is green,
   GitHub reports it `MERGEABLE`, no human review requests changes, the task's difficulty
-  is in `automerge_tiers` (so `hard` still waits for a person), and the phase is under
-  budget. It merges with `automerge_method`, deletes the branch, comments on the PR, and
+  is in `automerge_tiers`, and the phase is under budget. A `hard`-tier PR merges too
+  when `automerge_hard_tier` is on (the default), but only after two approving review
+  rounds and the garden's own scratch-merge check — the pre-PR suite run on the branch
+  rebased onto the base tip in a throwaway worktree; set it `false` to keep hard-tier
+  merges by hand. It merges with `automerge_method`, deletes the branch, comments on the PR, and
   lets the next poll move the task to `done` and restack children; the digest counts
   garden merges. Any failing gate leaves the PR in review with the reason on the task
   page. A task-level `automerge: false` in its frontmatter opts one task out; all these
@@ -415,7 +418,9 @@ github:
   automerge: false          # let the scheduler merge a PR once every loop gate is green (off by default)
   automerge_method: squash  # squash | merge | rebase
   automerge_min_review_rounds: 1   # require at least this many automated review rounds
-  automerge_tiers: [easy, medium]  # only these difficulty tiers automerge; hard waits for a person
+  automerge_tiers: [easy, medium]  # these difficulty tiers automerge under the plain policy
+  automerge_hard_tier: true        # also merge hard-tier PRs, after two approving rounds and the
+                                   # garden's own scratch-merge check; false keeps them by hand
   trusted_authors: []       # logins whose PR comments may become a worker's revise brief, besides the
                             # login the garden authenticates as, the `reviewers` above and [bot] accounts.
                             # A comment by anyone else is logged on the task and ignored: on a public

@@ -100,6 +100,7 @@ class CheckRunMixin:
             "reprobe": self._after_reprobe_check,
             "reprobe_conflict": self._after_reprobe_conflict_check,
             "merge_rebase": self._after_merge_rebase_check,
+            "scratch_merge": self._after_scratch_merge_check,
             "ci": self._after_ci_check,
         }.get(stage)
         if handler is None:
@@ -265,6 +266,76 @@ class CheckRunMixin:
         failed = check_failures(results)
         self._start_check_revise(task, failed, rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
         rep.transitions.append(f"{task.id} base moved but rebase conflicted; revise")
+
+    # ---- hard-tier scratch-merge check (CG-191) ----------------------------
+    def _dispatch_scratch_merge(self, task: Task, rep: TickReport) -> None:
+        """Build the scratch merge — the branch rebased onto the base tip in a throwaway worktree,
+        never touching the branch itself — and run the pre-PR checks on it as a detached check run
+        (stage `scratch_merge`). With no checks configured there is nothing to run, so the revision
+        is recorded verified at once; a scratch merge that does not apply cleanly holds the merge."""
+        st = self.state.get(task.id)
+        base = self.final_base_for(task)
+        branch = task.branch or task.default_branch()
+        diff_h = str(st.get("last_diff_hash") or "")
+        specs = self._pre_pr_specs(task)
+        if not specs:
+            st["scratch_merge"] = {"diff": diff_h, "ok": True}
+            self.events.emit("scratch_merge", task.id, resolved=True, checks=0)
+            self.store.save(task)
+            return
+        repo = self.repo_for(task)
+        wt = self.worktree_for(task)
+        scratch = wt.parent / f"{wt.name}.scratch-merge"
+        try:
+            gitops.fetch(repo)
+            # The branch is checked out in the task's own worktree, so the scratch worktree takes
+            # the branch tip detached (the pushed head under review) and rebases it onto the base.
+            head_ref = branch
+            if gitops.remote_url(repo):
+                try:
+                    gitops.rev_parse(repo, f"origin/{branch}")
+                    head_ref = f"origin/{branch}"
+                except gitops.GitError:
+                    pass
+            gitops.remove_worktree(repo, scratch)
+            gitops.add_detached_worktree(repo, scratch, head_ref)
+            ok, files, _ = gitops.rebase_onto_capture(scratch, gitops.base_ref(scratch, base))
+        except gitops.GitError as e:
+            ok, files = False, [str(e)]
+        if not ok:
+            gitops.remove_worktree(repo, scratch)
+            st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": f"does not merge onto {base}"}
+            self.events.emit("scratch_merge", task.id, resolved=False, base=base, files=files)
+            self._hold_automerge(task, f"the scratch merge onto `{base}` does not apply cleanly ({', '.join(files) or 'unknown'})")
+            return
+        self._dispatch_check_run(
+            task, worktree=scratch, branch=branch, base=base, specs=specs, stage="scratch_merge", rep=rep,
+            cont={"scratch": str(scratch), "diff_h": diff_h})
+
+    def _after_scratch_merge_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
+        """Reap the hard-tier scratch-merge check. Green: record this revision as verified (keyed
+        to the reviewed diff) so the automerge gate clears and the queue can merge it. Red: hold
+        the merge with the failing checks. Either way the throwaway worktree is removed."""
+        scratch = cont.get("scratch")
+        if scratch:
+            try:
+                gitops.remove_worktree(self.repo_for(task), Path(scratch))
+            except gitops.GitError:
+                pass
+        st = self.state.get(task.id)
+        diff_h = str(cont.get("diff_h") or "")
+        failed = check_failures(results)
+        if failed:
+            names = ", ".join(str(f.get("name")) for f in failed) or "checks"
+            st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": names}
+            self.events.emit("scratch_merge", task.id, resolved=False, checks=len(failed))
+            self._hold_automerge(task, f"the hard-tier scratch-merge check failed ({names})")
+            return
+        st["scratch_merge"] = {"diff": diff_h, "ok": True}
+        self.events.emit("scratch_merge", task.id, resolved=True, checks=len(results))
+        task.log("hard-tier scratch-merge check passed; ready to merge once the queue reaches it")
+        self.store.save(task)
+        rep.transitions.append(f"{task.id} scratch-merge check green")
 
     # ---- pre-merge / conflict rebase re-check ------------------------------
     def _after_merge_rebase_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
