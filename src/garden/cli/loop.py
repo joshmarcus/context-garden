@@ -444,10 +444,14 @@ def walkthrough(
 def persona_review(
     target: str = typer.Argument(..., help="A task id (reviews its PR) or product/phase (reviews the body of work)"),
     personas: list[str] = typer.Option(..., "--persona", "-p", help="Persona name (repeat); see `garden personas`"),
-    file_tasks: bool = typer.Option(False, help="Phase reviews: turn high-severity findings into draft tasks"),
+    file_tasks: bool = typer.Option(False, help="Phase reviews: turn every finding into a draft task, priority from severity"),
+    min_severity: str = typer.Option("low", "--min-severity", help="With --file-tasks: lowest severity to file (low, medium, high)"),
     request_changes: bool = typer.Option(False, help="PR reviews: high findings trigger a revise run"),
 ):
     """Persona reviews (designer, project-manager, staff-engineer, usability-expert, user, security, or your own)."""
+    if min_severity not in ("low", "medium", "high"):
+        err.print(f"[red]--min-severity must be low, medium or high, got {min_severity!r}[/red]")
+        raise typer.Exit(1)
     store = _store()
     sched = _scheduler(store)
     if "/" in target:
@@ -458,7 +462,7 @@ def persona_review(
             err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
         for name in personas:
-            run = sched.dispatch_persona_phase(ph, name, file_tasks=file_tasks)
+            run = sched.dispatch_persona_phase(ph, name, file_tasks=file_tasks, min_severity=min_severity)
             console.print(f"{ph.key}: persona {name} -> run {run.run_id} (report lands in {ph.name}/docs/reviews/)")
         return
     t = _task(store, target)

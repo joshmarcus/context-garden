@@ -19,6 +19,32 @@ from .store import Store
 
 PERSONA_MARKER = "GARDEN_PERSONA:"
 
+# A finding's severity becomes a task's priority (1 highest); "the reviewer chooses severity
+# to rank, not to filter" (CG-187) — every severity is kept, never just "high".
+SEVERITY_PRIORITY: dict[str, int] = {"high": 1, "medium": 2, "low": 3}
+SEVERITY_RANK: dict[str, int] = {"low": 1, "medium": 2, "high": 3}
+
+
+def severity_ok(severity: str, min_severity: str) -> bool:
+    """Whether `severity` clears `min_severity` (low < medium < high); unknown severities
+    count as low so a malformed finding is not silently dropped."""
+    return SEVERITY_RANK.get(str(severity), 1) >= SEVERITY_RANK.get(str(min_severity), 1)
+
+
+def finding_title(f: dict[str, Any]) -> str:
+    return str(f.get("summary") or "").strip()[:80]
+
+
+def finding_body(f: dict[str, Any], personas: list[str], provenance: str) -> str:
+    """A draft task body for a persona finding: the goal is the suggestion (falling back to
+    the summary when a persona gave none), the context names who raised it and where."""
+    suggestion = str(f.get("suggestion") or "").strip()
+    summary = str(f.get("summary") or "").strip()
+    area = str(f.get("area") or "").strip()
+    goal = suggestion or summary
+    context = f"Raised by the {', '.join(personas)} persona review" + (f" ({area})" if area else "") + f". {provenance}."
+    return f"## Goal\n\n{goal}\n\n## Context\n\n{context}\n"
+
 DEFAULT_PERSONAS: dict[str, str] = {
     "designer": """# Persona: Product designer
 

@@ -172,12 +172,62 @@ def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkey
     assert len(reports) == 1 and "First run needs a config file" in reports[0].read_text()
     assert any("persona usability-expert report" in t for t in rep.transitions)
     sched.store.invalidate()
-    filed = [t for t in sched.store.tasks().values() if t.discovered_from == "persona:usability-expert"]
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:usability-expert:")]
     assert len(filed) == 1 and filed[0].status == Status.DRAFT
     # the planner sees the report via docs/
     from garden.planner import plan_prompt
 
     assert "usability-expert" in plan_prompt(sched.store, "demo", "p1")
+
+
+def test_persona_phase_review_files_every_severity_with_priority_from_severity(sched, fake_github, monkeypatch):
+    """CG-187: every finding becomes a draft, not only the high ones, priority from severity
+    (high 1, medium 2, low 3), and provenance names the persona and the run."""
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "security", file_tasks=True)
+    sched.tick()
+    sched.store.invalidate()
+    filed = {t.priority: t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")}
+    assert set(filed) == {1, 2, 3}
+    assert filed[1].title == "Secrets can leak into run logs" and filed[1].status == Status.DRAFT
+    assert filed[2].title == "garden.yaml needs a restart to take effect"
+    assert filed[3].title == "The Inbox button label is inconsistent"
+    assert filed[1].discovered_from == f"persona:security:{run.run_id}"
+    assert "Scrub env before logging" in filed[1].body
+
+
+def test_persona_phase_review_min_severity_filters_lower_findings(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    sched.dispatch_persona_phase(ph, "security", file_tasks=True, min_severity="medium")
+    sched.tick()
+    sched.store.invalidate()
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")]
+    assert {t.priority for t in filed} == {1, 2}  # the low finding was filtered out
+
+
+def test_persona_phase_review_frozen_phase_sends_findings_to_the_next_phase(sched, fake_github, monkeypatch):
+    from tests.conftest import write
+
+    write(sched.store.root / "demo" / "p1" / "goals.md", "---\nfrozen: '2026-09-01'\n---\n\n# p1\n\nShip it.\n")
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# p2\n\nNext.\n")
+    sched.store.invalidate()
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    assert ph.frozen
+    sched.dispatch_persona_phase(ph, "security", file_tasks=True)
+    sched.tick()
+    sched.store.invalidate()
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")]
+    assert len(filed) == 3
+    assert all(t.phase == "p2" for t in filed)
 
 
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
