@@ -25,7 +25,6 @@ Three rules live here (see docs/architecture.md, beside stacking):
 from __future__ import annotations
 
 from .. import gitops
-from ..checks import failures as check_failures
 from ..github import GitHubError, PRInfo, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -36,14 +35,18 @@ from .report import TickReport
 class RebaseMixin:
     # ---- mechanical rebase (rule 1) ----------------------------------------
     def mechanical_rebase(self, task: Task, base: str, rep: TickReport, *, reason: str,
-                          skip_if_current: bool = False) -> str:
+                          skip_if_current: bool = False, merge_head: bool = False) -> str:
         """Try to bring `task`'s branch onto `base` with no model. On a clean apply: record a
-        `rebase` run (no harness call), force-push with a lease, re-run the pre-PR checks, then
-        keep the verdict or dispatch a review (rule 2). On a textual conflict: dispatch an
-        easy-tier agent that carries only the hunks. Returns one of:
-        `clean` (rebased, pushed, checks green), `current` (the branch was already on the base's
-        tip, so nothing was rebased or pushed — only when `skip_if_current`), `checks` (a check
-        revise was started), `conflict` (an agent was dispatched), `error` (the push failed)."""
+        `rebase` run (no harness call), force-push with a lease, then start the pre-PR checks as
+        a detached check run (reaped on a later tick; CG-182) whose continuation keeps the verdict
+        or dispatches a review (rule 2). On a textual conflict: dispatch an easy-tier agent that
+        carries only the hunks. Returns one of:
+        `checking` (rebased, pushed, a check run started — the continuation finishes the round),
+        `clean` (rebased and pushed with no checks configured, verdict kept synchronously),
+        `current` (the branch was already on the base's tip, so nothing was rebased or pushed —
+        only when `skip_if_current`), `conflict` (an agent was dispatched), `error` (the push
+        failed). `merge_head` marks the pre-merge rebase: its continuation holds the head in
+        flight until its rollup goes green."""
         st = self.state.get(task.id)
         branch = task.branch or task.default_branch()
         wt = self.worktree_for(task)
@@ -102,10 +105,12 @@ class RebaseMixin:
         self.events.emit("rebase", task.id, base=base, files=[], resolved=True, how="mechanical", run=run.run_id)
         task.log(f"{reason}; rebased onto {base} mechanically and force-pushed")
         self.store.save(task)
-        failed = check_failures(self._pre_pr_checks(task, wt, branch, base))
-        if failed:
-            self._start_check_revise(task, failed, rep, "")
-            return "checks"
+        specs = self._pre_pr_specs(task)
+        if specs:
+            self._dispatch_check_run(task, worktree=wt, branch=branch, base=base, specs=specs,
+                                     stage="merge_rebase", rep=rep,
+                                     cont={**self._pre_pr_cont(run, wt, branch, base, ""), "merge_head": merge_head})
+            return "checking"
         self._rebase_review_or_keep(task, run, base, rep)
         return "clean"
 
@@ -163,6 +168,12 @@ class RebaseMixin:
         if head is not None:
             self._advance_merge_head(head, rep)
             return
+        if self._merge_head_pending():
+            # A pre-merge check dispatched for a would-be head is still in flight. Its
+            # `merge_head` marker is only set when that check reaps (`_after_merge_rebase_check`),
+            # so `_current_merge_head` cannot see it yet; picking a second candidate and rebasing
+            # it here would put two heads in flight, breaking the one-head invariant (CG-176).
+            return
         candidates: list[tuple[str, str, Task]] = []
         for t in self.store.tasks().values():
             if t.status != Status.IN_REVIEW:
@@ -170,11 +181,24 @@ class RebaseMixin:
             st = self.state.get(t.id)
             if not st.get("automerge_candidate"):
                 continue
+            if st.get("check_run"):
+                continue  # a pre-merge check run is already in flight for this task (CG-182)
             candidates.append((str(st.get("automerge_ready_at") or ""), t.id, t))
         if not candidates:
             return
         candidates.sort(key=lambda c: (c[0], c[1]))
         self._merge_candidate(candidates[0][2], rep)
+
+    def _merge_head_pending(self) -> bool:
+        """Whether a pre-merge rebase's check run is in flight for a would-be head. Between the
+        tick that dispatches that detached check and the tick that reaps it, the task has no
+        `merge_head` marker (the reap sets it) yet is already the queue's chosen head, so the
+        queue must not pick another candidate meanwhile."""
+        for t in self.store.tasks().values():
+            info = self.state.get(t.id).get("check_run") or {}
+            if info.get("stage") == "merge_rebase" and (info.get("cont") or {}).get("merge_head"):
+                return True
+        return False
 
     def _current_merge_head(self) -> Task | None:
         """The task currently in flight (rebased, waiting for its rollup), or None. A stale marker
@@ -208,9 +232,11 @@ class RebaseMixin:
             self._hold_automerge(task, reason)
             return
         # Rebase once, right before the merge. A clean rebase whose diff is unchanged keeps the
-        # verdict (no re-review); a conflict or a failed check takes the task off the queue.
+        # verdict (no re-review); a conflict or a failed check takes the task off the queue. The
+        # pre-merge checks run as a detached check run (`merge_head=True`), whose continuation
+        # holds the head in flight once they pass (CG-182).
         outcome = self.mechanical_rebase(task, self.final_base_for(task), rep,
-                                         reason="rebasing before merge", skip_if_current=True)
+                                         reason="rebasing before merge", skip_if_current=True, merge_head=True)
         st = self.state.get(task.id)
         if outcome == "current":
             # Already on the base's tip: no push, so the reported rollup is trustworthy — decide
@@ -219,11 +245,10 @@ class RebaseMixin:
             self._advance_merge_head(task, rep)
             return
         if outcome != "clean":
-            return  # conflict / failed check / push error already took it off the queue
+            return  # checking (a check run holds the head) / conflict / push error handled elsewhere
+        # No checks configured: the rebase moved the branch and force-pushed it synchronously.
         if st.get("review_run") or st.get("needs_human"):
             return  # the rebase changed the diff: a new review round (or a human) now owns it
-        # The rebase moved the branch and force-pushed it, restarting the rollup. Keep this task
-        # as the head (in flight) with its ready_at, and merge it once the rollup is green.
         st["merge_head"] = True
         self.events.emit("merge_head", task.id, waiting=True, reason="rebased; awaiting rollup")
         self.log(f"{task.id}: rebased before merge; in flight until its rollup is green")

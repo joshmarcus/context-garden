@@ -37,7 +37,7 @@ def register(app: FastAPI, site: Site) -> None:
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         state = State(s.config.garden_dir / "state.json")
         stack = bool(s.config.get("stack", True))
-        sched = hub.scheduler()
+        sched = hub.reader()  # a GET reads through the scheduler; it must not log (CG-182)
         phase_tasks = {t.id: t for t in ph.tasks}
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
         m = metrics(all_events, phase_tasks)

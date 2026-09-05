@@ -553,7 +553,9 @@ def test_conflicting_pr_auto_rebased_when_clean(sched, fake_github, tmp_path):
     # a pre-PR check that leaves a marker, so we can prove the round re-ran the checks
     marker = tmp_path / "clean-rebase-check-ran"
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}"}], "ci": []}
-    rep = sched.tick()
+    rep = sched.tick()  # mechanical rebase + push; the pre-PR checks start as a detached run
+    fake_github.prs["garden/dm-001-first-task"].mergeable = "MERGEABLE"  # GitHub recomputes after the push
+    sched.tick()  # reap the check run: diff unchanged -> verdict kept, check event emitted
 
     # clean rebase: no agent, task stays in_review, pending_feedback is empty
     assert statuses(sched)["DM-001"] == "in_review"
@@ -563,7 +565,7 @@ def test_conflicting_pr_auto_rebased_when_clean(sched, fake_github, tmp_path):
     rb = [r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]
     assert len(rb) == 1 and rb[0].harness == "" and rb[0].status == "done" and rb[0].cost_usd == 0.0
     assert sched.state.get("DM-001").get("rebases") == 1
-    # the pre-PR checks were re-run after the mechanical rebase
+    # the pre-PR checks were re-run after the mechanical rebase, as a detached check run
     assert marker.exists()
     checks = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["check"])
     assert any(e.get("stage") == "pre_pr" and e.get("name") == "unit" for e in checks)

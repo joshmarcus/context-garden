@@ -72,9 +72,10 @@ of the loop touch different files.
 | module | what it holds |
 |---|---|
 | `model.py`, `store.py`, `graph.py`, `brief.py` | task frontmatter and statuses; discovery of products, phases and tasks on disk; the dependency graph and ready set; the worker brief and `GARDEN_RESULT` parsing |
-| `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` and `_transition()`; `WORKER_MODES`, `REVIEW_MODES` |
-| `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` |
-| `scheduler/reap.py` | `reap`, `finalize`, the pre-PR checks and the base probe, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`) |
+| `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` (which times each phase into the report and warns over `tick.warn_seconds`) and `_transition()`; `WORKER_MODES`, `REVIEW_MODES`, `CHECK_MODES` |
+| `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` (per-pass duration and slowest step) |
+| `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
+| `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
 | `scheduler/discovered.py` | discovered tasks, duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
@@ -87,11 +88,11 @@ of the loop touch different files.
 | `scheduler/upgrades.py` | the pinned tool install: note a merge, upgrade, auto-upgrade on an idle tick |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
-| `review.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; the event log, digest and metrics; trial records; persona briefs and reports; token-free checks; the retro brief and documents; friction harvesting; task suggestions |
+| `review.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents; friction harvesting; task suggestions |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
-| `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub`, the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
+| `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
 | `web/pages/` | one module per page family (`inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
@@ -355,10 +356,13 @@ files under `tasks/` must not be hand-edited.
     stands — not rebased or pushed. A rebase that has to move the branch restarts its rollup, so
     the head goes **in flight** (`merge_head`, holding its `automerge_ready_at`): the queue does
     not pick another head while one is in flight, and it merges the head the moment the rollup
-    goes green. A head leaves the queue only on a conflict, a failed check, a changed diff that
-    needs a review, a closed PR or a human change request — the reason is logged and the
-    next-oldest candidate becomes head. So each PR is rebased at most once, right before it
-    merges, and a pending rollup never rotates the head.
+    goes green. The pre-merge checks run as a detached check run (CG-182), so the head is chosen
+    a tick before its `merge_head` marker is set (the reap sets it); while that check run is in
+    flight the queue treats the task as the head all the same and picks no other candidate, so
+    the one-head invariant holds across the detach window too. A head leaves the queue only on a
+    conflict, a failed check, a changed diff that needs a review, a closed PR or a human change
+    request — the reason is logged and the next-oldest candidate becomes head. So each PR is
+    rebased at most once, right before it merges, and a pending rollup never rotates the head.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is

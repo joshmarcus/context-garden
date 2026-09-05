@@ -57,14 +57,22 @@ def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     # Passes at the base (no worker-output.txt yet), so the base probe (CG-131) sees a clean
     # base and this stays a branch-owned failure: fails on the first run's "1", passes on "2".
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; if [ -f worker-output.txt ]; then grep -qx 2 worker-output.txt; fi"}], "ci": []}
-    sched.tick()
-    rep = sched.tick()  # first worker output is "1" -> check fails -> no PR, revise queued and dispatched
+    # Checks are detached run records (CG-182): the worker's push starts a pre-PR check run,
+    # reaped a tick later; a failure probes the base (another check run) before the revise round.
+    dispatched: set[str] = set()
+    transitions: set[str] = set()
+    for _ in range(8):
+        rep = sched.tick()
+        dispatched |= set(rep.dispatched)
+        transitions |= set(rep.transitions)
+        if statuses(sched)["DM-001"] == "in_review":
+            break
     assert marker.exists()
-    assert "DM-001 -> changes_requested (checks)" in rep.transitions and "DM-001(revise)" in rep.dispatched
-    assert fake_github.created == []
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert any(d.startswith("DM-001(check:") for d in dispatched)
+    assert "DM-001 -> changes_requested (checks)" in transitions and "DM-001(revise)" in dispatched
+    revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
+    brief = (revise.path / "brief.md").read_text()
     assert "pre-PR check" in brief and "unit" in brief
-    rep = sched.tick()  # revise bumps output to "2" -> check passes -> PR opened
     assert statuses(sched)["DM-001"] == "in_review" and len(fake_github.created) == 1
 
 
@@ -75,18 +83,24 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     sched.tick()
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
-    # 1) flaky -> rerun, no revise round
+    # 1) flaky -> the CI analyser runs as a detached check run (CG-182); its continuation reruns
+    #    CI instead of dispatching a revise round
     monkeypatch.setenv("FAKE_CI_MODE", "flaky")
     pr.updated_at, pr.checks, pr.failed_checks = "t2", "FAILURE", ["build"]
-    rep = sched.tick()
-    assert rerun_file.read_text().strip() == "rerun" and rep.dispatched == []
+    dispatched = set(sched.tick().dispatched)  # poll starts the CI check run
+    rep = sched.tick()  # reap it: flaky -> rerun
+    dispatched |= set(rep.dispatched)
+    assert rerun_file.read_text().strip() == "rerun"
+    assert not any("revise" in d for d in dispatched)
     assert statuses(sched)["DM-001"] == "in_review"
     # 2) real failure -> revise brief carries the analyser's details
     monkeypatch.setenv("FAKE_CI_MODE", "fail")
     pr.updated_at = "t3"
-    rep = sched.tick()
+    sched.tick()  # poll starts the CI check run
+    rep = sched.tick()  # reap it: real failure -> revise
     assert "DM-001(revise)" in rep.dispatched
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
+    brief = (revise.path / "brief.md").read_text()
     assert "failed checks: build" in brief and "test_x.py::test_y" in brief
 
 

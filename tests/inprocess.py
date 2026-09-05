@@ -21,6 +21,7 @@ mechanics construct `LocalRunner` directly and stub `subprocess.Popen`.
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 from collections.abc import Callable, Mapping
@@ -73,6 +74,22 @@ class InProcessRunner(LocalRunner):
         (d / "stderr.log").write_text(stderr)
         if code is not None:
             (d / "exit_code").write_text(f"{code}\n")  # the completion signal reap waits for
+
+    def start_checks(self, run: Run, worktree: Path, payload: dict) -> None:
+        """Run the same check job the local runner would launch, but synchronously in this
+        process: by the time the tick that started it returns, `checks.json` and `exit_code`
+        are written, so the next tick reaps it — exactly the two-tick shape reviews have."""
+        from garden.checkrun import run_check_job
+
+        d = run.path
+        (d / "checks_input.json").write_text(json.dumps(payload))
+        (d / "stdout.json").write_text("")
+        (d / "stderr.log").write_text("")
+        run.pid = None
+        run.save()
+        results = run_check_job(payload)
+        (d / "checks.json").write_text(json.dumps(results))
+        (d / "exit_code").write_text("0\n")
 
     def wake(self, run: Run) -> None:
         """Finish a `stall` run now, as if the silent worker woke up and completed a plain

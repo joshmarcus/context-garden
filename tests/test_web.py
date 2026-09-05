@@ -757,3 +757,42 @@ def test_trusted_origins_from_config_are_accepted(garden):
     c = client(garden)
     assert c.post("/tick", headers={"Origin": "https://garden.internal"}, follow_redirects=False).status_code == 303
     assert c.post("/tick", headers={"Origin": "https://other.internal"}, follow_redirects=False).status_code == 403
+
+
+def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
+    """CG-182: a button press and a page render never wait for a scheduler pass. With a slow
+    pre-PR check running (as a run record; here in-process, holding hub.lock during the check
+    subprocess), POST /tasks/<id>/<action> returns well under a second and GET / under half a
+    second, because actions take a short action-only lock (never the tick's) and GET reads
+    directly."""
+    import threading
+    import time
+
+    from tests.conftest import FakeGitHub
+
+    store = Store(garden)
+    # A pre-PR check that takes three seconds; the tick starts it as a check run and the
+    # in-process runner runs the `sleep` subprocess (which releases the GIL) inside the pass.
+    store.config.data["checks"] = {"pre_pr": [{"name": "slow", "command": "sleep 3"}], "ci": []}
+    app = create_app(store, watch=False, github=FakeGitHub())
+    c = TestClient(app)
+    hub = app.state.hub
+    hub.tick()  # dispatch DM-001's worker (finishes in-process)
+
+    done = threading.Event()
+    threading.Thread(target=lambda: (hub.tick(), done.set()), daemon=True).start()
+    time.sleep(0.6)  # let the pass reap the worker and reach the slow check
+    assert not done.is_set(), "the background tick should still be running the slow check"
+
+    t0 = time.monotonic()
+    r = c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False)
+    post_s = time.monotonic() - t0
+    t1 = time.monotonic()
+    g = c.get("/")
+    get_s = time.monotonic() - t1
+
+    assert r.status_code == 303 and g.status_code == 200
+    assert not done.is_set(), "the tick was still running while both requests were served"
+    assert post_s < 1.0, f"POST waited {post_s:.2f}s for the tick"
+    assert get_s < 0.5, f"GET waited {get_s:.2f}s for the tick"
+    done.wait(timeout=10)

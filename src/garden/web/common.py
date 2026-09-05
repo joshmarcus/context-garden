@@ -54,7 +54,13 @@ class Hub:
     def __init__(self, store: Store, watch: bool, github: Any | None = None):
         self.store = store
         self.github = github
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # held only by tick(): one scheduler pass at a time
+        # A short lock around an action so two POSTs don't clobber one task, held *only* for
+        # the action — never shared with the tick, so a button press never waits for a pass to
+        # finish (CG-182). State.save() merges per key under its own file lock and task files
+        # are written whole, so an action and a concurrent tick each build a scheduler, apply
+        # their change and save without a shared lock.
+        self.action_lock = threading.Lock()
         self.events: list[dict[str, Any]] = []
         self.last_tick = ""
         self.watch = watch

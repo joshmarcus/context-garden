@@ -12,6 +12,22 @@ from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
 
 
+def drive(sched, until, n=8):
+    """Tick until `until(sched)` holds (or `n` ticks pass), accumulating what was dispatched
+    and transitioned. Checks are detached run records now (CG-182): a pre-PR check, a base
+    probe and a stale-base rebase re-check each take their own tick, so a test drives the loop
+    to a stable state instead of asserting a single tick's outcome."""
+    dispatched: set[str] = set()
+    transitions: set[str] = set()
+    for _ in range(n):
+        rep = sched.tick()
+        dispatched |= set(rep.dispatched)
+        transitions |= set(rep.transitions)
+        if until(sched):
+            break
+    return dispatched, transitions
+
+
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
     """CG-083: a crash between the run record's final-status write and the task
     transition / push / PR step must not strand the finished run. Simulate the
@@ -105,11 +121,11 @@ def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     sched.tick()
     sched.state.get("DM-001")["revisions"] = 2  # pretend two revise rounds were already used
     sched.state.save()
-    rep = sched.tick()  # reap -> pre-PR check fails at the cap
+    _, transitions = drive(sched, lambda s: statuses(s)["DM-001"] == "changes_requested")
     assert statuses(sched)["DM-001"] == "changes_requested"
     st = sched.state.get("DM-001")
     assert st.get("needs_human") and "revision rounds already used" in st["needs_human"]
-    assert any("cap" in tr for tr in rep.transitions)
+    assert any("cap" in tr for tr in transitions)
 
 
 def _seed_base_guard(sched, content: str) -> str:
@@ -134,9 +150,10 @@ def test_check_failing_at_moved_base_is_rebased_not_revised(sched, fake_github):
     sched.tick()  # dispatch DM-001 from the red base
     _seed_base_guard(sched, "ok")  # main goes green before the branch is reaped
 
-    rep = sched.tick()  # reap: guard fails on the branch; base moved + green -> rebase, pass, PR
+    # reap: guard fails on the branch; base probe finds it red-and-moved -> rebase + re-check -> PR
+    dispatched, _ = drive(sched, lambda s: statuses(s)["DM-001"] == "in_review")
     assert statuses(sched)["DM-001"] == "in_review"
-    assert not any("revise" in d for d in rep.dispatched)
+    assert not any("revise" in d for d in dispatched)
     assert sched.state.get("DM-001").get("revisions", 0) == 0
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
@@ -152,17 +169,17 @@ def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
     base_sha = _seed_base_guard(sched, "bad")  # red base that stays put
 
     sched.tick()
-    runs_before = len(sched.runs.runs_for("DM-001"))
-    rep = sched.tick()  # reap: guard fails on the branch and at the unmoved base -> card
-
+    # reap: guard fails on the branch and at the unmoved base -> base_broken card
+    dispatched, _ = drive(sched, lambda s: statuses(s)["DM-001"] == "changes_requested")
     assert statuses(sched)["DM-001"] == "changes_requested"
     info = sched.state.get("DM-001").get("needs_human")
     assert isinstance(info, dict) and info["kind"] == "base_broken"
     assert "guard" in info["reason"] and base_sha[:12] in info["reason"]
-    assert not any("revise" in d for d in rep.dispatched)
-    # no revise worker dispatched now or on the next tick: the task waits without spending
+    assert not any("revise" in d for d in dispatched)
+    # no revise worker or check run dispatched while parked: the task waits without spending
+    runs_before = len(sched.runs.runs_for("DM-001"))
     rep2 = sched.tick()
-    assert not any("DM-001" in d for d in rep.dispatched + rep2.dispatched)
+    assert not any("DM-001" in d for d in rep2.dispatched)
     assert len(sched.runs.runs_for("DM-001")) == runs_before
     # the Inbox surfaces it as a base-broken card
     from garden.inbox import build_inbox
@@ -179,23 +196,27 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     _seed_base_guard(sched, "bad")  # red base the branch is cut from
 
     sched.tick()  # dispatch DM-001 from the red base (the in-process worker finishes here)
-    sched.tick()  # reap: guard fails on the branch and at the unmoved base -> parked base_broken
+    # reap: guard fails on the branch and at the unmoved base -> parked base_broken
+    drive(sched, lambda s: statuses(s)["DM-001"] == "changes_requested")
     assert statuses(sched)["DM-001"] == "changes_requested"
     info = sched.state.get("DM-001").get("needs_human")
     assert isinstance(info, dict) and info["kind"] == "base_broken"
     runs_before = len(sched.runs.runs_for("DM-001"))
 
     _seed_base_guard(sched, "ok")  # the base branch is fixed and goes green
-    rep = sched.tick()  # re-probe: base moved + green -> rebase, re-check, open PR, no worker
+    # re-probe: base moved + green -> mechanical rebase, re-check run, open PR, no worker
+    dispatched, _ = drive(sched, lambda s: statuses(s)["DM-001"] == "in_review")
 
     assert statuses(sched)["DM-001"] == "in_review"
     assert not sched.state.get("DM-001").get("needs_human")  # the stop is cleared
-    assert not any("DM-001" in d for d in rep.dispatched)  # no worker run was dispatched
+    assert not any(d.startswith("DM-001(work") or "revise" in d for d in dispatched)  # no worker run
     assert len(fake_github.created) == 1  # the PR is open
     assert sched.state.get("DM-001").get("revisions", 0) == 0  # no revise round spent
-    # the only run added is the no-cost mechanical rebase, not a worker run
+    # the runs added are the no-cost mechanical rebase and the detached re-check, not a worker run
     added = sched.runs.runs_for("DM-001")[runs_before:]
-    assert [r.mode for r in added] == ["rebase"] and added[0].cost_usd == 0.0
+    modes = [r.mode for r in added]
+    assert "rebase" in modes and "work" not in modes and "revise" not in modes
+    assert next(r for r in added if r.mode == "rebase").cost_usd == 0.0
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
     assert (wt / "sentinel.txt").read_text().strip() == "ok"
@@ -211,14 +232,14 @@ def test_base_broken_task_stays_parked_while_base_stays_red(sched, fake_github):
     _seed_base_guard(sched, "bad")
 
     sched.tick()
-    sched.tick()  # parked base_broken
+    drive(sched, lambda s: statuses(s)["DM-001"] == "changes_requested")  # parked base_broken
     runs_before = len(sched.runs.runs_for("DM-001"))
 
     rep = sched.tick()  # base unchanged: the re-probe waits
     assert statuses(sched)["DM-001"] == "changes_requested"
     assert sched.state.get("DM-001").get("needs_human", {}).get("kind") == "base_broken"
     assert not any("DM-001" in d for d in rep.dispatched)
-    assert len(sched.runs.runs_for("DM-001")) == runs_before  # no rebase run created while waiting
+    assert len(sched.runs.runs_for("DM-001")) == runs_before  # no rebase/check run created while waiting
 
 
 def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fake_github, monkeypatch):
@@ -241,11 +262,17 @@ def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fa
     monkeypatch.setattr(gitops, "rebase_onto", lambda worktree, onto: (False, ["sentinel.txt"]))
 
     for i in range(3):
-        # one tick reaps the running round (guard still fails on the branch and the moved,
-        # still-red base), flags it as a rebase round, and immediately redispatches the
-        # exempt revise round in the same tick despite max_revisions=0
-        rep = sched.tick()
-        assert "DM-001(revise)" in rep.dispatched
+        # each cycle reaps the running round, runs the pre-PR check and base probe as detached
+        # runs (guard fails on the branch and at the moved, still-red base), flags it as a rebase
+        # round when `rebase_onto` can't apply, and redispatches the exempt revise despite
+        # max_revisions=0 — never counting a revision or flagging needs_human
+        got_revise = False
+        for _ in range(6):
+            rep = sched.tick()
+            if "DM-001(revise)" in rep.dispatched:
+                got_revise = True
+                break
+        assert got_revise
         st = sched.state.get("DM-001")
         assert st["rebases"] == i + 1
         assert st.get("revisions", 0) == 0
@@ -519,3 +546,20 @@ def test_review_dispatch_is_deferred_while_a_worker_run_is_in_flight(sched, fake
     assert next(r for r in sched.runs.runs_for("DM-001") if r.run_id == revise_run.run_id).status == "done"
     assert any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))
     assert not sched.state.get("DM-001").get("pending_reviews")
+
+
+def test_tick_report_carries_duration_and_slowest_step(garden, fake_github):
+    """CG-182: every pass records its own duration and the slowest step, and warns when it
+    runs over the tick.warn_seconds budget, naming the slow step."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    logs: list[str] = []
+    sched = Scheduler(Store(garden), github=fake_github, log=logs.append)
+    sched.cfg.data["tick"] = {"warn_seconds": 0.001}  # any real pass exceeds this tiny budget
+    rep = sched.tick()
+    assert rep.duration_s > 0
+    assert rep.slowest_step in {"reap", "poll", "base_reprobe", "merge_queue", "dispatch", "audit"}
+    assert "took" in rep.timing() and "slowest" in rep.timing()
+    assert rep.timing() in rep.summary()
+    assert any("exceeded" in m and "budget" in m for m in logs)

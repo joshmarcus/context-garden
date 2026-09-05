@@ -3,10 +3,12 @@ scheduler. Only the worker spends tokens, and it only sees the brief."""
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,27 @@ class LocalRunner(Runner):
         )
         run.pid = proc.pid
         run.harness = self.harness.name
+        run.save()
+        (d / "command.txt").write_text(script + "\n")
+
+    def start_checks(self, run: Run, worktree: Path, payload: dict[str, Any]) -> None:
+        """Launch a check run detached: a shell runs `garden.checkrun` on the payload in the
+        worktree and writes `exit_code` when it ends, so the tick starts the checks and reaps
+        them later instead of running the product's suite in-process (CG-182). Overridden by
+        the in-process test runner to run the same job synchronously."""
+        d = run.path
+        (d / "checks_input.json").write_text(json.dumps(payload))
+        script = (
+            f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(d))} "
+            f"> {shlex.quote(str(d / 'stdout.json'))} 2> {shlex.quote(str(d / 'stderr.log'))}; "
+            f"echo $? > {shlex.quote(str(d / 'exit_code'))}"
+        )
+        proc = subprocess.Popen(
+            ["sh", "-c", script], cwd=str(worktree),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        run.pid = proc.pid
         run.save()
         (d / "command.txt").write_text(script + "\n")
 

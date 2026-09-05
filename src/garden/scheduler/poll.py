@@ -6,10 +6,11 @@ from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
-from ..checks import run_checks, to_feedback
+from ..checks import to_feedback
 from ..github import GitHubError, PRInfo
 from ..model import Status, Task, now_iso
 from ..notify import notify
+from ..runs import Run
 from .report import TickReport
 
 
@@ -69,10 +70,6 @@ class PollMixin:
             self._maybe_automerge(task, pr, rep)
             return
         st["pr_updated_at"] = pr.updated_at
-        since = task.last_dispatched_at
-        fb = self.github.feedback_since(slug, number, since)
-        if fb.ignored:
-            self._log_ignored_feedback(task, fb.ignored)
         st["head_sha"] = pr.head_sha
         ci_note = ""
         if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
@@ -81,25 +78,22 @@ class PollMixin:
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
             if specs:
-                results = run_checks(specs, self.check_ctx(task, task.branch, self.base_for(task)),
-                                     cwd=self.worktree_for(task) if self.worktree_for(task).exists() else None,
-                                     timeout=int(self.cfg.get("checks.timeout_seconds", 600)), config=self.cfg.data)
-                for r in results:
-                    self.events.emit("check", task.id, stage="ci", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
-                flaky = [r for r in results if r.get("status") == "flaky"]
-                if flaky and len(flaky) == len([r for r in results if r.get("status") != "pass"]) and int(st.get("ci_reruns", 0)) < 1:
-                    st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
-                    for r in flaky:
-                        if r.get("retry_command"):
-                            import subprocess
+                # The CI analyser runs as a detached check run, reaped a tick later (CG-182): the
+                # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
+                # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
+                self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
+                                         base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note},
+                                         extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
+                return
+        fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
+        if fb.ignored:
+            self._log_ignored_feedback(task, fb.ignored)
+        self._apply_feedback(task, pr, fb, ci_note, rep)
 
-                            subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True, timeout=120)
-                    task.log("CI failure judged flaky by checks; reran instead of dispatching a revise run")
-                    self.store.save(task)
-                    self.events.emit("ci_rerun", task.id, checks=[r.get("name") for r in flaky])
-                    ci_note = ""
-                elif check_failures(results):
-                    ci_note += "\n\n" + to_feedback(results, "CI check")
+    def _apply_feedback(self, task: Task, pr: PRInfo, fb: Any, ci_note: str, rep: TickReport) -> None:
+        """Turn new PR feedback and/or a CI note into a revise round (or a human hand-off at the
+        cap). Shared by `poll` and the CI check continuation so both route a failure the same way."""
+        st = self.state.get(task.id)
         if not fb and not ci_note:
             # Feedback processed, nothing actionable: another stable point to consider merging.
             self._maybe_automerge(task, pr, rep)
@@ -127,6 +121,34 @@ class PollMixin:
             return
         self._transition(task, Status.CHANGES_REQUESTED, note)
         rep.transitions.append(f"{task.id} -> changes_requested")
+
+    def _after_ci_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
+        """Reap a CI analyser check run: a wholly-flaky verdict reruns CI instead of a revise
+        round (once); otherwise the analyser's details join the CI note and the GitHub feedback."""
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not slug or not number or not self.github.available:
+            return
+        try:
+            pr = self.github.get_pr(slug, number)
+        except (GitHubError, KeyError):
+            return
+        st = self.state.get(task.id)
+        ci_note = str(cont.get("ci_note") or "")
+        reran = [r for r in results if r.get("reran")]
+        if reran:
+            # The detached job already reran CI (it held the flaky-rerun budget); record it here.
+            st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
+            task.log("CI failure judged flaky by checks; reran instead of dispatching a revise run")
+            self.store.save(task)
+            self.events.emit("ci_rerun", task.id, checks=[r.get("name") for r in reran])
+            ci_note = ""
+        elif check_failures(results):
+            ci_note += "\n\n" + to_feedback(results, "CI check")
+        fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
+        if fb.ignored:
+            self._log_ignored_feedback(task, fb.ignored)
+        self._apply_feedback(task, pr, fb, ci_note, rep)
 
     def _log_ignored_feedback(self, task: Task, ignored: list[dict[str, Any]]) -> None:
         """One task-log line and one event per skipped comment (a bot notice, or an author
