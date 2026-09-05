@@ -11,11 +11,28 @@ import typer
 from rich.table import Table
 
 from ..model import Status, now_iso
-from .common import _phase, _scheduler, _split_target, _store, _style, _task, app, console, err
+from .common import (
+    PANEL_BOARD,
+    PANEL_DECIDE,
+    PANEL_INSIGHT,
+    PANEL_LOOP,
+    PANEL_PLAN,
+    PANEL_QUALITY,
+    PANEL_REVIEW,
+    _phase,
+    _scheduler,
+    _split_target,
+    _store,
+    _style,
+    _task,
+    app,
+    console,
+    err,
+)
 
 
 # --------------------------------------------------------------------------- the loop
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason to record")):
     """Pause automatic dispatch (reap, poll and reviews keep running)."""
     store = _store()
@@ -27,7 +44,7 @@ def pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason
     console.print(f"[yellow]{msg}[/yellow]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def budget(
     phase: str = typer.Argument(..., help="Phase key, e.g. context-garden/phase-02-friction"),
     value: str = typer.Argument(..., help="USD cap, or 'none' to remove the cap"),
@@ -61,29 +78,34 @@ def budget(
     console.print(f"{phase}: budget set to ${usd:.2f}")
 
 
-@app.command()
-def resume(task_id: str = typer.Argument("", help="Task id: nothing to fix, clear its needs-human stop and put it back where it was")):
-    """Resume automatic dispatch after a pause; with a task id, clear that task's needs-human stop without starting a run."""
+@app.command(rich_help_panel=PANEL_LOOP)
+def unpause():
+    """Resume automatic dispatch after a `garden pause` (the mirror of pause)."""
+    store = _store()
+    _scheduler(store).resume(by="cli")
+    console.print("[green]dispatch resumed[/green]")
+
+
+@app.command(rich_help_panel=PANEL_DECIDE)
+def resume(task_id: str = typer.Argument(..., help="The task to clear")):
+    """Clear a task's needs-human stop without starting a run: it goes back where it was.
+    (To resume paused dispatch, use `garden unpause`.)"""
     store = _store()
     sched = _scheduler(store)
-    if task_id:
-        t = _task(store, task_id)
-        try:
-            sched.resume_task(t)
-        except RuntimeError as e:
-            err.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from None
-        console.print(f"{t.id}: nothing to fix; resumed as {t.status.value}")
-        return
-    sched.resume(by="cli")
-    console.print("[green]dispatch resumed[/green]")
+    t = _task(store, task_id)
+    try:
+        sched.resume_task(t)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: nothing to fix; resumed as {t.status.value}")
 
 
 # keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
 LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int}
 
 
-@app.command("set")
+@app.command("set", rich_help_panel=PANEL_LOOP)
 def set_live(key: str, value: str):
     """Set a config value live, effective next tick without a restart (currently: max_parallel).
     Overrides the garden.yaml value until cleared with `garden clear <key>`."""
@@ -102,7 +124,7 @@ def set_live(key: str, value: str):
     console.print(f"[green]{key} = {cast_value}[/green] (live override; garden.yaml value unchanged, takes effect next tick)")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def clear(key: str):
     """Clear a live override set with `garden set`, going back to the garden.yaml value."""
     if key not in LIVE_OVERRIDES:
@@ -114,7 +136,7 @@ def clear(key: str):
     console.print(f"[green]{key} override cleared[/green] (back to the garden.yaml value)")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't start workers")):
     """One scheduler pass: reap finished workers, poll PRs, dispatch ready tasks."""
     store = _store()
@@ -124,7 +146,7 @@ def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't
         raise typer.Exit(1) from None
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: garden.yaml tick_interval)")):
     """Loop `tick` forever. Sleeping costs nothing; only workers spend tokens."""
     store = _store()
@@ -141,7 +163,7 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
         console.print("stopped")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"), force: bool = typer.Option(False, help="Ignore deps/status")):
     """Start a worker for one task now."""
     from ..graph import blockers
@@ -164,7 +186,7 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
     console.print(f"{t.id}: run {run.run_id} started (worktree {run.worktree})")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def take(
     task_id: str,
     worktree: bool = typer.Option(False, help="Also create the git worktree and print its path"),
@@ -200,7 +222,7 @@ def take(
     print(brief_path.read_text())
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_LOOP)
 def finish(
     task_id: str,
     pr_url: str = typer.Option("", "--pr", help="PR URL if you opened it yourself"),
@@ -227,7 +249,7 @@ def finish(
     console.print(rep.summary())
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to the worker's question")):
     """Answer a waiting_human task; the worker resumes (same session when the harness supports it).
     If the worker reported wont_do / no_change, this rejects that call and sends your note back."""
@@ -250,7 +272,7 @@ def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to th
     console.print(f"{t.id}: {'resumed session' if run.session_id else 'fresh run with the answer'} ({run.run_id})")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_INSIGHT)
 def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an ISO timestamp")):
     """What happened while you were away: PRs opened and merged, tasks needing you, cost."""
     from ..events import EventLog, parse_since
@@ -312,7 +334,7 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
         console.print("[dim]nothing notable[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_INSIGHT)
 def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
     """Lead time, revise rounds, first-pass approval and cost per task and per difficulty tier."""
     from ..events import EventLog
@@ -354,7 +376,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def events(task_id: str | None = typer.Argument(None), since: str = typer.Option("", help="90m, 24h, 3d or ISO"), limit: int = typer.Option(50, "-n")):
     """Timeline of scheduler events (all, or one task)."""
     from ..events import EventLog, parse_since
@@ -366,7 +388,7 @@ def events(task_id: str | None = typer.Argument(None), since: str = typer.Option
         console.print(f"[dim]{ev['at'][5:19]}[/dim] {ev['task']:<8} [bold]{ev['kind']:<14}[/bold] " + " ".join(f"{k}={v}" for k, v in extra.items() if v not in ("", None, False, 0)))
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_INSIGHT)
 def trial(
     task_id: str,
     contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5 (repeat)"),
@@ -383,7 +405,7 @@ def trial(
         console.print(f"{t.id}: {r.harness}:{r.model or 'default'} -> run {r.run_id} on {r.branch}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_INSIGHT)
 def trials(task_id: str | None = typer.Argument(None, help="Show one task's trial instead of the leaderboard")):
     """Model leaderboard from every trial: wins, average score and cost per contender."""
     from ..trials import TrialLog, ranking_markdown
@@ -410,7 +432,7 @@ def trials(task_id: str | None = typer.Argument(None, help="Show one task's tria
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_QUALITY)
 def walkthrough(
     target: str = typer.Argument(..., help="product/phase"),
     out: Path | None = typer.Option(None, "--out", help="Output directory (default: <phase>/docs/walkthrough/<date>)"),
@@ -440,7 +462,7 @@ def walkthrough(
         console.print(f"[yellow]{result.browser_note}[/yellow]")
 
 
-@app.command("persona-review")
+@app.command("persona-review", rich_help_panel=PANEL_QUALITY)
 def persona_review(
     target: str = typer.Argument(..., help="A task id (reviews its PR) or product/phase (reviews the body of work)"),
     personas: list[str] = typer.Option(..., "--persona", "-p", help="Persona name (repeat); see `garden personas`"),
@@ -475,7 +497,7 @@ def persona_review(
         console.print(f"{t.id}: persona {name} -> run {run.run_id} (comment on {t.pr or 'the PR'})")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_QUALITY)
 def personas():
     """List available personas (personas/*.md, plus the built-in defaults)."""
     from ..personas import DEFAULT_PERSONAS, list_personas
@@ -487,7 +509,7 @@ def personas():
         console.print(f"{name:<18} {where}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_REVIEW)
 def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci")):
     """Run the token-free checks for a task by hand (pre_pr in its worktree, or ci analysers)."""
     from ..checks import run_checks
@@ -516,7 +538,7 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
     raise typer.Exit(1 if bad else 0)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def triage(
     task_id: str,
     ready: bool = typer.Option(False, help="The draft PR is good enough for review: mark it ready"),
@@ -534,7 +556,7 @@ def triage(
     console.print(f"{t.id}: {'ready for review' if ready else 'sent back for changes'}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def suggest(
     task_id: str,
     text: str = typer.Argument(..., help="Your suggestion about the task (its goal, context, acceptance, etc.)"),
@@ -550,7 +572,7 @@ def suggest(
     console.print(f"{t.id}: suggestion recorded; it will be integrated on the next tick (or `garden integrate {t.id}`)")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def integrate(task_id: str):
     """Start an edit run now that folds a task's pending suggestions into its body."""
     store = _store()
@@ -563,7 +585,7 @@ def integrate(task_id: str):
     console.print(f"{t.id}: edit run {run.run_id} started")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def inbox():
     """Everything that needs a human, with the command that resolves it."""
     from ..inbox import build_inbox, decisions, notices
