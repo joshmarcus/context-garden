@@ -30,6 +30,8 @@ if "GARDEN_COMPARE:" in brief:
     mode = "compare"
 if "GARDEN_PERSONA:" in brief:
     mode = "persona"
+if "GARDEN_RETRO:" in brief:
+    mode = "retro"
 try:
     Path("model.txt").write_text(model + "\n")
 except OSError:
@@ -68,6 +70,27 @@ if mode == "persona":
            "findings": [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions", "suggestion": "Add it to Quick start"}]}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed as persona.\nGARDEN_PERSONA: " + json.dumps(rev),
                       "usage": {"input_tokens": 1500, "output_tokens": 120}, "total_cost_usd": 0.02}))
+    sys.exit(0)
+
+if mode == "retro":
+    import re as _re
+    fsec = _re.search(r"## Harvested friction.*?(?=\n## |\Z)", brief, flags=_re.S)
+    friction_ids = _re.findall(r"^### (\S+):", fsec.group(0), flags=_re.M) if fsec else []
+    msec = _re.search(r"## Merged pull requests.*?(?=\n## |\Z)", brief, flags=_re.S)
+    merged_ids = _re.findall(r"^- (\S+) —", msec.group(0), flags=_re.M) if msec else []
+    cycle = ["fixed", "still_true", "outdated", "disputed"]
+    recon = []
+    for i, fid in enumerate(friction_ids):
+        v = cycle[i % len(cycle)]
+        recon.append({"item": f"friction from {fid}", "logged": fid,
+                      "pr": (merged_ids[0] if v == "fixed" and merged_ids else ""),
+                      "verdict": v, "evidence": f"reconciled {fid} against the merged work"})
+    rev = {"reconciliation": recon, "summary": "The phase mostly held together.",
+           "personas": "The personas liked the onboarding.", "still_open": ["live worker output"],
+           "next_goals": "# Next\n\n- Make waiting visible.\n"}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                      "result": "Reconciled.\nGARDEN_RETRO: " + json.dumps(rev),
+                      "usage": {"input_tokens": 4000, "output_tokens": 300}, "total_cost_usd": 0.04}))
     sys.exit(0)
 
 if mode.startswith("review"):
