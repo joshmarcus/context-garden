@@ -19,6 +19,7 @@ from .store import Store
 GROUPS = [
     ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
     ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer.", "decision"),
+    ("retro_verdict", "Accept or change a retro's verdict", "A retrospective reopened the phase: the named tasks must land before it can close. Accept to approve them and keep the phase open, or change the verdict to close instead.", "decision"),
     ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
@@ -420,6 +421,24 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             "age": _age(tgt.updated if tgt else str(d.get("at") or "")),
             "difficulty": tgt.difficulty if tgt else "",
             "decision": str(d.get("id") or ""), "decision_kind": str(d.get("kind") or ""),
+        })
+
+    for v in getattr(sched, "pending_retro_verdicts", list)():
+        phase_key = str(v.get("phase_key") or "")
+        product, _, phase_name = phase_key.partition("/")
+        blocking_ids = [str(b) for b in (v.get("blocking_ids") or [])]
+        names = [f"{bid} ({tasks[bid].title})" if bid in tasks else bid for bid in blocking_ids]
+        why = ("reopen: " + ", ".join(names) + " must land before the phase can close") if names \
+            else "reopen: the retro named no blocking tasks"
+        items.append({
+            "group": "retro_verdict", "group_title": titles["retro_verdict"], "task": "",
+            "title": phase_key, "phase": phase_key, "status": "", "pr": "",
+            "why": why, "age": _age(str(v.get("at") or "")), "difficulty": "",
+            "product": product, "phase_name": phase_name, "blocking_ids": blocking_ids,
+            "actions": [
+                {"label": "Accept reopen", "kind": "retro-decide-reopen", "command": f"garden retro-decide {phase_key} reopen"},
+                {"label": "Change to close", "kind": "retro-decide-close", "command": f"garden retro-decide {phase_key} close"},
+            ],
         })
 
     for key in sorted({t.key for t in tasks.values()}):

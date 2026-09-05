@@ -209,6 +209,18 @@ def test_digest_nothing_notable_without_failures():
     assert not any([d["needs_human"], d["prs_opened"], d["reviews"], d["merged"], d["discovered"], d["failures"]])
 
 
+def test_digest_counts_a_pending_reopen_verdict_but_not_an_accepted_close():
+    """A `reopen` verdict still waiting on a person is a needs_human item; a `close`/
+    `close_with_followups` verdict already closed the phase (CG-178), so it is not."""
+    events = [
+        {"at": "2026-01-01T00:01:00+00:00", "kind": "retro_verdict", "task": "", "phase": "demo/p1", "status": "pending"},
+        {"at": "2026-01-01T00:02:00+00:00", "kind": "retro_verdict", "task": "", "phase": "demo/p2", "status": "accepted"},
+    ]
+    d = digest(events)
+    assert len(d["needs_human"]) == 1
+    assert d["needs_human"][0]["phase"] == "demo/p1"
+
+
 # --------------------------------------------------------------------------- decisions vs notices
 
 
@@ -258,8 +270,27 @@ def _garden_with_a_decision_and_a_notice(garden: Path) -> None:
 def test_group_kind_classifies_retrying_as_notice_and_approve_as_decision():
     assert GROUP_KIND["retrying"] == "notice"
     assert GROUP_KIND["tool"] == "notice"
-    for g in ("question", "decision", "triage", "review", "attention", "approve", "budget"):
+    for g in ("question", "decision", "triage", "review", "attention", "approve", "budget", "retro_verdict"):
         assert GROUP_KIND[g] == "decision", g
+
+
+def test_build_inbox_shows_a_pending_reopen_verdict(garden: Path):
+    """CG-178: a `reopen` verdict waiting on a person shows as an Inbox decision card, naming
+    the blocking task(s), with the accept-reopen/change-to-close actions."""
+    class _SchedWithVerdict(_FakeSched):
+        def pending_retro_verdicts(self):
+            return [{"phase_key": "demo/p1", "verdict": "reopen", "status": "pending",
+                     "blocking_ids": ["DM-099"], "at": "2026-01-01T00:00:00+00:00"}]
+
+    items = build_inbox(_store(garden), _SchedWithVerdict(garden / ".garden"))
+    verdicts = [i for i in items if i["group"] == "retro_verdict"]
+    assert len(verdicts) == 1
+    v = verdicts[0]
+    assert v["phase"] == "demo/p1" and v["product"] == "demo" and v["phase_name"] == "p1"
+    assert "DM-099" in v["why"]
+    assert v in decisions(items)
+    commands = {a["command"] for a in v["actions"]}
+    assert commands == {"garden retro-decide demo/p1 reopen", "garden retro-decide demo/p1 close"}
 
 
 def test_decisions_and_notices_split_the_inbox(garden: Path):

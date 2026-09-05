@@ -566,6 +566,15 @@ class RetroMixin:
         rec = self.state.get("_retro_verdicts").get(phase_key)
         return dict(rec) if isinstance(rec, dict) else None
 
+    def pending_retro_verdicts(self) -> list[dict[str, Any]]:
+        """Retro verdicts still waiting for a person's call: a `reopen` verdict not yet accepted
+        or changed. Stamped with `phase_key`. What the Inbox shows and the badge counts."""
+        out: list[dict[str, Any]] = []
+        for phase_key, rec in self.state.get("_retro_verdicts").items():
+            if isinstance(rec, dict) and rec.get("status") == "pending":
+                out.append({**rec, "phase_key": phase_key})
+        return sorted(out, key=lambda r: str(r["phase_key"]))
+
     def retro_blocking_open(self, phase: Phase) -> list[Task]:
         """The phase's `retro_blocking` tasks that are not yet done or cancelled -- what
         `close-phase` refuses on."""

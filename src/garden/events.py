@@ -94,7 +94,7 @@ def parse_duration(text: str) -> int:
 # or question, a phase closing. Everything else in the log is a notice — a merge, a
 # dispatch, progress — and never notifies.
 DECISION_KINDS = ("waiting_human", "decision", "needs_human", "stall", "discovered",
-                  "retro_done", "retro_question", "phase_closed")
+                  "retro_done", "retro_question", "retro_verdict", "phase_closed")
 
 # stop_kind -> a short phrase for a needs_human notification (mirrors inbox.ATTENTION_KINDS,
 # kept local so events.py stays free of the inbox's store/graph imports).
@@ -151,6 +151,10 @@ def decision_notifications(events: list[dict[str, Any]], titles: dict[str, str] 
             title, url = f"Retro ready to review — {phase}", f"/phases/{phase}"
         elif kind == "retro_question":
             title, url = f"Retro needs a decision — {phase}", f"/phases/{phase}"
+        elif kind == "retro_verdict":
+            if ev.get("status") != "pending":
+                continue  # close/close_with_followups verdicts close at once; retro_done already notified
+            title, url = f"Retro verdict needs a decision — {phase}", f"/phases/{phase}"
         elif kind == "phase_closed":
             title, url = f"Phase closed — {phase}", f"/phases/{phase}"
         out.append({"kind": kind, "at": str(ev.get("at") or ""), "task": task, "phase": phase, "title": title, "url": url})
@@ -178,7 +182,8 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
             out["merged"].append(ev)
         elif k == "automerged":
             out["automerged"].append(ev)
-        elif k in HUMAN_KINDS or (k == "transition" and ev.get("to") in ("failed", "waiting_human")):
+        elif (k in HUMAN_KINDS or (k == "transition" and ev.get("to") in ("failed", "waiting_human"))
+              or (k == "retro_verdict" and ev.get("status") == "pending")):
             out["needs_human"].append(ev)
         elif k == "review":
             out["reviews"].append(ev)
