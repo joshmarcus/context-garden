@@ -155,6 +155,12 @@ class FakeGitHub:
         self.deleted_branches: set[str] = set()  # branches GitHub has deleted
         self.base_deleted: set[int] = set()  # PR numbers with a base_ref_deleted timeline event
         self.refuse_reopen: set[int] = set()  # PR numbers GitHub refuses to reopen
+        # Check latency (like real GitHub): after a push the rollup is PENDING for a few polls
+        # before it turns green or red. `check_latency` is the default number of `get_pr` polls
+        # a freshly-pushed rollup stays PENDING; `set_checks` arms a specific target and latency.
+        self.check_latency = 0
+        self._check_pending: dict[int, int] = {}  # PR number -> polls left before the rollup settles
+        self._check_target: dict[int, str] = {}   # PR number -> the state the rollup settles to
         self._n = 100
 
     def describe(self):
@@ -169,9 +175,25 @@ class FakeGitHub:
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
+    def set_checks(self, branch, state, latency=None):
+        """Arm a PR's checks rollup the way a push does on real GitHub: report PENDING for
+        `latency` polls (default `check_latency`), then settle to `state` (SUCCESS/FAILURE).
+        Tests use this to simulate a force-push restarting CI."""
+        pr = self.prs[branch]
+        n = self.check_latency if latency is None else latency
+        self._check_target[pr.number] = state
+        self._check_pending[pr.number] = n
+        pr.checks = "PENDING" if n > 0 else state
+
     def get_pr(self, slug, number):
         for pr in self.prs.values():
             if pr.number == number:
+                left = self._check_pending.get(number, 0)
+                if left > 0:
+                    self._check_pending[number] = left - 1
+                    pr.checks = "PENDING"
+                elif number in self._check_target:
+                    pr.checks = self._check_target[number]
                 return pr
         raise KeyError(number)
 
@@ -180,6 +202,8 @@ class FakeGitHub:
         pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, body=body, updated_at="t1", is_draft=draft)
         self.prs[head] = pr
         self.created.append({"head": head, "base": base, "title": title, "body": body})
+        if self.check_latency > 0:  # a fresh push starts CI: PENDING until it settles
+            self.set_checks(head, "SUCCESS")
         return pr
 
     def feedback_since(self, slug, number, since_iso, exclude_logins=None):
@@ -209,9 +233,18 @@ class FakeGitHub:
                 pr.state = "MERGED"
                 self.merged.append({"number": number, "method": method, "delete_branch": delete_branch})
                 if delete_branch:
-                    self.deleted_branches.add(pr.head)
+                    self.delete_branch(slug, pr.head)
                 return
         raise KeyError(number)
+
+    def delete_branch(self, slug, branch):
+        """Delete a branch the way real GitHub does on merge: every open PR still targeting it
+        is closed with a `base_ref_deleted` timeline event (the incident behind CG-173)."""
+        self.deleted_branches.add(branch)
+        for child in self.prs.values():
+            if child.base == branch and child.state == "OPEN":
+                child.state = "CLOSED"
+                self.base_deleted.add(child.number)
 
     def reopen_pr(self, slug, number):
         from garden.github import GitHubError

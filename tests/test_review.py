@@ -1,6 +1,28 @@
 from garden.model import Status
 from garden.review import feedback_from_review, parse_review, review_brief, review_to_markdown
+from garden.scheduler import Scheduler
 from garden.store import Store
+
+
+def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
+    """A verdict the scheduler reaped in its last tick is on disk (state.json) before the
+    process ends: a fresh Scheduler on the same garden reads it back. Guards the 2026-09-05
+    incident, when a restart lost a review verdict the old process had reaped in its last tick."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    sched.tick()  # reap review -> approve verdict recorded and saved at the tick's end
+    st = sched.state.get("DM-001")
+    assert st.get("last_review", {}).get("verdict") == "approve"
+    run_id = st.get("last_review_run")
+    assert run_id
+
+    # a new process on the same garden: state.json is the only thing that survives it
+    fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    st2 = fresh.state.get("DM-001")
+    assert st2.get("last_review", {}).get("verdict") == "approve"
+    assert st2.get("last_review_run") == run_id
 
 
 def test_review_brief_and_parse(garden):
