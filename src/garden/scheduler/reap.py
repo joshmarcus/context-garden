@@ -132,6 +132,15 @@ class ReapMixin:
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
                              cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
 
+        # Checked before the ordinary fence, and by reading files directly rather than through
+        # `gitops.git`: a change to the clone's git internals would otherwise make the fence's
+        # own git-based checks below (head_sha, status_lines) run against a clone that may no
+        # longer be trustworthy (CG-239).
+        git_guard_violations = self._git_guard_check(task, run)
+        if git_guard_violations:
+            self._git_guard_fail(task, run, git_guard_violations, rep)
+            return
+
         # The runner's fence, not the brief's: whatever the worker was told, a write to the
         # live garden or the product clone is reverted here and the run fails (see the
         # permission deny rules in Harness.fence_settings for the first line of defence).

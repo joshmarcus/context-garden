@@ -308,6 +308,7 @@ class DispatchMixin:
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
             self._fence_snapshot(task, run)
+            self._git_guard_snapshot(task, run)
         run.save()
         try:
             runner.start(run, wt or self.store.root, text)
