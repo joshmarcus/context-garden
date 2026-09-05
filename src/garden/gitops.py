@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,33 +31,42 @@ class LeaseRejected(GitError):
         )
 
 
-def _empty_hooks_dir() -> str:
-    """A directory that is guaranteed to hold no hook scripts, for `core.hooksPath` (see
-    `_git_env`). Shared and machine-wide, like `runner.base.worker_home`'s throwaway home:
-    nothing is ever written into it, so nothing to keep separate per garden or per repo."""
-    d = Path(tempfile.gettempdir()) / "garden-empty-hooks"
+@contextlib.contextmanager
+def _empty_hooks_dir():
+    """A freshly created, empty directory for `core.hooksPath` (see `_git_env`), torn down as
+    soon as the `git` call it was made for returns. A single fixed path (e.g. under
+    `tempfile.gettempdir()`) would be predictable and, since workers run without a sandbox by
+    default, writable by any worker's own Bash tool call — planting a hook there would let a
+    worker plant code the scheduler later executes with the operator's credentials against any
+    clone, not just its own. `mkdtemp` gives each invocation an unpredictable name that does not
+    exist until this call creates it, so there is nothing for a worker to have pre-planted into,
+    and it is gone again before the next call picks a new name (CG-239)."""
+    d = tempfile.mkdtemp(prefix="garden-empty-hooks-")
     try:
-        d.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    return str(d)
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
-def _git_env() -> dict[str, str]:
+@contextlib.contextmanager
+def _git_env():
     """The environment every scheduler-side `git` invocation in this module runs under:
-    `core.hooksPath` forced to an empty directory and `core.fsmonitor` forced off, via
+    `core.hooksPath` forced to a fresh, empty directory and `core.fsmonitor` forced off, via
     `GIT_CONFIG_COUNT` (git reads `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs as the
     highest-priority config, above the repo's own `.git/config`). A clone's `.git/config` or
     `.git/hooks` is reachable from inside a worker's own worktree (a worktree shares its
     clone's config unless `extensions.worktreeConfig` is set) — without this, a hook path or
     an fsmonitor command planted there would run with the operator's own credentials the next
-    time the scheduler itself runs `git` in that clone (CG-239)."""
-    return {
-        **os.environ,
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": _empty_hooks_dir(),
-        "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
-    }
+    time the scheduler itself runs `git` in that clone (CG-239). Every subprocess call site in
+    this module goes through this context manager, so the hooks directory it makes never
+    outlives the single `git` invocation it was made for."""
+    with _empty_hooks_dir() as hooks_dir:
+        yield {
+            **os.environ,
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": hooks_dir,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
+        }
 
 
 _BLOCK_MARKER = ".garden-git-blocked"
@@ -124,7 +135,8 @@ def _ensure_not_blocked(cwd: Path | None) -> None:
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
     _ensure_not_blocked(cwd)
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=_git_env())
+    with _git_env() as env:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env)
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} (in {cwd}): {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout
@@ -335,7 +347,8 @@ def stash_all(worktree: Path, message: str) -> str:
 def is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
     """Return True if ref_a is an ancestor of ref_b (or equal)."""
     _ensure_not_blocked(repo)
-    proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True, env=_git_env())
+    with _git_env() as env:
+        proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True, env=env)
     return proc.returncode == 0
 
 
@@ -507,8 +520,9 @@ def patch_id(worktree: Path, base: str) -> str:
     if not diff_text.strip():
         return ""
     _ensure_not_blocked(worktree)
-    proc = subprocess.run(["git", "patch-id", "--stable"], input=diff_text, cwd=worktree,
-                          capture_output=True, text=True, env=_git_env())
+    with _git_env() as env:
+        proc = subprocess.run(["git", "patch-id", "--stable"], input=diff_text, cwd=worktree,
+                              capture_output=True, text=True, env=env)
     if proc.returncode != 0 or not proc.stdout.strip():
         return ""
     return proc.stdout.split()[0]
@@ -583,9 +597,14 @@ def changed_files(repo: Path, old: str, new: str) -> list[str]:
 
 
 def path_at(repo: Path, ref: str, rel: str) -> bool:
-    """True if `rel` exists as a tracked path in `ref`'s tree."""
-    proc = subprocess.run(["git", "cat-file", "-e", f"{ref}:{rel}"], cwd=repo, capture_output=True)
-    return proc.returncode == 0
+    """True if `rel` exists as a tracked path in `ref`'s tree. Goes through `git()` (not a raw
+    `subprocess.run`) so a blocked clone refuses this call too, and hooksPath/fsmonitor are
+    forced off the same as every other git call in this module."""
+    try:
+        git("cat-file", "-e", f"{ref}:{rel}", cwd=repo)
+        return True
+    except GitError:
+        return False
 
 
 def reset_soft(repo: Path, ref: str) -> None:
