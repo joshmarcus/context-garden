@@ -237,6 +237,36 @@ def test_in_place_mutation_of_read_value_survives(tmp_path):
     assert final.get("CG-001")["items"] == [1, 2]
 
 
+def test_task_state_get_snapshots_mutable_like_getitem():
+    # st.get(key) must snapshot a mutable value the same way st[key] does, so an in-place
+    # mutation of the value read through .get is caught by dirty (dict.get bypasses __getitem__).
+    ts = _TaskState({"cfg": {"a": 1}})
+    val = ts.get("cfg")
+    assert "cfg" not in ts.dirty  # a bare read is not dirty
+    val["a"] = 2
+    assert "cfg" in ts.dirty
+    # a missing key returns the default and is never snapshotted
+    assert ts.get("missing", "d") == "d"
+    assert "missing" not in ts.dirty
+
+
+def test_in_place_mutation_of_value_read_via_get_survives(tmp_path):
+    """A mutable value read through st.get(key) and then mutated in place is persisted:
+    dict.get bypasses __getitem__, so without the get override the mutation is lost."""
+    path = tmp_path / "state.json"
+
+    init = State(path)
+    init.get("CG-001")["items"] = [1]
+    init.save()
+
+    s = State(path)
+    s.get("CG-001").get("items").append(2)  # read through .get, then mutate in place
+    s.save()
+
+    final = State(path)
+    assert final.get("CG-001")["items"] == [1, 2]
+
+
 # ── atomic replace ──────────────────────────────────────────────────────────
 
 def test_save_leaves_no_temp_files_behind(tmp_path):
