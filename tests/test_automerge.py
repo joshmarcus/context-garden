@@ -110,6 +110,54 @@ def test_gate_min_review_rounds(sched, fake_github):
     assert not ok and "review round" in reason
 
 
+def test_gate_self_product_needs_two_rounds_by_default(sched, fake_github):
+    """CG-200: a PR against a `self: true` product can change the loop that merges it, so it
+    needs two approving rounds by default, not one LLM review."""
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["self"] = True
+    st["review_rounds"] = 1
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "review round" in reason and "need 2" in reason
+    st["review_rounds"] = 2
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+
+
+def test_gate_provides_tool_product_needs_two_rounds_by_default(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["provides_tool"] = True
+    st["review_rounds"] = 1
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "review round" in reason
+
+
+def test_gate_self_product_two_round_default_is_overridable_per_product(sched, fake_github):
+    """An explicit per-product `automerge_min_review_rounds` overrides the self/tool default."""
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["self"] = True
+    sched.cfg.data["products"]["demo"]["automerge_min_review_rounds"] = 1
+    st["review_rounds"] = 1
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+
+
+def test_gate_self_product_honours_a_stricter_global(sched, fake_github):
+    """A global setting above the self/tool floor still wins (max, not replace)."""
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["self"] = True
+    sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
+    st["review_rounds"] = 2
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "need 3" in reason
+
+
+def test_gate_normal_product_still_needs_one_round(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    st["review_rounds"] = 1
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+
+
 def test_gate_pending_feedback(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     st["pending_feedback"] = "- please fix the thing"
