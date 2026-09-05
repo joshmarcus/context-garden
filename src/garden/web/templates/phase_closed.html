@@ -8,6 +8,14 @@
 </div>
 <div class="grid2">
   <div class="stack">
+    {% if retro_verdict %}
+    <div class="panel"><div class="eyebrow">Retro verdict</div>
+      <h3>{{ retro_verdict.word }}</h3>
+      <p class="muted">{% if retro_verdict.accepted_by %}accepted by {{ retro_verdict.accepted_by }}{% if retro_verdict.accepted_at %} at {{ retro_verdict.accepted_at }}{% endif %}{% else %}recorded {{ retro_verdict.at }}{% endif %}{% if retro_verdict.note %} · {{ retro_verdict.note }}{% endif %}{% if retro_verdict.pr %} · <a href="{{ retro_verdict.pr }}" target="_blank">retro PR ↗</a>{% endif %}</p>
+      {% if retro_verdict.tasks %}<table style="font-size:13px;margin-top:8px"><tr><th>task</th><th>kind</th><th>status</th><th>title</th></tr>
+      {% for t in retro_verdict.tasks %}<tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td>{{ t.kind }}</td><td><span class="state s-{{ t.status }}">{{ t.status.replace('_',' ') }}</span></td><td class="title">{{ t.title }}</td></tr>{% endfor %}</table>{% endif %}
+    </div>
+    {% endif %}
     <div class="panel"><div class="eyebrow">Persona reviews</div>
       {% for r in review_heads %}
       <div style="padding:10px 0; border-bottom:1px dashed var(--line)">

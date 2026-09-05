@@ -141,6 +141,7 @@ class Task:
     discovered_from: str = ""  # task id that reported this one as discovered work
     freeze_exception: bool = False  # with freeze_exception_reason, lets this task through a frozen phase
     freeze_exception_reason: str = ""
+    retro_blocking: bool = False  # filed by a retro `reopen` verdict; close-phase refuses while it is open
     attempts: int = 0
     last_dispatched_at: str = ""
     created: str = ""
@@ -169,6 +170,7 @@ class Task:
         "discovered_from",
         "freeze_exception",
         "freeze_exception_reason",
+        "retro_blocking",
         "attempts",
         "last_dispatched_at",
         "created",
@@ -207,6 +209,7 @@ class Task:
             discovered_from=str(data.get("discovered_from") or ""),
             freeze_exception=bool(data.get("freeze_exception") or False),
             freeze_exception_reason=str(data.get("freeze_exception_reason") or ""),
+            retro_blocking=bool(data.get("retro_blocking") or False),
             attempts=int(data.get("attempts", 0) or 0),
             last_dispatched_at=str(data.get("last_dispatched_at") or ""),
             created=str(data.get("created") or ""),
@@ -237,6 +240,8 @@ class Task:
             data["freeze_exception"] = True
             if self.freeze_exception_reason:
                 data["freeze_exception_reason"] = self.freeze_exception_reason
+        if self.retro_blocking:
+            data["retro_blocking"] = True
         if self.attempts:
             data["attempts"] = self.attempts
         if self.last_dispatched_at:

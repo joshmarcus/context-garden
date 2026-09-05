@@ -155,6 +155,14 @@ def close_phase(
     if ph.closed:
         console.print(f"{ph.key} is already closed ({ph.closed})")
         return
+    sched = _scheduler(store)
+    blocking = sched.retro_blocking_open(ph)
+    if blocking and not force:
+        err.print(f"[red]{ph.key} has {len(blocking)} open retro-blocking task(s) that must land first:[/red]")
+        for t in blocking:
+            err.print(f"  {t.id}  {_style(t.status.value)}  {t.title}")
+        err.print("finish or cancel them, or close anyway with --force")
+        raise typer.Exit(1) from None
     open_tasks = [t for t in ph.tasks if not t.status.terminal]
     if open_tasks and not force:
         err.print(f"[red]{ph.key} still has {len(open_tasks)} open task(s):[/red]")
@@ -162,6 +170,9 @@ def close_phase(
             err.print(f"  {t.id}  {_style(t.status.value)}  {t.title}")
         err.print("finish or cancel them, or close anyway with --force")
         raise typer.Exit(1) from None
+    if sched.retro_verdict(ph.key) is None:
+        console.print(f"[yellow]note: {ph.key} has no retro verdict; closing anyway. "
+                      f"Run `garden retro {ph.key}` to record one.[/yellow]")
     date = _dt.date.today().isoformat()
     _set_phase_closed(store, ph, date)
     console.print(f"{ph.key} closed ({date}); it now appears in the herbarium")

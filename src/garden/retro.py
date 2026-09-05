@@ -36,6 +36,24 @@ VERDICTS: dict[str, str] = {
     "disputed": "disputed",
 }
 
+# The three ways a retro can end for the phase, and how each reads in the document.
+PHASE_VERDICTS: dict[str, str] = {
+    "close": "Close",
+    "close_with_followups": "Close with follow-ups",
+    "reopen": "Reopen",
+}
+
+
+def normalize_verdict(v: Any) -> str:
+    """The phase verdict, canonicalised; '' when the reconciliation named none (close-phase
+    warns in that case). Accepts the shorthand `followups` for `close_with_followups`."""
+    s = str(v or "").strip().lower().replace("-", "_")
+    if s in PHASE_VERDICTS:
+        return s
+    if s in ("followups", "close_followups", "close_with_follow_ups", "with_followups"):
+        return "close_with_followups"
+    return ""
+
 
 RECONCILE_RULES = """\
 ## Your job
@@ -66,12 +84,23 @@ already exists (check the phase task list and the titles of tasks in other phase
 as part of the persona reports and task list above), say so by putting that task's id in
 `duplicate_of` instead of proposing it again; do not guess an id that is not shown to you.
 
-Do NOT edit any file and do NOT commit: the retro document, the next-goals draft, and the
-filed feature tasks are all written for you from your verdict list. Just report it.
+Finally, end the retro with a verdict on the phase itself — the one decision the whole
+retrospective is for:
+
+- `close` — nothing is left; the phase can join the herbarium as it stands.
+- `close_with_followups` — nothing *blocks* closing, but there is work worth carrying into the
+  next phase. List it under `followups`; each becomes a draft task in the next phase.
+- `reopen` — some work must land in *this* phase before it can close. List it under `blocking`;
+  each becomes a task in this phase (with a freeze exception so it still dispatches) and
+  `garden close-phase` refuses until each is done or cancelled. Give the reason each item
+  blocks. Reserve this for real blockers, not nice-to-haves.
+
+Do NOT edit any file and do NOT commit: the retro document, the next-goals draft, the verdict
+and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -320,6 +349,60 @@ def findings_section(filed: list[dict[str, Any]]) -> str:
     return "\n".join(out).rstrip()
 
 
+def resolve_retro_tasks(items: Any, existing_titles: dict[str, str]) -> list[dict[str, Any]]:
+    """Normalise a `followups`/`blocking` list from the reconciliation into task drafts,
+    flagging any whose title already belongs to a task so the scheduler can skip it. Pure:
+    assigns no ids and touches no files, so it is testable without a live model or worktree.
+
+    `existing_titles` maps a lowercased task title to the id of the task that has it. A
+    `blocking` item may carry a `reason`; a `followup` will not."""
+    out: list[dict[str, Any]] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        if not title:
+            continue
+        dup = existing_titles.get(title.lower())
+        out.append({
+            "title": title,
+            "body": str(it.get("body") or "").strip(),
+            "difficulty": str(it.get("difficulty") or "medium").strip() or "medium",
+            "priority": it.get("priority"),
+            "reason": str(it.get("reason") or "").strip(),
+            "skip": bool(dup),
+            "dup_reason": f"same title as {dup}" if dup else "",
+        })
+    return out
+
+
+def verdict_section(phase: Phase, verdict: str, followups: list[dict[str, Any]] | None,
+                    blocking: list[dict[str, Any]] | None, next_phase: str) -> str:
+    """The retro document's `## Verdict` body: the choice, and the tasks it named by id."""
+    v = normalize_verdict(verdict)
+    followups = [f for f in followups or [] if f.get("task_id")]
+    blocking = [b for b in blocking or [] if b.get("task_id")]
+    if not v:
+        return "_The reconciliation named no verdict; decide with `garden retro-decide`._"
+    out = [f"**{PHASE_VERDICTS[v]}.**"]
+    if v == "close":
+        out.append(f"Nothing blocks closing {phase.key}; it can join the herbarium as it stands.")
+    elif v == "close_with_followups":
+        out.append(f"Nothing blocks closing {phase.key}. The follow-ups below become draft "
+                   f"tasks in {next_phase}.")
+    else:
+        out.append(f"These must land before {phase.key} can close; each carries a freeze exception "
+                   "so it still dispatches.")
+    if followups:
+        out += ["", f"Follow-ups filed in {next_phase}:"]
+        out += [f"- {f['task_id']}: {f['title']}" for f in followups]
+    if blocking:
+        out += ["", "Blocking tasks filed in this phase:"]
+        out += [f"- {b['task_id']}: {b['title']}" + (f" — {b['reason']}" if b.get('reason') else "")
+                for b in blocking]
+    return "\n".join(out)
+
+
 def features_section(filed: list[dict[str, Any]]) -> str:
     """Render the ranked '## Features for the next phase' body: rank order is the order the
     reconciliation returned them in. Each filed feature shows its new task id; each skipped
@@ -348,11 +431,17 @@ def features_section(filed: list[dict[str, Any]]) -> str:
 
 def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
                      filed: list[dict[str, Any]] | None = None,
-                     filed_findings: list[dict[str, Any]] | None = None) -> str:
+                     filed_findings: list[dict[str, Any]] | None = None,
+                     followups: list[dict[str, Any]] | None = None,
+                     blocking: list[dict[str, Any]] | None = None,
+                     next_phase: str = "") -> str:
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
         out += ["## What changed", "", summary, ""]
+    out += ["## Verdict", "",
+            verdict_section(phase, rev.get("verdict", ""), followups, blocking,
+                            next_phase or next_phase_name(phase.name)), ""]
     out += ["## Friction reconciled", "", reconciliation_table(rev), ""]
     personas = str(rev.get("personas", "")).strip()
     if personas:
@@ -368,7 +457,8 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
 
 
 def render_next_goals(phase: Phase, next_phase: str, rev: dict[str, Any],
-                      filed: list[dict[str, Any]] | None = None) -> str:
+                      filed: list[dict[str, Any]] | None = None,
+                      followups: list[dict[str, Any]] | None = None) -> str:
     body = str(rev.get("next_goals", "")).strip()
     out = [f"# {next_phase} goals (draft)", "",
            f"_Drafted by `garden retro` from {phase.key}; edit before planning._", ""]
@@ -380,4 +470,8 @@ def render_next_goals(phase: Phase, next_phase: str, rev: dict[str, Any],
     if filed_ok:
         out += ["", "## Features for the next phase", ""]
         out += [f"- {f['task_id']}: {f['title']}" for f in filed_ok]
+    followups_ok = [f for f in followups or [] if f.get("task_id")]
+    if followups_ok:
+        out += ["", "## Follow-ups carried from the retro verdict", ""]
+        out += [f"- {f['task_id']}: {f['title']}" for f in followups_ok]
     return "\n".join(out).rstrip() + "\n"
