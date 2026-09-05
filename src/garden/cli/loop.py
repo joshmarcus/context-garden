@@ -470,13 +470,22 @@ def trial(
     """Run a task with several models; a comparison run scores the PRs and keeps the best one."""
     store = _store()
     t = _task(store, task_id)
+    sc = _scheduler(store)
     try:
-        runs = _scheduler(store).start_trial(t, contenders)
+        runs = sc.start_trial(t, contenders)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     for r in runs:
         console.print(f"{t.id}: {r.harness}:{r.model or 'default'} -> run {r.run_id} on {r.branch}")
+    contenders_state = sc.state.get(t.id).get("trial", {}).get("contenders", [])
+    table = Table(title="contenders")
+    for c in ("contender", "status", "cost", "note"):
+        table.add_column(c)
+    for c in contenders_state:
+        status = c["status"] if c["status"] != "env_failed" else f"env_failed ({c.get('kind', '?')})"
+        table.add_row(c["label"], status, f"${c['cost']:.2f}" if c.get("cost") is not None else "", c.get("note") or "")
+    console.print(table)
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
@@ -496,13 +505,13 @@ def trials(task_id: str | None = typer.Argument(None, help="Show one task's tria
         console.print("no trials yet (garden trial ID -c claude:sonnet -c claude:opus)")
         return
     table = Table(title="model trials")
-    for c in ("contender", "trials", "wins", "win rate", "avg score", "avg cost", "$ / point", "avg tokens in / out", "failed"):
+    for c in ("contender", "trials", "wins", "win rate", "avg score", "avg cost", "$ / point", "avg tokens in / out", "failed", "env failed"):
         table.add_column(c)
     for r in rows:
         table.add_row(r["label"], str(r["trials"]), str(r["wins"]), f"{r['win_rate']:.0%}" if r["win_rate"] is not None else "",
                       f"{r['avg_score']:.1f}" if r["avg_score"] is not None else "", f"${r['avg_cost']:.2f}" if r["avg_cost"] is not None else "",
                       f"${r['cost_per_point']:.3f}" if r["cost_per_point"] is not None else "",
-                      f"{r['avg_input_tokens']:,} / {r['avg_output_tokens']:,}", str(r["failed"]))
+                      f"{r['avg_input_tokens']:,} / {r['avg_output_tokens']:,}", str(r["failed"]), str(r["env_failed"]))
     console.print(table)
 
 

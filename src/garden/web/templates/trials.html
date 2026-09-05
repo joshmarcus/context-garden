@@ -13,8 +13,9 @@
 </div>
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">Leaderboard</div>
-  {% if rows %}<table style="margin-top:8px"><tr><th>contender</th><th>trials</th><th>wins</th><th>win rate</th><th>avg score</th><th>avg cost</th><th>$ per point</th><th>avg tokens in / out</th><th>failed</th></tr>
-  {% for r in rows %}<tr><td class="mono">{{ r.label }}</td><td>{{ r.trials }}</td><td>{{ r.wins }}</td><td>{% if r.win_rate is not none %}{{ (r.win_rate * 100)|round|int }}%{% endif %}</td><td>{% if r.avg_score is not none %}{{ r.avg_score }}{% endif %}</td><td>{% if r.avg_cost is not none %}${{ '%.2f' % r.avg_cost }}{% endif %}</td><td>{% if r.cost_per_point is not none %}${{ '%.3f' % r.cost_per_point }}{% endif %}</td><td class="mono">{{ '{:,}'.format(r.avg_input_tokens) }} / {{ '{:,}'.format(r.avg_output_tokens) }}</td><td>{{ r.failed }}</td></tr>{% endfor %}</table>
+  {% if rows %}<table style="margin-top:8px"><tr><th>contender</th><th>trials</th><th>wins</th><th>win rate</th><th>avg score</th><th>avg cost</th><th>$ per point</th><th>avg tokens in / out</th><th>failed</th><th>env failed</th></tr>
+  {% for r in rows %}<tr><td class="mono">{{ r.label }}</td><td>{{ r.trials }}</td><td>{{ r.wins }}</td><td>{% if r.win_rate is not none %}{{ (r.win_rate * 100)|round|int }}%{% endif %}</td><td>{% if r.avg_score is not none %}{{ r.avg_score }}{% endif %}</td><td>{% if r.avg_cost is not none %}${{ '%.2f' % r.avg_cost }}{% endif %}</td><td>{% if r.cost_per_point is not none %}${{ '%.3f' % r.cost_per_point }}{% endif %}</td><td class="mono">{{ '{:,}'.format(r.avg_input_tokens) }} / {{ '{:,}'.format(r.avg_output_tokens) }}</td><td>{{ r.failed }}</td><td>{{ r.env_failed }}</td></tr>{% endfor %}</table>
+  <p class="muted" style="margin:6px 0 0;font-size:12.5px">env failed: the contender's own harness or environment stopped it (quota, login, a sandbox denial, a missing setup) — excluded from the comparison, not scored as a loss.</p>
   <p class="muted" style="margin:10px 0 0;font-size:12.5px">$ per point is cost divided by the comparison score: the cheapest way to a good PR is the lowest number, not the lowest cost.</p>
   {% else %}<div class="empty">No trials yet. On a ready task's page choose <b>Model trial…</b> and name two or more contenders, e.g. <span class="mono">claude:sonnet, claude:opus</span>.</div>{% endif %}
 </div>
