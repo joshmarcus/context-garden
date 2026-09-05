@@ -1,4 +1,4 @@
-"""What a person does to a task: answer, accept or reject a decision, triage, cancel, retry, resume, finish."""
+"""What a person does to a task: answer, accept or reject a decision, triage, cancel, move, retry, resume, finish."""
 
 from __future__ import annotations
 
@@ -216,6 +216,36 @@ class HumanMixin:
         ensure_open(task)
         self._cancel_active_run(task)
         self._transition(task, Status.CANCELLED, note)
+
+    def move(self, task: Task, product: str, phase: str) -> None:
+        """Move a task to another phase of the same product, keeping its id, run history,
+        state.json entry and dependencies: only the file location and `phase:` field change.
+        Refuses a task with a run in flight and a closed phase; a frozen phase takes drafts
+        only. Emits a `moved` event and logs the move on both phases' task history."""
+        if product != task.product:
+            raise RuntimeError(f"{task.id} is in {task.product}; a task can only move between phases of its own product")
+        try:
+            ph = self.store.phase(product, phase)
+        except KeyError:
+            raise RuntimeError(f"no phase {product}/{phase}") from None
+        if ph.key == task.key:
+            raise RuntimeError(f"{task.id} is already in {ph.key}")
+        if task.status == Status.RUNNING or any(r.task_id == task.id for r in self.runs.active()):
+            raise RuntimeError(f"{task.id} has a run in flight; cancel or let it finish before moving")
+        if ph.closed:
+            raise RuntimeError(f"{ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)")
+        if ph.frozen and task.status != Status.DRAFT:
+            raise RuntimeError(f"{ph.key} is frozen ({ph.frozen}); only a draft can move into a frozen phase")
+        old_key, old_path = task.key, task.path
+        task.phase = phase
+        task.path = ph.path / "tasks" / old_path.name
+        task.log(f"moved from {old_key} to {ph.key}")
+        self.store.save(task)
+        if old_path != task.path and old_path.exists():
+            old_path.unlink()
+        self.events.emit("moved", task.id, **{"from": old_key, "to": ph.key})
+        self.log(f"{task.id}: moved {old_key} -> {ph.key}")
+        self.store.invalidate()
 
     def _grant_one_more_review_round(self, st: _TaskState) -> bool:
         """When a human asks for one more automated review after the review cap stopped it,

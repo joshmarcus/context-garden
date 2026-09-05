@@ -106,6 +106,26 @@ def dependents(task_id: str, tasks: dict[str, Task]) -> list[str]:
     return sorted(t.id for t in tasks.values() if task_id in t.depends_on)
 
 
+def deps_in_later_phase(task: Task, tasks: dict[str, Task], phase_index: dict[str, int]) -> list[str]:
+    """Dependencies that sit in a later phase of the same product than `task`. Such a dep can
+    never merge before `task`, so `task` can never become ready in the earlier phase — a state
+    a move between phases can create. `phase_index` maps 'product/phase' to its ordinal within
+    the product; positions are only comparable within one product, so cross-product deps are
+    ignored."""
+    ti = phase_index.get(task.key)
+    if ti is None:
+        return []
+    out = []
+    for d in task.depends_on:
+        dep = tasks.get(d)
+        if dep is None or dep.product != task.product:
+            continue
+        di = phase_index.get(dep.key)
+        if di is not None and di > ti:
+            out.append(d)
+    return out
+
+
 def critical_path(tasks: dict[str, Task]) -> list[str]:
     """Longest chain of not-done tasks (by count), useful for 'what to unblock first'."""
     order = topological_order(tasks)
