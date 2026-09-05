@@ -356,6 +356,9 @@ step; fonts fall back to system faces when the font host is unreachable.
 `garden tui`: an Inbox tab and a Tasks tab (`i` switches). Keys: `w` answer, `y` ready
 for review, `n` send back, `a` approve, `d` dispatch, `e` continue, `x` cancel, `t` tick,
 `b` brief size, `l` last log, `f` toggle done/cancelled, `r` refresh, `q` quit.
+On a kickoff question card, `w` opens an answer field (Enter sends, Escape cancels)
+and `x` dismisses the question. The detail pane shows its full text, context and options;
+answers and dismissals are recorded in the phase kickoff report.
 
 `garden qa` checks that a person can run the whole loop from the pages. It builds a
 throwaway garden (a demo product on a local git repo, fake workers that finish in a second,

@@ -106,6 +106,7 @@ class GardenTUI(App):
         self._msg = ""
         self._inbox_by_key: dict[str, dict] = {}
         self._inbox_decisions = 0
+        self._answer_decision: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -137,7 +138,8 @@ class GardenTUI(App):
         from ..inbox import build_inbox
 
         inbox = self.query_one("#inbox", DataTable)
-        selected = self._selected_id()
+        dec = self._selected_decision()
+        selected = str(dec["decision"]) if dec else self._selected_id()
         inbox.clear()
         try:
             items = build_inbox(self.store, self._sched())
@@ -153,6 +155,8 @@ class GardenTUI(App):
             color = "grey50" if GROUP_KIND.get(it["group"]) == "notice" else STATUS_COLOR.get(it["status"], "white")
             row_key = it.get("decision") or it["task"] or it["title"]
             do = "a accept · x reject" if it.get("decision") else keys.get(it["group"], "")
+            if it.get("decision_kind") == "question":
+                do = "w answer · x dismiss"
             inbox.add_row(it["task"] or "—", f"[{color}]{it['group_title'][:22]}[/{color}]", it["title"][:40], it["why"][:48], do, key=row_key)
             self._inbox_by_key[row_key] = it
         if selected:
@@ -244,6 +248,17 @@ class GardenTUI(App):
         return it if it and it.get("decision") else None
 
     def _resolve_decision(self, dec: dict, accept: bool) -> None:
+        if dec.get("decision_kind") == "question":
+            if accept:
+                self._msg = "kickoff question selected: w to answer, x to dismiss"
+            else:
+                try:
+                    self._sched().dismiss_kickoff_question(str(dec["decision"]))
+                    self._msg = f"{dec['phase']}: kickoff question dismissed"
+                except Exception as e:  # noqa: BLE001
+                    self._msg = f"dismiss failed: {e}"
+            self.action_refresh()
+            return
         try:
             self._sched().resolve_decision(str(dec["decision"]), accept)
             self._msg = f"decision {'accepted' if accept else 'rejected'} on {dec.get('task') or '?'}"
@@ -291,6 +306,16 @@ class GardenTUI(App):
     def _show_detail(self) -> None:
         tid = self._selected_id()
         detail = self.query_one("#detail", Markdown)
+        dec = self._selected_decision()
+        if dec and dec.get("decision_kind") == "question":
+            head = [f"# Kickoff question · {dec['phase']}", dec["title"]]
+            if dec.get("question_context"):
+                head.append(dec["question_context"])
+            if dec.get("question_options"):
+                head.append("## Options\n\n" + "\n".join(f"- {o}" for o in dec["question_options"]))
+            head.append("Press `w` to answer · `x` to dismiss")
+            detail.update("\n\n".join(head))
+            return
         if not tid:
             detail.update("_no task selected_")
             return
@@ -405,8 +430,10 @@ class GardenTUI(App):
         self.action_refresh()
 
     def action_retry(self) -> None:
-        if self._selected_decision():
-            self._msg = "decision selected: a to accept, x to reject"
+        dec = self._selected_decision()
+        if dec:
+            self._msg = ("kickoff question selected: w to answer, x to dismiss"
+                         if dec.get("decision_kind") == "question" else "decision selected: a to accept, x to reject")
             self.action_refresh()
             return
         t = self._current()
@@ -437,12 +464,21 @@ class GardenTUI(App):
         detail.update(f"# {t.id} run {r.run_id}\n\nstatus {r.status} · {r.dir}\n\n## Final message\n\n{final or '_none_'}\n\n## stderr\n\n```\n{stderr}\n```")
 
     def action_answer(self) -> None:
+        dec = self._selected_decision()
+        self._answer_decision = None
+        box = self.query_one("#answer", Input)
+        if dec and dec.get("decision_kind") == "question":
+            self._answer_decision = str(dec["decision"])
+            box.placeholder = f"answer for {dec['phase']} kickoff · enter to send · esc to cancel"
+            box.add_class("visible")
+            box.focus()
+            return
+        box.placeholder = "answer for the waiting worker · enter to send · esc to cancel"
         t = self._current()
         if not t or t.status != Status.WAITING_HUMAN:
             self._msg = "select a waiting_human task first"
             self.action_refresh()
             return
-        box = self.query_one("#answer", Input)
         if self._sched().pending_decision(t):
             box.placeholder = "why you disagree · enter to send back · esc to cancel"
         box.add_class("visible")
@@ -464,9 +500,24 @@ class GardenTUI(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         box = event.input
         text = event.value.strip()
+        decision_id = self._answer_decision if box.id == "answer" else None
+        if decision_id and not text:
+            self._msg = "enter an answer, or press esc to cancel"
+            self.action_refresh()
+            return
+        if box.id == "answer":
+            self._answer_decision = None
         box.value = ""
         box.remove_class("visible")
         self._active_table().focus()
+        if decision_id:
+            try:
+                self._sched().answer_kickoff_question(decision_id, text)
+                self._msg = "kickoff question answered"
+            except Exception as e:  # noqa: BLE001
+                self._msg = f"answer failed: {e}"
+            self.action_refresh()
+            return
         t = self._current()
         if not text or not t:
             return
@@ -486,6 +537,7 @@ class GardenTUI(App):
 
     def on_key(self, event) -> None:
         if event.key == "escape":
+            self._answer_decision = None
             for bid in ("#answer", "#note"):
                 box = self.query_one(bid, Input)
                 if box.has_class("visible"):

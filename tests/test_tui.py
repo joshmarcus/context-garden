@@ -123,3 +123,98 @@ def test_tui_mounts_and_lists_tasks(garden, tmp_path):
 
     out = asyncio.run(run())
     assert out.exists()
+
+
+def _setup_kickoff(sched):
+    phase = sched.store.phase("demo", "p1")
+    path = sched.file_kickoff(phase, {"questions": [
+        {"question": "Which storage should the phase use?", "context": "We need offline access.",
+         "options": ["SQLite", "Files"]},
+        {"question": "Should we keep the old format?"},
+    ]}, "kickoff-test")
+    sched.state.save()
+    return path
+
+
+def test_tui_kickoff_answer_and_dismiss(sched):
+    from textual.widgets import Input, Markdown
+
+    from garden.scheduler import Scheduler
+
+    path = _setup_kickoff(sched)
+
+    async def run():
+        app = GardenTUI(Store(sched.store.root))
+        async with app.run_test(size=(160, 48)) as pilot:
+            inbox = app.query_one("#inbox", DataTable)
+            inbox.move_cursor(row=inbox.get_row_index("kickoff-test-q0"))
+            inbox.focus()
+            await pilot.pause()
+            assert inbox.get_row("kickoff-test-q0")[-1] == "w answer · x dismiss"
+            detail = app.query_one("#detail", Markdown)
+            assert "Which storage should the phase use?" in detail._markdown
+            assert "We need offline access." in detail._markdown
+            assert "SQLite" in detail._markdown
+            await pilot.press("a")  # accepting must not resolve a question
+            assert "w to answer" in app._msg
+            await pilot.press("w")
+            box = app.query_one("#answer", Input)
+            box.value = "   "
+            await pilot.press("enter")
+            assert box.has_class("visible")
+            assert len(Scheduler(Store(sched.store.root)).pending_decisions()) == 2
+            box.value = "abandoned answer"
+            await pilot.press("escape")
+            assert not box.has_class("visible")
+            assert box.value == ""
+            assert app._answer_decision is None
+            await pilot.press("w")
+            app.action_refresh()
+            assert app._selected_decision()["decision"] == "kickoff-test-q0"
+            # Moving the cursor while composing must not change which card is answered.
+            inbox.move_cursor(row=inbox.get_row_index("kickoff-test-q1"))
+            box.value = "SQLite"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "kickoff-test-q0" not in app._inbox_by_key
+            assert "kickoff-test-q1" in app._inbox_by_key
+            assert "kickoff question answered" in app._msg
+            inbox.move_cursor(row=inbox.get_row_index("kickoff-test-q1"))
+            await pilot.press("x")
+            await pilot.pause()
+            assert "kickoff-test-q1" not in app._inbox_by_key
+            assert "dismissed" in app._msg
+
+    asyncio.run(run())
+    assert Scheduler(Store(sched.store.root)).pending_decisions() == []
+    assert "**Which storage should the phase use?** — answered: SQLite" in path.read_text()
+    assert "**Should we keep the old format?** — dismissed" in path.read_text()
+    assert all(t.status != Status.CANCELLED for t in sched.store.tasks().values())
+
+
+def test_tui_kickoff_answer_handles_stale_card(sched):
+    from textual.widgets import Input
+
+    from garden.scheduler import Scheduler
+
+    path = _setup_kickoff(sched)
+
+    async def run():
+        app = GardenTUI(Store(sched.store.root))
+        async with app.run_test(size=(160, 48)) as pilot:
+            inbox = app.query_one("#inbox", DataTable)
+            inbox.move_cursor(row=inbox.get_row_index("kickoff-test-q0"))
+            inbox.focus()
+            await pilot.press("w")
+            Scheduler(Store(sched.store.root)).dismiss_kickoff_question("kickoff-test-q0")
+            app.action_refresh()
+            box = app.query_one("#answer", Input)
+            box.value = "Too late"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "answer failed:" in app._msg
+            assert "kickoff-test-q1" in app._inbox_by_key
+
+    asyncio.run(run())
+    assert "Too late" not in path.read_text()
+    assert len(Scheduler(Store(sched.store.root)).pending_decisions()) == 1
