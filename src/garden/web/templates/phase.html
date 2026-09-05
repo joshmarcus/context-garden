@@ -99,6 +99,7 @@
     <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3>{{ tiers|safe }}
       {% if metrics.by_difficulty %}<table style="margin-top:10px;font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th></tr>
       {% for tier in ['easy','medium','hard'] %}{% if metrics.by_difficulty.get(tier) %}{% set d = metrics.by_difficulty[tier] %}<tr><td>{{ tier }}</td><td>{{ d.tasks }}</td><td>{{ d.done }}</td><td>{{ d.avg_revisions }}</td><td>{% if d.first_pass_rate is not none %}{{ (d.first_pass_rate * 100)|round|int }}%{% endif %}</td></tr>{% endif %}{% endfor %}</table>{% endif %}
+      <p style="margin:10px 0 0"><a href="/costs?phase={{ phase_key }}" class="mono">spend over time for this phase →</a></p>
     </div>
     {% for name, text in specs %}<details class="panel" {% if loop.first %}open{% endif %}><summary class="mono">{{ name }}</summary><div class="prose" style="margin-top:8px">{{ text|md|safe }}</div></details>{% endfor %}
     {% for name, text in docs %}<details class="panel"><summary class="mono">{{ name }}</summary><div class="prose" style="margin-top:8px">{{ text|md|safe }}</div></details>{% endfor %}

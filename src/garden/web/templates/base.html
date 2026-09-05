@@ -15,6 +15,7 @@
   --s-draft:#7f8a83; --s-blocked:#b5850f; --s-ready:#1c9c8c; --s-running:#3b62d9; --s-waiting_human:#c2417f; --s-awaiting_triage:#7c5cd6; --s-in_review:#2a8fa3; --s-changes_requested:#d0702a; --s-done:#2f8a4f; --s-failed:#c23b3b; --s-wont_do:#8a6d3b; --s-cancelled:#9aa39d;
   --good:#2f8a4f; --warn:#b5850f; --bad:#c23b3b;
   --viz-1:#2a78d6; --viz-2:#eb6834; --viz-ord-1:#6fbf98; --viz-ord-2:#3f9a6f; --viz-ord-3:#22664a;
+  --viz-cat-3:#1baf7a; --viz-cat-4:#eda100; --viz-cat-5:#e87ba4; --viz-cat-6:#008300; --viz-cat-7:#4a3aa7; --viz-cat-8:#e34948;
   /* pressed-specimen palette used by the plant and stage drawings: moss greens on the old ground */
   --sp-ink:#24352b; --leaf:#4f9a72; --leaf-tint:#4f9a72; --hatch:#22664a; --vein:#a8d4bd; --petal:#cfa3b9; --petal-tint:#cfa3b9; --petal2:#e6c6d2; --pea:#7fcaa2;
   --berry:#4a2f45; --berry-tint:#4a2f45; --berry2:#7a4a63; --apple:#c0383a; --poppy:#d95f4a; --seed:#8a6d4e; --wilt:#9c8b6b; --pressed:#6f9a80; --pin:#c23b3b; --paper:#ffffff;
@@ -31,6 +32,7 @@
   --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
   --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
   --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --viz-cat-3:#199e70; --viz-cat-4:#c98500; --viz-cat-5:#d55181; --viz-cat-6:#008300; --viz-cat-7:#9085e9; --viz-cat-8:#e66767;
   --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
   --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --apple:#d95252; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
@@ -43,6 +45,7 @@
   --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
   --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
   --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --viz-cat-3:#199e70; --viz-cat-4:#c98500; --viz-cat-5:#d55181; --viz-cat-6:#008300; --viz-cat-7:#9085e9; --viz-cat-8:#e66767;
   --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
   --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --apple:#d95252; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
   --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
@@ -288,6 +291,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/events" class="{{ 'on' if page == 'events' else '' }}">Timeline</a>
     <a href="/trials" class="{{ 'on' if page == 'trials' else '' }}">Trials</a>
     <a href="/runs" class="{{ 'on' if page == 'runs' else '' }}">Runs <span class="count">${{ '%.0f' % totals.cost_usd }}</span></a>
+    <a href="/costs" class="{{ 'on' if page == 'costs' else '' }}">Costs</a>
     <a href="/config" class="{{ 'on' if page == 'config' else '' }}">Config</a>
   </nav>
   <div>
