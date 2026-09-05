@@ -3,7 +3,7 @@
 {% block body %}
 <div class="page-head">
   <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}</h1>
-    <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals)</p>
+    <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
     <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center">
       <span class="muted">Budget $</span>
       <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px">
