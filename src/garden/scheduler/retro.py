@@ -9,7 +9,7 @@ from typing import Any
 from .. import gitops
 from ..events import phase_summary
 from ..github import GitHubError
-from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
+from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
 from ..operator_spend import total_cost as operator_total_cost
@@ -22,9 +22,11 @@ from ..personas import (
     valid_name,
 )
 from ..retro import (
+    PHASE_VERDICTS,
     flatten_findings,
     group_findings,
     next_phase_name,
+    normalize_verdict,
     numbers_section,
     parse_retro,
     persona_features,
@@ -34,6 +36,7 @@ from ..retro import (
     render_retro_doc,
     resolve_features,
     resolve_findings,
+    resolve_retro_tasks,
 )
 from ..runs import Run
 from .report import TickReport
@@ -287,20 +290,35 @@ class RetroMixin:
         rep.errors.append(msg)
         self.events.emit("retro_failed", "", phase=phase.key, step=step, error=str(error))
 
-    def _file_retro_features(self, phase: Phase, next_phase: str, rev: dict[str, Any],
-                             wt: Path, rel_product: Path, prefix: str, num: int,
+    @staticmethod
+    def _retro_priority(v: Any) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 3
+
+    def _write_worktree_draft(self, tasks_dir: Path, tid: str, phase: Phase, target_phase: str,
+                              title: str, body: str, priority: int, difficulty: str) -> None:
+        """Write one draft task file into the retro worktree (the target phase may not exist on
+        disk yet, so this cannot go through `store.create_task`); it lands with the retro PR."""
+        t = Task(path=tasks_dir / f"{tid}-{slugify(title)}.md", id=tid, title=title,
+                 status=Status.DRAFT, product=phase.product, phase=target_phase, priority=priority,
+                 difficulty=difficulty if difficulty in ("easy", "medium", "hard") else "medium",
+                 discovered_from=f"retro:{phase.key}", created=now_iso(), updated=now_iso(), body=body)
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        t.path.write_text(t.render())
+
+    def _file_retro_features(self, phase: Phase, next_phase: str, rev: dict[str, Any], wt: Path,
+                             rel_product: Path, existing_titles: dict[str, str],
+                             prefix: str, num: int,
                              persona_feats: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
         """Turn the reconciliation's `features`, plus any structured `features` a persona
         reported (CG-188), into draft task files inside the retro's own worktree, so they land
         with the same PR as the retro document and the next phase's goals draft (the next phase
         may not exist on disk yet, so this cannot go through `store.create_task`, which requires
         an already-discovered phase). Skips whatever `resolve_features` flags as a duplicate;
-        ids are reserved locally (continuing from `num`, shared with `_file_retro_findings` so
-        the two never collide) since the live store never sees these files until the PR merges."""
-        existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
+        returns the filed list and the next free id number."""
         resolved = resolve_features(rev, existing_titles, persona_feats)
-        if not resolved:
-            return [], num
         tasks_dir = wt / rel_product / next_phase / "tasks"
         filed: list[dict[str, Any]] = []
         for f in resolved:
@@ -310,28 +328,21 @@ class RetroMixin:
                 continue
             tid = f"{prefix}-{num:03d}"
             num += 1
-            try:
-                priority = int(f.get("priority"))
-            except (TypeError, ValueError):
-                priority = 3
-            difficulty = f["difficulty"] if f["difficulty"] in ("easy", "medium", "hard") else "medium"
             body = f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\nProposed at the {phase.key} retro."
             if f.get("source"):
                 body += f" Raised by the {f['source']} persona."
             if f["rationale"]:
                 body += f" {f['rationale']}"
             body += "\n"
-            t = Task(path=tasks_dir / f"{tid}-{slugify(f['title'])}.md", id=tid, title=f["title"],
-                     status=Status.DRAFT, product=phase.product, phase=next_phase, priority=priority,
-                     difficulty=difficulty, discovered_from=f"retro:{phase.key}",
-                     created=now_iso(), updated=now_iso(), body=body)
-            tasks_dir.mkdir(parents=True, exist_ok=True)
-            t.path.write_text(t.render())
+            self._write_worktree_draft(tasks_dir, tid, phase, next_phase, f["title"], body,
+                                       self._retro_priority(f.get("priority")), f["difficulty"])
+            existing_titles[f["title"].strip().lower()] = tid
             filed.append({**f, "task_id": tid, "status": "draft"})
         return filed, num
 
     def _file_retro_findings(self, phase: Phase, next_phase: str, persona_findings: dict[str, list[dict[str, Any]]],
-                             wt: Path, rel_product: Path, prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
+                             wt: Path, rel_product: Path, existing_titles: dict[str, str],
+                             prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
         """Turn every persona finding into a draft task in the next phase (CG-187): every
         severity, not only high, priority from severity, and findings that say the same thing
         across personas collapsed into one task via `group_findings`'s title match. Mirrors
@@ -341,7 +352,6 @@ class RetroMixin:
         if not flat:
             return [], num
         groups = group_findings(flat)
-        existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
         resolved = resolve_findings(groups, existing_titles)
         tasks_dir = wt / rel_product / next_phase / "tasks"
         filed: list[dict[str, Any]] = []
@@ -363,8 +373,64 @@ class RetroMixin:
                      created=now_iso(), updated=now_iso(), body=body)
             tasks_dir.mkdir(parents=True, exist_ok=True)
             t.path.write_text(t.render())
+            existing_titles[title.strip().lower()] = tid
             filed.append({**f, "task_id": tid, "status": "draft"})
         return filed, num
+
+    def _file_retro_followups(self, phase: Phase, next_phase: str, rev: dict[str, Any], wt: Path,
+                              rel_product: Path, existing_titles: dict[str, str],
+                              prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
+        """File the verdict's `followups` as draft tasks in the next phase (in the worktree, like
+        features): a `close_with_followups` verdict carries work worth doing next but not blocking
+        the close. Returns the filed list and the next free id number."""
+        resolved = resolve_retro_tasks(rev.get("followups"), existing_titles)
+        tasks_dir = wt / rel_product / next_phase / "tasks"
+        filed: list[dict[str, Any]] = []
+        for f in resolved:
+            if f["skip"]:
+                filed.append({**f, "task_id": "", "status": "skipped"})
+                self.log(f"retro {phase.key}: follow-up {f['title']!r} skipped ({f['dup_reason']})")
+                continue
+            tid = f"{prefix}-{num:03d}"
+            num += 1
+            body = (f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\n"
+                    f"A follow-up carried into {next_phase} by the {phase.key} retro verdict.\n")
+            self._write_worktree_draft(tasks_dir, tid, phase, next_phase, f["title"], body,
+                                       self._retro_priority(f.get("priority")), f["difficulty"])
+            existing_titles[f["title"].strip().lower()] = tid
+            filed.append({**f, "task_id": tid, "status": "draft"})
+        return filed, num
+
+    def _file_retro_blocking(self, phase: Phase, rev: dict[str, Any],
+                             existing_titles: dict[str, str]) -> list[dict[str, Any]]:
+        """File the verdict's `blocking` items as draft tasks in the *current* phase, live (the
+        phase exists), with `retro_blocking` and a freeze exception so a frozen phase still
+        dispatches them and `close-phase` refuses until they are done. Skips a duplicate title."""
+        resolved = resolve_retro_tasks(rev.get("blocking"), existing_titles)
+        filed: list[dict[str, Any]] = []
+        for b in resolved:
+            if b["skip"]:
+                filed.append({**b, "task_id": "", "status": "skipped"})
+                self.log(f"retro {phase.key}: blocking task {b['title']!r} skipped ({b['dup_reason']})")
+                continue
+            reason = b["reason"] or "retro reopen: must land before the phase can close"
+            body = (f"## Goal\n\n{b['body'] or b['title']}\n\n## Context\n\n"
+                    f"Filed by the {phase.key} retro `reopen` verdict: it must land before the phase "
+                    f"can close. Reason: {reason}\n")
+            t = self.store.create_task(phase.product, phase.name, b["title"], body,
+                                       priority=self._retro_priority(b.get("priority")), status="draft",
+                                       difficulty=b["difficulty"] if b["difficulty"] in ("easy", "medium", "hard") else "medium")
+            t.discovered_from = f"retro:{phase.key}"
+            t.retro_blocking = True
+            t.freeze_exception = True
+            t.freeze_exception_reason = reason
+            t.log(f"filed by the {phase.key} retro reopen verdict (blocking)")
+            self.store.save(t)
+            self.store.invalidate()
+            existing_titles[b["title"].strip().lower()] = t.id
+            filed.append({**b, "task_id": t.id, "status": "draft"})
+            self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
+        return filed
 
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
@@ -382,20 +448,30 @@ class RetroMixin:
         goals_path = wt / rel_product / next_phase / "goals.md"
         retro_path.parent.mkdir(parents=True, exist_ok=True)
         goals_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
+        # Blocking tasks go live into the current phase (it exists, they must dispatch and block
+        # the close); features, followups and findings go into the worktree next phase (which may
+        # not exist yet) to land with the retro PR. Blocking is filed first so the live id counter
+        # is past those ids before the worktree drafts reserve theirs.
+        blocking = self._file_retro_blocking(phase, rev, existing_titles)
         prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
         num = int(num_s)
         persona_feats = persona_features(self._persona_sections(reports))
-        filed, num = self._file_retro_features(phase, next_phase, rev, wt, rel_product, prefix, num,
+        filed, num = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, prefix, num,
                                                persona_feats=persona_feats)
         persona_findings = self._persona_findings(phase, reports)
-        filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product, prefix, num)
+        filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
+                                                         existing_titles, prefix, num)
+        followups, num = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, prefix, num)
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         operator_records = read_operator_records(operator_spend_path(self.store.root))
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
         numbers = numbers_section(summary["cost_usd"], operator_cost)
-        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed, filed_findings=filed_findings,
+        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
+                                               filed_findings=filed_findings, followups=followups,
+                                               blocking=blocking, next_phase=next_phase,
                                                difficulty=run.difficulty, model=run.model, numbers=numbers))
-        goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed))
+        goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
         except gitops.GitError as e:
@@ -419,15 +495,21 @@ class RetroMixin:
         n_skipped = len(filed) - n_filed
         n_findings_filed = sum(1 for f in filed_findings if f.get("task_id"))
         n_findings_skipped = len(filed_findings) - n_findings_filed
+        n_followups = sum(1 for f in followups if f.get("task_id"))
+        n_blocking = sum(1 for b in blocking if b.get("task_id"))
+        verdict = normalize_verdict(rev.get("verdict"))
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
         body = (f"Retrospective for **{phase.key}**, produced by `garden retro`.\n\n"
+                f"- verdict: **{PHASE_VERDICTS.get(verdict, 'none')}**\n"
                 f"- reconciled {n_items} friction item(s) against what merged\n"
                 f"- {len(reports)} persona report(s)\n"
                 f"- {n_findings_filed} persona finding(s) filed as draft tasks in {next_phase}"
                 + (f" ({n_findings_skipped} duplicate(s) skipped)" if n_findings_skipped else "") + "\n"
                 f"- {n_filed} feature(s) filed as draft tasks in {next_phase}"
                 + (f" ({n_skipped} duplicate(s) skipped)" if n_skipped else "") + "\n"
-                f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
+                + (f"- {n_followups} follow-up(s) filed in {next_phase}\n" if n_followups else "")
+                + (f"- {n_blocking} blocking task(s) filed in {phase.key}\n" if n_blocking else "")
+                + f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
                 f"- next-phase goals draft: `{rel_product.as_posix()}/{next_phase}/goals.md`\n\n"
                 f"{str(rev.get('summary', '')).strip()}\n")
         pr_url = ""
@@ -441,3 +523,91 @@ class RetroMixin:
                 rep.errors.append(f"retro {phase.key}: branch pushed but PR failed: {e}")
         self.events.emit("retro_done", "", phase=phase.key, pr=pr_url, branch=branch, items=n_items, cost_usd=run.cost_usd)
         rep.transitions.append(f"retro {phase.key} -> {pr_url or branch}")
+        self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url, rep)
+
+    # ---- the verdict: close, close with follow-ups, or reopen --------------
+    def _apply_retro_verdict(self, phase: Phase, rev: dict[str, Any], followups: list[dict[str, Any]],
+                             blocking: list[dict[str, Any]], next_phase: str, pr_url: str,
+                             rep: TickReport) -> None:
+        """Record the retro's phase verdict and act on it: `close`/`close_with_followups` close
+        the phase at once (the owner decided closing does not wait for approval); `reopen` leaves
+        the phase open and records a pending decision that approves the blocking tasks when
+        accepted (see `retro_decide`). The record is what the phase page, the retro page and
+        `close-phase` read."""
+        verdict = normalize_verdict(rev.get("verdict"))
+        at = now_iso()
+        rec: dict[str, Any] = {
+            "phase": phase.key, "verdict": verdict, "at": at, "next_phase": next_phase,
+            "followup_ids": [f["task_id"] for f in followups if f.get("task_id")],
+            "blocking_ids": [b["task_id"] for b in blocking if b.get("task_id")],
+            "pr": pr_url, "note": "", "accepted_by": "", "accepted_at": "", "status": "recorded",
+        }
+        if verdict in ("close", "close_with_followups"):
+            try:
+                self.close_phase(phase, force=True)
+                rec.update(status="accepted", accepted_by="retro", accepted_at=at)
+            except RuntimeError as e:
+                self.log(f"retro {phase.key}: verdict {verdict} could not close the phase: {e}")
+                rep.errors.append(f"retro {phase.key}: {e}")
+        elif verdict == "reopen":
+            rec["status"] = "pending"  # a decision: accept to approve the blocking tasks
+        self.state.get("_retro_verdicts")[phase.key] = rec
+        self.events.emit("retro_verdict", "", phase=phase.key, verdict=verdict or "none",
+                         status=rec["status"], blocking=",".join(rec["blocking_ids"]),
+                         followups=",".join(rec["followup_ids"]))
+        self.state.save()
+
+    def retro_verdict(self, phase_key: str) -> dict[str, Any] | None:
+        """The recorded verdict for a phase (verdict, status, who accepted it and when, and the
+        ids of the tasks it filed), or None if no retro has run. A copy, so callers can't mutate
+        the stored record."""
+        rec = self.state.get("_retro_verdicts").get(phase_key)
+        return dict(rec) if isinstance(rec, dict) else None
+
+    def retro_blocking_open(self, phase: Phase) -> list[Task]:
+        """The phase's `retro_blocking` tasks that are not yet done or cancelled -- what
+        `close-phase` refuses on."""
+        return [t for t in phase.tasks if t.retro_blocking and not t.status.terminal]
+
+    def _approve_retro_blocking(self, phase: Phase, blocking_ids: list[str]) -> list[str]:
+        """Approve (draft -> ready) the phase's still-draft blocking tasks named by the verdict."""
+        approved: list[str] = []
+        tasks = self.store.tasks()
+        for tid in blocking_ids:
+            t = tasks.get(tid)
+            if t is None or t.status != Status.DRAFT:
+                continue
+            refusal = phase_refusal(phase, t)
+            if refusal:
+                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {refusal}")
+                continue
+            t.status = Status.READY
+            t.log("approved by the retro reopen verdict")
+            self.store.save(t)
+            approved.append(tid)
+        if approved:
+            self.store.invalidate()
+        return approved
+
+    def retro_decide(self, phase: Phase, choice: str, note: str = "", by: str = "cli") -> dict[str, Any]:
+        """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
+        its blocking tasks; `close`/`close_with_followups` close the phase (refusing on open
+        tasks the way `close-phase` does). Records who decided and when."""
+        choice = normalize_verdict(choice)
+        if not choice:
+            raise RuntimeError("choose one of: close, followups, reopen")
+        vs = self.state.get("_retro_verdicts")
+        if phase.key not in vs:
+            raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
+        rec = vs[phase.key]
+        if choice == "reopen":
+            if phase.closed:
+                self.reopen_phase(phase)
+                phase = self.store.phase(phase.product, phase.name)
+            self._approve_retro_blocking(phase, list(rec.get("blocking_ids") or []))
+        else:
+            self.close_phase(phase)  # raises on open tasks, like close-phase
+        rec.update(verdict=choice, status="accepted", note=note, accepted_by=by, accepted_at=now_iso())
+        self.events.emit("retro_verdict", "", phase=phase.key, verdict=choice, status="accepted", by=by)
+        self.state.save()
+        return dict(rec)

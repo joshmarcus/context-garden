@@ -434,6 +434,12 @@ class HumanMixin:
 
         if phase.closed:
             return ""
+        blocking = [t for t in phase.tasks if t.retro_blocking and not t.status.terminal]
+        if blocking and not force:
+            ids = ", ".join(f"{t.id} ({t.status.value})" for t in blocking)
+            raise RuntimeError(f"{phase.key} has {len(blocking)} open retro-blocking task(s) that must "
+                               f"land before it can close: {ids}; finish or cancel them, or close anyway "
+                               "with --force")
         open_tasks = [t for t in phase.tasks if not t.status.terminal]
         if open_tasks and not force:
             ids = ", ".join(f"{t.id} ({t.status.value})" for t in open_tasks)

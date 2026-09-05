@@ -288,6 +288,12 @@ def retro(
         pending = sched.retro_pending(ph.key)
         if pending:
             console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+        verdict = sched.retro_verdict(ph.key)
+        if verdict:
+            from ..retro import PHASE_VERDICTS
+
+            word = PHASE_VERDICTS.get(verdict.get("verdict"), verdict.get("verdict") or "none")
+            console.print(f"  current verdict: {word} ({verdict.get('status')})")
         console.print(f"  harvest: {plan['friction']} PR-body friction item(s), {plan['reported']} reported "
                      f"in friction.md, {plan['comment_friction']} from PR comments; "
                      f"{plan['merged']} merged PR(s), {plan['tasks']} task(s)")
@@ -315,6 +321,33 @@ def retro(
     else:
         console.print(f"{ph.key}: reconciliation run started; retro PR will open to the {entry['self_product']} repo on the next tick")
     console.print("[dim]run `garden tick` (or `garden watch`) to let it finish[/dim]")
+
+
+@app.command("retro-decide")
+def retro_decide(
+    target: str = typer.Argument(..., help="product/phase"),
+    choice: str = typer.Argument(..., help="close | followups | reopen"),
+    note: str = typer.Option("", "--note", help="A note recorded with the decision"),
+):
+    """Accept or change a phase's retro verdict: `close`/`followups` close the phase, `reopen`
+    (re)opens it and approves the blocking tasks the retro filed."""
+    from ..retro import PHASE_VERDICTS, normalize_verdict
+
+    store = _store()
+    product, phase_name = _split_target(target)
+    ph = _phase(store, product, phase_name)
+    if normalize_verdict(choice) == "":
+        err.print("[red]choose one of: close, followups, reopen[/red]")
+        raise typer.Exit(1) from None
+    sched = _scheduler(store)
+    try:
+        rec = sched.retro_decide(ph, choice, note=note, by="cli")
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{ph.key}: verdict is now {PHASE_VERDICTS.get(rec['verdict'], rec['verdict'])}")
+    if rec.get("blocking_ids"):
+        console.print(f"  blocking task(s): {', '.join(rec['blocking_ids'])}")
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
