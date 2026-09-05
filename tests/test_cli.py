@@ -32,19 +32,19 @@ def test_status_ls_graph_validate(garden):
 
 def test_set_and_clear_max_parallel(garden):
     r = run(garden, "status")
-    assert r.exit_code == 0 and "max_parallel: 2" in r.output and "live override" not in r.output
+    assert r.exit_code == 0 and "workers: 0/2" in r.output and "live override" not in r.output
 
     r = run(garden, "set", "max_parallel", "5")
     assert r.exit_code == 0 and "max_parallel = 5" in r.output
 
     r = run(garden, "status")
-    assert r.exit_code == 0 and "max_parallel: 5 (live override; garden.yaml: 2)" in r.output
+    assert r.exit_code == 0 and "workers: 0/5 (live override; garden.yaml: 2)  reviews: 0/5" in r.output
 
     r = run(garden, "clear", "max_parallel")
     assert r.exit_code == 0 and "max_parallel override cleared" in r.output
 
     r = run(garden, "status")
-    assert r.exit_code == 0 and "max_parallel: 2" in r.output and "live override" not in r.output
+    assert r.exit_code == 0 and "workers: 0/2" in r.output and "live override" not in r.output
 
 
 def test_set_rejects_unknown_key(garden):
