@@ -79,7 +79,8 @@ of the loop touch different files.
 | `scheduler/discovered.py` | discovered tasks, duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it) and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
-| `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; automerge; stacking, restack and conflicts |
+| `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
+| `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
 | `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch` |
 | `scheduler/human.py` | answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
@@ -148,6 +149,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | the PR | `pr_number`, `pr_draft`, `pr_base`, `pr_state`, `pr_updated_at`, `head_sha`, `review_decision`, `checks`, `failed_checks`, `ci_failed_at`, `ci_reruns`, `last_polled` | what the last poll saw; `pr_updated_at` lets the poll skip PRs nothing has touched |
 | the revise loop | `pending_feedback`, `revisions`, `needs_human`, `last_diff_hash`, `force_push` | feedback waiting for a revise run, how many rounds were used, why the loop stopped |
 | automated review | `review_run`, `review_rounds`, `last_review`, `last_findings` | the review run in flight, rounds used, the last verdict and its blocking findings (for stall detection) |
+| rebase and automerge | `rebases`, `rebase_pending`, `rebase_base`, `rebase_files`, `rebase_hunks`, `automerge_candidate`, `automerge_ready_at`, `automerge_blocked`, `automerged` | rebase rounds used (its own counter), a pending agent rebase and its hunks, whether the PR is a merge-queue candidate and since when, why automerge is held, and the record of a garden merge |
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
@@ -311,7 +313,7 @@ files under `tasks/` must not be hand-edited.
 - **Stacking.** A task whose one unfinished dependency has an open PR starts from that
   branch, its PR targets that branch, and `state.json` records `stack_parent` and
   `pr_base`. When the parent merges, the child's PR is retargeted to the product base and
-  its branch rebased and force-pushed; a conflict becomes feedback for a revise run. A
+  its branch rebased and force-pushed; a textual conflict starts a rebase round (below). A
   parent closed without merging flags the children for a human.
   - **Automerge only into the product base.** Automerge (see below) merges a PR only when
     its base is the product's base branch. A stacked child (its base is the parent's
@@ -321,11 +323,31 @@ files under `tasks/` must not be hand-edited.
     there that the parent's worktree does not have, and the parent's next rebase round
     would force-push them away.
   - **A rebase round keeps remote-only commits.** A rebase round rewrites a branch in the
-    worktree and force-pushes it, so before rebasing (in the restack path) the scheduler
-    folds in any commits that exist only on `origin/<branch>` by rebasing the worktree's
-    commits onto it first. This means a force-push never discards work that reached the
-    remote branch by another route (someone merged into it). If those commits conflict, the
-    round resolves them like any other conflict.
+    worktree and force-pushes it, so before rebasing the scheduler folds in any commits
+    that exist only on `origin/<branch>` by rebasing the worktree's commits onto it first.
+    This means a force-push never discards work that reached the remote branch by another
+    route (someone merged into it). If those commits conflict, the round resolves them like
+    any other conflict.
+- **Rebase is its own mode** (`scheduler/rebase.py`). A PR that falls behind its base is
+  brought forward by the cheapest thing that works, tracked as its own kind of run, and
+  never re-reviewed for code the reviewer already approved. Three rules:
+  - **Mechanical first, an agent only on a real conflict.** When a PR conflicts (GitHub
+    reports `CONFLICTING`, a parent merged, or the merge queue is about to land it) the
+    scheduler runs `git rebase origin/<base>` in the worktree with no model. A clean apply
+    is the whole round: a `rebase` run record with no harness call, a force-push with a
+    lease and a re-run of the pre-PR checks. Only a textual conflict starts an agent, on the
+    easy tier, with a minimal brief carrying the conflicting hunks, the task's goal and the
+    rule "resolve the conflict, change nothing else". A rebase round has its own counter
+    (`state[task].rebases`), its own line in `garden metrics` (rebases per merge, rebase
+    cost), and never counts against `max_revisions` or `review.max_rounds`.
+  - **No re-review when the diff is unchanged.** After any rebase the diff against the new
+    base is compared with `last_diff_hash` from the reviewed push. When they match, the last
+    verdict is kept, `rebased; diff unchanged; verdict kept` is logged, and no review is
+    dispatched. Only a textual resolution that changed the diff is reviewed again.
+  - **Automerge is a queue.** Approved candidates are ordered oldest-approved-first and only
+    the head is rebased, checked and merged; the next candidate is taken on the following
+    poll. So exactly one PR is rebased and merged per tick, each rebased once, right before
+    it merges.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
   `last_dispatched_at` count, minus the garden's own login (the `gh` user or the token's
   user) and `[bot]` accounts, so the scheduler's own review comments never trigger a
@@ -343,6 +365,7 @@ the marker line the scheduler looks for at the end of their output.
 | `work` | dispatch | `build_brief`: rules, principles digest, product overview, phase goals, task, reading list | `GARDEN_RESULT` | task difficulty tier | push, PR, review run |
 | `revise` | dispatch, when feedback is pending | the same, plus a "Revision round" section and the new feedback | `GARDEN_RESULT` | task tier | push, PR title and body updated, a comment on the PR, review run |
 | `resume` | `garden answer` | the answer, into the paused session (`--resume`); a fresh brief with every Q&A when the harness cannot resume | `GARDEN_RESULT` | task tier | as `work` |
+| `rebase` | a real (textual) rebase conflict; the mechanical rebase runs with no model and needs no worker | a minimal brief: the conflicting hunks, the task's goal, "resolve the conflict, change nothing else" | `GARDEN_RESULT` | easy | push (lease), re-run checks; the verdict is kept when the diff is unchanged, else a review runs. Own counter; never counts against `max_revisions` |
 | `review` | after a PR is opened or updated | the task brief without rules, the PR title and body, the diff | `GARDEN_REVIEW` | `review.difficulty`, or the harness's `review_model`, else the task tier | verdict posted as a PR comment; `request_changes` becomes feedback for a revise run; a repeated blocking finding stalls the loop |
 | `edit` | dispatch, when a draft/ready task has pending `## Suggestions` (or `garden integrate`) | the task body and the suggestions, planner-style | `GARDEN_EDIT` | `review.difficulty`, else the task tier | the task body is rewritten to fold in the suggestions, they are marked `- [x]`, the old body is kept for the diff |
 | `persona` | `garden persona-review`, or `review.personas` on every PR round | the persona file plus the phase's body of work, or plus one PR's description and diff | `GARDEN_PERSONA` | review settings, `hard` for a phase | a report under `<phase>/docs/reviews/`, or a PR comment; high findings can become tasks or a revise run |
