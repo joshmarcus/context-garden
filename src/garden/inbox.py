@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+from .brief import brief_gaps
 from .graph import effective_status
 from .model import Status, Task
 from .runs import RunStore
@@ -294,13 +295,16 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             if last:
                 why += f" · {last}"
             move_to = next_open_phase.get(t.key, "") if t.key in frozen_phases else ""
+            gaps = brief_gaps(store, t)
+            if gaps:
+                why += " · brief incomplete, fix before approving"
             actions = [{"label": "Approve", "kind": "approve", "command": f"garden approve {t.id}"}]
             if move_to:
                 actions.append({"label": f"Move to {move_to.split('/', 1)[1]}", "kind": "move",
                                 "command": f"garden move {t.id} {move_to}"})
             actions.append({"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"})
             add("approve", t, why, actions, attempts=t.attempts, last_log=last, move_to=move_to,
-                move_label=move_to.split("/", 1)[1] if move_to else "")
+                move_label=move_to.split("/", 1)[1] if move_to else "", gaps=gaps)
         if t.attempts > 0 and not st.get("needs_human") and not t.status.terminal and t.status in (Status.READY, Status.RUNNING) and not (t.status == Status.RUNNING and t.attempts <= 1):
             last = _last_log_line(t)
             why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
