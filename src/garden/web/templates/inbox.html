@@ -28,12 +28,12 @@
       {% if it.group == 'decision' and it.final %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
       {% if it.get('review') %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
       {% if it.group == 'attention' %}
-        {% if it.kind_blurb %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
-        {% if it.evidence %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
-        <div id="discuss-{{ it.task }}" hidden style="margin-top:6px">
+        {% if it.get('kind_blurb') %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
+        {% if it.get('evidence') %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+        {% if it.get('discuss') %}<div id="discuss-{{ it.task }}" hidden style="margin-top:6px">
           <textarea id="discuss-text-{{ it.task }}" readonly style="width:100%;box-sizing:border-box;min-height:130px">{{ it.discuss }}</textarea>
           <div class="actions" style="margin-top:4px"><button data-copy="discuss-text-{{ it.task }}">Copy prompt</button><span class="faint">paste it into a chat session or <code>garden take {{ it.task }}</code></span></div>
-        </div>
+        </div>{% endif %}
       {% endif %}
     </div>
     <div class="do">
