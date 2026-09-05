@@ -121,6 +121,27 @@ def test_trials_page_and_persona_form(garden):
     assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200
 
 
+def test_trellis_and_phase_hide_done_toggle(garden):
+    c = client(garden)
+    c.post("/tasks/DM-002/cancel", follow_redirects=False)
+
+    full = c.get("/trellis")
+    assert 'href="/tasks/DM-002"' in full.text
+    assert "hide done (1)" in full.text
+
+    hidden = c.get("/trellis?hide=done")
+    assert hidden.status_code == 200
+    assert 'href="/tasks/DM-002"' not in hidden.text
+    assert "show 1 done" in hidden.text
+
+    full_phase = c.get("/phases/demo/p1")
+    assert "DM-002" in full_phase.text and "hide 1 done" in full_phase.text
+
+    hidden_phase = c.get("/phases/demo/p1?hide=done")
+    assert "DM-002" not in hidden_phase.text
+    assert "show 1 done" in hidden_phase.text
+
+
 def test_inbox_triage_flow(garden, monkeypatch):
     import yaml
 

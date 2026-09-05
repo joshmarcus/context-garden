@@ -10,6 +10,7 @@ import re
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import markdown as md
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
@@ -30,6 +31,7 @@ from ..graph import (
     ready,
     svg,
     validate,
+    visible_ids,
 )
 from ..inbox import attention_view, build_inbox, needs_human_info, running_now
 from ..model import PRIORITY_SCALE, STATUS_ORDER, Status, now_iso, priority_label
@@ -355,7 +357,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.get("/trellis", response_class=HTMLResponse)
     @app.get("/graph", response_class=HTMLResponse, include_in_schema=False)
-    def trellis_page(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False):
+    def trellis_page(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False, hide: str | None = None):
         s = hub.fresh()
         closed_keys = closed_phase_keys(s)
         tasks = {k: v for k, v in s.tasks().items()
@@ -365,9 +367,17 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             cp = critical_path(tasks)
         except Exception:  # noqa: BLE001
             cp = []
+        stack = bool(s.config.get("stack", True))
+        hide_done = hide == "done"
+        vis = visible_ids(tasks, stack, hide_done)
+        hidden_count = len(tasks) - len(visible_ids(tasks, stack, hide_done=True))
+        qs = {k: v for k, v in {"product": product, "phase": phase, "closed": "1" if closed else None}.items() if v}
+        show_url = "/trellis" + ("?" + urlencode(qs) if qs else "")
+        hide_url = "/trellis?" + urlencode({**qs, "hide": "done"})
         return templates.TemplateResponse(request, "trellis.html", ctx(
-            request, page="trellis", svg=svg(tasks, stack=bool(s.config.get("stack", True))), mermaid=mermaid(tasks), product=product, phase=phase,
-            closed=closed, critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks)))
+            request, page="trellis", svg=svg(tasks, stack=stack, hide_done=hide_done), mermaid=mermaid(tasks, visible=vis), product=product, phase=phase,
+            closed=closed, critical=cp, ready=[t.id for t in ready(tasks)], problems=validate(tasks),
+            hide_done=hide_done, hidden_count=hidden_count, show_url=show_url, hide_url=hide_url))
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs_page(request: Request):
@@ -395,7 +405,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks), tiers=tier_bars_svg(tier_rows(s, tasks))))
 
     @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
-    def phase_page(request: Request, product: str, phase: str):
+    def phase_page(request: Request, product: str, phase: str, hide: str | None = None):
         s = hub.fresh()
         try:
             ph = s.phase(product, phase)
@@ -462,13 +472,17 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         from ..personas import DEFAULT_PERSONAS, list_personas
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
+        hide_done = hide == "done"
+        all_rows = [(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
+        hidden_count = sum(1 for row in all_rows if row[1] in ("done", "cancelled"))
+        rows = [row for row in all_rows if not hide_done or row[1] not in ("done", "cancelled")]
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             sheet=sheet,
             burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
             personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=spent, metrics=m,
-            rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
         ))
 

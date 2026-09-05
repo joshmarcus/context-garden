@@ -90,6 +90,18 @@ def effective_status(task: Task, tasks: dict[str, Task], stack: bool = False) ->
     return task.status.value
 
 
+HIDDEN_STATUSES = ("done", "cancelled")
+
+
+def visible_ids(tasks: dict[str, Task], stack: bool = False, hide_done: bool = False) -> set[str]:
+    """Task ids to draw/list when `hide_done` filters out finished work. Status (and thus
+    dependency resolution) is always computed against the full `tasks` dict; this only
+    narrows what gets displayed."""
+    if not hide_done:
+        return set(tasks)
+    return {tid for tid, t in tasks.items() if effective_status(t, tasks, stack) not in HIDDEN_STATUSES}
+
+
 def dependents(task_id: str, tasks: dict[str, Task]) -> list[str]:
     return sorted(t.id for t in tasks.values() if task_id in t.depends_on)
 
@@ -129,9 +141,10 @@ MERMAID_CLASS = {
 }
 
 
-def mermaid(tasks: dict[str, Task], direction: str = "LR") -> str:
+def mermaid(tasks: dict[str, Task], direction: str = "LR", visible: set[str] | None = None) -> str:
+    vis = set(tasks) if visible is None else visible
     lines = [f"graph {direction}"]
-    for tid in sorted(tasks):
+    for tid in sorted(vis):
         t = tasks[tid]
         label = t.title.replace('"', "'")
         if len(label) > 40:
@@ -139,10 +152,12 @@ def mermaid(tasks: dict[str, Task], direction: str = "LR") -> str:
         lines.append(f'  {_mid(tid)}["{tid}<br/>{label}"]')
         lines.append(f"  style {_mid(tid)} {MERMAID_CLASS.get(effective_status(t, tasks), MERMAID_CLASS['draft'])}")
     for t in tasks.values():
+        if t.id not in vis:
+            continue
         for d in t.depends_on:
-            if d in tasks:
+            if d in tasks and d in vis:
                 lines.append(f"  {_mid(d)} --> {_mid(t.id)}")
-        if t.discovered_from in tasks:
+        if t.discovered_from in tasks and t.discovered_from in vis:
             lines.append(f"  {_mid(t.discovered_from)} -.->|discovered| {_mid(t.id)}")
     return "\n".join(lines)
 
@@ -168,11 +183,16 @@ SVG_FILL = {
 }
 
 
-def layers(tasks: dict[str, Task]) -> dict[str, int]:
-    """Longest-path layering: layer = 1 + max(layer of deps)."""
+def layers(tasks: dict[str, Task], visible: set[str] | None = None) -> dict[str, int]:
+    """Longest-path layering: layer = 1 + max(layer of deps). When `visible` narrows the
+    node set, edges through hidden tasks are dropped so the layout closes up rather than
+    leaving a gap where the hidden task's column was."""
+    vis = set(tasks) if visible is None else visible
     order = topological_order(tasks)
     out: dict[str, int] = {}
     for tid in order:
+        if tid not in vis:
+            continue
         deps = [d for d in tasks[tid].depends_on if d in out]
         if tasks[tid].discovered_from in out:
             deps.append(tasks[tid].discovered_from)
@@ -180,18 +200,21 @@ def layers(tasks: dict[str, Task]) -> dict[str, int]:
     return out
 
 
-def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = False) -> str:
+def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = False, hide_done: bool = False) -> str:
     """The trellis: a lattice with the work climbing it. Layered left to right; each task is a
     growth-stage glyph (symbols from plants.DEFS, which the page must inline) at a lattice
-    crossing, dependencies as vine, discovered work as a dashed tendril."""
-    if not tasks:
+    crossing, dependencies as vine, discovered work as a dashed tendril. With `hide_done`, done
+    and cancelled tasks are dropped from the drawing and it is re-laid out without them; a task
+    whose only dependency was hidden draws as a root, with the hidden dependency named on hover."""
+    vis = visible_ids(tasks, stack, hide_done)
+    if not vis:
         return '<svg xmlns="http://www.w3.org/2000/svg" class="trellis" width="10" height="10"></svg>'
     from .plants import STAGE, stage_word
 
     try:
-        lay = layers(tasks)
+        lay = layers(tasks, vis)
     except GraphError:
-        lay = {tid: 0 for tid in tasks}
+        lay = {tid: 0 for tid in vis}
     cols: dict[int, list[str]] = {}
     for tid, layer in lay.items():
         cols.setdefault(layer, []).append(tid)
@@ -220,7 +243,8 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
     parts.append("</g>")
     parts.append(f'<line class="post" x1="{pad_x - 70}" y1="{total_h - 8:.0f}" x2="{pad_x - 70}" y2="8"/><line class="post" x1="{total_w - 40:.0f}" y1="{total_h - 8:.0f}" x2="{total_w - 40:.0f}" y2="8"/>')
     vine = []
-    for t in tasks.values():
+    for tid in vis:
+        t = tasks[tid]
         x, y = pos[t.id]
         deps = [d for d in t.depends_on if d in pos]
         if not deps and t.discovered_from not in pos:
@@ -238,8 +262,10 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
         st = effective_status(t, tasks, stack)
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
+        hidden_deps = [d for d in t.depends_on if d in tasks and d not in vis]
+        dep_note = f" — depends on hidden: {', '.join(hidden_deps)}" if hidden_deps else ""
         parts.append(
-            f'<a href="{link_prefix}{tid}"><g><title>{tid}: {title} — {st.replace("_", " ")} ({stage_word(st)})</title>'
+            f'<a href="{link_prefix}{tid}"><g><title>{tid}: {title} — {st.replace("_", " ")} ({stage_word(st)}){_esc(dep_note)}</title>'
             f'<circle class="halo" cx="{x:.0f}" cy="{y:.0f}" r="19"/>'
             f'<use href="#{STAGE.get(st, "st-seed")}" transform="translate({x - 15:.0f} {y - 15:.0f}) scale(1.25)"/>'
             f'<text class="nid" x="{x:.0f}" y="{y + 36:.0f}" text-anchor="middle">{tid}</text>'

@@ -53,6 +53,28 @@ def test_set_rejects_unknown_key(garden):
     assert "can't be set live" in r.output
 
 
+def test_trellis_open_filter(garden):
+    assert run(garden, "set-status", "DM-001", "done").exit_code == 0
+    r = run(garden, "trellis")
+    lines = [line for line in r.output.splitlines() if line.strip()]
+    assert any(line.startswith("DM-001") for line in lines)
+    assert any(line.startswith("DM-002") for line in lines)
+
+    r = run(garden, "trellis", "--open")
+    lines = [line for line in r.output.splitlines() if line.strip()]
+    assert not any(line.startswith("DM-001") for line in lines)
+    assert any(line.startswith("DM-002") for line in lines)
+
+    r = run(garden, "trellis", "--format", "json", "--open")
+    data = json.loads(r.output)
+    ids = {n["id"] for n in data["nodes"]}
+    assert ids == {"DM-002"}
+    assert data["edges"] == []
+
+    r = run(garden, "trellis", "--format", "mermaid", "--open")
+    assert "DM_001" not in r.output and "DM_002" in r.output
+
+
 def test_new_task_and_approve(garden):
     r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
     assert r.exit_code == 0 and "DM-003" in r.output

@@ -1,7 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Trellis{% endblock %}
 {% block body %}
-<div class="page-head"><div><h1>Trellis</h1><p>The structure the work climbs: dependencies left to right, dashed edges for discovered work. A task with one open dependency stacks on its PR instead of waiting.</p></div></div>
+<script>
+(function() {
+  var hide = new URLSearchParams(location.search).get('hide');
+  if (hide === 'done') localStorage.setItem('garden.trellisHideDone', 'done');
+  else localStorage.removeItem('garden.trellisHideDone');
+})();
+</script>
+<div class="page-head"><div><h1>Trellis</h1><p>The structure the work climbs: dependencies left to right, dashed edges for discovered work. A task with one open dependency stacks on its PR instead of waiting.</p></div>
+  <div class="tools">
+    {% if hide_done %}<a href="{{ show_url }}" class="btn" data-hide-toggle>show {{ hidden_count }} done</a>
+    {% else %}<a href="{{ hide_url }}" class="btn" data-hide-toggle>hide done{% if hidden_count %} ({{ hidden_count }}){% endif %}</a>{% endif %}
+  </div>
+</div>
 <div class="filters">
   <a href="/trellis{{ '?closed=1' if closed else '' }}" class="{{ 'on' if not product else '' }}">all</a>
   {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
