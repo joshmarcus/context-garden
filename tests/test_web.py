@@ -13,7 +13,7 @@ def client(garden):
 
 def test_pages_render(garden):
     c = client(garden)
-    for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials"]:
+    for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials", "/costs"]:
         r = c.get(url)
         assert r.status_code == 200, url
     assert "DM-002" in c.get("/board").text
