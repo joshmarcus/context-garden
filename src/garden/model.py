@@ -139,6 +139,8 @@ class Task:
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
     discovered_from: str = ""  # task id that reported this one as discovered work
+    freeze_exception: bool = False  # with freeze_exception_reason, lets this task through a frozen phase
+    freeze_exception_reason: str = ""
     attempts: int = 0
     last_dispatched_at: str = ""
     created: str = ""
@@ -165,6 +167,8 @@ class Task:
         "difficulty",
         "model",
         "discovered_from",
+        "freeze_exception",
+        "freeze_exception_reason",
         "attempts",
         "last_dispatched_at",
         "created",
@@ -201,6 +205,8 @@ class Task:
             difficulty=str(data.get("difficulty") or "medium"),
             model=str(data.get("model") or ""),
             discovered_from=str(data.get("discovered_from") or ""),
+            freeze_exception=bool(data.get("freeze_exception") or False),
+            freeze_exception_reason=str(data.get("freeze_exception_reason") or ""),
             attempts=int(data.get("attempts", 0) or 0),
             last_dispatched_at=str(data.get("last_dispatched_at") or ""),
             created=str(data.get("created") or ""),
@@ -227,6 +233,10 @@ class Task:
             v = getattr(self, k)
             if v:
                 data[k] = v
+        if self.freeze_exception:
+            data["freeze_exception"] = True
+            if self.freeze_exception_reason:
+                data["freeze_exception_reason"] = self.freeze_exception_reason
         if self.attempts:
             data["attempts"] = self.attempts
         if self.last_dispatched_at:
@@ -247,6 +257,11 @@ class Task:
     @property
     def slug(self) -> str:
         return slugify(self.title)
+
+    @property
+    def has_freeze_exception(self) -> bool:
+        """A freeze exception needs both the flag and a reason; a bare flag is not enough."""
+        return self.freeze_exception and bool(self.freeze_exception_reason.strip())
 
     def default_branch(self) -> str:
         return f"garden/{self.id.lower()}-{self.slug}"
@@ -299,6 +314,24 @@ class Phase:
         """Close date from `closed:` in goals.md frontmatter; empty while the phase is open."""
         v = self.meta.get("closed")
         return str(v) if v else ""
+
+    @property
+    def frozen(self) -> str:
+        """Freeze date from `frozen:` in goals.md frontmatter; empty while the phase is not frozen."""
+        v = self.meta.get("frozen")
+        return str(v) if v else ""
+
+
+def phase_refusal(phase: Phase, task: Task) -> str:
+    """Empty if `task` may be approved or dispatched; otherwise the reason it can't. A closed
+    phase always refuses (reopen it first); a frozen phase refuses unless the task carries a
+    freeze exception with a reason."""
+    if phase.closed:
+        return f"{phase.key} is closed ({phase.closed}); reopen it first (`garden reopen-phase {phase.key}`)"
+    if phase.frozen and not task.has_freeze_exception:
+        return (f"{phase.key} is frozen ({phase.frozen}); needs `freeze_exception: true` and a "
+                f"`freeze_exception_reason` on the task, or `garden unfreeze {phase.key}`")
+    return ""
 
 
 def goals_text(path: Path | None) -> str:
