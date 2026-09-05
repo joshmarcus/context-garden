@@ -1062,6 +1062,14 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"{d['first_pass_rate']:.0%}" if d["first_pass_rate"] is not None else "",
                       f"${d['cost_usd']:.2f}", f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
     console.print(table)
+    rb = m.get("rebase") or {}
+    table = Table(title="rebases (their own mode: cheapest thing that brings a PR forward)")
+    for c in ("rebases", "merges", "rebases per merge", "rebase cost"):
+        table.add_column(c)
+    table.add_row(str(rb.get("rebases", 0)), str(rb.get("merges", 0)),
+                  f"{rb['per_merge']:.2f}" if rb.get("per_merge") is not None else "",
+                  f"${rb.get('cost_usd', 0.0):.2f}")
+    console.print(table)
 
 
 @app.command()

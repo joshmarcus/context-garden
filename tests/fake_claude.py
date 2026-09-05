@@ -23,6 +23,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | friction (done + a friction list in the result, none in the body)
        | omit-body (a revise round that omits pr_body, leaving the description unchanged)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
+       | rebase-resolve (redoes an aborted rebase and resolves it, favouring this branch)
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
@@ -249,6 +250,26 @@ def collide_with_main(call: Call) -> None:
     (call.cwd / "README.md").write_text("# demo\n\nchanged by worker\n")
 
 
+def resolve_rebase(call: Call) -> bool:
+    # A rebase-conflict agent: redo the rebase the scheduler aborted and resolve it, favouring
+    # this branch's changes (a stand-in for "resolve the conflict, change nothing else"). The
+    # runner force-pushes the rebased branch; no extra commit is made.
+    m = re.search(r"git rebase origin/(\S+)", call.brief)
+    base = m.group(1) if m else "main"
+    subprocess.run(["git", "fetch", "origin"], check=False, capture_output=True)
+    env = {**os.environ, "GIT_EDITOR": "true"}
+    r = subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
+                        "rebase", "-X", "theirs", f"origin/{base}"], capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        subprocess.run(["git", "rebase", "--abort"], check=False, capture_output=True)
+        print(result_json('Stuck.\nGARDEN_RESULT: {"status": "needs_input", "question": "How should this conflict be resolved?", "summary": "cannot resolve"}',
+                          {"input_tokens": 400, "output_tokens": 20}, 0.01))
+        return True
+    print(result_json('Resolved the conflict.\nGARDEN_RESULT: {"status": "done", "summary": "resolved the rebase conflict, changed nothing else"}',
+                      {"input_tokens": 500, "output_tokens": 40}, 0.02))
+    return True
+
+
 def escape_worktree(call: Call) -> None:
     # Do what CG-092's worker did: leave the worktree and write/commit in another repo
     # (the live garden or the product clone), whatever the brief said.
@@ -311,6 +332,7 @@ WORKERS: dict[str, Worker] = {
     "nochange": Worker(early=nothing_to_change),
     "revise-with-comment": Worker(tweak=add_pr_comment),
     "conflict": Worker(prepare=collide_with_main),
+    "rebase-resolve": Worker(early=resolve_rebase),
     "wont_do": Worker(early=wont_do_first),
     "no_change": Worker(early=no_change_on_revise),
     "friction": Worker(tweak=add_friction),

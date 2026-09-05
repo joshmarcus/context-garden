@@ -79,6 +79,37 @@ The worktree has commits from the prior attempt:
 {commits}
 """
 
+REBASE_BRIEF = """\
+# Rebase {task_id}: {title}
+
+Branch `{branch}` has an open pull request that fell behind `{base}`, and a plain
+`git rebase` hit a textual conflict. Your only job is to resolve that conflict — nothing else.
+
+## Rules
+
+- **Resolve the conflict, change nothing else.** Do not refactor, add features, rename, or touch
+  any file the rebase did not mark as conflicted. Keep the intent of both sides.
+- Run `git fetch origin && git rebase origin/{base}`. When it stops on a conflict, resolve the
+  marked hunks, `git add` them, and `git rebase --continue` until the rebase completes.
+- Do NOT push and do NOT open or update the PR yourself: the runner force-pushes the rebased
+  branch when you finish.
+- If `{base}` now already contains something this branch's PR description claims as new, drop it
+  from the description and return the corrected `pr_body`; otherwise omit `pr_body`.
+- If resolving the conflict needs a decision only a human can make, stop and report
+  `status: needs_input` with one precise `question`.
+
+## The task's goal (for intent only — do not implement anything new)
+
+{goal}
+
+## Conflicting hunks
+{hunks}
+
+End your final message with exactly one line:
+
+  {marker} {{"status": "done", "summary": "<what you resolved>", "pr_comment": "<optional>", "pr_body": "<only if the description must change>"}}
+"""
+
 
 @dataclass
 class Brief:
@@ -315,6 +346,39 @@ def build_brief(
         inlined=inlined,
         referenced=referenced,
         missing=missing,
+    )
+
+
+def rebase_brief(
+    store: Store,
+    task: Task,
+    *,
+    branch: str,
+    base: str,
+    hunks: dict[str, str],
+    files: list[str] | None = None,
+) -> str:
+    """A minimal brief for an agent that only resolves a rebase conflict: the task's goal for
+    intent, the rule "resolve the conflict, change nothing else", and the conflicting hunks.
+    Deliberately small — a rebase is not a fresh worker round and gets no reading list."""
+    if hunks:
+        parts = []
+        for path, content in hunks.items():
+            fence = "````" if "```" in content else "```"
+            parts.append(f"\n### {path}\n\n{fence}\n{content.rstrip()}\n{fence}\n")
+        hunks_text = "\n".join(parts)
+    elif files:
+        hunks_text = "\nConflicting files: " + ", ".join(f"`{f}`" for f in files) + "\n"
+    else:
+        hunks_text = "\n(The conflicting hunks were not captured; run the rebase to see them.)\n"
+    return REBASE_BRIEF.format(
+        task_id=task.id,
+        title=task.title,
+        branch=branch,
+        base=base,
+        goal=task.body.strip(),
+        hunks=hunks_text,
+        marker=RESULT_MARKER,
     )
 
 

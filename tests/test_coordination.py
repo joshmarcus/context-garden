@@ -361,7 +361,9 @@ def test_restack_keeps_remote_only_commits(sched, fake_github, tmp_path):
     assert "remote-only.txt" in files
 
 
-def test_restack_conflict_routes_to_revise(sched, fake_github, tmp_path, monkeypatch):
+def test_restack_conflict_dispatches_rebase_agent(sched, fake_github, tmp_path, monkeypatch):
+    """A restack whose rebase conflicts textually dispatches an easy-tier rebase agent, not a
+    full revise run: the rebase brief carries only the hunks, and max_revisions is untouched."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "conflict")  # both tasks rewrite README.md
     sched.tick()
     sched.tick()  # DM-001 PR; DM-002 stacked
@@ -375,18 +377,22 @@ def test_restack_conflict_routes_to_revise(sched, fake_github, tmp_path, monkeyp
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
     rep = sched.tick()
     assert "DM-002 -> changes_requested (rebase)" in rep.transitions
-    assert "DM-002(revise)" in rep.dispatched  # the revise run is told to rebase, in the same tick
-    brief = (sched.runs.latest("DM-002").path / "brief.md").read_text()
-    assert "git rebase origin/main" in brief and "README.md" in brief
-    # a rebase round tells the worker to drop from the description what main now already has
-    assert "drop from the PR description anything `main` now already contains" in brief
+    assert "DM-002(rebase)" in rep.dispatched  # an easy-tier rebase agent, in the same tick
+    run = sched.runs.latest("DM-002")
+    assert run.mode == "rebase" and run.difficulty == "easy"
+    brief = (run.path / "brief.md").read_text()
+    assert "git fetch origin && git rebase origin/main" in brief and "README.md" in brief
+    assert "Resolve the conflict, change nothing else" in brief
+    assert "## Reading list" not in brief  # the minimal rebase brief, not the full worker brief
     assert sched.state.get("DM-002")["force_push"] is True  # the rebased branch will be force-pushed
+    assert sched.state.get("DM-002").get("rebases") == 1  # its own counter
+    assert int(sched.state.get("DM-002").get("revisions", 0)) == 0  # never touches max_revisions
 
 
 # ---- 6. conflict detection ---------------------------------------------------
-def test_conflicting_pr_triggers_revise_run(sched, fake_github, tmp_path, monkeypatch):
-    """When GitHub reports a PR as CONFLICTING and the actual rebase conflicts,
-    poll transitions to changes_requested and queues a revise run."""
+def test_conflicting_pr_dispatches_rebase_agent(sched, fake_github, tmp_path, monkeypatch):
+    """When GitHub reports a PR as CONFLICTING and the actual rebase conflicts textually,
+    poll dispatches an easy-tier rebase agent carrying only the conflicting hunks."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "conflict")  # worker writes README.md
     sched.tick()
     sched.tick()  # DM-001 -> in_review
@@ -402,22 +408,23 @@ def test_conflicting_pr_triggers_revise_run(sched, fake_github, tmp_path, monkey
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
     rep = sched.tick()
 
-    assert "DM-001 -> changes_requested (conflict)" in rep.transitions
-    assert "DM-001(revise)" in rep.dispatched
-    # pending_feedback is cleared when dispatch() consumes it; check the brief instead
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    assert "Revision round" in brief
-    assert "rebase" in brief.lower() and "README.md" in brief
-    assert "drop from the PR description anything `main` now already contains" in brief
-    # force_push is set for the upcoming push after the revise resolves the conflict
+    assert "DM-001 -> changes_requested (rebase)" in rep.transitions
+    assert "DM-001(rebase)" in rep.dispatched
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "rebase" and run.difficulty == "easy"
+    brief = (run.path / "brief.md").read_text()
+    assert "Resolve the conflict, change nothing else" in brief
+    assert "README.md" in brief  # the conflicting hunk is carried in the brief
+    # force_push is set for the upcoming push after the agent resolves the conflict
     assert sched.state.get("DM-001").get("force_push") is True
-    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["conflict"])
-    assert len(evs) == 1 and evs[0]["resolved"] is False and "README.md" in evs[0]["files"]
+    assert int(sched.state.get("DM-001").get("revisions", 0)) == 0  # a rebase never counts as a revise
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
+    assert any(e.get("resolved") is False and "README.md" in (e.get("files") or []) for e in evs)
 
 
 def test_conflicting_pr_auto_rebased_when_clean(sched, fake_github, tmp_path):
-    """When GitHub reports CONFLICTING but the actual rebase applies cleanly,
-    poll rebases and force-pushes without queuing a revise run."""
+    """When GitHub reports CONFLICTING but the actual rebase applies cleanly, poll rebases
+    mechanically (no model) as its own `rebase` run, force-pushes, and queues no agent."""
     sched.tick()
     sched.tick()  # DM-001 -> in_review
     assert statuses(sched)["DM-001"] == "in_review"
@@ -430,15 +437,26 @@ def test_conflicting_pr_auto_rebased_when_clean(sched, fake_github, tmp_path):
     gitc("push", "-q", "origin", "main", cwd=repo)
 
     fake_github.prs["garden/dm-001-first-task"].mergeable = "CONFLICTING"
+    # a pre-PR check that leaves a marker, so we can prove the round re-ran the checks
+    marker = tmp_path / "clean-rebase-check-ran"
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}"}], "ci": []}
     rep = sched.tick()
 
-    # clean rebase: no revise run, task stays in_review, pending_feedback is empty
+    # clean rebase: no agent, task stays in_review, pending_feedback is empty
     assert statuses(sched)["DM-001"] == "in_review"
-    assert "DM-001(revise)" not in rep.dispatched
+    assert "DM-001(rebase)" not in rep.dispatched and "DM-001(revise)" not in rep.dispatched
     assert not sched.state.get("DM-001").get("pending_feedback")
-    # conflict event recorded as resolved
-    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["conflict"])
-    assert len(evs) == 1 and evs[0]["resolved"] is True
+    # a rebase run record was written with no harness call, and its own counter moved
+    rb = [r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]
+    assert len(rb) == 1 and rb[0].harness == "" and rb[0].status == "done" and rb[0].cost_usd == 0.0
+    assert sched.state.get("DM-001").get("rebases") == 1
+    # the pre-PR checks were re-run after the mechanical rebase
+    assert marker.exists()
+    checks = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["check"])
+    assert any(e.get("stage") == "pre_pr" and e.get("name") == "unit" for e in checks)
+    # rebase event recorded as resolved
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["rebase"])
+    assert any(e.get("resolved") is True for e in evs)
     # origin/main is now an ancestor of the branch (rebase completed)
     gitc("fetch", "origin", cwd=repo)
     branch = sched.store.task("DM-001").branch
