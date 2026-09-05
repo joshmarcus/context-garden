@@ -77,11 +77,12 @@ def test_persona_phase_brief_includes_newest_walkthrough(garden):
 
 def test_capture_includes_a_run_page_when_a_task_has_run(garden):
     from garden.scheduler import Scheduler
-    from tests.conftest import FakeGitHub, wait_for_runs
+    from tests.conftest import FakeGitHub
 
+    # The in-process runner finishes the worker during dispatch, so the first tick
+    # dispatches the run and the second reaps it; nothing needs to wait in between.
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
 
     store = Store(garden)
