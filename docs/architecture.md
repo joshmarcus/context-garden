@@ -484,7 +484,9 @@ The scheduler's own tests sit under `tests/scheduler/`, one file per tick phase
 (`test_reap.py`, `test_poll.py`, `test_dispatch.py`, `test_human.py`, `test_notify.py`,
 `test_orphan_sweep.py`, `test_dead_runs.py`) with shared helpers in `tests/scheduler/conftest.py`. `pytest -q`
 runs it all in well under a minute; CI for this repository runs the same in
-`.github/workflows/ci.yml`.
+`.github/workflows/ci.yml`. `.github/workflows/qa.yml` runs `garden qa --scripted` daily
+and on demand (`workflow_dispatch`), so a page regression is caught between phases without
+spending tokens; a failed flow exits non-zero and fails the job.
 
 ## Rules the code keeps
 
