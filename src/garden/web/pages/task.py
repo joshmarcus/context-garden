@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from ...brief import build_brief
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
-from ...inbox import attention_view
+from ...inbox import approve_phase_options, attention_view
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -56,6 +56,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if prod.name == t.product and (not ph.closed or ph.name == t.phase):
                     move_phases.append(ph.name)
         later_deps = deps_in_later_phase(t, tasks, phase_index)
+        approve_phases = approve_phase_options(s, t) if t.status.value == "draft" else []
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
@@ -72,7 +73,7 @@ def register(app: FastAPI, site: Site) -> None:
             attention=attention_view(t, st, rs),
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
-            move_phases=move_phases, later_deps=later_deps,
+            move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
