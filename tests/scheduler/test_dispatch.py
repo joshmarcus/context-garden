@@ -105,6 +105,39 @@ def test_max_parallel(sched, garden):
     assert len(rep.dispatched) == 2
 
 
+def test_garden_yaml_reloaded_between_ticks(sched, garden):
+    """CG-192: editing garden.yaml is honoured within one tick, no restart. The scheduler
+    re-reads store.config each pass when the file's mtime changed, so a raised max_parallel
+    dispatches more work on the very next tick and the change is logged."""
+    import os
+
+    import yaml
+
+    logs = []
+    sched.log = logs.append
+    for t in sched.store.tasks().values():
+        t.depends_on = []
+        sched.store.save(t)
+    for i in range(3, 6):
+        (garden / "demo" / "p1" / "tasks" / f"DM-00{i}.md").write_text(
+            f"---\nid: DM-00{i}\ntitle: t{i}\nstatus: ready\ndepends_on: []\npriority: 3\nreading: []\ncreated: ''\nupdated: ''\n---\n\n## Goal\n\nx\n")
+    rep = sched.tick()
+    assert len(rep.dispatched) == 2  # garden.yaml's max_parallel
+
+    # raise the limit in garden.yaml (and bump the mtime so the reload is deterministic)
+    p = garden / "garden.yaml"
+    data = yaml.safe_load(p.read_text())
+    data["max_parallel"] = 4
+    p.write_text(yaml.safe_dump(data))
+    future = os.stat(p).st_mtime + 10
+    os.utime(p, (future, future))
+
+    rep = sched.tick()  # reaps the 2 finished runs, re-reads the config, dispatches up to 4
+    assert sched.cfg.get("max_parallel") == 4
+    assert len(rep.dispatched) == 3  # the 3 remaining ready tasks, without a restart
+    assert any("garden.yaml reloaded" in m and "max_parallel" in m for m in logs)
+
+
 def test_max_parallel_override_and_clear(sched):
     from garden.scheduler import State
 
