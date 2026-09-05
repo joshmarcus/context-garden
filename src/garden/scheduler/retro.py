@@ -449,6 +449,11 @@ class RetroMixin:
         goals_path = wt / rel_product / next_phase / "goals.md"
         retro_path.parent.mkdir(parents=True, exist_ok=True)
         goals_path.parent.mkdir(parents=True, exist_ok=True)
+        questions = [f for f in (self._file_question(
+            phase, item, i, run.run_id, source=f"retro:{phase.key}", document_paths=[
+                retro_path, goals_path, phase.path / "docs" / "retro.md", phase.path.parent / next_phase / "goals.md",
+            ]
+        ) for i, item in enumerate(rev.get("questions") or []) if isinstance(item, dict)) if f]
         existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
         # Blocking tasks go live into the current phase (it exists, they must dispatch and block
         # the close); features, followups and findings go into the worktree next phase (which may
@@ -469,7 +474,7 @@ class RetroMixin:
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
         numbers = numbers_section(summary["cost_usd"], operator_cost)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
-                                               filed_findings=filed_findings, followups=followups,
+                                               filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,
                                                difficulty=run.difficulty, model=run.model, numbers=numbers))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
@@ -498,6 +503,7 @@ class RetroMixin:
         n_findings_skipped = len(filed_findings) - n_findings_filed
         n_followups = sum(1 for f in followups if f.get("task_id"))
         n_blocking = sum(1 for b in blocking if b.get("task_id"))
+        n_questions = len(questions)
         verdict = normalize_verdict(rev.get("verdict"))
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
         body = (f"Retrospective for **{phase.key}**, produced by `garden retro`.\n\n"
@@ -510,6 +516,7 @@ class RetroMixin:
                 + (f" ({n_skipped} duplicate(s) skipped)" if n_skipped else "") + "\n"
                 + (f"- {n_followups} follow-up(s) filed in {next_phase}\n" if n_followups else "")
                 + (f"- {n_blocking} blocking task(s) filed in {phase.key}\n" if n_blocking else "")
+                + (f"- {n_questions} owner question(s) filed as decision cards\n" if n_questions else "")
                 + f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
                 f"- next-phase goals draft: `{rel_product.as_posix()}/{next_phase}/goals.md`\n\n"
                 f"{str(rev.get('summary', '')).strip()}\n")
@@ -611,6 +618,12 @@ class RetroMixin:
         vs = self.state.get("_retro_verdicts")
         if phase.key not in vs:
             raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
+        pending_blocking = [d for d in self.pending_decisions()
+                            if d.get("kind") == "question" and d.get("source") == f"retro:{phase.key}"
+                            and d.get("blocking")]
+        if pending_blocking:
+            raise RuntimeError("answer the retro's blocking question before accepting its verdict: "
+                               + str(pending_blocking[0].get("question") or "(unnamed question)"))
         rec = vs[phase.key]
         if choice == "reopen":
             if phase.closed:

@@ -218,6 +218,45 @@ def test_retro_decide_reopen_approves_the_blocking_task_then_close_follows(tmp_p
     assert Store(root).phase("gdn", "p1").closed
 
 
+def test_retro_questions_use_shared_cards_and_record_web_and_cli_answers(tmp_path, fake_github, monkeypatch):
+    """Two fake-harness retro questions share kickoff's cards; answers reach both planning docs."""
+    import shutil
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_VERDICT", "reopen")
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_QUESTIONS", "1")
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = _run_retro(root, store, fake_github)
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    for rel in (Path("gdn/p1/docs/retro.md"), Path("gdn/p2/goals.md")):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(wt / rel, target)
+
+    questions = [d for d in sched.pending_decisions() if d.get("source") == "retro:gdn/p1"]
+    assert len(questions) == 2
+    by_question = {d["question"]: d["id"] for d in questions}
+    c = TestClient(create_app(Store(root), watch=False))
+    response = c.post(f"/decisions/{by_question['Which rollout should the next phase use?']}/answer",
+                      data={"answer": "gradual"}, follow_redirects=False)
+    assert response.status_code == 303
+    blocked = _cli(root, "retro-decide", "gdn/p1", "reopen")
+    assert blocked.exit_code == 1 and "blocking question" in blocked.output
+    answered = _cli(root, "decide", by_question["Does the broken base require reopening?"], "--answer", "reopen")
+    assert answered.exit_code == 0, answered.output
+    assert _cli(root, "retro-decide", "gdn/p1", "reopen").exit_code == 0
+
+    retro_text = (root / "gdn/p1/docs/retro.md").read_text()
+    goals_text = (root / "gdn/p2/goals.md").read_text()
+    assert "## Questions for the owner" in retro_text and "## Answers" in retro_text
+    assert "by web at" in retro_text and "by cli at" in retro_text
+    assert "## Decisions" in goals_text and "gradual" in goals_text and "reopen" in goals_text
+    html = c.get("/phases/gdn/p1/retro").text
+    assert "Which rollout should the next phase use?" in html and "by web at" in html
+
+
 def test_close_phase_warns_when_no_verdict_exists(tmp_path, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     repo = _garden_repo(tmp_path)

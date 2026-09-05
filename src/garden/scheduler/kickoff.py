@@ -89,7 +89,9 @@ class KickoffMixin:
                                    discovered_from=f"kickoff:{phase.key}")
         return {"path": path, "issue": issue, "task_id": t.id}
 
-    def _file_kickoff_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str) -> dict[str, Any]:
+    def _file_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str, *, source: str,
+                       document_paths: list[Path] | None = None) -> dict[str, Any]:
+        """File an owner question as the shared decision-card kind used by kickoff and retro."""
         question = str(item.get("question") or "").strip()
         if not question:
             return {}
@@ -98,38 +100,60 @@ class KickoffMixin:
         decisions[did] = {
             "id": did, "kind": "question", "target": "", "target_title": question[:80],
             "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
-            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"kickoff:{phase.key}",
+            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": source,
             "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
-            "discovered_from": f"kickoff:{phase.key}",
+            "discovered_from": source, "source": source, "blocking": bool(item.get("blocking")),
+            "document_paths": [str(p) for p in (document_paths or [])],
         }
         self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
-        return {"question": question, "decision_id": did}
+        return {"question": question, "context": str(item.get("context") or "").strip(),
+                "options": [str(o) for o in (item.get("options") or [])],
+                "blocking": bool(item.get("blocking")), "decision_id": did}
 
-    def answer_kickoff_question(self, decision_id: str, answer: str) -> dict[str, Any]:
-        d = self._pop_kickoff_question(decision_id)
+    def answer_question(self, decision_id: str, answer: str, by: str = "cli") -> dict[str, Any]:
+        d = self._pop_question(decision_id)
         phase = self._phase_of_decision(d)
         if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "answered", answer.strip())
+            if str(d.get("source") or d.get("discovered_from") or "").startswith("retro:"):
+                from ..retro import append_retro_question_resolution
+                paths = [Path(p) for p in d.get("document_paths") or []]
+                if len(paths) >= 2:
+                    append_retro_question_resolution(paths, str(d["question"]), "answered", answer.strip(), by, now_iso())
+            else:
+                append_question_resolution(phase, str(d["question"]), "answered", answer.strip(), by=by, at=now_iso())
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=True)
         self.state.save()
         return d
 
-    def dismiss_kickoff_question(self, decision_id: str) -> dict[str, Any]:
-        d = self._pop_kickoff_question(decision_id)
+    def dismiss_question(self, decision_id: str, by: str = "cli") -> dict[str, Any]:
+        d = self._pop_question(decision_id)
         phase = self._phase_of_decision(d)
         if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "dismissed", "")
+            if str(d.get("source") or d.get("discovered_from") or "").startswith("retro:"):
+                from ..retro import append_retro_question_resolution
+                paths = [Path(p) for p in d.get("document_paths") or []]
+                if len(paths) >= 2:
+                    append_retro_question_resolution(paths, str(d["question"]), "dismissed", "", by, now_iso())
+            else:
+                append_question_resolution(phase, str(d["question"]), "dismissed", "", by=by, at=now_iso())
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=False)
         self.state.save()
         return d
 
-    def _pop_kickoff_question(self, decision_id: str) -> dict[str, Any]:
+    def _pop_question(self, decision_id: str) -> dict[str, Any]:
         decisions = self.state.get("_decisions")
         d = decisions.get(decision_id)
         if not isinstance(d, dict) or d.get("kind") != "question" or d.get("status", "pending") != "pending":
             raise KeyError(decision_id)
         decisions.pop(decision_id, None)
         return d
+
+    # Compatibility for callers introduced with CG-224. New callers use the source-neutral API.
+    def answer_kickoff_question(self, decision_id: str, answer: str) -> dict[str, Any]:
+        return self.answer_question(decision_id, answer)
+
+    def dismiss_kickoff_question(self, decision_id: str) -> dict[str, Any]:
+        return self.dismiss_question(decision_id)
 
     def _phase_of_decision(self, d: dict[str, Any]) -> Phase | None:
         product, _, name = str(d.get("phase") or "").partition("/")
@@ -150,7 +174,7 @@ class KickoffMixin:
                                     for it in data.get("design_needed") or [] if isinstance(it, dict)) if f]
         filed_docs = [f for f in (self._file_kickoff_doc(phase, it)
                                   for it in data.get("docs") or [] if isinstance(it, dict)) if f]
-        filed_questions = [f for f in (self._file_kickoff_question(phase, it, i, run_id)
+        filed_questions = [f for f in (self._file_question(phase, it, i, run_id, source=f"kickoff:{phase.key}")
                                        for i, it in enumerate(data.get("questions") or []) if isinstance(it, dict)) if f]
         goals_gaps = [g for g in data.get("goals_gaps") or [] if isinstance(g, dict) and str(g.get("goal") or "").strip()]
         if goals_gaps:

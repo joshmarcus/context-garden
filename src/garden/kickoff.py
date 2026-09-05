@@ -290,7 +290,7 @@ def append_goal_gaps(phase: Phase, gaps: list[dict[str, Any]]) -> None:
     goals_path.write_text(join_frontmatter(meta, body) if meta else body.lstrip("\n"))
 
 
-def append_question_resolution(phase: Phase, question: str, status: str, answer: str) -> None:
+def append_question_resolution(phase: Phase, question: str, status: str, answer: str, *, by: str = "cli", at: str = "") -> None:
     """Record a question's resolution (answered or dismissed) onto the kickoff document, so
     the report a person reads reflects what happened to every item it raised, not just what
     the run originally proposed."""
@@ -298,7 +298,7 @@ def append_question_resolution(phase: Phase, question: str, status: str, answer:
     if not path.exists():
         return
     text = path.read_text()
-    line = f"- **{question}** — {status}" + (f": {answer}" if answer else "")
+    line = f"- **{question}** — {status}" + (f": {answer}" if answer else "") + (f" (by {by} at {at})" if at else "")
     heading = "## Questions for the owner"
     idx = text.find(heading)
     if idx == -1:
