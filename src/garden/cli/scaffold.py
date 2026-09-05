@@ -16,7 +16,6 @@ from .common import (
     _scheduler,
     _split_target,
     _store,
-    _style,
     app,
     console,
     err,
@@ -159,23 +158,19 @@ def close_phase(
     force: bool = typer.Option(False, "--force", help="Close even with open tasks"),
 ):
     """Close a phase once every task is done or cancelled: it leaves the rail and joins the herbarium."""
-    import datetime as _dt
-
     store = _store()
     product, phase = _split_target(target)
     ph = _phase(store, product, phase)
     if ph.closed:
         console.print(f"{ph.key} is already closed ({ph.closed})")
         return
-    open_tasks = [t for t in ph.tasks if not t.status.terminal]
-    if open_tasks and not force:
-        err.print(f"[red]{ph.key} still has {len(open_tasks)} open task(s):[/red]")
-        for t in open_tasks:
-            err.print(f"  {t.id}  {_style(t.status.value)}  {t.title}")
+    sched = _scheduler(store)
+    try:
+        date = sched.close_phase(ph, force=force)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
         err.print("finish or cancel them, or close anyway with --force")
         raise typer.Exit(1) from None
-    date = _dt.date.today().isoformat()
-    _set_phase_closed(store, ph, date)
     console.print(f"{ph.key} closed ({date}); it now appears in the herbarium")
 
 

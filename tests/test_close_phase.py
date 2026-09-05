@@ -32,7 +32,8 @@ def finish_all(garden):
 def test_close_phase_refuses_open_tasks_and_force_overrides(garden):
     r = run(garden, "close-phase", "demo/p1")
     assert r.exit_code == 1
-    assert "DM-001" in r.output and "DM-002" in r.output and "--force" in r.output
+    assert "still has 2 open task(s)" in r.output
+    assert "DM-001 (ready)" in r.output and "DM-002 (ready)" in r.output and "--force" in r.output
     assert not Store(garden).phase("demo", "p1").closed
 
     r = run(garden, "close-phase", "demo/p1", "--force")
