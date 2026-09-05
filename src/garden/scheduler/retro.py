@@ -134,7 +134,7 @@ class RetroMixin:
         base = self.cfg.product_base_branch(self_prod or phase.product)
         recon = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                 reports, task_rows, merged, nxt)
-        difficulty = str(self.cfg.get("retro.difficulty") or "hard")
+        difficulty = str(self.effective("retro.difficulty") or "hard")
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                      product=self_prod or phase.product, phase="")
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
@@ -215,7 +215,7 @@ class RetroMixin:
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                reports, task_rows, merged, entry["next_phase"])
-        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("retro.difficulty") or "hard"))
+        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.effective("retro.difficulty") or "hard"))
         entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)

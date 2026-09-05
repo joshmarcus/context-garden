@@ -63,7 +63,7 @@ class PersonaMixin:
         return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
                                                              "persona": name, "target": "phase", "file_tasks": file_tasks,
                                                              "min_severity": min_severity},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("retro.difficulty") or "hard"))
+                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False) -> Run:
         ensure_open(task)
@@ -81,7 +81,7 @@ class PersonaMixin:
             pr_body = str(latest.result.get("pr_body") or "")
         text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff, int(self.cfg.get("review.max_diff_chars", 60000)))
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("retro.difficulty") or "hard"))
+                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
     def _finding_target_phase(self, phase: Phase) -> Phase:
         """Where a persona finding is filed: the reviewed phase, unless it is frozen or closed

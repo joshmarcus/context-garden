@@ -121,7 +121,8 @@ def tier_bars_svg(rows: list[dict[str, Any]], value: str = "cost_usd", fmt: str 
 
 
 def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, max_groups: int = 7,
-                   compactions: list[dict[str, Any]] | None = None) -> str:
+                   compactions: list[dict[str, Any]] | None = None,
+                   annotations: list[dict[str, Any]] | None = None) -> str:
     """Spend per bucket (day or hour), stacked by group, from `costs.cost_series`.
 
     Colors are the fixed nine-slot categorical order (`--viz-1`, `--viz-2`,
@@ -134,8 +135,13 @@ def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, 
     entry whose bucket falls inside the chart, the same hover-title mark language as every
     other element here — a bucket with no cost recorded never got a bar, so a mark for it is
     silently skipped rather than drawn off the axis.
+
+    `annotations` (each `{"at": iso, "from": stop, "to": stop}`, e.g. `profile_changed`
+    events) draw a thin marker at the bar for the bucket the timestamp falls in (see
+    `costs.bucket_key`); a change with no cost recorded in that bucket has no bar to mark
+    and is silently skipped.
     """
-    from .costs import ACTIVITIES, _bucket_key
+    from .costs import ACTIVITIES, bucket_key
 
     buckets = series.get("buckets") or []
     totals = series.get("totals") or {}
@@ -202,13 +208,27 @@ def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, 
             acc += v
     bucket_index = {b["bucket"]: i for i, b in enumerate(buckets)}
     for mark in compactions or []:
-        i = bucket_index.get(_bucket_key(str(mark.get("at") or ""), series.get("bucket", "day")))
+        i = bucket_index.get(bucket_key(str(mark.get("at") or ""), series.get("bucket", "day")))
         if i is None:
             continue
         mx = ml + i * bw + bw / 2
         session = _esc(str(mark.get("session") or "")[:8])
         out.append(f'<line x1="{mx:.1f}" x2="{mx:.1f}" y1="{mt}" y2="{mt + ph}" stroke="var(--muted)" '
                    f'stroke-width="1" stroke-dasharray="2,3"><title>compacted (session {session})</title></line>')
+    if annotations:
+        bucket_kind = str(series.get("bucket") or "day")
+        index_by_bucket = {b["bucket"]: i for i, b in enumerate(buckets)}
+        for ann in annotations:
+            at = str(ann.get("at") or "")
+            i = index_by_bucket.get(bucket_key(at, bucket_kind)) if at else None
+            if i is None:
+                continue
+            cx = ml + (i + 0.5) * bw
+            label = f'{ann.get("from") or "(none)"} → {ann.get("to") or "(none)"}'
+            title = f'profile changed {_esc(label)} at {_esc(at[:16])}'
+            out.append(f'<line x1="{cx:.1f}" x2="{cx:.1f}" y1="{mt}" y2="{mt + ph}" stroke="var(--ink)" '
+                       f'stroke-width="1" stroke-dasharray="3,2" class="annotation"><title>{title}</title></line>')
+            out.append(f'<circle cx="{cx:.1f}" cy="{mt}" r="3" fill="var(--ink)"><title>{title}</title></circle>')
     out.append(f'<text x="{ml}" y="{mt + ph + mb - 6}" fill="var(--muted)" font-size="11">{_esc(buckets[0]["bucket"])}</text>')
     out.append(f'<text x="{width - mr}" y="{mt + ph + mb - 6}" text-anchor="end" fill="var(--muted)" font-size="11">{_esc(buckets[-1]["bucket"])}</text>')
     ly = 12

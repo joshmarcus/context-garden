@@ -85,6 +85,8 @@ def status(
     if mp_live is not None:
         mp_line += f" (live override; garden.yaml: {store.config.get('max_parallel')})"
     mp_line += f"  reviews: {len(sched.review_runs_active())}/{sched.review_parallel_limit()}"
+    active_profile = sched.operating_profile_name()
+    mp_line += f"  profile: {active_profile or '(none)'}"
     console.print(mp_line)
     up = sched.upgrade_available()
     if up:

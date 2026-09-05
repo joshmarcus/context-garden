@@ -91,6 +91,23 @@ def register(app: FastAPI, site: Site) -> None:
                 hub._log(f"observe.profile set to {value} via web")
         return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
 
+    @app.post("/config/operating-profile")
+    def web_set_operating_profile(request: Request, value: str = Form("")):
+        """Switch the operating profile (CG-221) live from the rail or the Config page: sets
+        workers, reviews, the tier map, the review and retro tiers and the observe profile
+        together. A running scheduler picks it up within a tick (Scheduler.effective); an
+        empty value clears it, back to plain garden.yaml values."""
+        value = value.strip()
+        back = request.headers.get("referer", "/config")
+        with hub.action_lock:
+            sched = hub.scheduler()
+            try:
+                sched.set_operating_profile(value, by="web")
+            except ValueError as e:
+                return RedirectResponse(_flash_url(back, str(e)), status_code=303)
+            hub._log(f"operating profile set to {value or '(none)'} via web")
+        return RedirectResponse(back, status_code=303)
+
     @app.post("/upgrade")
     def web_upgrade(request: Request):
         back = request.headers.get("referer", "/")

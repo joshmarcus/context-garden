@@ -280,6 +280,11 @@ class RunStore:
             "cache_read_input_tokens": cache_read,
         }
 
+    def spend_since(self, since_iso: str) -> float:
+        """Total cost_usd of runs that finished at or after `since_iso` (an events.parse_since
+        cutoff), for a spend-rate reading beside the operating profile (CG-221)."""
+        return round(sum(r.cost_usd or 0.0 for r in self.all_runs() if (r.finished_at or "") >= since_iso), 4)
+
 
 def _rollup(runs: list[Run]) -> dict[str, Any]:
     tot = {"runs": len(runs), "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,

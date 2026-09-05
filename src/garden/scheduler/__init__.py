@@ -152,7 +152,18 @@ class Scheduler(
         d = difficulty or task.difficulty
         if d not in DIFFICULTIES:
             d = "medium"
-        return runner.harness.model_for(d, task.model if not difficulty else "")
+        override = task.model if not difficulty else ""
+        if override:
+            return override
+        # a more specific live override on this exact harness/tier still wins over the stop
+        key = f"harnesses.{runner.harness.name}.models.{d}"
+        ov = self.overrides()
+        if key in ov:
+            return str(ov[key])
+        models = self.operating_profile().get("models") or {}
+        if models.get(d):
+            return str(models[d])
+        return runner.harness.model_for(d)
 
     def git_identity(self) -> tuple[str, str]:
         """The identity written into a fresh product clone (see CG-147): `git.user_name` /
@@ -253,7 +264,7 @@ class Scheduler(
         return max(0, self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active()))
 
     def review_parallel_limit(self) -> int:
-        limit = self.cfg.get("review_parallel")
+        limit = self.effective("review_parallel")
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
 
     def review_slots_free(self) -> int:

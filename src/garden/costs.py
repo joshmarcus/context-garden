@@ -29,7 +29,10 @@ GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "phase", "task
 BUCKET_CHOICES = ("hour", "day")
 
 
-def _bucket_key(at: str, bucket: str) -> str:
+def bucket_key(at: str, bucket: str) -> str:
+    """The bucket an ISO timestamp falls into for `bucket` ("hour" or "day"); shared with
+    `charts.cost_stack_svg` so a `profile_changed` annotation lines up with the same bar a
+    run's cost landed in."""
     return at[:13] + ":00" if bucket == "hour" else at[:10]
 
 
@@ -113,7 +116,7 @@ def cost_series(
         if session and str(ev.get("session") or "") != session:
             continue
         group = _group_key(ev, t, group_by)
-        _add(buckets.setdefault(_bucket_key(at, bucket), {}).setdefault(group, _zero_row()), ev)
+        _add(buckets.setdefault(bucket_key(at, bucket), {}).setdefault(group, _zero_row()), ev)
         _add(totals.setdefault(group, _zero_row()), ev)
         _add(grand, ev)
     grand["cost_usd"] = round(grand["cost_usd"], 4)

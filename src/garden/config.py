@@ -123,6 +123,9 @@ DEFAULTS: dict[str, Any] = {
         "profile": "",            # one of the built-ins (quiet, watch, debug) or a name from `profiles`; empty = the fields above as-is
         "profiles": {},           # name -> partial override of interval/digest_window/events/stuck_after/line_width/phases
     },
+    "operating_profile": "",      # the active stop (economy|balanced|fast, or a name from `profiles`); empty = plain config values
+    "profiles": {},               # name -> partial stop (workers, reviews, models, review_difficulty, retro_difficulty, observe);
+                                  # see garden.profiles.BUILTIN_PROFILES for the built-in economy/balanced/fast stops
     "products": {},
 }
 

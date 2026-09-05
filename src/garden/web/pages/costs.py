@@ -39,7 +39,8 @@ def register(app: FastAPI, site: Site) -> None:
         events = events + ops.to_cost_events(operator_records)
         by = by if by in GROUP_BY_CHOICES else "activity"
         bucket = bucket if bucket in ("day", "hour") else "day"
-        series = cost_series(events, tasks, since=resolve_since(since), bucket=bucket, group_by=by,
+        window_since = resolve_since(since)
+        series = cost_series(events, tasks, since=window_since, bucket=bucket, group_by=by,
                              difficulty=difficulty, model=model, harness=harness, phase=phase, task=task,
                              session=session)
         runs = [e for e in events if e.get("kind") == "run_finished"]
@@ -49,8 +50,14 @@ def register(app: FastAPI, site: Site) -> None:
         session_ids = sorted({str(e["session"]) for e in runs if e.get("session")})
         phase_keys = [ph.key for p in s.products() for ph in p.phases]
         compactions = ops.compaction_marks(operator_records)
+        annotations = [
+            {"at": e.get("at"), "from": e.get("from"), "to": e.get("to")}
+            for e in events
+            if e.get("kind") == "profile_changed" and (not window_since or str(e.get("at") or "") >= window_since)
+        ]
         return templates.TemplateResponse(request, "costs.html", ctx(
-            request, page="costs", series=series, chart=cost_stack_svg(series, compactions=compactions),
+            request, page="costs", series=series,
+            chart=cost_stack_svg(series, compactions=compactions, annotations=annotations),
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
             phase=phase, task=task, session=session, models=models, harnesses=harnesses, task_ids=task_ids,
             session_ids=session_ids, phase_keys=phase_keys))
