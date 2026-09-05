@@ -1,5 +1,5 @@
 """Accept or reject a worker's duplicate/cancel decision card, or answer/dismiss a kickoff
-question card (CG-224)."""
+or retro question card (CG-224, CG-225)."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def register(app: FastAPI, site: Site) -> None:
             sched = hub.scheduler()
             try:
                 if action == "answer":
-                    sched.answer_kickoff_question(decision_id, answer)
+                    sched.answer_kickoff_question(decision_id, answer, by="web")
                 elif action == "dismiss":
-                    sched.dismiss_kickoff_question(decision_id)
+                    sched.dismiss_kickoff_question(decision_id, by="web")
                 else:
                     sched.resolve_decision(decision_id, accept=(action == "accept"))
             except KeyError:

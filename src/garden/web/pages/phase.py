@@ -184,7 +184,8 @@ def register(app: FastAPI, site: Site) -> None:
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
             persona_heads=persona_heads, retro_tasks=retro_tasks,
-            retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks)))
+            retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks),
+            open_questions=_retro_questions_panel(sched, ph)))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
     def phase_doc(request: Request, product: str, phase: str, name: str):
@@ -217,6 +218,15 @@ def _kickoff_panel(s: Any, sched: Any, ph: Any) -> dict[str, Any]:
         "doc_tasks": [t for t in filed if not t.extra.get("spike")],
         "questions": [d for d in sched.pending_decisions() if d.get("kind") == "question" and d.get("phase") == ph.key],
     }
+
+
+def _retro_questions_panel(sched: Any, ph: Any) -> list[dict[str, Any]]:
+    """Still-pending retro question cards for this phase, live from the decision state (CG-225)
+    — the retro document's own '## Questions'/'## Answers' sections may be stale until the
+    retro's own PR merges, so the retro page cross-references `garden decide`'s pending cards
+    the same way `_kickoff_panel` does for a kickoff's."""
+    return [d for d in sched.pending_decisions()
+            if d.get("kind") == "question" and d.get("source") == "retro" and d.get("phase") == ph.key]
 
 
 def _retro_doc(ph: Any) -> Path | None:

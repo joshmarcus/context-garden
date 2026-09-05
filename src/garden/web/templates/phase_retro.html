@@ -20,6 +20,12 @@
   </div>
   <div class="stack">
     {% include "_retro_verdict.html" %}
+    {% if open_questions %}
+    <div class="panel warn"><div class="eyebrow">Questions still open</div>
+      <ul class="tl">{% for d in open_questions %}<li><span>{{ d.question }}{% if d.blocking %} <span class="badge hot">blocks the verdict</span>{% endif %}</span></li>{% endfor %}</ul>
+      <p class="muted">Answer them from the <a href="/inbox">Inbox</a>.</p>
+    </div>
+    {% endif %}
     <div class="panel"><div class="eyebrow">Persona reports</div>
       {% for r in persona_heads %}
       <div style="padding:10px 0; border-bottom:1px dashed var(--line)">

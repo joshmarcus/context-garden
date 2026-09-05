@@ -203,8 +203,8 @@ def decide(
     answer: str | None = typer.Option(None, "--answer", help="Answer a kickoff question card"),
     dismiss: bool = typer.Option(False, "--dismiss", help="Dismiss a kickoff question card without answering"),
 ):
-    """Resolve a worker's decision card (a duplicate/cancel discovery), or a kickoff question
-    (--answer/--dismiss)."""
+    """Resolve a worker's decision card (a duplicate/cancel discovery), or a kickoff or retro
+    question (--answer/--dismiss)."""
     if sum([accept, reject, answer is not None, dismiss]) != 1:
         err.print("[red]choose exactly one of --accept / --reject / --answer / --dismiss[/red]")
         raise typer.Exit(1) from None
@@ -212,10 +212,10 @@ def decide(
     sched = _scheduler(store)
     try:
         if answer is not None:
-            sched.answer_kickoff_question(decision_id, answer)
+            sched.answer_kickoff_question(decision_id, answer, by="cli")
             console.print(f"decision {decision_id} answered")
         elif dismiss:
-            sched.dismiss_kickoff_question(decision_id)
+            sched.dismiss_kickoff_question(decision_id, by="cli")
             console.print(f"decision {decision_id} dismissed")
         else:
             d = sched.resolve_decision(decision_id, accept=accept)
