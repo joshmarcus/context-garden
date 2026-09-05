@@ -45,7 +45,7 @@ def test_phases_get_plants_by_position_or_frontmatter(garden):
     (garden / "demo" / "p2" / "tasks").mkdir()
     store.invalidate()
     p2 = store.phase("demo", "p2")
-    assert p2.plant == "poppy" and p2.plate == "VII" and p2.common == "corn poppy"
+    assert p2.plant == "poppy" and p2.plate == "VII" and p2.common == "prickly poppy"
     # pinning p2 does not move p1, and a later phase without frontmatter stays positional
     assert store.phase("demo", "p1").plant == "pea"
     (garden / "demo" / "p3" / "tasks").mkdir(parents=True)
@@ -84,7 +84,7 @@ def test_new_phase_assigns_next_plant(garden):
     store.invalidate()
     ph = store.phase("demo", "p3")
     assert ph.plant == "bramble" and ph.plate == "II"
-    assert (garden / "demo" / "p3" / "goals.md").read_text().startswith("---\nplant: bramble\nlatin: Rubus fruticosus\nplate: II\n---")
+    assert (garden / "demo" / "p3" / "goals.md").read_text().startswith("---\nplant: bramble\nlatin: Rubus fruticosus agg.\nplate: II\n---")
     new_phase(store, "demo", "p4", plant="fern")
     store.invalidate()
     assert store.phase("demo", "p4").plant == "fern"
