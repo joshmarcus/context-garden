@@ -53,6 +53,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "allowed_tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "MultiEdit"],
         "models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
         "review_model": "",              # empty = the task's difficulty tier
+        "retro_model": "",                # empty = retro.difficulty's tier; see Scheduler.retro_model_for
         "resume": True,                  # `claude -p --resume <session>` after a human answers
         # A message matching one of these (case-insensitive substring) marks the run an
         # environment stop, not a task failure: see Harness.parse's env_error classification.
@@ -64,6 +65,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "permission_mode": "workspace-write",  # or "read-only", "bypass"
         "models": {"easy": "gpt-5.6-luna", "medium": "gpt-5.6-terra", "hard": "gpt-5.6-sol"},
         "review_model": "",
+        "retro_model": "",
         "resume": True,                  # `codex exec resume <id>` after a human answers
         "prices": CODEX_PRICES,
         "quota_patterns": ["you've hit your usage limit"],

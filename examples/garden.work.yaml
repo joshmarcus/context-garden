@@ -41,6 +41,8 @@ worker_env:
 harnesses:
   claude:
     models: {easy: haiku, medium: sonnet, hard: sonnet}   # cheaper tier map for work
+    retro_model: fable         # retros, persona reviews and trial judging still get the best
+                                # model, independent of the cheap tier map above
 
 # Runs whenever a task needs you: awaiting_triage (after its review verdict is in),
 # waiting_human, failed, a changes_requested past max_revisions, or a stall/budget event.

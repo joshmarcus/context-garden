@@ -509,6 +509,47 @@ def test_persona_reviews_resolve_model_from_retro_difficulty_not_review_difficul
     assert pr_run.difficulty == "hard" and pr_run.model == "opus"
 
 
+def test_persona_reviews_use_retro_model_when_set(sched, fake_github):
+    """CG-235: harnesses.<h>.retro_model names the judge outright, ahead of retro.difficulty's
+    tier map, for both a phase and a PR persona review."""
+    sched.cfg.data["harnesses"]["claude"]["retro_model"] = "fable"
+    sched.tick()
+    sched.tick()  # DM-001 has a PR
+    ph = sched.store.phase("demo", "p1")
+    phase_run = sched.dispatch_persona_phase(ph, "security")
+    assert phase_run.difficulty == "hard" and phase_run.model == "fable"
+    pr_run = sched.dispatch_persona_pr(sched.store.task("DM-001"), "security")
+    assert pr_run.difficulty == "hard" and pr_run.model == "fable"
+
+
+def test_trial_compare_uses_retro_model_when_set(sched, fake_github, monkeypatch):
+    """CG-235: the trial judge (the comparison run) follows retro_model too, ahead of the tier
+    map — the contenders themselves keep whichever model each was asked to run, unaffected."""
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    sched.cfg.data["harnesses"]["claude"]["retro_model"] = "fable"
+    t = sched.store.task("DM-001")
+    runs = sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    assert [r.model for r in runs] == ["sonnet", "opus"]  # contenders keep their chosen models
+    rep = sched.tick()
+    assert "DM-001(compare)" in rep.dispatched
+    compare = next(r for r in sched.runs.runs_for(t.id) if r.mode == "compare")
+    assert compare.model == "fable"
+
+
+def test_retro_model_falls_back_to_the_top_level_key_for_the_default_harness(sched, fake_github):
+    """CG-235: harnesses.<h>.retro_model wins when set; otherwise the top-level retro.model
+    applies only to whichever harness is the garden's own default (`harness:`) — not to a
+    product pinned to a different one."""
+    sched.cfg.data["retro"] = {**sched.cfg.data["retro"], "model": "fable"}  # replace, not mutate: the
+    # garden fixture never sets `retro:`, so cfg.data["retro"] is still the module-level default dict
+    ph = sched.store.phase("demo", "p1")
+    phase_run = sched.dispatch_persona_phase(ph, "security")
+    assert phase_run.model == "fable"  # "demo" runs on the default harness (claude)
+    sched.cfg.data["products"]["demo"]["harness"] = "codex"  # pinned off the default harness
+    phase_run = sched.dispatch_persona_phase(ph, "security")
+    assert phase_run.model == "gpt-max"  # the top-level key doesn't apply; codex's own hard tier does
+
+
 def test_configured_personas_run_on_every_pr(sched, fake_github):
     sched.cfg.data["review"] = {"enabled": False, "personas": ["user"], "max_rounds": 2, "max_diff_chars": 60000}
     sched.tick()

@@ -65,8 +65,13 @@ DEFAULTS: dict[str, Any] = {
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
     },
     "retro": {
-        "difficulty": "hard",     # tier for persona reviews (phase and PR) and the retro reconciliation;
-                                  # separate from review.difficulty so nobody has to edit config before a retro
+        "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and
+                                  # trial comparisons; separate from review.difficulty so nobody has to
+                                  # edit config before a retro
+        "model": "",              # names the judge's model outright, for the default harness (see
+                                  # harnesses.<h>.retro_model for a non-default harness); wins over the
+                                  # tier map above so a garden can price work cheaply and still judge on
+                                  # its best model without editing the hard tier
     },
     "harnesses": {},
     "prices": {},              # generic per-model price table (input/cached_input/cache_write/output per
