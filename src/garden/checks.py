@@ -34,6 +34,17 @@ for the duration of the call (checks run sequentially, not concurrently), so any
 your callable launches inherits the guard even if it builds its own env from `os.environ`
 without going through `ctx`.
 
+A `command` check (the pre_pr `tests`/`lint` default among them) runs code the branch
+itself wrote, so it gets the same scrubbed environment as the worker
+(`runner.base.scrubbed_env`, plus the `GARDEN_<KEY>` context and the `GARDEN_ROOT`
+sentinel above) rather than the scheduler's own `os.environ` — no GitHub token, cloud
+credentials or ssh agent, unless `worker_env.pass` in garden.yaml names them. Pass the
+live garden's config dict as `run_check`'s `config` argument to pick this up; callers that
+omit it get the same defaults as an unconfigured worker. A `python:` check is not scrubbed
+this way: it runs in-process in the scheduler (see the guard above), so it already has
+whatever access the scheduler process has — write one only for code you trust the way you
+trust the scheduler itself.
+
 A product's tests must not depend on `GARDEN_ROOT` or `GARDEN_EXEC_ROOT`: the pre_pr
 `tests` check runs them with these variables set (as above), so a suite that reads them
 directly, or that calls into garden internals that do (e.g. `find_root`), passes or fails
@@ -54,6 +65,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import no_live_garden_root
+from .runner.base import scrubbed_env
 
 MAX_DETAILS = 4000
 
@@ -74,7 +86,8 @@ def _guarded_process_env(cwd: Path | None):
             os.environ["GARDEN_ROOT"] = prev
 
 
-def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600) -> dict[str, Any]:
+def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600,
+              config: dict[str, Any] | None = None) -> dict[str, Any]:
     name = str(spec.get("name") or spec.get("command") or spec.get("python") or "check")
     try:
         if spec.get("python"):
@@ -88,7 +101,7 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             out.setdefault("status", "pass")
             return _trim(out)
         if spec.get("command"):
-            env = dict(os.environ)
+            env = scrubbed_env(config)
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
             for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
                 env[str(k)] = str(v)
@@ -135,8 +148,9 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
         return {"name": name, "status": "error", "summary": f"{type(e).__name__}: {e}", "details": ""}
 
 
-def run_checks(specs: list[dict[str, Any]], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600) -> list[dict[str, Any]]:
-    return [run_check(s, ctx, cwd, timeout) for s in specs or []]
+def run_checks(specs: list[dict[str, Any]], ctx: dict[str, Any], cwd: Path | None = None, timeout: int = 600,
+               config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return [run_check(s, ctx, cwd, timeout, config) for s in specs or []]
 
 
 def failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
