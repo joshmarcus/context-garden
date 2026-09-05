@@ -116,9 +116,14 @@ class ReapMixin:
             (run.path / "final.md").write_text(final_text)
         result = run.result
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
-        # Emit exactly once per run: a resumed finalize (the tick that first finalized this
-        # run was killed after emitting run_finished but before the task transition) skips
-        # the emit so the run's cost is not counted twice.
+        # Persist the collected outcome (finished_at, usage, cost, result) before the fence
+        # check, push and PR steps below. A kill during any of them then leaves finished_at
+        # set, so the restart recognises this as an interrupted finalize (see _is_unreaped) and
+        # resumes it with resumed=True rather than finalizing a second time. run_finished is
+        # emitted once per run, only after this terminal save — so a kill during the fence check
+        # can no longer re-emit it (CG-198). A resumed finalize skips the emit because the first
+        # pass already made it, so the run's cost is never counted twice (CG-153).
+        run.save()
         if not resumed:
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
