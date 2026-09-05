@@ -432,6 +432,22 @@ class RetroMixin:
             self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
         return filed
 
+    def _file_retro_questions(self, phase: Phase, next_phase: str, rev: dict[str, Any],
+                              run_id: str) -> list[dict[str, Any]]:
+        """File the reconciliation's `questions` as pending decision cards, one per question,
+        tagged with the retro as their source (CG-225) -- the same kind of card the kickoff
+        files (CG-224), so the Inbox and `garden decide` need no second mechanism."""
+        items = [it for it in rev.get("questions") or [] if isinstance(it, dict)]
+        return [f for f in (self._file_question_decision(phase, it, i, run_id, "retro", next_phase=next_phase)
+                            for i, it in enumerate(items)) if f]
+
+    def pending_retro_questions(self, phase_key: str) -> list[dict[str, Any]]:
+        """Pending question cards this phase's retro raised and marked `blocking`: CG-225's
+        gate on `retro_decide` -- these must be answered or dismissed before the verdict card
+        for this phase can be accepted."""
+        return [d for d in self.pending_decisions() if d.get("kind") == "question"
+                and d.get("source") == "retro" and d.get("phase") == phase_key and d.get("blocking")]
+
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
         rev = parse_retro(final)
@@ -454,6 +470,7 @@ class RetroMixin:
         # not exist yet) to land with the retro PR. Blocking is filed first so the live id counter
         # is past those ids before the worktree drafts reserve theirs.
         blocking = self._file_retro_blocking(phase, rev, existing_titles)
+        filed_questions = self._file_retro_questions(phase, next_phase, rev, run.run_id)
         prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
         num = int(num_s)
         persona_feats = persona_features(self._persona_sections(reports))
@@ -469,7 +486,8 @@ class RetroMixin:
         numbers = numbers_section(summary["cost_usd"], operator_cost)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, followups=followups,
-                                               blocking=blocking, next_phase=next_phase,
+                                               blocking=blocking, filed_questions=filed_questions,
+                                               next_phase=next_phase,
                                                difficulty=run.difficulty, model=run.model, numbers=numbers))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
@@ -497,6 +515,7 @@ class RetroMixin:
         n_findings_skipped = len(filed_findings) - n_findings_filed
         n_followups = sum(1 for f in followups if f.get("task_id"))
         n_blocking = sum(1 for b in blocking if b.get("task_id"))
+        n_questions = len(filed_questions)
         verdict = normalize_verdict(rev.get("verdict"))
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
         body = (f"Retrospective for **{phase.key}**, produced by `garden retro`.\n\n"
@@ -509,6 +528,7 @@ class RetroMixin:
                 + (f" ({n_skipped} duplicate(s) skipped)" if n_skipped else "") + "\n"
                 + (f"- {n_followups} follow-up(s) filed in {next_phase}\n" if n_followups else "")
                 + (f"- {n_blocking} blocking task(s) filed in {phase.key}\n" if n_blocking else "")
+                + (f"- {n_questions} question(s) filed for the owner\n" if n_questions else "")
                 + f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
                 f"- next-phase goals draft: `{rel_product.as_posix()}/{next_phase}/goals.md`\n\n"
                 f"{str(rev.get('summary', '')).strip()}\n")
@@ -603,13 +623,19 @@ class RetroMixin:
     def retro_decide(self, phase: Phase, choice: str, note: str = "", by: str = "cli") -> dict[str, Any]:
         """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
         its blocking tasks; `close`/`close_with_followups` close the phase (refusing on open
-        tasks the way `close-phase` does). Records who decided and when."""
+        tasks the way `close-phase` does). Records who decided and when. Refuses while a
+        question the retro marked `blocking` is still unanswered (CG-225): the owner must
+        answer or dismiss it (`garden decide`) before the verdict card can be accepted."""
         choice = normalize_verdict(choice)
         if not choice:
             raise RuntimeError("choose one of: close, followups, reopen")
         vs = self.state.get("_retro_verdicts")
         if phase.key not in vs:
             raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
+        blocking_qs = self.pending_retro_questions(phase.key)
+        if blocking_qs:
+            names = "; ".join(str(q.get("question") or "") for q in blocking_qs)
+            raise RuntimeError(f"{phase.key} has unanswered blocking question(s) from the retro: {names}")
         rec = vs[phase.key]
         if choice == "reopen":
             if phase.closed:
