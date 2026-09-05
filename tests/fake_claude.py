@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` binary in tests.
 
-Reads the brief from stdin, does something to the cwd (a git worktree) depending on
-FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
+Takes the brief, does something to the cwd (a git worktree) depending on FAKE_CLAUDE_MODE,
+and returns a `claude -p --output-format json`-shaped result. `run()` is the entry point
+the suite's in-process runner calls (see tests/inprocess.py): no subprocess, no global
+cwd or environment, so a scheduler test never waits on a worker. `main()` is the same
+thing as a script (stdin, argv, os.environ, the process cwd) for the one path that still
+launches a real command: the ssh runner's remote script.
 
 The modes are two tables. `SPECIAL` holds the runs that are not a worker round (crash, stall,
 the planner, a comparison, a persona, a retro, an edit, and every `review-*` verdict);
@@ -10,7 +14,7 @@ the planner, a comparison, a persona, a retro, an edit, and every `review-*` ver
 whether it commits, and how its final message differs from a plain "done". Add a mode by
 adding a row, not a branch.
 
-Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) | noresult | plan | review-ok | review-bad | review-desc
+Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no output, no exit) | noresult | plan | review-ok | review-bad | review-desc
        | review-rewrite (description-only review that returns description_rewrite)
        | review-approve-rewrite (approve verdict, description_ok false, with description_rewrite)
        | review-approve-desc (approve verdict, description_ok false, no rewrite: dispatches a description round)
@@ -26,19 +30,28 @@ Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) |
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
+from __future__ import annotations
+
+import contextlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+class Stall(Exception):
+    """The worker goes silent and never finishes: no commit, no file change, no output."""
 
 
 @dataclass
 class Call:
-    """One invocation: the mode, the brief and what the arguments say about the run."""
+    """One invocation: the mode, the brief, the worktree it runs in, its environment, and
+    what the arguments say about the run."""
 
     mode: str
     brief: str
@@ -46,6 +59,8 @@ class Call:
     model: str
     stream: bool
     resumed: bool
+    cwd: Path = field(default_factory=Path.cwd)
+    env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     escaped_path: str = ""
 
     @property
@@ -59,26 +74,23 @@ def result_json(final: str, usage: dict, cost: float, **extra) -> str:
     return json.dumps(obj)
 
 
-def git_commit(message: str, cwd: str | None = None) -> None:
-    subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+def git_commit(message: str, cwd: Path | str, env: Mapping[str, str]) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=cwd, env=dict(env), check=True)
     subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
-                    "commit", "-q", "-m", message], cwd=cwd, check=True)
+                    "commit", "-q", "-m", message], cwd=cwd, env=dict(env), check=True)
 
 
 # ---- runs that are not a worker round -----------------------------------------------------
+# A handler returns the exit code (None for 0) or raises Stall.
 
-def crash(call: Call) -> None:
+def crash(call: Call) -> int:
     print("boom", file=sys.stderr)
-    sys.exit(1)
+    return 1
 
 
 def stall(call: Call) -> None:
-    # A worker that goes silent: no commit, no file change, no output. It just sleeps,
-    # so the scheduler must notice it is idle and stop it. If it is never killed it wakes
-    # and finishes cleanly, so a test that forgets to kill it still terminates.
-    import time as _time
-    _time.sleep(float(os.environ.get("FAKE_CLAUDE_STALL_SECONDS", "30")))
-    print(result_json('Awake.\nGARDEN_RESULT: {"status": "done", "summary": "napped", "pr_title": "t", "pr_body": "b"}', {}, 0.0))
+    # A worker that goes silent: the scheduler must notice it is idle and stop it.
+    raise Stall
 
 
 def plan(call: Call) -> None:
@@ -91,7 +103,7 @@ def plan(call: Call) -> None:
 
 def compare(call: Call) -> None:
     labels = re.findall(r"^- \*\*(.+?)\*\* — branch", call.brief, flags=re.M)
-    winner = os.environ.get("FAKE_CLAUDE_WINNER") or labels[-1]
+    winner = call.env.get("FAKE_CLAUDE_WINNER") or labels[-1]
     ranking = [{"label": lb, "score": (9 if lb == winner else 6), "summary": f"{lb} did fine"} for lb in labels]
     verdict = {"winner": winner, "rationale": "the winner had tests", "ranking": ranking}
     print(result_json("Compared.\nGARDEN_COMPARE: " + json.dumps(verdict), {"input_tokens": 3000, "output_tokens": 200}, 0.03))
@@ -100,7 +112,7 @@ def compare(call: Call) -> None:
 def persona(call: Call) -> None:
     m = re.search(r"^# Persona review: ([a-z0-9-]+)", call.brief, flags=re.M)
     name = m.group(1) if m else "persona"
-    sev = os.environ.get("FAKE_CLAUDE_PERSONA_SEVERITY", "medium")
+    sev = call.env.get("FAKE_CLAUDE_PERSONA_SEVERITY", "medium")
     rev = {"persona": name, "score": 7, "overall": f"As the {name}, mostly fine.",
            "findings": [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions", "suggestion": "Add it to Quick start"}]}
     print(result_json("Reviewed as persona.\nGARDEN_PERSONA: " + json.dumps(rev), {"input_tokens": 1500, "output_tokens": 120}, 0.02))
@@ -131,7 +143,7 @@ def edit(call: Call) -> None:
     sugs = sm.group(1).strip() if sm else ""
     pm = re.search(r"- priority: (\d+)", call.brief)
     dm = re.search(r"- difficulty: (\w+)", call.brief)
-    if os.environ.get("FAKE_CLAUDE_EDIT") == "noresult":
+    if call.env.get("FAKE_CLAUDE_EDIT") == "noresult":
         print(result_json("I could not produce a revised body.", {"input_tokens": 400, "output_tokens": 10}, 0.01))
         return
     new_body = cur + "\n\n## Integrated suggestions\n\n" + sugs
@@ -174,7 +186,7 @@ def review(call: Call) -> None:
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
 
 
-SPECIAL: dict[str, Callable[[Call], None]] = {
+SPECIAL: dict[str, Callable[[Call], int | None]] = {
     "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro, "edit": edit,
 }
 
@@ -201,8 +213,8 @@ def ask_once(call: Call) -> bool:
     if call.resumed:
         return False
     # commit partial work, then ask
-    Path("partial.txt").write_text("half done\n")
-    git_commit("partial")
+    (call.cwd / "partial.txt").write_text("half done\n")
+    git_commit("partial", call.cwd, call.env)
     print(result_json('Stopping.\nGARDEN_RESULT: {"status": "needs_input", "question": "Postgres or SQLite?", "summary": "need a decision"}',
                       {"input_tokens": 300, "output_tokens": 20}, 0.01, session_id="sess-42"))
     return True
@@ -234,19 +246,19 @@ def no_change_on_revise(call: Call) -> bool:
 
 
 def collide_with_main(call: Call) -> None:
-    Path("README.md").write_text("# demo\n\nchanged by worker\n")
+    (call.cwd / "README.md").write_text("# demo\n\nchanged by worker\n")
 
 
 def escape_worktree(call: Call) -> None:
     # Do what CG-092's worker did: leave the worktree and write/commit in another repo
     # (the live garden or the product clone), whatever the brief said.
-    escape_dir = os.environ["FAKE_CLAUDE_ESCAPE_DIR"]
-    escape_file = os.environ.get("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+    escape_dir = call.env["FAKE_CLAUDE_ESCAPE_DIR"]
+    escape_file = call.env.get("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
     fp = Path(escape_dir) / escape_file
     call.escaped_path = str(fp)  # a real worker names the path it wrote (Edit file_path / Bash / final msg)
     fp.write_text((fp.read_text() if fp.exists() else "") + "\n# edited by a runaway worker\n")
-    if os.environ.get("FAKE_CLAUDE_ESCAPE_COMMIT", "1") == "1":
-        git_commit("runaway commit", cwd=escape_dir)
+    if call.env.get("FAKE_CLAUDE_ESCAPE_COMMIT", "1") == "1":
+        git_commit("runaway commit", escape_dir, call.env)
 
 
 def add_discovered(call: Call, result: dict) -> None:
@@ -308,7 +320,7 @@ WORKERS: dict[str, Worker] = {
 
 
 def commit_counter(call: Call) -> None:
-    p = Path("worker-output.txt")
+    p = call.cwd / "worker-output.txt"
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
     # A stacked task's worktree can branch from the exact tree+parent another task's run
@@ -317,8 +329,8 @@ def commit_counter(call: Call) -> None:
     # dedupes them to one object, and the stacked task's "own" commit silently vanishes
     # (its branch is already at that commit, so it looks like it made no commits at all).
     # Mixing the run identity into the message keeps every run's commit object distinct.
-    tag = f"{os.environ.get('GARDEN_TASK_ID', '')}/{os.environ.get('GARDEN_RUN_ID', '')}"
-    git_commit(f"fake change {n} ({tag})")
+    tag = f"{call.env.get('GARDEN_TASK_ID', '')}/{call.env.get('GARDEN_RUN_ID', '')}"
+    git_commit(f"fake change {n} ({tag})", call.cwd, call.env)
 
 
 def done_result(call: Call) -> dict:
@@ -333,7 +345,7 @@ def done_result(call: Call) -> dict:
 
 def run_worker(call: Call, worker: Worker) -> None:
     if call.resumed:
-        Path("resumed.txt").write_text(call.brief)  # the resume prompt (contains the answer)
+        (call.cwd / "resumed.txt").write_text(call.brief)  # the resume prompt (contains the answer)
     if worker.early and worker.early(call):
         return
     if worker.prepare:
@@ -364,37 +376,68 @@ def run_worker(call: Call, worker: Worker) -> None:
         print(json.dumps(result_obj))
 
 
-# ---- main -------------------------------------------------------------------------------
+# ---- entry points -----------------------------------------------------------------------
 
-def main() -> None:
-    mode = os.environ.get("FAKE_CLAUDE_MODE", "done")
-    brief = sys.stdin.read()
-    args = sys.argv[1:]
-    model = args[args.index("--model") + 1] if "--model" in args else ""
-    stream = "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json"
+def handle(call: Call) -> int:
+    """Dispatch one call to its mode; prints the harness output; returns the exit code.
+    Raises Stall for a worker that never finishes."""
+    mode = call.mode
     # The brief's marker decides the kind of run, whatever FAKE_CLAUDE_MODE says.
-    if "GARDEN_REVIEW:" in brief:
-        mode = os.environ.get("FAKE_CLAUDE_REVIEW", "review-ok")
-    if "GARDEN_COMPARE:" in brief:
+    if "GARDEN_REVIEW:" in call.brief:
+        mode = call.env.get("FAKE_CLAUDE_REVIEW", "review-ok")
+    if "GARDEN_COMPARE:" in call.brief:
         mode = "compare"
-    if "GARDEN_PERSONA:" in brief:
+    if "GARDEN_PERSONA:" in call.brief:
         mode = "persona"
-    if "GARDEN_RETRO:" in brief:
+    if "GARDEN_RETRO:" in call.brief:
         mode = "retro"
-    if "GARDEN_EDIT:" in brief:
+    if "GARDEN_EDIT:" in call.brief:
         mode = "edit"
+    call.mode = mode
     try:
-        Path("model.txt").write_text(model + "\n")
+        (call.cwd / "model.txt").write_text(call.model + "\n")
     except OSError:
         pass
-    Path(os.environ.get("FAKE_CLAUDE_BRIEF_COPY", "/dev/null")).write_text(brief)
-    call = Call(mode=mode, brief=brief, args=args, model=model, stream=stream, resumed="--resume" in args)
+    Path(call.env.get("FAKE_CLAUDE_BRIEF_COPY", "/dev/null")).write_text(call.brief)
     special = SPECIAL.get(mode) or (review if mode.startswith("review") else None)
     if special is not None:
-        special(call)
-        return
+        return int(special(call) or 0)
     # An unknown mode behaves like `done` without a commit, as it always has.
     run_worker(call, WORKERS.get(mode, Worker(commits=False)))
+    return 0
+
+
+def make_call(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> Call:
+    model = args[args.index("--model") + 1] if "--model" in args else ""
+    stream = "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json"
+    return Call(mode=env.get("FAKE_CLAUDE_MODE", "done"), brief=brief, args=list(args), model=model,
+                stream=stream, resumed="--resume" in args, cwd=Path(cwd), env=env)
+
+
+def run(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> tuple[str, str, int | None]:
+    """One in-process invocation: (stdout, stderr, exit code). The exit code is None when
+    the worker never finishes (the `stall` mode), which is the caller's cue to leave the
+    run without an exit_code file."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code: int | None = handle(make_call(args, brief, cwd, env))
+        except Stall:
+            code = None
+    return out.getvalue(), err.getvalue(), code
+
+
+def main() -> None:
+    call = make_call(sys.argv[1:], sys.stdin.read(), Path.cwd(), dict(os.environ))
+    try:
+        sys.exit(handle(call))
+    except Stall:
+        # As a process a stalled worker just sleeps, so the scheduler must notice it is idle
+        # and stop it. If it is never killed it wakes and finishes cleanly, so a test that
+        # forgets to kill it still terminates.
+        import time as _time
+        _time.sleep(float(call.env.get("FAKE_CLAUDE_STALL_SECONDS", "30")))
+        print(result_json('Awake.\nGARDEN_RESULT: {"status": "done", "summary": "napped", "pr_title": "t", "pr_body": "b"}', {}, 0.0))
 
 
 if __name__ == "__main__":
