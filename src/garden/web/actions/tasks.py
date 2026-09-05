@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from ...github import GitHubError
 from ...gitops import GitError
-from ...model import Status, Task
+from ...model import Status, Task, phase_refusal
 from ...scheduler import Scheduler
 from ...store import Store
 from ...trials import parse_contender
@@ -20,6 +20,14 @@ from . import ACTIONS, action
 def approve(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     if t.status != Status.DRAFT:
         raise RuntimeError(f"{t.id} is {t.status.value}, not draft; nothing to approve")
+    try:
+        ph = s.phase(t.product, t.phase)
+    except KeyError:
+        ph = None
+    if ph is not None:
+        refusal = phase_refusal(ph, t)
+        if refusal:
+            raise RuntimeError(refusal)
     t.status = Status.READY
     t.log("approved (web)")
     s.save(t)
