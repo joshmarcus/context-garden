@@ -253,6 +253,48 @@ def test_run_setup_runs_in_the_scrubbed_env(tmp_path, monkeypatch):
     assert "ANTHROPIC_API_KEY=sk-ant" in seen and "WIDGET_HOME=/opt/widget" in seen
 
 
+def test_run_check_command_scrubs_the_schedulers_credentials(tmp_path, monkeypatch):
+    """CG-164: a `command` check runs code the branch itself wrote (its own test suite via
+    the pre_pr `tests` default), so it must get the same scrubbed environment as the worker
+    (runner.base.scrubbed_env) rather than the scheduler's own os.environ — no GitHub token
+    or cloud credentials, even with no `config` passed in."""
+    from garden.checks import run_check
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws_secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    result = run_check(
+        {
+            "name": "env-probe",
+            "command": (
+                "python3 -c \"import os, json; "
+                "print(json.dumps({'summary': os.environ.get('GITHUB_TOKEN', ''), "
+                "'details': os.environ.get('ANTHROPIC_API_KEY', '')}))\""
+            ),
+        },
+        {"branch": "feat"}, cwd=tmp_path,
+    )
+    assert result["status"] == "pass"
+    assert result["summary"] == ""  # GITHUB_TOKEN dropped
+    assert result["details"] == "sk-ant"  # ANTHROPIC_* stays (the claude harness needs it)
+
+
+def test_run_check_command_respects_worker_env_pass(tmp_path, monkeypatch):
+    """`worker_env.pass` in garden.yaml applies to checks the same way it applies to the
+    worker: pass the live config through as run_check's `config` argument to widen it."""
+    from garden.checks import run_check
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    result = run_check(
+        {
+            "name": "env-probe",
+            "command": "python3 -c \"import os, json; print(json.dumps({'summary': os.environ.get('GITHUB_TOKEN', '')}))\"",
+        },
+        {}, cwd=tmp_path, config={"worker_env": {"pass": ["GITHUB_TOKEN"]}},
+    )
+    assert result["status"] == "pass" and result["summary"] == "ghp_secret"
+
+
 def test_local_worker_does_not_inherit_the_schedulers_credentials(sched, monkeypatch):
     """The worker process gets the scrubbed environment: the harness's own key and the
     product's setup env, but not the scheduler's GitHub token, cloud credentials or ssh

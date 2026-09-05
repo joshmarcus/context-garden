@@ -1293,7 +1293,8 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
         raise typer.Exit(1)
     wt = sched.worktree_for(t)
     results = run_checks(specs, sched.check_ctx(t, t.branch or t.default_branch(), sched.base_for(t), wt),
-                         cwd=wt if wt.exists() else None, timeout=int(store.config.get("checks.timeout_seconds", 600)))
+                         cwd=wt if wt.exists() else None, timeout=int(store.config.get("checks.timeout_seconds", 600)),
+                         config=store.config.data)
     bad = 0
     for r in results:
         color = "green" if r.get("status") == "pass" else ("yellow" if r.get("status") == "flaky" else "red")

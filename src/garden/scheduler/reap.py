@@ -277,7 +277,7 @@ class ReapMixin:
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
         return run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
-                          timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+                          timeout=int(self.cfg.get("checks.timeout_seconds", 600)), config=self.cfg.data)
 
     def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
         results = self._run_specs_in(task, self._pre_pr_specs(task), worktree, branch, base)

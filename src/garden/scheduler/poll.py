@@ -83,7 +83,7 @@ class PollMixin:
             if specs:
                 results = run_checks(specs, self.check_ctx(task, task.branch, self.base_for(task)),
                                      cwd=self.worktree_for(task) if self.worktree_for(task).exists() else None,
-                                     timeout=int(self.cfg.get("checks.timeout_seconds", 600)))
+                                     timeout=int(self.cfg.get("checks.timeout_seconds", 600)), config=self.cfg.data)
                 for r in results:
                     self.events.emit("check", task.id, stage="ci", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
                 flaky = [r for r in results if r.get("status") == "flaky"]
