@@ -421,9 +421,10 @@ worker_env:
                             # Add names or globs here, e.g. [AWS_*] for a Bedrock harness or [HOME] to restore
                             # the operator's home; ["*"] passes everything
 web:
-  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is another site, or that
-                            # is addressed to a non-loopback Host (a DNS-rebinding guard); list extra origins
-                            # here, e.g. [https://garden.internal], behind a proxy or for a LAN address
+  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is not the address it
+                            # binds to (localhost by default); the request's own Host is never trusted, so a
+                            # DNS-rebound page is refused too. List extra origins here, e.g.
+                            # [https://garden.internal], behind a proxy that rewrites Host
 harnesses:
   claude:
     bin: claude
@@ -444,16 +445,21 @@ github:
   reviewers: []
   automerge: false          # let the scheduler merge a PR once every loop gate is green (off by default)
   automerge_method: squash  # squash | merge | rebase
-  automerge_min_review_rounds: 1   # require at least this many automated review rounds
+  automerge_min_review_rounds: 1   # require at least this many automated review rounds. A product with
+                            # `self: true` or `provides_tool: true` requires 2 by default (a PR there can
+                            # change the loop that merges it) unless it sets its own per-product value
   automerge_tiers: [easy, medium]  # these difficulty tiers automerge under the plain policy
   automerge_hard_tier: true        # also merge hard-tier PRs, after two approving rounds and the
                                    # garden's own scratch-merge check; false keeps them by hand
   trusted_authors: []       # logins whose PR comments may become a worker's revise brief, besides the
-                            # login the garden authenticates as, the `reviewers` above and [bot] accounts.
+                            # login the garden authenticates as and the `reviewers` above.
                             # A comment by anyone else is logged on the task and ignored: on a public
                             # repo anyone can comment, and a comment is text a worker would carry out
-  bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
-                            # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
+  trusted_bots: []          # [bot] logins whose PR comments may become a revise brief, e.g. a Codex or
+                            # Copilot review app you installed. Empty by default: no bot is trusted until
+                            # its login is named here, so an app relaying untrusted text cannot steer a worker
+  bot_logins: []            # [bot] accounts whose PR comments are dropped entirely, e.g. [dependabot];
+                            # not even logged as ignored (a bot is otherwise ignored unless in trusted_bots)
   bot_notice_patterns:      # a bot comment matching one of these (case-insensitive substring) is a
                             # status notice, not a finding, unless it's on a diff line or carries a
                             # finding marker like [P1]/[P2]; logged on the task and otherwise ignored
