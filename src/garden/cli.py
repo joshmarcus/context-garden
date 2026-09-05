@@ -1200,6 +1200,35 @@ def triage(
 
 
 @app.command()
+def suggest(
+    task_id: str,
+    text: str = typer.Argument(..., help="Your suggestion about the task (its goal, context, acceptance, etc.)"),
+    by: str = typer.Option("cli", "--by", help="Who is suggesting (recorded with the line)"),
+    applies_to: str = typer.Option("", "--applies-to", help="goal | context | acceptance | reading | priority | difficulty | anything"),
+):
+    """Suggest a change to a task's own spec; an `edit` run folds it in later."""
+    from .suggestions import record_suggestion
+
+    store = _store()
+    t = _task(store, task_id)
+    record_suggestion(store, t, text, author=by, applies_to=applies_to)
+    console.print(f"{t.id}: suggestion recorded; it will be integrated on the next tick (or `garden integrate {t.id}`)")
+
+
+@app.command()
+def integrate(task_id: str):
+    """Start an edit run now that folds a task's pending suggestions into its body."""
+    store = _store()
+    t = _task(store, task_id)
+    try:
+        run = _scheduler(store).integrate_now(t)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: edit run {run.run_id} started")
+
+
+@app.command()
 def inbox():
     """Everything that needs a human, with the command that resolves it."""
     from .inbox import build_inbox, decisions, notices

@@ -16,6 +16,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) |
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
+       | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -38,6 +39,8 @@ if "GARDEN_PERSONA:" in brief:
     mode = "persona"
 if "GARDEN_RETRO:" in brief:
     mode = "retro"
+if "GARDEN_EDIT:" in brief:
+    mode = "edit"
 try:
     Path("model.txt").write_text(model + "\n")
 except OSError:
@@ -108,6 +111,27 @@ if mode == "retro":
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
                       "result": "Reconciled.\nGARDEN_RETRO: " + json.dumps(rev),
                       "usage": {"input_tokens": 4000, "output_tokens": 300}, "total_cost_usd": 0.04}))
+    sys.exit(0)
+
+if mode == "edit":
+    import re as _re
+    cm = _re.search(r"## Current task body\n\n(.*?)\n+## Current metadata", brief, _re.S)
+    cur = cm.group(1).strip() if cm else ""
+    sm = _re.search(r"## Suggestions to fold in\n\n(.*?)\n+Now output", brief, _re.S)
+    sugs = sm.group(1).strip() if sm else ""
+    pm = _re.search(r"- priority: (\d+)", brief)
+    dm = _re.search(r"- difficulty: (\w+)", brief)
+    if os.environ.get("FAKE_CLAUDE_EDIT") == "noresult":
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                          "result": "I could not produce a revised body.",
+                          "usage": {"input_tokens": 400, "output_tokens": 10}, "total_cost_usd": 0.01}))
+        sys.exit(0)
+    new_body = cur + "\n\n## Integrated suggestions\n\n" + sugs
+    obj = {"body": new_body, "priority": int(pm.group(1)) if pm else 3,
+           "difficulty": dm.group(1) if dm else "medium", "reading": [], "summary": "folded in the suggestions"}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                      "result": "Edited.\nGARDEN_EDIT: " + json.dumps(obj),
+                      "usage": {"input_tokens": 800, "output_tokens": 60}, "total_cost_usd": 0.01}))
     sys.exit(0)
 
 if mode.startswith("review"):

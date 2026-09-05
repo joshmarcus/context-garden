@@ -118,6 +118,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
+| suggestions | `edit_run`, `edit_attempts` | the edit run folding pending suggestions into the task body, and how many edit runs failed (capped) |
 
 Two special entries: `_phase:<product>/<phase>` records when a budget was hit, and `_aux`
 lists comparison and persona runs still in flight.
@@ -310,6 +311,7 @@ the marker line the scheduler looks for at the end of their output.
 | `revise` | dispatch, when feedback is pending | the same, plus a "Revision round" section and the new feedback | `GARDEN_RESULT` | task tier | push, PR title and body updated, a comment on the PR, review run |
 | `resume` | `garden answer` | the answer, into the paused session (`--resume`); a fresh brief with every Q&A when the harness cannot resume | `GARDEN_RESULT` | task tier | as `work` |
 | `review` | after a PR is opened or updated | the task brief without rules, the PR title and body, the diff | `GARDEN_REVIEW` | `review.difficulty`, or the harness's `review_model`, else the task tier | verdict posted as a PR comment; `request_changes` becomes feedback for a revise run; a repeated blocking finding stalls the loop |
+| `edit` | dispatch, when a draft/ready task has pending `## Suggestions` (or `garden integrate`) | the task body and the suggestions, planner-style | `GARDEN_EDIT` | `review.difficulty`, else the task tier | the task body is rewritten to fold in the suggestions, they are marked `- [x]`, the old body is kept for the diff |
 | `persona` | `garden persona-review`, or `review.personas` on every PR round | the persona file plus the phase's body of work, or plus one PR's description and diff | `GARDEN_PERSONA` | review settings, `hard` for a phase | a report under `<phase>/docs/reviews/`, or a PR comment; high findings can become tasks or a revise run |
 | `trial` | `garden trial` | as `work`, once per contender on its own branch | `GARDEN_RESULT` | the contender's model | each contender pushes and gets a PR |
 | `compare` | when every contender has finished | the task brief, every contender's PR description and diff | `GARDEN_COMPARE` | review tier | the winner's branch and PR become the task's; the others are closed with the ranking posted |

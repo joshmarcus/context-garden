@@ -10,6 +10,7 @@
   <div class="kpi"><div class="v">{{ workers_running }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
   <div class="kpi"><div class="v">{{ reviews_running }}/{{ review_parallel }}</div><div class="l">reviews running</div></div>
   <div class="kpi"><div class="v">{{ prs_open }}</div><div class="l">PRs open</div></div>
+  {% if suggestions_pending %}<div class="kpi"><div class="v">{{ suggestions_pending }}</div><div class="l">suggestions to integrate</div></div>{% endif %}
   <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
 </div>
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
