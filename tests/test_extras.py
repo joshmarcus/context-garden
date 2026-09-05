@@ -55,7 +55,9 @@ def test_run_check_signalled_json_output_is_not_a_pass(tmp_path):
 
 def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     marker = garden / "checked"
-    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; test -f worker-output.txt && grep -q 2 worker-output.txt"}], "ci": []}
+    # Passes at the base (no worker-output.txt yet), so the base probe (CG-131) sees a clean
+    # base and this stays a branch-owned failure: fails on the first run's "1", passes on "2".
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; if [ -f worker-output.txt ]; then grep -qx 2 worker-output.txt; fi"}], "ci": []}
     sched.tick()
     wait_for_runs(sched)
     rep = sched.tick()  # first worker output is "1" -> check fails -> no PR, revise queued and dispatched
