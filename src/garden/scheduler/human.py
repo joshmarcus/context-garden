@@ -9,7 +9,16 @@ from typing import Any
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
 from ..github import GitHubError, mark_garden_comment
-from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
+from ..model import (
+    Phase,
+    Status,
+    Task,
+    dispatch_sort_key,
+    ensure_open,
+    now_iso,
+    phase_refusal,
+    priority_label,
+)
 from ..runs import Run
 from .report import TickReport
 from .state import _TaskState
@@ -252,6 +261,65 @@ class HumanMixin:
             old_path.unlink()
         self.events.emit("moved", task.id, **{"from": old_key, "to": ph.key})
         self.log(f"{task.id}: moved {old_key} -> {ph.key}")
+        self.store.invalidate()
+
+    def reorder(self, task: Task, after: str | None = None, direction: str = "") -> None:
+        """Reorder a task within its own phase section (the backlog). `after` is the id the task
+        should follow, "" for the top of the section; `direction` ('up'/'down') is the no-JS
+        equivalent, resolved against the section's current order. Writes `order` on every row
+        whose rank changes and, when the task crosses a priority band, sets its `priority` to the
+        band it landed in. Unlike `move`, a running or in-review task may be reordered. A drop
+        that leaves the arrangement unchanged is a no-op."""
+        ensure_open(task)
+        tasks = self.store.tasks()
+        moved = tasks.get(task.id)
+        if moved is None:
+            raise RuntimeError(f"no task {task.id}")
+        section = sorted(
+            (t for t in tasks.values()
+             if t.product == moved.product and t.phase == moved.phase and not t.status.terminal),
+            key=dispatch_sort_key,
+        )
+        ids = [t.id for t in section]
+        i = ids.index(moved.id)
+        if direction == "up":
+            if i == 0:
+                return
+            after = ids[i - 2] if i >= 2 else ""
+        elif direction == "down":
+            if i >= len(ids) - 1:
+                return
+            after = ids[i + 1]
+        after = (after or "").strip()
+        if after and after not in ids:
+            raise RuntimeError(f"cannot reorder {moved.id}: {after} is not an open task in {moved.key}")
+        rest = [tid for tid in ids if tid != moved.id]
+        idx = (rest.index(after) + 1) if after else 0
+        rest.insert(idx, moved.id)
+        if rest == ids:
+            return  # dropped where it already was
+        # The band the row landed in. The section is sorted ascending by priority, so a valid
+        # arrangement needs prev.priority <= band <= next.priority: keep the row's own priority,
+        # clamped into that range, so it only changes when the drop lands it among another band.
+        pos = rest.index(moved.id)
+        prev = tasks[rest[pos - 1]] if pos > 0 else None
+        nxt = tasks[rest[pos + 1]] if pos + 1 < len(rest) else None
+        lo = prev.priority if prev is not None else -(10**9)
+        hi = nxt.priority if nxt is not None else 10**9
+        band = min(max(moved.priority, lo), hi)
+        original = {t.id: (t.priority, t.order) for t in section}
+        for rank, tid in enumerate(rest):
+            tasks[tid].order = rank
+        old_pri, old_order = original[moved.id]
+        moved.priority = band
+        for tid in rest:
+            t = tasks[tid]
+            if t.id != moved.id and (t.priority, t.order) != original[t.id]:
+                self.store.save(t)
+        band_note = f", priority {priority_label(old_pri)} -> {priority_label(band)}" if band != old_pri else ""
+        moved.log(f"reordered in {moved.key} (order {old_order} -> {moved.order}{band_note}) (web)")
+        self.store.save(moved)
+        self.events.emit("reordered", moved.id, order=moved.order, priority=moved.priority)
         self.store.invalidate()
 
     def _grant_one_more_review_round(self, st: _TaskState) -> bool:
