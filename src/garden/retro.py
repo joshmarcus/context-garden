@@ -57,12 +57,21 @@ decide a verdict and give the evidence:
 - `disputed` — it was wrong, or the reviewers disagree it is friction.
 
 Then draft the next phase's goals from what is *still true* plus what the personas raised.
-Do NOT edit any file and do NOT commit: the retro document and the next-goals draft are
-written for you from your verdict list. Just report it.
+
+Also rank five to eight features for the next phase, drawn from the product-manager persona's
+report (if one ran) and from what the other personas raised. Each feature needs a title short
+enough to be a task's title, a body giving the user value, why now, the size (easy, medium,
+hard) and what it depends on, and a one-sentence rationale. If a feature duplicates a task that
+already exists (check the phase task list and the titles of tasks in other phases, given to you
+as part of the persona reports and task list above), say so by putting that task's id in
+`duplicate_of` instead of proposing it again; do not guess an id that is not shown to you.
+
+Do NOT edit any file and do NOT commit: the retro document, the next-goals draft, and the
+filed feature tasks are all written for you from your verdict list. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -192,7 +201,68 @@ def reconciliation_table(rev: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store) -> str:
+def resolve_features(rev: dict[str, Any], existing_titles: dict[str, str]) -> list[dict[str, Any]]:
+    """Match each proposed feature against existing task titles (case-insensitive) or the
+    retro's own `duplicate_of`, deciding which get filed as draft tasks. Pure: assigns no
+    ids and touches no files, so it is testable without a live model or a worktree.
+
+    `existing_titles` maps a lowercased task title to the id of the task that has it.
+    """
+    out: list[dict[str, Any]] = []
+    for f in rev.get("features") or []:
+        if not isinstance(f, dict):
+            continue
+        title = str(f.get("title") or "").strip()
+        if not title:
+            continue
+        dup_of = str(f.get("duplicate_of") or "").strip()
+        title_dup = existing_titles.get(title.lower())
+        if dup_of:
+            reason = f"flagged by the retro as a duplicate of {dup_of}"
+        elif title_dup:
+            reason = f"same title as {title_dup}"
+        else:
+            reason = ""
+        out.append({
+            "title": title,
+            "body": str(f.get("body") or "").strip(),
+            "difficulty": str(f.get("difficulty") or "medium").strip() or "medium",
+            "priority": f.get("priority"),
+            "rationale": str(f.get("rationale") or "").strip(),
+            "skip": bool(reason),
+            "reason": reason,
+        })
+    return out
+
+
+def features_section(filed: list[dict[str, Any]]) -> str:
+    """Render the ranked '## Features for the next phase' body: rank order is the order the
+    reconciliation returned them in. Each filed feature shows its new task id; each skipped
+    one shows why."""
+    if not filed:
+        return "_No features proposed for the next phase._"
+    out = []
+    for i, f in enumerate(filed, 1):
+        title = str(f.get("title", "")).strip()
+        if f.get("task_id"):
+            head = f"{i}. **{title}** — {f['task_id']} [{f.get('status', 'draft')}]"
+        else:
+            head = f"{i}. **{title}** — _skipped: {f.get('reason') or 'duplicate'}_"
+        out.append(head)
+        difficulty = str(f.get("difficulty") or "").strip()
+        if difficulty:
+            out.append(f"   - size: {difficulty}")
+        rationale = str(f.get("rationale") or "").strip()
+        if rationale:
+            out.append(f"   - why now: {rationale}")
+        body = str(f.get("body") or "").strip()
+        if body:
+            out.append(f"   - {body}")
+    return "\n".join(out)
+
+
+def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
+                     filed: list[dict[str, Any]] | None = None) -> str:
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
@@ -204,12 +274,14 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     still_open = [str(s).strip() for s in rev.get("still_open") or [] if str(s).strip()]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
+    out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:
         out += ["## Persona reports", ""] + [f"- [{name}]({store.rel(path)})" for name, path in reports.items()] + [""]
     return "\n".join(out).rstrip() + "\n"
 
 
-def render_next_goals(phase: Phase, next_phase: str, rev: dict[str, Any]) -> str:
+def render_next_goals(phase: Phase, next_phase: str, rev: dict[str, Any],
+                      filed: list[dict[str, Any]] | None = None) -> str:
     body = str(rev.get("next_goals", "")).strip()
     out = [f"# {next_phase} goals (draft)", "",
            f"_Drafted by `garden retro` from {phase.key}; edit before planning._", ""]
@@ -217,4 +289,8 @@ def render_next_goals(phase: Phase, next_phase: str, rev: dict[str, Any]) -> str
         out.append(body)
     else:
         out.append("_(the reconciliation produced no draft; write the goals here)_")
+    filed_ok = [f for f in filed or [] if f.get("task_id")]
+    if filed_ok:
+        out += ["", "## Features for the next phase", ""]
+        out += [f"- {f['task_id']}: {f['title']}" for f in filed_ok]
     return "\n".join(out).rstrip() + "\n"

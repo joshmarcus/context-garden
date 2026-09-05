@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import gitops
 from ..github import GitHubError
-from ..model import Phase, Status, Task, estimate_tokens, now_iso
+from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
 from ..personas import phase_brief, valid_name
 from ..retro import (
     next_phase_name,
@@ -17,6 +17,7 @@ from ..retro import (
     reconcile_brief,
     render_next_goals,
     render_retro_doc,
+    resolve_features,
 )
 from ..runs import Run
 from .report import TickReport
@@ -227,6 +228,47 @@ class RetroMixin:
         rep.errors.append(msg)
         self.events.emit("retro_failed", "", phase=phase.key, step=step, error=str(error))
 
+    def _file_retro_features(self, phase: Phase, next_phase: str, rev: dict[str, Any],
+                             wt: Path, rel_product: Path) -> list[dict[str, Any]]:
+        """Turn the reconciliation's `features` into draft task files inside the retro's own
+        worktree, so they land with the same PR as the retro document and the next phase's
+        goals draft (the next phase may not exist on disk yet, so this cannot go through
+        `store.create_task`, which requires an already-discovered phase). Skips whatever
+        `resolve_features` flags as a duplicate; ids are reserved locally since the live store
+        never sees these files until the PR merges."""
+        existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
+        resolved = resolve_features(rev, existing_titles)
+        if not resolved:
+            return []
+        prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
+        num = int(num_s)
+        tasks_dir = wt / rel_product / next_phase / "tasks"
+        filed: list[dict[str, Any]] = []
+        for f in resolved:
+            if f["skip"]:
+                filed.append({**f, "task_id": "", "status": "skipped"})
+                self.log(f"retro {phase.key}: feature {f['title']!r} skipped ({f['reason']})")
+                continue
+            tid = f"{prefix}-{num:03d}"
+            num += 1
+            try:
+                priority = int(f.get("priority"))
+            except (TypeError, ValueError):
+                priority = 3
+            difficulty = f["difficulty"] if f["difficulty"] in ("easy", "medium", "hard") else "medium"
+            body = f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\nProposed at the {phase.key} retro."
+            if f["rationale"]:
+                body += f" {f['rationale']}"
+            body += "\n"
+            t = Task(path=tasks_dir / f"{tid}-{slugify(f['title'])}.md", id=tid, title=f["title"],
+                     status=Status.DRAFT, product=phase.product, phase=next_phase, priority=priority,
+                     difficulty=difficulty, discovered_from=f"retro:{phase.key}",
+                     created=now_iso(), updated=now_iso(), body=body)
+            tasks_dir.mkdir(parents=True, exist_ok=True)
+            t.path.write_text(t.render())
+            filed.append({**f, "task_id": tid, "status": "draft"})
+        return filed
+
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
         rev = parse_retro(final)
@@ -243,8 +285,9 @@ class RetroMixin:
         goals_path = wt / rel_product / next_phase / "goals.md"
         retro_path.parent.mkdir(parents=True, exist_ok=True)
         goals_path.parent.mkdir(parents=True, exist_ok=True)
-        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store))
-        goals_path.write_text(render_next_goals(phase, next_phase, rev))
+        filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product)
+        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed))
+        goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
         except gitops.GitError as e:
@@ -264,10 +307,14 @@ class RetroMixin:
             self._retro_failed(phase, "push", e, rep)
             return
         n_items = len([f for f in rev.get("reconciliation") or [] if isinstance(f, dict)])
+        n_filed = sum(1 for f in filed if f.get("task_id"))
+        n_skipped = len(filed) - n_filed
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
         body = (f"Retrospective for **{phase.key}**, produced by `garden retro`.\n\n"
                 f"- reconciled {n_items} friction item(s) against what merged\n"
                 f"- {len(reports)} persona report(s)\n"
+                f"- {n_filed} feature(s) filed as draft tasks in {next_phase}"
+                + (f" ({n_skipped} duplicate(s) skipped)" if n_skipped else "") + "\n"
                 f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
                 f"- next-phase goals draft: `{rel_product.as_posix()}/{next_phase}/goals.md`\n\n"
                 f"{str(rev.get('summary', '')).strip()}\n")

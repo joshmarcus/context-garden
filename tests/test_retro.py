@@ -15,12 +15,14 @@ import yaml
 from typer.testing import CliRunner
 
 from garden.retro import (
+    features_section,
     next_phase_name,
     parse_retro,
     reconcile_brief,
     reconciliation_table,
     render_next_goals,
     render_retro_doc,
+    resolve_features,
 )
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -87,6 +89,39 @@ def test_render_documents_carry_the_verdicts_and_the_next_goals():
     goals = render_next_goals(phase, "phase-03", rev)
     assert goals.startswith("# phase-03 goals (draft)")
     assert "do the next thing" in goals
+
+
+def test_resolve_features_flags_a_title_match_and_an_explicit_duplicate():
+    rev = {"features": [
+        {"title": "New thing", "body": "b", "difficulty": "medium", "priority": 2, "rationale": "r"},
+        {"title": "First task", "body": "b2", "difficulty": "easy", "priority": 4, "rationale": "already tracked"},
+        {"title": "Another new thing", "duplicate_of": "CG-9", "body": "b3", "difficulty": "hard", "priority": 1, "rationale": "r3"},
+        {"title": "  "},  # blank titles are dropped
+        "not a dict",
+    ]}
+    resolved = resolve_features(rev, {"first task": "GD-001"})
+    assert len(resolved) == 3
+    assert resolved[0]["skip"] is False and resolved[0]["reason"] == ""
+    assert resolved[1]["skip"] is True and "GD-001" in resolved[1]["reason"]
+    assert resolved[2]["skip"] is True and "CG-9" in resolved[2]["reason"]
+
+
+def test_resolve_features_empty():
+    assert resolve_features({}, {}) == []
+    assert resolve_features({"features": []}, {}) == []
+
+
+def test_features_section_renders_rank_ids_and_skips():
+    filed = [
+        {"title": "New thing", "task_id": "GD-003", "status": "draft", "difficulty": "medium",
+         "rationale": "r", "body": "b"},
+        {"title": "First task", "task_id": "", "reason": "same title as GD-001"},
+    ]
+    section = features_section(filed)
+    assert section.startswith("1. **New thing** — GD-003 [draft]")
+    assert "size: medium" in section and "why now: r" in section
+    assert "2. **First task** — _skipped: same title as GD-001_" in section
+    assert features_section([]) == "_No features proposed for the next phase._"
 
 
 def test_reconcile_brief_includes_reported_and_comment_friction():
@@ -255,6 +290,56 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     assert not (root / "gdn" / "p2").exists()
 
 
+def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, fake_github, monkeypatch):
+    """CG-181: the fake harness proposes two new features and one that repeats the phase's
+    first task by title (see tests/fake_claude.py:retro); the reap must file the two new ones
+    as draft tasks in the next phase, with provenance back to this retro, and skip the
+    duplicate with a log line rather than filing it again."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    logs: list[str] = []
+    sched = Scheduler(store, github=fake_github, log=logs.append)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    sched.start_retro(ph, ["designer"], skip_personas=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    assert fake_github.created
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    tasks_dir = wt / "gdn" / "p2" / "tasks"
+    filed = {t.stem: t for t in tasks_dir.glob("*.md")}
+    assert len(filed) == 2, filed  # two new features filed, the duplicate skipped
+
+    from garden.model import Task as TaskModel
+
+    parsed = [TaskModel.parse(p, p.read_text(), product="gdn", phase="p2") for p in filed.values()]
+    ids = sorted(t.id for t in parsed)
+    assert ids == ["GD-003", "GD-004"]
+    for t in parsed:
+        assert t.status.value == "draft"
+        assert t.discovered_from == "retro:gdn/p1"
+        assert "retro" in t.body.lower()
+    titles = {t.title for t in parsed}
+    assert titles == {"Add a task-creation form to the web UI", "One vocabulary across CLI, web and TUI"}
+    assert not any(t.title == "First task" for t in parsed)
+
+    # the skip reached the running log, and the retro doc renders both the filed ids and the skip
+    assert any("First task" in m and "skipped" in m for m in logs)
+    retro_md = (wt / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "## Features for the next phase" in retro_md
+    assert "GD-003" in retro_md and "GD-004" in retro_md
+    assert "_skipped:" in retro_md and "First task" in retro_md
+    goals = (wt / "gdn" / "p2" / "goals.md").read_text()
+    assert "GD-003" in goals and "GD-004" in goals
+
+    pr = fake_github.created[-1]
+    assert "2 feature(s) filed" in pr["body"] and "1 duplicate(s) skipped" in pr["body"]
+
+
 def test_retro_commit_failure_becomes_a_card_not_a_silent_vanish(tmp_path, fake_github, monkeypatch):
     """CG-147: at the phase-02 retro, a commit that failed inside `reap_retro` (missing git
     identity in the retro worktree) left the rendered doc staged but uncommitted, opened no
@@ -353,7 +438,7 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
 
     ph = store.phase("gdn", "p1")
     names = sorted(DEFAULT_PERSONAS)
-    assert len(names) == 6
+    assert len(names) == 7
     # a retro entry naming all six personas, none dispatched yet (the mid-race snapshot);
     # only "designer" has a report on disk (pre-seeded by _live_garden)
     entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name, "personas": names,
@@ -362,7 +447,7 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     sched._retro_list().append(entry)
     sched.state.save()
 
-    assert sched.retro_pending(ph.key) == {"done": 1, "total": 6}
+    assert sched.retro_pending(ph.key) == {"done": 1, "total": 7}
     rep = sched.tick()  # tick() reloads state from disk, so re-fetch the entry after each call
     assert not rep.errors, rep.errors
     entry = sched._retro_list()[0]
@@ -375,7 +460,7 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
             continue
         (reviews / f"{name}-2026-01-02.md").write_text(f"# {name} review of gdn/p1\n\nfine.\n")
 
-    assert sched.retro_pending(ph.key) == {"done": 6, "total": 6}
+    assert sched.retro_pending(ph.key) == {"done": 7, "total": 7}
     friction, reported, comment_friction, reports, task_rows, merged = sched._retro_materials(ph, names)
     brief = reconcile_brief(store, ph, "main", friction, reported, comment_friction, reports, task_rows, merged, "p2")
     assert "(none)" not in brief.split("## Persona reviews")[1].split("## ")[0]
