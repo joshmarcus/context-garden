@@ -8,6 +8,7 @@ import typer
 from rich import box
 from rich.table import Table
 
+from .. import operator_spend as ops
 from ..costs import BUCKET_CHOICES, GROUP_BY_CHOICES, cost_series
 from ..events import EventLog, parse_since
 from .common import PANEL_INSIGHT, _store, app, console
@@ -17,13 +18,14 @@ from .common import PANEL_INSIGHT, _store, app, console
 def costs(
     since: str = typer.Option("", "--since", help="24h, 3d, an ISO timestamp, or empty for all time"),
     bucket: str = typer.Option("day", "--bucket", help="day | hour"),
-    by: str = typer.Option("activity", "--by", help="activity | difficulty | model | harness | phase | task"),
+    by: str = typer.Option("activity", "--by", help="activity | difficulty | model | harness | phase | task | session"),
     difficulty: str = typer.Option("", "--difficulty", help="easy | medium | hard"),
     model: str = typer.Option("", "--model"),
     harness: str = typer.Option("", "--harness"),
     phase: str = typer.Option("", "--phase", help="product/phase"),
     product: str = typer.Option("", "--product"),
     task: str = typer.Option("", "--task", help="a single task id"),
+    session: str = typer.Option("", "--session", help="an operator session id"),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Spend over time, sliced one way and filtered by the rest — the same numbers /costs shows."""
@@ -36,8 +38,10 @@ def costs(
     store = _store()
     tasks = store.tasks()
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
+    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
     series = cost_series(events, tasks, since=parse_since(since) if since else "", bucket=bucket, group_by=by,
-                         difficulty=difficulty, model=model, harness=harness, phase=phase, product=product, task=task)
+                         difficulty=difficulty, model=model, harness=harness, phase=phase, product=product, task=task,
+                         session=session)
     if json_out:
         print(json.dumps(series, indent=2))
         return

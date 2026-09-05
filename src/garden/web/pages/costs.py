@@ -8,6 +8,7 @@ import datetime as dt
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
+from ... import operator_spend as ops
 from ...charts import cost_stack_svg
 from ...costs import GROUP_BY_CHOICES, cost_series
 from ...events import EventLog, parse_since
@@ -29,21 +30,27 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/costs", response_class=HTMLResponse)
     def costs_page(
         request: Request, since: str = "", bucket: str = "day", by: str = "activity",
-        difficulty: str = "", model: str = "", harness: str = "", phase: str = "", task: str = "",
+        difficulty: str = "", model: str = "", harness: str = "", phase: str = "", task: str = "", session: str = "",
     ):
         s = hub.fresh()
         tasks = s.tasks()
         events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        operator_records = ops.read_records(ops.default_path(s.root))
+        events = events + ops.to_cost_events(operator_records)
         by = by if by in GROUP_BY_CHOICES else "activity"
         bucket = bucket if bucket in ("day", "hour") else "day"
         series = cost_series(events, tasks, since=resolve_since(since), bucket=bucket, group_by=by,
-                             difficulty=difficulty, model=model, harness=harness, phase=phase, task=task)
+                             difficulty=difficulty, model=model, harness=harness, phase=phase, task=task,
+                             session=session)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})
         task_ids = sorted({str(e["task"]) for e in runs if e.get("task")})
+        session_ids = sorted({str(e["session"]) for e in runs if e.get("session")})
         phase_keys = [ph.key for p in s.products() for ph in p.phases]
+        compactions = ops.compaction_marks(operator_records)
         return templates.TemplateResponse(request, "costs.html", ctx(
-            request, page="costs", series=series, chart=cost_stack_svg(series),
+            request, page="costs", series=series, chart=cost_stack_svg(series, compactions=compactions),
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
-            phase=phase, task=task, models=models, harnesses=harnesses, task_ids=task_ids, phase_keys=phase_keys))
+            phase=phase, task=task, session=session, models=models, harnesses=harnesses, task_ids=task_ids,
+            session_ids=session_ids, phase_keys=phase_keys))

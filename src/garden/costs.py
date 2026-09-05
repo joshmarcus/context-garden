@@ -21,9 +21,11 @@ from .model import Task
 
 # The fixed activity vocabulary the costs chart names in order (CG-214): every other mode
 # a run can carry (resume, trial, compare, edit, and any future one) folds into "other"
-# rather than growing the chart's own categorical order.
-ACTIVITIES = ("work", "revise", "rebase", "review", "persona", "retro", "check")
-GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "phase", "task")
+# rather than growing the chart's own categorical order. "operator" (CG-223) is not a
+# scheduler run mode: it is synthesized from docs/operator-spend.jsonl by
+# `operator_spend.to_cost_events` before the events reach `cost_series`.
+ACTIVITIES = ("work", "revise", "rebase", "review", "persona", "retro", "check", "operator")
+GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "phase", "task", "session")
 BUCKET_CHOICES = ("hour", "day")
 
 
@@ -45,6 +47,8 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
         return task.key if task else "unknown"
     if group_by == "task":
         return str(ev.get("task") or "unknown")
+    if group_by == "session":
+        return str(ev.get("session") or "unknown")
     raise ValueError(f"unknown group_by: {group_by}")
 
 
@@ -64,6 +68,7 @@ def cost_series(
     events: list[dict[str, Any]], tasks: dict[str, Task], *,
     since: str = "", until: str = "", bucket: str = "day", group_by: str = "activity",
     difficulty: str = "", model: str = "", harness: str = "", phase: str = "", product: str = "", task: str = "",
+    session: str = "",
 ) -> dict[str, Any]:
     """Bucket `run_finished` events by time (day or hour), grouped by one dimension, with the
     rest of the dimensions available as equality filters.
@@ -104,6 +109,8 @@ def cost_series(
         if product and (not t or t.product != product):
             continue
         if task and tid != task:
+            continue
+        if session and str(ev.get("session") or "") != session:
             continue
         group = _group_key(ev, t, group_by)
         _add(buckets.setdefault(_bucket_key(at, bucket), {}).setdefault(group, _zero_row()), ev)

@@ -120,16 +120,22 @@ def tier_bars_svg(rows: list[dict[str, Any]], value: str = "cost_usd", fmt: str 
     return "\n".join(out)
 
 
-def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, max_groups: int = 7) -> str:
+def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, max_groups: int = 7,
+                   compactions: list[dict[str, Any]] | None = None) -> str:
     """Spend per bucket (day or hour), stacked by group, from `costs.cost_series`.
 
-    Colors are the fixed eight-slot categorical order (`--viz-1`, `--viz-2`,
-    `--viz-cat-3`..`--viz-cat-8`): grouped by activity, the slots follow the activity
+    Colors are the fixed nine-slot categorical order (`--viz-1`, `--viz-2`,
+    `--viz-cat-3`..`--viz-cat-9`): grouped by activity, the slots follow the activity
     vocabulary's own fixed order (`costs.ACTIVITIES`, "other" last); grouped by anything
     else, slots go to the highest-cost groups and the rest fold into "other" so the palette
-    never grows past its eight slots no matter how many models/phases/tasks appear.
+    never grows past its nine slots no matter how many models/phases/tasks appear.
+
+    `compactions` (from `operator_spend.compaction_marks`) draws one thin annotation per
+    entry whose bucket falls inside the chart, the same hover-title mark language as every
+    other element here — a bucket with no cost recorded never got a bar, so a mark for it is
+    silently skipped rather than drawn off the axis.
     """
-    from .costs import ACTIVITIES
+    from .costs import ACTIVITIES, _bucket_key
 
     buckets = series.get("buckets") or []
     totals = series.get("totals") or {}
@@ -145,7 +151,8 @@ def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, 
             order = order[: max_groups - 1] + ["other"]
     kept_real = set(order) - {"other"}
     palette = ["var(--viz-1)", "var(--viz-2)", "var(--viz-cat-3)", "var(--viz-cat-4)",
-               "var(--viz-cat-5)", "var(--viz-cat-6)", "var(--viz-cat-7)", "var(--viz-cat-8)"]
+               "var(--viz-cat-5)", "var(--viz-cat-6)", "var(--viz-cat-7)", "var(--viz-cat-8)",
+               "var(--viz-cat-9)"]
     colors = {g: palette[i % len(palette)] for i, g in enumerate(g for g in order if g != "other")}
     colors["other"] = palette[-1]
     other_total = sum(r["cost_usd"] for g, r in totals.items() if g not in kept_real) if "other" in order else 0.0
@@ -193,6 +200,15 @@ def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, 
             out.append(f'<rect x="{x0:.1f}" y="{y1:.1f}" width="{bar_w:.1f}" height="{max(y0 - y1, 0.5):.1f}" '
                        f'fill="{colors[g]}"><title>{_esc(b["bucket"])} · {_esc(g)}: ${v:.2f}</title></rect>')
             acc += v
+    bucket_index = {b["bucket"]: i for i, b in enumerate(buckets)}
+    for mark in compactions or []:
+        i = bucket_index.get(_bucket_key(str(mark.get("at") or ""), series.get("bucket", "day")))
+        if i is None:
+            continue
+        mx = ml + i * bw + bw / 2
+        session = _esc(str(mark.get("session") or "")[:8])
+        out.append(f'<line x1="{mx:.1f}" x2="{mx:.1f}" y1="{mt}" y2="{mt + ph}" stroke="var(--muted)" '
+                   f'stroke-width="1" stroke-dasharray="2,3"><title>compacted (session {session})</title></line>')
     out.append(f'<text x="{ml}" y="{mt + ph + mb - 6}" fill="var(--muted)" font-size="11">{_esc(buckets[0]["bucket"])}</text>')
     out.append(f'<text x="{width - mr}" y="{mt + ph + mb - 6}" text-anchor="end" fill="var(--muted)" font-size="11">{_esc(buckets[-1]["bucket"])}</text>')
     ly = 12
