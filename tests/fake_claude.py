@@ -189,8 +189,20 @@ def retro(call: Call) -> None:
     elif verdict == "reopen":
         blocking = [{"title": "Fix the broken base check", "difficulty": "medium", "priority": 1,
                      "body": "The pre-PR check fails at the phase's base.", "reason": "the base is red"}]
+    # CG-225: a retro with two questions for the owner, one flagged as blocking its own
+    # verdict, gated behind an env var so every other retro test's fixture stays unchanged.
+    questions = []
+    if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
+        questions = [
+            {"question": "Should hard-tier merges wait for two review rounds or one?",
+             "context": "affects how soon a hard-tier PR can auto-merge",
+             "options": ["one round", "two rounds"], "blocking": True},
+            {"question": "Should the qa medium-tier cap move to 2 or 3?",
+             "context": "affects qa cost per run", "options": ["2", "3"], "blocking": False},
+        ]
     rev = {"reconciliation": recon, "summary": "The phase mostly held together.",
            "personas": "The personas liked the onboarding.", "still_open": ["live worker output"],
+           "questions": questions,
            "features": features, "verdict": verdict, "followups": followups, "blocking": blocking,
            "next_goals": "# Next\n\n- Make waiting visible.\n"}
     print(result_json("Reconciled.\nGARDEN_RETRO: " + json.dumps(rev), {"input_tokens": 4000, "output_tokens": 300}, 0.04))
