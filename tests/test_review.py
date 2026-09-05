@@ -21,7 +21,6 @@ def test_review_brief_and_parse(garden):
 
 def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
     """Workers can include pr_comment in the result to explain revisions."""
-    from tests.conftest import wait_for_runs
 
     # Focus on DM-001's review cycle: without this, DM-002 stacks on DM-001's open PR
     # and runs its own review rounds concurrently, so the fixed per-tick assertions
@@ -31,11 +30,8 @@ def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "revise-with-comment")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened -> review dispatched
-    wait_for_runs(sched)
     sched.tick()  # reap review -> request_changes -> revise dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap revise -> PR body updated + pr_comment posted -> second review dispatched
     # Verify the pr_comment was posted as a separate comment
     assert any("I addressed the feedback by adding the missing test." in c for c in fake_github.comments)
@@ -51,7 +47,6 @@ def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
 
 
 def test_review_flow(sched, fake_github, monkeypatch):
-    from tests.conftest import wait_for_runs
 
     # Focus on DM-001's review cycle: without this, DM-002 stacks on DM-001's open PR
     # and runs its own review rounds concurrently, so the fixed per-tick assertions
@@ -60,25 +55,21 @@ def test_review_flow(sched, fake_github, monkeypatch):
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap work -> PR opened -> review dispatched
     assert "DM-001(review)" in rep.dispatched
     st = sched.state.get("DM-001")
     assert st["review_run"] and st["review_rounds"] == 1
     run = sched.runs.latest("DM-001")
     assert run.mode == "review" and "GARDEN_REVIEW" in (run.path / "brief.md").read_text()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> request_changes -> revise dispatched
     assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     assert any("Automated review: request changes" in c for c in fake_github.comments)
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
     assert "missing test" in brief and "PR description" in brief
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
-    wait_for_runs(sched)
     rep = sched.tick()  # reap revise -> PR body updated -> second review
     assert fake_github.updated and fake_github.updated[-1]["body"]
     assert "DM-001(review)" in rep.dispatched
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 review: approve" in rep.transitions
     sched.store.invalidate()
@@ -105,15 +96,12 @@ def test_review_brief_advertises_description_rewrite(garden):
 def test_review_description_only_rewrite_applied_without_a_round(sched, fake_github, monkeypatch):
     """description_ok false, no blocking finding, rewrite supplied: the scheduler updates the PR
     body through the API and starts no revise round."""
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-rewrite")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap work -> PR opened -> review dispatched (as review-rewrite)
     assert "DM-001(review)" in rep.dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> apply the rewrite, no round
     assert any("description rewritten by the reviewer" in t for t in rep.transitions)
     assert "DM-001(revise)" not in rep.dispatched
@@ -129,14 +117,11 @@ def test_review_description_only_rewrite_applied_without_a_round(sched, fake_git
 def test_description_only_revise_dispatches_on_easy_tier(sched, fake_github, monkeypatch):
     """CG-109: a review with no code findings, only a description fix, is a paragraph
     rewrite, so the revise round should not cost a code-review-tier model."""
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened -> review dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> request_changes -> revise dispatched
     assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     run = sched.runs.latest("DM-001")
@@ -152,14 +137,11 @@ def test_description_only_revise_dispatches_on_easy_tier(sched, fake_github, mon
 def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatch):
     """A revise round with a blocking code finding is a real review round, so it keeps
     the task's own tier rather than dropping to easy."""
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened -> review dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> request_changes -> revise dispatched
     assert "DM-001(revise)" in rep.dispatched
     run = sched.runs.latest("DM-001")
@@ -175,15 +157,12 @@ def test_approve_with_description_rewrite_applies_directly(sched, fake_github, m
     """CG-140: an approve verdict with description_ok false and a rewrite applies the
     rewrite through the GitHub API and stores no pending feedback; the task stays
     in_review with no revise round."""
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-rewrite")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap work -> PR opened -> review dispatched
     assert "DM-001(review)" in rep.dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> approve, apply the rewrite, no round
     assert any("description rewritten by the reviewer" in t for t in rep.transitions)
     assert "DM-001(revise)" not in rep.dispatched
@@ -198,15 +177,12 @@ def test_approve_with_description_rewrite_applies_directly(sched, fake_github, m
 def test_approve_with_empty_rewrite_dispatches_description_round(sched, fake_github, monkeypatch):
     """CG-140: an approve verdict with description_ok false and no rewrite dispatches a
     description-only revise round instead of leaving feedback parked on an in_review task."""
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-desc")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap work -> PR opened -> review dispatched
     assert "DM-001(review)" in rep.dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap review -> approve but description flagged -> revise dispatched
     assert "DM-001 -> changes_requested (description round)" in rep.transitions
     assert "DM-001(revise)" in rep.dispatched
@@ -216,11 +192,9 @@ def test_approve_with_empty_rewrite_dispatches_description_round(sched, fake_git
 
 
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # reap work -> PR opened -> review dispatched
     assert "DM-001(review)" in rep.dispatched
     review_run_id = sched.state.get("DM-001")["review_run"]
@@ -233,7 +207,6 @@ def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     task.status = Status.DONE
     sched.store.save(task)
 
-    wait_for_runs(sched)
     rep = sched.tick()
 
     assert not any(r.task_id == "DM-001" and r.run_id == review_run_id for r in sched.runs.active())
@@ -250,22 +223,16 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     """CG-117: once the cap stops the automated reviewer, the task says so instead of sitting
     silently in review, and the Inbox offers one more round without a human editing state.json."""
     from garden.inbox import build_inbox
-    from tests.conftest import wait_for_runs
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
-    wait_for_runs(sched)
     sched.tick()  # reap review round 1: request_changes (description only) -> revise dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap revise -> pushed -> review dispatched (round 2)
     assert "DM-001(review)" in rep.dispatched
     assert sched.state.get("DM-001")["review_rounds"] == 2
-    wait_for_runs(sched)
     sched.tick()  # reap review round 2: request_changes again -> revise dispatched
-    wait_for_runs(sched)
     rep = sched.tick()  # reap revise -> pushed -> cap already used; no third review dispatched
     assert "DM-001(review)" not in rep.dispatched
     assert "DM-001 review cap reached" in rep.transitions
@@ -295,7 +262,6 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     assert sched.state.get("DM-001")["review_rounds"] == 2  # rolled back one, then re-incremented
     assert not sched.state.get("DM-001").get("needs_human")
 
-    wait_for_runs(sched)
     rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
     assert "DM-001 review: approve" in rep.transitions
     assert not sched.state.get("DM-001").get("needs_human")

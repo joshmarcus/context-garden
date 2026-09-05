@@ -3,7 +3,6 @@
 import subprocess
 
 from garden.model import Status
-from tests.conftest import wait_for_runs
 from tests.scheduler.conftest import statuses
 
 
@@ -18,7 +17,6 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(work)"]  # DM-002 is blocked
     assert statuses(sched)["DM-001"] == "running"
-    wait_for_runs(sched)
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
     assert fake_github.created and fake_github.created[0]["title"] == "Fake: implemented the thing"
@@ -53,7 +51,6 @@ def test_max_parallel(sched, garden):
             f"---\nid: DM-00{i}\ntitle: t{i}\nstatus: ready\ndepends_on: []\npriority: 3\nreading: []\ncreated: ''\nupdated: ''\n---\n\n## Goal\n\nx\n")
     rep = sched.tick()
     assert len(rep.dispatched) == 2
-    wait_for_runs(sched)
     rep = sched.tick()
     assert len(rep.dispatched) == 2
 
@@ -85,7 +82,6 @@ def test_tick_uses_max_parallel_override(sched, garden):
     sched.set_override("max_parallel", 1)
     rep = sched.tick()
     assert len(rep.dispatched) == 1  # override (1) wins over garden.yaml's max_parallel (2)
-    wait_for_runs(sched)
     sched.clear_override("max_parallel")
     rep = sched.tick()  # reaps the finished run, then dispatches up to garden.yaml's 2 again
     assert len(rep.dispatched) == 2
@@ -135,7 +131,6 @@ def test_resume_restarts_dispatch(sched, fake_github):
 def test_paused_tick_still_reaps_and_polls(sched, fake_github):
     # dispatch, let worker finish, then pause before reaping
     sched.tick()
-    wait_for_runs(sched)
     sched.pause(by="cli")
     rep = sched.tick()
     # should reap the finished worker and push the PR even while paused

@@ -19,7 +19,7 @@ from garden.config import find_root
 from garden.model import Status
 from garden.scheduler import Scheduler
 from garden.store import Store
-from tests.conftest import FAKE_CLAUDE, wait_for_runs
+from tests.conftest import FAKE_CLAUDE
 
 runner = CliRunner()
 
@@ -114,7 +114,6 @@ def test_self_product_runs_in_worktree_of_the_garden_repo_and_opens_pr(tmp_path,
     store = Store(root)
     sched = Scheduler(store, github=fake_github, log=print)
     sched.tick()  # dispatch GD-001
-    wait_for_runs(sched)
     sched.tick()  # reap -> push -> PR
 
     task = store.task("GD-001")

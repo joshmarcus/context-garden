@@ -20,7 +20,7 @@ from garden.retro import (
 )
 from garden.scheduler import Scheduler
 from garden.store import Store
-from tests.conftest import FAKE_CLAUDE, wait_for_runs
+from tests.conftest import FAKE_CLAUDE
 
 
 # --------------------------------------------------------------------------- pure logic
@@ -181,7 +181,6 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     ph = store.phase("gdn", "p1")
     entry = sched.start_retro(ph, ["designer"], skip_personas=True)
     assert entry["stage"] == "reconciling", entry  # designer report exists, so no persona run
-    wait_for_runs(sched)
     rep = sched.tick()  # reap_retro -> render, commit, push, PR
     assert not rep.errors, rep.errors
 
@@ -221,9 +220,7 @@ def test_retro_runs_missing_personas_first_then_reconciles(tmp_path, fake_github
     entry = sched.start_retro(ph, ["usability-expert"], skip_personas=False)
     assert entry["stage"] == "personas"
     assert entry["persona_runs"], "no persona review dispatched"
-    wait_for_runs(sched)
     sched.tick()  # reap the persona review (writes its report), then dispatch the reconcile run
-    wait_for_runs(sched)
     rep = sched.tick()  # reap the reconcile run -> PR
     assert not rep.errors, rep.errors
     assert fake_github.created, "no retro PR opened after personas ran"

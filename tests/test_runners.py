@@ -1,3 +1,4 @@
+import os
 import subprocess
 from unittest.mock import patch
 
@@ -5,7 +6,19 @@ import yaml
 
 from garden.model import Status
 from garden.runner.local import LocalRunner
-from tests.conftest import wait_for_runs
+
+
+def _wait_for_child(run) -> None:
+    """The ssh runner is the one path in the suite that still launches a real command: its
+    remote script is shell, so fake_ssh runs it with `sh`, which runs fake_claude as a
+    process. Wait on that child directly rather than polling for its exit_code: no sleep,
+    no timeout. A ChildProcessError means subprocess's own bookkeeping already reaped it,
+    and the wrapper writes exit_code before it exits."""
+    try:
+        os.waitpid(run.pid, 0)
+    except ChildProcessError:
+        pass
+    assert (run.path / "exit_code").exists()
 
 
 def test_codex_harness_and_difficulty_model(sched, garden, fake_github):
@@ -14,7 +27,6 @@ def test_codex_harness_and_difficulty_model(sched, garden, fake_github):
     t.difficulty = "hard"
     sched.store.save(t)
     sched.tick()
-    wait_for_runs(sched)
     run = sched.runs.latest("DM-001")
     assert run.harness == "codex" and run.model == "gpt-max"
     sched.tick()
@@ -32,7 +44,6 @@ def test_explicit_model_override(sched):
     sched.tick()
     run = sched.runs.latest("DM-001")
     assert run.model == "my-model"
-    wait_for_runs(sched)
     assert (sched.worktree_for(t) / "model.txt").read_text().strip() == "my-model"
 
 
@@ -53,7 +64,7 @@ def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path):
     run = sched.runs.latest("DM-001")
     assert run.runner == "ssh" and run.host == "boxA" and run.worktree == ""
     assert "git push" in (run.path / "remote.sh").read_text()
-    wait_for_runs(sched)
+    _wait_for_child(run)
     assert (run.path / "exit_code").read_text().strip() == "0", (run.path / "stderr.log").read_text()
     rep = sched.tick()
     sched.store.invalidate()
@@ -134,7 +145,6 @@ def test_stream_json_harness_end_to_end(garden, fake_github, monkeypatch):
     store = Store(garden)
     sc = Scheduler(store, github=fake_github, log=print)
     sc.tick()
-    wait_for_runs(sc)
     run = sc.runs.latest("DM-001")
     assert run is not None
     evs = run.stdout_events()

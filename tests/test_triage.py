@@ -2,7 +2,6 @@
 
 from garden.github import Feedback
 from garden.inbox import build_inbox, counts
-from tests.conftest import wait_for_runs
 
 
 def statuses(sched):
@@ -13,7 +12,6 @@ def statuses(sched):
 def test_draft_pr_waits_for_triage_then_ready(sched, fake_github):
     sched.cfg.data["github"] = {"draft_pr": True}
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 -> awaiting_triage" in rep.transitions[-1] or statuses(sched)["DM-001"] == "awaiting_triage"
     pr = fake_github.prs["garden/dm-001-first-task"]
@@ -35,7 +33,6 @@ def test_draft_pr_waits_for_triage_then_ready(sched, fake_github):
 def test_triage_changes_go_to_revise(sched, fake_github):
     sched.cfg.data["github"] = {"draft_pr": True}
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     rep_before = statuses(sched)["DM-001"]
     assert rep_before == "awaiting_triage"
@@ -44,7 +41,6 @@ def test_triage_changes_go_to_revise(sched, fake_github):
     rep = sched.tick()
     assert "DM-001(revise)" in rep.dispatched
     assert "rename the flag" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    wait_for_runs(sched)
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "awaiting_triage"  # still a draft after the revision
 
@@ -52,7 +48,6 @@ def test_triage_changes_go_to_revise(sched, fake_github):
 def test_ready_on_github_is_detected_by_poll(sched, fake_github):
     sched.cfg.data["github"] = {"draft_pr": True}
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.is_draft, pr.updated_at = False, "t2"
@@ -68,7 +63,6 @@ def test_ready_on_github_is_detected_by_poll(sched, fake_github):
 def test_triage_row_shows_diff_summary(sched, fake_github):
     sched.cfg.data["github"] = {"draft_pr": True}
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     items = build_inbox(sched.store, sched)
     it = next(i for i in items if i["group"] == "triage")
@@ -79,7 +73,6 @@ def test_triage_row_shows_diff_summary(sched, fake_github):
 def test_inbox_groups(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     items = build_inbox(sched.store, sched)
     c = counts(items)

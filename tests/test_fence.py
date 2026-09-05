@@ -13,8 +13,6 @@ from garden.gitops import head_sha
 from garden.harness import Harness
 from garden.inbox import build_inbox
 
-from .conftest import wait_for_runs
-
 
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
@@ -49,7 +47,6 @@ def test_worker_writing_to_product_clone_is_reverted_and_fails(sched, monkeypatc
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "README.md")
 
     sched.tick()            # dispatch DM-001
-    wait_for_runs(sched)
     sched.tick()            # reap -> fence check
 
     task = sched.store.task("DM-001")
@@ -74,7 +71,6 @@ def test_worker_writing_to_live_garden_is_reverted_and_fails(sched, garden, monk
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
 
     task = sched.store.task("DM-001")
@@ -95,7 +91,6 @@ def test_uncommitted_escape_is_reverted(sched, monkeypatch, tmp_path):
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_COMMIT", "0")  # write but do not commit
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
 
     assert sched.store.task("DM-001").status.value == "failed"
@@ -109,7 +104,6 @@ def test_scheduler_task_file_edits_do_not_trip_the_fence(sched, garden, monkeypa
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")  # a well-behaved worker
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
 
     task = sched.store.task("DM-001")

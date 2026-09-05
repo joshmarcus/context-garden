@@ -4,7 +4,6 @@
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import TickReport
-from tests.conftest import wait_for_runs
 from tests.scheduler.conftest import statuses, stub_finished_run
 
 
@@ -13,7 +12,6 @@ def test_orphan_sweep_leaves_finished_revise_run_of_running_task(sched, fake_git
     task's reap has already run and seen it unfinished — must be left for the next
     reap, never swept out from under the task."""
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 -> in_review, PR opened
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
@@ -24,7 +22,6 @@ def test_orphan_sweep_leaves_finished_revise_run_of_running_task(sched, fake_git
     assert run.mode == "revise" and run.status == "running"
 
     # the revise run finishes; the sweep now fires while the task is still running
-    wait_for_runs(sched)
     rep = TickReport()
     sched.reap_orphaned(rep)
     assert not any("orphaned" in t for t in rep.transitions)

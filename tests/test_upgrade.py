@@ -10,7 +10,7 @@ from garden.config import Config
 from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.upgrade import git_ref, installed_commit
-from tests.conftest import git, wait_for_runs, write
+from tests.conftest import git, write
 
 
 class FakeUpgrader:
@@ -105,7 +105,6 @@ def test_merge_into_tool_product_records_upgrade(garden, fake_github):
     sched = Scheduler(Store(garden), github=fake_github, upgrader=up, restarter=Restarter(), log=print)
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 -> in_review, PR opened
 
     new_sha = _advance_main(repo)  # a PR merged; main moved forward
@@ -128,7 +127,6 @@ def test_no_upgrade_when_already_installed(garden, fake_github):
     up = FakeUpgrader(main_sha)  # already on the tip
     sched = Scheduler(Store(garden), github=fake_github, upgrader=up, restarter=Restarter(), log=print)
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
     sched.tick()

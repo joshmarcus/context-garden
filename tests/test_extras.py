@@ -5,7 +5,6 @@ from garden.checks import run_check, run_checks, to_feedback
 from garden.model import Status
 from garden.personas import DEFAULT_PERSONAS, parse_persona, write_default_personas
 from garden.trials import TrialLog, parse_compare, parse_contender
-from tests.conftest import wait_for_runs
 
 
 def statuses(sched):
@@ -59,14 +58,12 @@ def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     # base and this stays a branch-owned failure: fails on the first run's "1", passes on "2".
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; if [ -f worker-output.txt ]; then grep -qx 2 worker-output.txt; fi"}], "ci": []}
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()  # first worker output is "1" -> check fails -> no PR, revise queued and dispatched
     assert marker.exists()
     assert "DM-001 -> changes_requested (checks)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     assert fake_github.created == []
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
     assert "pre-PR check" in brief and "unit" in brief
-    wait_for_runs(sched)
     rep = sched.tick()  # revise bumps output to "2" -> check passes -> PR opened
     assert statuses(sched)["DM-001"] == "in_review" and len(fake_github.created) == 1
 
@@ -76,7 +73,6 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     monkeypatch.setenv("FAKE_CI_RERUN_FILE", str(rerun_file))
     sched.cfg.data["checks"] = {"pre_pr": [], "ci": [{"name": "plugin", "python": "tests.ci_plugin:analyse"}]}
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     # 1) flaky -> rerun, no revise round
@@ -110,13 +106,11 @@ def test_trial_end_to_end(sched, fake_github, monkeypatch):
     assert [r.model for r in runs] == ["sonnet", "opus"]
     assert {r.branch for r in runs} == {"garden/dm-001-first-task-trial-claude-sonnet", "garden/dm-001-first-task-trial-claude-opus"}
     assert statuses(sched)["DM-001"] == "running"
-    wait_for_runs(sched)
     rep = sched.tick()  # both contenders finished -> two PRs -> comparison run
     assert "DM-001(compare)" in rep.dispatched
     assert len(fake_github.created) == 2 and all(c["title"].startswith("[trial ") for c in fake_github.created)
     trial = sched.state.get("DM-001")["trial"]
     assert trial["status"] == "comparing" and all(c["status"] == "pr" for c in trial["contenders"])
-    wait_for_runs(sched)
     rep = sched.tick()  # comparison reaped -> winner kept, loser closed
     assert "DM-001 -> in_review (trial winner claude:opus)" in rep.transitions
     t = sched.store.task("DM-001")
@@ -137,7 +131,6 @@ def test_trial_single_survivor(sched, fake_github, monkeypatch):
     t = sched.store.task("DM-001")
     sched.cfg.data["harnesses"]["codex"]["bin"] = "/nonexistent/codex"  # this contender crashes
     sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 -> in_review (trial winner claude:sonnet)" in rep.transitions
     trial = sched.state.get("DM-001")["trial"]
@@ -155,13 +148,11 @@ def test_default_personas_written(tmp_path):
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 has a PR: part of the body of work
     ph = sched.store.phase("demo", "p1")
     run = sched.dispatch_persona_phase(ph, "usability-expert", file_tasks=True)
     brief = (run.path / "brief.md").read_text()
     assert "# Persona: Usability expert" in brief and "Body of work" in brief and "DM-001" in brief and "A fake change" in brief
-    wait_for_runs(sched)
     rep = sched.tick()
     reports = list((ph.path / "docs" / "reviews").glob("usability-expert-*.md"))
     assert len(reports) == 1 and "First run needs a config file" in reports[0].read_text()
@@ -177,18 +168,15 @@ def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkey
 
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     t = sched.store.task("DM-001")
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "low")
     sched.dispatch_persona_pr(t, "security")
-    wait_for_runs(sched)
     rep = sched.tick()
     assert any("security review of DM-001" in c for c in fake_github.comments)
     assert statuses(sched)["DM-001"] == "in_review"
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.dispatch_persona_pr(sched.store.task("DM-001"), "security", request_changes=True)
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 -> changes_requested (persona security)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     assert "security persona" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
@@ -197,9 +185,7 @@ def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, 
 def test_configured_personas_run_on_every_pr(sched, fake_github):
     sched.cfg.data["review"] = {"enabled": False, "personas": ["user"], "max_rounds": 2, "max_diff_chars": 60000}
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001(persona:user)" in rep.dispatched
-    wait_for_runs(sched)
     sched.tick()
     assert any("user review of DM-001" in c for c in fake_github.comments)

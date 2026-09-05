@@ -333,11 +333,9 @@ def test_collect_comment_friction_without_github():
 
 def test_worker_friction_reaches_record_and_comment_not_body(sched, fake_github, monkeypatch):
     from garden.runs import RunStore
-    from tests.conftest import wait_for_runs
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "friction")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened -> friction recorded
 
     items = ["The spec never linked the schema.", "Tests needed PYTHONPATH set."]
@@ -366,10 +364,8 @@ def test_worker_friction_reaches_record_and_comment_not_body(sched, fake_github,
 
 def test_revise_omitting_pr_body_keeps_the_description(sched, fake_github, monkeypatch):
     from garden.model import Status
-    from tests.conftest import wait_for_runs
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # reap work -> PR opened with a description
     sched.store.invalidate()
     task = sched.store.task("DM-001")
@@ -384,7 +380,6 @@ def test_revise_omitting_pr_body_keeps_the_description(sched, fake_github, monke
     sched.store.save(task)
     sched.state.save()
     sched.dispatch(task, mode="revise")
-    wait_for_runs(sched)
     sched.tick()  # reap revise -> PR updated (title only), body untouched
 
     assert fake_github.prs[task.branch].body == original_body

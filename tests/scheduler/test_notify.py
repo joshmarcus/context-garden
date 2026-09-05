@@ -2,7 +2,6 @@
 
 
 from garden.github import Feedback
-from tests.conftest import wait_for_runs
 from tests.scheduler.conftest import statuses
 
 
@@ -16,7 +15,6 @@ def test_notify_on_waiting_human_transition(sched, fake_github, tmp_path):
     # Set max_revisions to 0 to trigger needs_human immediately
     sched.cfg.data["max_revisions"] = 0
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     # PR opened, task is in_review
     assert statuses(sched)["DM-001"] == "in_review"
@@ -40,7 +38,6 @@ def test_notify_on_failed_status(sched, fake_github, tmp_path):
         "timeout_seconds": 5,
     }
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     # Close the PR -> task fails
     fake_github.prs["garden/dm-001-first-task"].state = "CLOSED"
@@ -61,7 +58,6 @@ def test_notify_receives_all_env_vars(sched, fake_github, tmp_path):
     }
     # Trigger a failed status transition to verify environment variables
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     # PR opened
     assert statuses(sched)["DM-001"] == "in_review"
@@ -87,7 +83,6 @@ def test_no_notify_on_auto_revise_changes_requested(sched, fake_github, tmp_path
     # auto_revise=True (default) and max_revisions=3 (default), so the scheduler will
     # queue a revise run without any human action
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
     pr = fake_github.prs["garden/dm-001-first-task"]
@@ -109,9 +104,7 @@ def test_notify_on_parent_closed(sched, fake_github, tmp_path):
     }
     # DM-001 dispatched and reaches in_review; DM-002 stacks on it
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 -> in_review; DM-002 stacks and dispatches
-    wait_for_runs(sched)
     sched.tick()  # DM-002 -> in_review (stacked on DM-001's branch)
     assert statuses(sched)["DM-002"] == "in_review"
     assert sched.state.get("DM-002").get("stack_parent") == "DM-001"

@@ -21,7 +21,6 @@ from garden.suggestions import (
     spec_body,
 )
 from garden.web.app import create_app
-from tests.conftest import wait_for_runs
 
 
 # ---- pure body helpers -----------------------------------------------------
@@ -89,7 +88,6 @@ def test_edit_run_integrates_and_leaves_scheduler_fields(sched):
     assert sched.state.get("DM-001").get("edit_run")
     run = sched.runs.latest("DM-001")
     assert run.mode == "edit"
-    wait_for_runs(sched)
 
     sched.tick(dispatch=False)  # reap the edit; do not start a work run
     sched.store.invalidate()
@@ -113,7 +111,6 @@ def test_edit_holds_the_work_run_until_integrated(sched):
     sched.tick()
     # the work run is held back while the edit run integrates the spec
     assert sched.store.task("DM-001").status == Status.READY
-    wait_for_runs(sched)
     sched.tick()  # reap edit, then dispatch the work run with the integrated spec
     assert sched.store.task("DM-001").status == Status.RUNNING
 
@@ -124,14 +121,14 @@ def test_failed_edit_does_not_loop_forever(sched, monkeypatch):
     record_suggestion(sched.store, t, "cover the empty case", author="josh")
     for _ in range(3):
         sched.tick()
-        wait_for_runs(sched)
     edits = [r for r in sched.runs.runs_for("DM-001") if r.mode == "edit"]
     assert len(edits) == sched.EDIT_MAX_ATTEMPTS  # capped, not endless
     # once the cap is hit the work run is allowed through despite the pending suggestion
     assert sched.store.task("DM-001").status == Status.RUNNING
 
 
-def test_suggestion_on_running_task_waits_and_rides_revise(sched, fake_github):
+def test_suggestion_on_running_task_waits_and_rides_revise(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")  # a worker still busy at the next tick
     sched.tick()  # DM-001 -> running (no suggestion yet)
     assert sched.store.task("DM-001").status == Status.RUNNING
     t = sched.store.task("DM-001")
@@ -141,7 +138,8 @@ def test_suggestion_on_running_task_waits_and_rides_revise(sched, fake_github):
     assert not sched.state.get("DM-001").get("edit_run")
     assert not any(r.mode == "edit" for r in sched.runs.runs_for("DM-001"))
 
-    wait_for_runs(sched)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
+    sched.runner_for(t).wake(sched.runs.latest("DM-001"))  # the worker finishes its round
     sched.tick()  # reap -> in_review
     sched.triage(sched.store.task("DM-001"), changes="please revisit")
     sched.tick()  # dispatch the revise run
@@ -176,7 +174,6 @@ def test_web_integrate_now(garden, monkeypatch):
     assert r.status_code == 303
     sched = Scheduler(Store(garden), github=FakeGitHub())
     assert sched.state.get("DM-001").get("edit_run")
-    wait_for_runs(sched)
     sched.tick(dispatch=False)
     assert not has_pending(sched.store.task("DM-001").body)
     assert "Integrated suggestions" in sched.store.task("DM-001").body

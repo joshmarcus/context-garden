@@ -3,13 +3,11 @@
 
 from garden.github import Feedback
 from garden.model import Status
-from tests.conftest import wait_for_runs
 from tests.scheduler.conftest import statuses
 
 
 def test_feedback_triggers_revise_round(sched, fake_github):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
@@ -21,7 +19,6 @@ def test_feedback_triggers_revise_round(sched, fake_github):
     assert run.mode == "revise"
     brief = (run.path / "brief.md").read_text()
     assert "Revision round" in brief and "rename this" in brief and "`a.py`:3" in brief
-    wait_for_runs(sched)
     fake_github.feedback.clear()
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
@@ -36,7 +33,6 @@ def test_feedback_triggers_revise_round(sched, fake_github):
 
 def test_bot_notice_does_not_trigger_revise_but_is_logged(sched, fake_github):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
@@ -53,7 +49,6 @@ def test_bot_notice_does_not_trigger_revise_but_is_logged(sched, fake_github):
 
 def test_revision_cap(sched, fake_github):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     for i in range(3):
@@ -61,7 +56,6 @@ def test_revision_cap(sched, fake_github):
         fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": f"round {i}", "created": "2099-01-01T00:00:00Z"}])
         sched.tick()
         if statuses(sched)["DM-001"] == "running":
-            wait_for_runs(sched)
             sched.tick()
     assert statuses(sched)["DM-001"] == "changes_requested"
     assert sched.state.get("DM-001")["revisions"] == 2
@@ -70,7 +64,6 @@ def test_revision_cap(sched, fake_github):
 
 def test_ci_failure_triggers_revise(sched, fake_github):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at, pr.checks = "t2", "FAILURE"
@@ -81,7 +74,6 @@ def test_ci_failure_triggers_revise(sched, fake_github):
 
 def test_pr_closed_fails(sched, fake_github):
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     fake_github.prs["garden/dm-001-first-task"].state = "CLOSED"
     sched.tick()
@@ -92,8 +84,8 @@ def test_failed_task_with_merged_pr_becomes_done(sched, fake_github):
     """CG-046/CG-039: a revise round (or a retry) can die with the task's PR still open.
     A human merging that PR on GitHub must still resolve the task to done, worktree cleaned
     up and dependants unblocked, even though the task fell out of the review flow."""
+    sched.cfg.data["stack"] = False  # DM-002 must wait for the merge, not stack on the open PR
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()  # DM-001 -> in_review, PR opened
     t = sched.store.task("DM-001")
     t.status = Status.FAILED  # e.g. a revise run died while the PR was still open
@@ -109,7 +101,6 @@ def test_failed_task_with_merged_pr_becomes_done(sched, fake_github):
 def test_failed_task_with_closed_pr_stays_failed(sched, fake_github):
     """A failed task whose PR is closed unmerged stays failed, with the close noted."""
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     t = sched.store.task("DM-001")
     t.status = Status.FAILED

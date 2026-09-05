@@ -5,7 +5,7 @@ import os
 from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
-from tests.conftest import FakeGitHub, wait_for_runs
+from tests.conftest import FakeGitHub
 
 
 def statuses(sched):
@@ -16,7 +16,6 @@ def statuses(sched):
 def _to_decision(sched, mode, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
 
 
@@ -47,7 +46,6 @@ def test_wont_do_accept_ends_the_task(sched, fake_github, monkeypatch):
 def test_wont_do_closes_the_open_pr(sched, fake_github):
     # a task that already reached a PR, then a person rules it won't be done
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     t = sched.store.task("DM-001")
     assert t.status == Status.IN_REVIEW and t.pr
@@ -70,7 +68,6 @@ def test_wont_do_reject_carries_the_note_into_a_revise(sched, fake_github, monke
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
     assert "The person disagrees" in brief and "still needed" in brief
     # the revise round finishes normally -> a PR
-    wait_for_runs(sched)
     sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
 
@@ -79,7 +76,6 @@ def test_wont_do_reject_carries_the_note_into_a_revise(sched, fake_github, monke
 def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     assert statuses(sched)["DM-001"] == "in_review"
     pr = fake_github.prs["garden/dm-001-first-task"]
@@ -87,7 +83,6 @@ def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monk
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
     rep = sched.tick()  # -> changes_requested + revise dispatched
     assert rep.dispatched == ["DM-001(revise)"]
-    wait_for_runs(sched)
     sched.tick()  # reap the revise run: it reports no_change
     assert statuses(sched)["DM-001"] == "waiting_human"
     assert sched.state.get("DM-001")["decision"]["kind"] == "no_change"
@@ -105,13 +100,11 @@ def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monk
 def test_no_change_reject_revises(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     assert statuses(sched)["DM-001"] == "waiting_human"
     sched.reject_decision(sched.store.task("DM-001"), "there is a real change to make here")
@@ -140,7 +133,6 @@ def test_cli_shows_and_accepts_a_decision(garden, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "wont_do")
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     r = _cli(garden, "show", "DM-001")
     assert "worker decision" in r.output and "duplicates DM-002" in r.output
@@ -156,7 +148,6 @@ def test_cli_reject_and_set_status_wont_do(garden, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "wont_do")
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     # garden answer on a decision task rejects with the note (per the protocol)
     r = _cli(garden, "answer", "DM-001", "please do it after all")
@@ -179,7 +170,6 @@ def test_web_decision_flow(garden, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "wont_do")
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     c = TestClient(create_app(Store(garden), watch=False))
     page = c.get("/tasks/DM-001").text
