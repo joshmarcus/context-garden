@@ -353,7 +353,16 @@ def start(root: Path, host: str = "127.0.0.1", port: int = 0) -> Sandbox:
 
     garden = make_garden(root)
     github = MemoryGitHub()
-    app = create_app(Store(garden), watch=True, github=github)
+    if port == 0:
+        # Resolve the ephemeral port up front so the origin check's allowlist can include the
+        # address the server binds to (the driver posts with that origin as its Referer).
+        import socket as _socket
+
+        probe = _socket.socket()
+        probe.bind((host, 0))
+        port = probe.getsockname()[1]
+        probe.close()
+    app = create_app(Store(garden), watch=True, github=github, host=host, port=port)
     register_pretend_github(app, github)
     recorder = PageRecorder(app, root / "pages")
     config = uvicorn.Config(recorder, host=host, port=port, log_level="warning")

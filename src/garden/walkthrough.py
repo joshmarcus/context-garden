@@ -237,7 +237,7 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    config = uvicorn.Config(create_app(store, watch=False), host="127.0.0.1", port=port, log_level="warning")
+    config = uvicorn.Config(create_app(store, watch=False, host="127.0.0.1", port=port), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

@@ -338,6 +338,12 @@ files under `tasks/` must not be hand-edited.
     before it can automerge. Merging a child into the parent's branch would put commits
     there that the parent's worktree does not have, and the parent's next rebase round
     would force-push them away.
+  - **A self or tool product needs a second round.** A PR against a product with `self: true`
+    (the garden's own repo) or `provides_tool: true` (the product that ships the `garden`
+    binary) can change the loop that merges it, so `automerge_min_review_rounds` is 2 there
+    by default — one approving LLM review is not enough (`_needs_second_review_round`). An
+    explicit per-product `automerge_min_review_rounds` overrides the default; otherwise the
+    PR waits for a second approving round or a person merging it by hand.
   - **A rebase round keeps remote-only commits.** A rebase round rewrites a branch in the
     worktree and force-pushes it, so before rebasing the scheduler folds in any commits
     that exist only on `origin/<branch>` by rebasing the worktree's commits onto it first.
@@ -422,12 +428,13 @@ files under `tasks/` must not be hand-edited.
   thread.
 - **Only trusted authors prompt a worker.** A comment is text a worker would carry out, and
   on a public repo anyone can leave one. `GitHub.is_trusted` admits the login the garden
-  authenticates as, `github.trusted_authors`, the `github.reviewers` it requests, and
-  `[bot]` accounts (review apps the owner installed). Everything else, a `CHANGES_REQUESTED`
-  review included, is returned as `ignored` with the reason `untrusted`, logged once on the
-  task with a `feedback_ignored` event, and never reaches a brief. The GitHub review
-  decision still gates automerge, so an untrusted request for changes blocks a merge
-  without steering a worker.
+  authenticates as, `github.trusted_authors` and the `github.reviewers` it requests. A
+  `[bot]` account is trusted only when `github.trusted_bots` names it (empty by default), so
+  an app relaying untrusted comment text does not steer a worker until the owner opts that
+  app in by login. Everything else, a `CHANGES_REQUESTED` review included, is returned as
+  `ignored` with the reason `untrusted`, logged once on the task with a `feedback_ignored`
+  event, and never reaches a brief. The GitHub review decision still gates automerge, so an
+  untrusted request for changes blocks a merge without steering a worker.
 - **CI.** The scheduler reads the checks rollup on the PR head, whichever system posts
   it. Log analysis is whatever `checks.ci` names; nothing assumes GitHub Actions.
 
@@ -472,12 +479,11 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
   Two checks sit at its edges (`web/trust.py`): every piece of markdown a page renders
   (task bodies, PR feedback, review verdicts, persona reports, specs) is reduced to an
   allowlist of tags and attributes with safe link targets, since much of it was written by
-  an agent or a commenter; and a POST whose `Origin` (or `Referer`) is another site is
-  refused with 403, so a page open elsewhere in the same browser cannot press the buttons. A
-  same-origin POST must also be addressed to a loopback `Host` (the garden serves on
-  localhost), so a domain that resolves to 127.0.0.1 (a DNS-rebinding attack, `Origin`
-  matching `Host`) is refused too. `web.trusted_origins` lists any extra origin — a reverse
-  proxy or a LAN address — that must be allowed.
+  an agent or a commenter; and a POST whose `Origin` (or `Referer`) is not the address the
+  server binds to is refused with 403, so a page open elsewhere in the same browser cannot
+  press the buttons. The allowlist is `server_origins(host, port)` plus `web.trusted_origins`
+  (for a reverse proxy that presents another origin); the request's own `Host` is never
+  consulted, so a page whose name was rebound to the loopback address is refused too.
 - **TUI** (`tui/app.py`, Textual): an Inbox tab and a Tasks tab with the same actions,
   refreshing every few seconds so it can sit beside a `garden watch`.
 - **Skills** (`.claude/skills/`, written by `garden init`): `garden-take`, `garden-plan`

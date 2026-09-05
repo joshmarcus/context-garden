@@ -107,6 +107,7 @@ class Scheduler(
             bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
             bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
             trusted_authors=[str(a) for a in trusted],
+            trusted_bots=[str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
         )
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)
