@@ -1361,6 +1361,52 @@ def friction(target: str = typer.Argument(..., help="product/phase")):
 
 
 @app.command()
+def retro(
+    target: str = typer.Argument(..., help="product/phase"),
+    personas: list[str] = typer.Option([], "--persona", "-p", help="Persona name (repeat); default: all configured/built-in"),
+    skip_personas: bool = typer.Option(False, "--skip-personas", help="Reuse persona reports that already exist instead of running them"),
+    next_phase: str = typer.Option("", "--next-phase", help="Name for the next phase's goals draft (default: next number up)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan and the estimated cost, then exit"),
+):
+    """Run a phase's retrospective as one process: harvest the PR-body friction, run (or reuse)
+    the persona reviews, reconcile every friction item against what merged, and open a PR to
+    the garden's own repo with the retro document and a draft of the next phase's goals."""
+    store = _store()
+    product, phase_name = _split_target(target)
+    ph = _phase(store, product, phase_name)
+    sched = _scheduler(store)
+    names = list(personas) or None
+    if dry_run:
+        plan = sched.retro_plan(ph, names, skip_personas=skip_personas, next_phase=next_phase)
+        console.print(f"[bold]retro plan for {plan['phase']}[/bold]")
+        console.print(f"  harvest: {plan['friction']} friction item(s) from {plan['merged']} merged PR(s), {plan['tasks']} task(s)")
+        if plan["personas_run"]:
+            console.print(f"  personas to run: {', '.join(plan['personas_run'])}")
+        if plan["personas_reuse"]:
+            console.print(f"  personas to reuse: {', '.join(plan['personas_reuse'])}")
+        if not plan["personas_run"] and not plan["personas_reuse"]:
+            console.print("  personas: none")
+        console.print("  reconcile: 1 run -> retro document + next-goals draft")
+        console.print(f"  output: PR to the {plan['self_product'] or '(missing self product!)'} repo; next phase draft {plan['next_phase']}")
+        cost = f"${plan['est_cost']:.2f}" if plan["have_cost_history"] else "unknown (no run history yet)"
+        console.print(f"  estimated: ~{plan['est_tokens']:,} tokens, {cost}")
+        if not plan["self_product"]:
+            err.print("[yellow]no product has `self: true`; retro cannot open a PR to the garden repo (see docs/architecture.md)[/yellow]")
+        return
+    try:
+        entry = sched.start_retro(ph, names, skip_personas=skip_personas, next_phase=next_phase)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    if entry["stage"] == "personas":
+        running = ", ".join(entry["persona_runs"])
+        console.print(f"{ph.key}: running persona review(s) ({running}); reconciliation follows on the next tick")
+    else:
+        console.print(f"{ph.key}: reconciliation run started; retro PR will open to the {entry['self_product']} repo on the next tick")
+    console.print("[dim]run `garden tick` (or `garden watch`) to let it finish[/dim]")
+
+
+@app.command()
 def usage(
     target: str | None = typer.Argument(None, help="task id, product/phase, or nothing for everything"),
     by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
