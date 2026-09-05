@@ -247,14 +247,18 @@ class Scheduler(
         task.status = status
         task.log(note)
         self.store.save(task)
+        st = self.state.get(task.id)
+        changed = False
         if status in (Status.DONE, Status.CANCELLED):
             # A task that reached done or cancelled is finished; any stop recorded while it
             # was still active (a review-cap card, feedback waiting for a revise run, an
             # automerge hold) must not linger and be counted as a decision on the Inbox.
-            st = self.state.get(task.id)
-            st.pop("needs_human", None)
-            st.pop("pending_feedback", None)
-            st.pop("automerge_blocked", None)
+            for k in ("needs_human", "pending_feedback", "automerge_blocked"):
+                changed = st.pop(k, None) is not None or changed
+        if status != Status.IN_REVIEW and st.pop("merge_head", None) is not None:
+            # A task that left in_review is no longer the merge queue's head.
+            changed = True
+        if changed:
             self.state.save()
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
