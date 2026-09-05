@@ -15,7 +15,7 @@ def register(app: FastAPI, site: Site) -> None:
     def decision_action(request: Request, decision_id: str, action: str):
         if action not in ("accept", "reject"):
             raise HTTPException(400, f"unknown action {action}")
-        with hub.lock:
+        with hub.action_lock:
             sched = hub.scheduler()
             try:
                 sched.resolve_decision(decision_id, accept=(action == "accept"))

@@ -48,7 +48,7 @@ def register(app: FastAPI, site: Site) -> None:
     def close_phase(product: str, phase: str):
         back = f"/phases/{product}/{phase}"
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 try:
                     ph = sched.store.phase(product, phase)
@@ -70,7 +70,7 @@ def register(app: FastAPI, site: Site) -> None:
     @app.post("/phases/{product}/{phase}/budget")
     def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
         key = f"{product}/{phase}"
-        with hub.lock:
+        with hub.action_lock:
             sched = hub.scheduler()
             if no_budget or not amount.strip():
                 sched.set_budget(key, None, by="web")
@@ -93,7 +93,7 @@ def register(app: FastAPI, site: Site) -> None:
         except KeyError:
             raise HTTPException(404) from None
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 for name in [n.strip() for n in personas.split(",") if n.strip()]:
                     sched.dispatch_persona_phase(ph, name, file_tasks=bool(file_tasks))

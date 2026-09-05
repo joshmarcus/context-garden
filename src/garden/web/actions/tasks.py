@@ -189,7 +189,7 @@ def register(app: FastAPI, site: Site) -> None:
         back = request.headers.get("referer", "")
         redirect_to = back if back.endswith("/") or back.endswith("/inbox") else f"/tasks/{task_id}"
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)

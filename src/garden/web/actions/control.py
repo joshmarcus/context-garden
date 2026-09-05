@@ -23,7 +23,7 @@ def register(app: FastAPI, site: Site) -> None:
     def web_pause(request: Request, reason: str = Form("")):
         back = request.headers.get("referer", "/")
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 sched.pause(by="web", reason=reason.strip())
             hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
@@ -41,7 +41,7 @@ def register(app: FastAPI, site: Site) -> None:
     def web_resume(request: Request):
         back = request.headers.get("referer", "/")
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 sched.resume(by="web")
             hub._log("dispatch resumed via web")
@@ -57,7 +57,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/config/max-parallel")
     def web_set_max_parallel(request: Request, value: int = Form(...)):
-        with hub.lock:
+        with hub.action_lock:
             sched = hub.scheduler()
             sched.set_override("max_parallel", value, by="web")
         hub._log(f"max_parallel set to {value} via web")
@@ -65,7 +65,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/config/max-parallel/clear")
     def web_clear_max_parallel(request: Request):
-        with hub.lock:
+        with hub.action_lock:
             sched = hub.scheduler()
             sched.clear_override("max_parallel", by="web")
         hub._log("max_parallel override cleared via web")
@@ -75,7 +75,7 @@ def register(app: FastAPI, site: Site) -> None:
     def web_upgrade(request: Request):
         back = request.headers.get("referer", "/")
         try:
-            with hub.lock:
+            with hub.action_lock:
                 sched = hub.scheduler()
                 result = sched.upgrade(restart=True)
         except (RuntimeError, GitError, GitHubError) as e:
