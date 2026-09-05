@@ -149,9 +149,9 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | group | keys | meaning |
 |---|---|---|
 | the PR | `pr_number`, `pr_draft`, `pr_base`, `pr_state`, `pr_updated_at`, `head_sha`, `review_decision`, `checks`, `failed_checks`, `ci_failed_at`, `ci_reruns`, `last_polled` | what the last poll saw; `pr_updated_at` lets the poll skip PRs nothing has touched |
-| the revise loop | `pending_feedback`, `revisions`, `needs_human`, `last_diff_hash`, `force_push` | feedback waiting for a revise run, how many rounds were used, why the loop stopped |
-| automated review | `review_run`, `review_rounds`, `last_review`, `last_findings` | the review run in flight, rounds used, the last verdict and its blocking findings (for stall detection) |
-| rebase and automerge | `rebases`, `rebase_pending`, `rebase_base`, `rebase_files`, `rebase_hunks`, `automerge_candidate`, `automerge_ready_at`, `automerge_blocked`, `automerged` | rebase rounds used (its own counter), a pending agent rebase and its hunks, whether the PR is a merge-queue candidate and since when, why automerge is held, and the record of a garden merge |
+| the revise loop | `pending_feedback`, `pending_feedback_rebase`, `revisions`, `needs_human`, `last_diff_hash`, `force_push` | feedback waiting for a revise run, whether that round only resolves a stale-base rebase conflict (CG-131, exempt from `max_revisions`), how many ordinary rounds were used, why the loop stopped |
+| automated review | `review_run`, `review_rounds`, `last_round_rebase`, `last_review`, `last_findings` | the review run in flight, rounds used, whether the last dispatched round was a rebase round (its review does not count toward `review.max_rounds`), the last verdict and its blocking findings (for stall detection) |
+| rebase and automerge | `rebases`, `rebase_pending`, `rebase_base`, `rebase_files`, `rebase_hunks`, `automerge_candidate`, `automerge_ready_at`, `automerge_blocked`, `automerged` | rebase rounds used (its own counter, shared with a hand-resolved stale-base conflict), a pending agent rebase and its hunks, whether the PR is a merge-queue candidate and since when, why automerge is held, and the record of a garden merge |
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
@@ -362,6 +362,11 @@ files under `tasks/` must not be hand-edited.
   does not apply, or checks that still fail after it, fall through to the normal revise path
   (and only then); a base that moved but is still red simply re-parks against the new tip. The
   event is `rebased_stale_base`.
+  - **That same stale-base path shares the rebase exemption.** When the mechanical rebase
+    onto the moved base does not apply cleanly, the revise round dispatched to resolve it by
+    hand is flagged `pending_feedback_rebase`: it adds to the same `rebases` counter, is
+    exempt from `max_revisions` and `needs_human` exactly like a conflict rebase, and the
+    review that follows it does not count toward `review.max_rounds` either.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
   `last_dispatched_at` count, minus the garden's own comments (recognised by a hidden
   marker) and the accounts in `github.bot_logins`, so the scheduler's own review comments

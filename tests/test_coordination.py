@@ -194,7 +194,7 @@ def test_review_parallel_queues_and_drains(sched, fake_github):
     reviewed = [d.split("(")[0] for d in rep.dispatched if d.endswith("(review)")]
     assert len(reviewed) == 1
     deferred = "DM-002" if reviewed[0] == "DM-001" else "DM-001"
-    assert sched.state.get(deferred)["pending_reviews"] == [{"kind": "review"}]
+    assert sched.state.get(deferred)["pending_reviews"] == [{"kind": "review", "count_round": True}]
     assert sched.review_slots_free() == 0
     rep = sched.tick()  # the first review is reaped, freeing the slot for the deferred one
     assert f"{deferred}(review)" in rep.dispatched

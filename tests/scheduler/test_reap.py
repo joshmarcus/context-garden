@@ -220,6 +220,37 @@ def test_base_broken_task_stays_parked_while_base_stays_red(sched, fake_github):
     assert len(sched.runs.runs_for("DM-001")) == runs_before  # no rebase run created while waiting
 
 
+def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fake_github, monkeypatch):
+    """CG-139: a stale base (CG-131) that has moved but is still red hands the branch a revise
+    round to resolve the mechanical rebase by hand once `gitops.rebase_onto` can't apply
+    cleanly. That round is bookkeeping, not a fix the worker was asked to make: it must keep
+    its own `rebases` counter and never burn through max_revisions (0 in this fixture) or flag
+    needs_human, however many times in a row it recurs."""
+    from garden import gitops
+
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["max_revisions"] = 0  # any ordinary revise round would need_human immediately
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    _seed_base_guard(sched, "bad")  # red base: guard fails here and on any branch cut from it
+
+    sched.tick()  # dispatch DM-001 from the red base
+    _seed_base_guard(sched, "still-bad")  # base moves, but stays red
+
+    # the mechanical rebase onto the moved base never applies cleanly
+    monkeypatch.setattr(gitops, "rebase_onto", lambda worktree, onto: (False, ["sentinel.txt"]))
+
+    for i in range(3):
+        # one tick reaps the running round (guard still fails on the branch and the moved,
+        # still-red base), flags it as a rebase round, and immediately redispatches the
+        # exempt revise round in the same tick despite max_revisions=0
+        rep = sched.tick()
+        assert "DM-001(revise)" in rep.dispatched
+        st = sched.state.get("DM-001")
+        assert st["rebases"] == i + 1
+        assert st.get("revisions", 0) == 0
+        assert not st.get("needs_human")
+
+
 def test_crash_retries_then_fails(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
     sched.tick()

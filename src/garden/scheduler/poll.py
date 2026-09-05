@@ -107,6 +107,7 @@ class PollMixin:
         pending = fb.to_markdown() + ("\n\n" + ci_note if ci_note else "")
         st["pending_feedback"] = pending
         st.pop("pending_feedback_easy", None)
+        st.pop("pending_feedback_rebase", None)
         n = len(fb.items)
         note = f"{n} new review item(s)" if n else "CI failure"
         if n and ci_note:

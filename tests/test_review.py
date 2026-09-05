@@ -312,3 +312,46 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
     assert "DM-001 review: approve" in rep.transitions
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(sched, fake_github):
+    """CG-139: a revise round that only resolved a stale-base rebase conflict (CG-131) by hand
+    re-reads code the reviewer already approved, so the review that follows it must not count
+    toward review.max_rounds — otherwise a busy merge queue rebasing several clean PRs in a row
+    sends them all to the review cap at once for no code reason."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
+    assert "DM-001(review)" in rep.dispatched
+    sched.tick()  # reap review -> approve
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+    sched.store.invalidate()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+    # Reproduce exactly the state reap.py's _handle_failed_checks (is_rebase=True) leaves behind
+    # for a stale base whose mechanical rebase failed to apply cleanly: feedback to resolve the
+    # conflict by hand, flagged as a rebase round rather than a fix the worker was asked to make.
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- **garden**: resolve the rebase conflict by hand."
+    st["pending_feedback_rebase"] = True
+    sched.state.save()
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+
+    rep = sched.tick()  # dispatches the exempt revise round (rebases counter, not revisions)
+    assert "DM-001(revise)" in rep.dispatched
+    assert sched.state.get("DM-001")["rebases"] == 1
+    assert sched.state.get("DM-001")["revisions"] == 0
+
+    rep = sched.tick()  # reap the revise round -> checks pass -> pushed -> review dispatched again
+    assert "DM-001(review)" in rep.dispatched
+    # the review ran, but it must not have counted: still 1, not 2
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+
+    sched.tick()  # reap the free review -> approve
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+    sched.store.invalidate()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    assert not sched.state.get("DM-001").get("needs_human")
