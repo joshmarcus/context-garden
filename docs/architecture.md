@@ -399,20 +399,33 @@ Hitting a cap flags the task for a human instead of retrying.
 ## How it is tested
 
 `tests/fake_claude.py`, `fake_codex.py` and `fake_ssh.py` stand in for the real
-binaries: the fake harness reads the brief from stdin, commits something in the worktree
-and prints a `claude -p --output-format json` shaped result, with an environment variable
-choosing the scenario (done, crash, no result line, blocked, needs a decision, discovered
-work, a revise round that changes nothing, a rebase conflict). The scenarios are two
-tables in that file: `SPECIAL` for runs that are not a worker round (crash, stall, the
-planner, a comparison, a persona, a retro, an edit, the `review-*` verdicts) and
-`WORKERS` with one row per worker mode; a new scenario is a new row. The `garden`
-fixture in `tests/conftest.py` builds a garden with one product whose repo is a local git
-repo with a bare `origin`, and a fake GitHub records PRs, comments and feedback in memory.
-That is enough to drive every state transition end to end without a network. The
-scheduler's own tests sit under `tests/scheduler/`, one file per tick phase (`test_reap.py`,
-`test_poll.py`, `test_dispatch.py`, `test_human.py`, `test_notify.py`,
+binaries: the fake harness takes the brief, commits something in the worktree and returns
+a `claude -p --output-format json` shaped result, with an environment variable choosing
+the scenario (done, crash, no result line, blocked, needs a decision, discovered work, a
+revise round that changes nothing, a rebase conflict). The scenarios are two tables in
+that file: `SPECIAL` for runs that are not a worker round (crash, stall, the planner, a
+comparison, a persona, a retro, an edit, the `review-*` verdicts) and `WORKERS` with one
+row per worker mode; a new scenario is a new row.
+
+No test drives a subprocess worker. `tests/inprocess.py` is a `LocalRunner` whose launch
+step calls the fake harness as a Python function instead of spawning it: it prepares the
+same setup, brief, environment and resolved argv, writes the same `stdout.json`,
+`stderr.log`, `command.txt` and `exit_code` beside the run record, and returns with the
+run already finished. An autouse fixture in `tests/conftest.py` puts it in the runner
+registry under `local` for every test, so a test ticks once to dispatch and once to reap,
+with nothing to wait for and nothing left running; a `stall` worker is a run with no
+`exit_code`, which is what the idle and timeout checks look for. The local runner's own
+launch mechanics are tested by constructing `LocalRunner` with `subprocess.Popen` stubbed;
+the ssh end-to-end test is the one place a real command runs (its remote script is shell),
+and it waits on that child directly rather than polling.
+
+The `garden` fixture in `tests/conftest.py` builds a garden with one product whose repo is
+a local git repo with a bare `origin`, and a fake GitHub records PRs, comments and feedback
+in memory. That is enough to drive every state transition end to end without a network.
+The scheduler's own tests sit under `tests/scheduler/`, one file per tick phase
+(`test_reap.py`, `test_poll.py`, `test_dispatch.py`, `test_human.py`, `test_notify.py`,
 `test_orphan_sweep.py`) with shared helpers in `tests/scheduler/conftest.py`. `pytest -q`
-runs it all in about a minute; CI for this repository runs the same in
+runs it all in well under a minute; CI for this repository runs the same in
 `.github/workflows/ci.yml`.
 
 ## Rules the code keeps
