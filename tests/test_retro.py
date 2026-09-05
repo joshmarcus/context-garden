@@ -205,6 +205,7 @@ def _live_garden(tmp_path: Path, *, repo: str, work_dir: str) -> Path:
         "review": {"enabled": False}, "github": {"draft_pr": False},
         "work_dir": work_dir,
         "harnesses": {"claude": {"bin": str(FAKE_CLAUDE), "max_turns": {"easy": 40, "medium": 5, "hard": 80}}},
+        "worker_env": {"pass": ["FAKE_CLAUDE_*"]},
         "products": {"gdn": {"repo": repo, "base_branch": "main", "id_prefix": "GD", "self": True, "github": "test/garden"}},
     }
     (root / "garden.yaml").write_text(yaml.safe_dump(cfg))
@@ -338,6 +339,54 @@ def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, 
 
     pr = fake_github.created[-1]
     assert "2 feature(s) filed" in pr["body"] and "1 duplicate(s) skipped" in pr["body"]
+
+
+def test_retro_files_persona_findings_merged_across_personas_by_title(tmp_path, fake_github, monkeypatch):
+    """CG-187: every persona finding becomes a draft, not only the high ones, priority from
+    severity, and findings that say the same thing across personas (the fake harness returns
+    the same three findings for every persona) collapse into one task naming every persona
+    that raised it."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    # neither persona has a report pre-seeded (only "designer" does), so both actually run
+    entry = sched.start_retro(ph, ["security", "usability-expert"], skip_personas=False)
+    assert entry["stage"] == "personas"
+    sched.tick()  # reap both persona runs -> dispatch the reconcile run
+    rep = sched.tick()  # reap the reconcile run -> PR
+    assert not rep.errors, rep.errors
+    assert fake_github.created
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    tasks_dir = wt / "gdn" / "p2" / "tasks"
+    from garden.model import Task as TaskModel
+
+    parsed = [TaskModel.parse(p, p.read_text(), product="gdn", phase="p2") for p in tasks_dir.glob("*.md")]
+    finding_tasks = [t for t in parsed if t.discovered_from.startswith("persona:")]
+    # three merged findings (one per severity) -- each raised by both personas, not six
+    assert len(finding_tasks) == 3
+    by_priority = {t.priority: t for t in finding_tasks}
+    assert set(by_priority) == {1, 2, 3}
+    assert by_priority[1].title == "Secrets can leak into run logs"
+    assert by_priority[2].title == "garden.yaml needs a restart to take effect"
+    assert by_priority[3].title == "The Inbox button label is inconsistent"
+    for t in finding_tasks:
+        assert t.status.value == "draft"
+        assert "security" in t.body and "usability-expert" in t.body
+
+    retro_md = (wt / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "## Findings from persona reviews" in retro_md
+    assert "### High" in retro_md and "### Medium" in retro_md and "### Low" in retro_md
+    assert by_priority[1].id in retro_md and by_priority[3].id in retro_md
+
+    pr = fake_github.created[-1]
+    assert "3 persona finding(s) filed" in pr["body"]
 
 
 def test_retro_commit_failure_becomes_a_card_not_a_silent_vanish(tmp_path, fake_github, monkeypatch):
