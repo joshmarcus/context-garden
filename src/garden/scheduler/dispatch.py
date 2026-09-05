@@ -8,7 +8,7 @@ from typing import Any
 from .. import gitops
 from ..brief import build_brief
 from ..graph import blockers, ready, stack_parents
-from ..model import Phase, Status, Task, now_iso, phase_refusal
+from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
 from ..runner.base import Runner
 from ..runs import Run
@@ -143,6 +143,7 @@ class DispatchMixin:
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+        ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
         branch = branch_override or task.branch or task.default_branch()

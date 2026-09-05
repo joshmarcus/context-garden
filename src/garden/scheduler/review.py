@@ -7,7 +7,7 @@ from typing import Any
 from .. import gitops
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, ensure_open, now_iso
 from ..notify import notify
 from ..review import (
     feedback_from_review,
@@ -116,6 +116,7 @@ class ReviewMixin:
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
     def dispatch_review(self, task: Task, work_run: Run | None = None) -> Run:
+        ensure_open(task)
         self._supersede_running_review(task)
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)
@@ -161,6 +162,7 @@ class ReviewMixin:
     def review_again(self, task: Task) -> Run:
         """The person asked for one more automated review after the cap stopped it: raise
         this task's review cap by one round, clear the stop, and dispatch immediately."""
+        ensure_open(task)
         if not task.pr:
             raise RuntimeError(f"{task.id} has no PR to review")
         st = self.state.get(task.id)

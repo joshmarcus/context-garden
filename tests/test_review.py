@@ -246,6 +246,26 @@ def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     assert not any("request_changes" in c or "approve" in c for c in fake_github.comments)
 
 
+def test_maybe_review_never_dispatches_for_a_merged_task(sched, fake_github):
+    """CG-142: if a task somehow reaches `_maybe_review` after its PR merged (a race between
+    a finishing work run and the poll that already saw the merge), the automated round must
+    not fire; it is logged and skipped instead of crashing the tick."""
+    from garden.scheduler import TickReport
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    sched.store.save(task)
+    sched._transition(sched.store.task("DM-001"), Status.DONE, f"PR merged: {task.pr}")
+
+    rep = TickReport()
+    sched._maybe_review(sched.store.task("DM-001"), None, rep)
+
+    assert not sched.runs.runs_for("DM-001")
+    assert sched.store.task("DM-001").status == Status.DONE
+    assert "could not start" in sched.store.task("DM-001").body
+
+
 def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round(sched, fake_github, monkeypatch):
     """CG-117: once the cap stops the automated reviewer, the task says so instead of sitting
     silently in review, and the Inbox offers one more round without a human editing state.json."""
