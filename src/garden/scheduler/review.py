@@ -186,7 +186,7 @@ class ReviewMixin:
                             pr_comment=pr_comment, verified=verified)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
-        review_difficulty = str(self.cfg.get("review.difficulty") or task.difficulty or "medium")
+        review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty

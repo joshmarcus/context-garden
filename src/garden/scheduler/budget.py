@@ -1,4 +1,5 @@
-"""Budgets, the dispatch pause and live config overrides: what a person can turn without a restart."""
+"""Budgets, the dispatch pause, live config overrides and the operating profile: what a
+person can turn without a restart."""
 
 from __future__ import annotations
 
@@ -6,6 +7,17 @@ from typing import Any
 
 from ..model import Task, now_iso
 from ..notify import notify
+from ..profiles import stops as profile_stops
+
+# effective() key -> the field of the active operating profile that answers it, when no more
+# specific live override is set for that key (see effective and operating_profile below).
+_PROFILE_KEYS: dict[str, str] = {
+    "max_parallel": "workers",
+    "review_parallel": "reviews",
+    "review.difficulty": "review_difficulty",
+    "retro.difficulty": "retro_difficulty",
+    "observe.profile": "observe",
+}
 
 
 class BudgetMixin:
@@ -110,11 +122,68 @@ class BudgetMixin:
         self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
 
     def effective(self, key: str, default: Any = None) -> Any:
-        """The live override for `key` if one is set, else the garden.yaml value."""
+        """The live override for `key` if one is set, else the active operating profile's
+        value for it (see operating_profile) if the profile sets that facet, else the
+        garden.yaml value. A live override is always the most specific: it wins over the
+        stop even while one is active."""
         ov = self.overrides()
         if key in ov:
             return ov[key]
+        field = _PROFILE_KEYS.get(key)
+        if field:
+            profile = self.operating_profile()
+            if field in profile:
+                return profile[field]
         return self.cfg.get(key, default)
+
+    def effective_source(self, key: str) -> str:
+        """Which layer answers `effective(key)` right now: "override" (a live override on
+        this exact key), "profile" (the active operating profile sets this facet), or "yaml"
+        (the plain garden.yaml/default value) — for the Config page to say where a value
+        comes from."""
+        if key in self.overrides():
+            return "override"
+        field = _PROFILE_KEYS.get(key)
+        if field and field in self.operating_profile():
+            return "profile"
+        return "yaml"
 
     def effective_max_parallel(self) -> int:
         return int(self.effective("max_parallel", 10))
+
+    # ---- operating profile (CG-221) -----------------------------------------
+    def operating_profile_stops(self) -> dict[str, dict[str, Any]]:
+        """Every stop a garden can be switched to: the built-ins plus whatever it defines or
+        overrides under `profiles:` (see garden.profiles.stops)."""
+        return profile_stops(self.cfg)
+
+    def operating_profile_name(self) -> str:
+        """The active stop's name, or "" when none is set (plain garden.yaml/live-override
+        values). A live override on `operating_profile` (`garden profile <name>` or the rail)
+        wins; otherwise the garden.yaml `operating_profile` key, if set."""
+        ov = self.overrides()
+        if "operating_profile" in ov:
+            return str(ov["operating_profile"] or "")
+        return str(self.cfg.get("operating_profile") or "")
+
+    def operating_profile(self) -> dict[str, Any]:
+        """The resolved fields of the active stop, or {} if none is active or its name is
+        unrecognised (a stop removed from `profiles:` after being selected doesn't crash the
+        scheduler; effective() just falls through to garden.yaml values)."""
+        return dict(self.operating_profile_stops().get(self.operating_profile_name()) or {})
+
+    def set_operating_profile(self, name: str, by: str = "cli") -> None:
+        """Switch the active stop live: an empty name clears it, back to plain garden.yaml
+        values. Emits `profile_changed` (from/to) so the change is visible on the costs chart
+        once it reads the event log, besides the generic `config_override` trail."""
+        name = (name or "").strip()
+        if name and name not in self.operating_profile_stops():
+            raise ValueError(f"unknown operating profile {name!r}")
+        old = self.operating_profile_name()
+        if name:
+            self.overrides()["operating_profile"] = name
+        else:
+            self.overrides().pop("operating_profile", None)
+        self.state.save()
+        self.events.emit("profile_changed", "", **{"from": old, "to": name})
+        self.log(f"operating profile: {old or '(none)'} -> {name or '(none)'} by {by}")
