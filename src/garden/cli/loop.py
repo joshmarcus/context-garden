@@ -79,6 +79,33 @@ def budget(
 
 
 @app.command(rich_help_panel=PANEL_LOOP)
+def profile(
+    name: str = typer.Argument("", help="economy | balanced | fast, or a name from garden.yaml profiles:; omit to show the active one"),
+    clear_: bool = typer.Option(False, "--clear", help="Drop the live override, back to plain garden.yaml values"),
+):
+    """Switch the operating profile live (CG-221): one named stop sets workers, reviews, the
+    model tier map, the review and retro tiers and the observe profile together, in effect
+    within one tick, no restart."""
+    store = _store()
+    sched = _scheduler(store)
+    if clear_:
+        sched.set_operating_profile("", by="cli")
+        console.print("[green]operating profile cleared[/green] (back to plain garden.yaml values)")
+        return
+    if not name:
+        active = sched.operating_profile_name()
+        console.print(f"active: {active or '(none — plain garden.yaml values)'}")
+        console.print(f"choices: {', '.join(sorted(sched.operating_profile_stops()))}")
+        return
+    try:
+        sched.set_operating_profile(name, by="cli")
+    except ValueError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]operating profile: {name}[/green] (live override; takes effect next tick)")
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
 def unpause():
     """Resume automatic dispatch after a `garden pause` (the mirror of pause)."""
     store = _store()
