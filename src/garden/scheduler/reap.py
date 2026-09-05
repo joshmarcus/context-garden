@@ -403,6 +403,22 @@ class ReapMixin:
         worker's `no_change` decision has already ruled that the unchanged diff is correct, so the
         round must proceed to the PR or review rather than stall."""
         st = self.state.get(task.id)
+        # A stack parent that merged while this run was in flight leaves `base` naming the parent's
+        # branch, which GitHub may already have deleted. Retarget to the final base and rebase onto
+        # it before the pre-PR checks and the PR, so the PR never opens (or updates) against a dead
+        # branch (CG-173). A textual conflict hands off to an easy-tier rebase agent; only then does
+        # the round stop short of the PR.
+        if self._parent_merged(task):
+            st.pop("restack_pending", None)
+            parent_id = st.get("stack_parent", "")
+            self._restack(task, rep)
+            if st.get("rebase_pending"):
+                if task.status != Status.CHANGES_REQUESTED:
+                    self._transition(task, Status.CHANGES_REQUESTED,
+                                     f"parent {parent_id} merged; rebase conflicts; a rebase agent will resolve it{cost}")
+                    rep.transitions.append(f"{task.id} -> changes_requested (rebase)")
+                return
+            base = self.base_for(task)
         stalled = False
         diff_h: str | None = None
         body_h: str | None = None
@@ -434,8 +450,6 @@ class ReapMixin:
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
             self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff or PR description")
-        if st.pop("restack_pending", False) and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
-            self._restack(task, rep)
 
     def _open_or_update_pr(self, task: Task, run: Run, branch: str, base: str, result: dict[str, Any],
                            rep: TickReport, cost: str) -> None:

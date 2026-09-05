@@ -389,6 +389,119 @@ def test_restack_conflict_dispatches_rebase_agent(sched, fake_github, tmp_path, 
     assert int(sched.state.get("DM-002").get("revisions", 0)) == 0  # never touches max_revisions
 
 
+# ---- CG-173: a merging parent never orphans its stacked children -------------
+def test_merge_retargets_children_before_deleting_branch(sched, fake_github, tmp_path):
+    """When a stack parent automerges, every open stacked-child PR is retargeted to the final
+    base before the parent's branch is deleted, so GitHub never closes the child mid-merge."""
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()
+    sched.tick()  # DM-001 in_review + PR; DM-002 stacks and dispatches
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    parent_branch, child_branch = "garden/dm-001-first-task", "garden/dm-002-second-task"
+    assert fake_github.prs[child_branch].base == parent_branch
+
+    # DM-001's gates go green so the merge queue takes it
+    st1 = sched.state.get("DM-001")
+    st1["last_review"] = {"verdict": "approve", "summary": "ok"}
+    st1["last_review_run"] = "rev-1"
+    st1["review_rounds"] = 1
+    sched.state.save()
+    pr1 = fake_github.prs[parent_branch]
+    pr1.mergeable, pr1.checks = "MERGEABLE", "SUCCESS"
+
+    sched.tick()  # merge queue merges DM-001
+    assert pr1.state == "MERGED"
+    assert fake_github.merged[-1] == {"number": pr1.number, "method": "squash", "delete_branch": True}
+    # the child PR was retargeted to main *before* the parent's branch was deleted, so it survives
+    child = fake_github.prs[child_branch]
+    assert child.base == "main"
+    assert {"number": child.number, "base": "main"} in [{"number": u["number"], "base": u["base"]} for u in fake_github.updated]
+    assert child.state == "OPEN"
+
+
+def test_child_run_finishing_after_parent_merged_opens_pr_on_final_base(sched, fake_github, tmp_path):
+    """A child whose stack parent became terminal while its work run was in flight opens its PR
+    against the final base and rebases onto it, never against the parent's (deleted) branch."""
+    sched.tick()
+    sched.tick()  # DM-001 in_review + PR; DM-002 stacks, dispatches and its in-process run finishes
+    child_branch = "garden/dm-002-second-task"
+    assert statuses(sched)["DM-002"] == "running"
+    st2 = sched.state.get("DM-002")
+    assert st2["stack_parent"] == "DM-001" and st2["pr_base"] == "garden/dm-001-first-task"
+    assert child_branch not in fake_github.prs  # the child has not opened a PR yet
+
+    # the parent merges into main before the child's run is reaped
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", "origin/garden/dm-001-first-task", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    t1 = sched.store.task("DM-001")
+    t1.status = Status.DONE
+    sched.store.save(t1)
+
+    rep = sched.tick()  # reap DM-002: restack onto main, then open its PR against main
+    assert "DM-002 restacked onto main" in rep.transitions
+    created = [c for c in fake_github.created if c["head"] == child_branch]
+    assert created and created[0]["base"] == "main"  # the PR opened against the final base
+    assert fake_github.prs[child_branch].base == "main"
+    st2 = sched.state.get("DM-002")
+    assert "stack_parent" not in st2 and st2["pr_base"] == "main"
+    assert statuses(sched)["DM-002"] == "in_review"
+    gitc("fetch", "origin", cwd=repo)
+    ahead = gitc("rev-list", "--count", "origin/main..origin/garden/dm-002-second-task", cwd=repo).strip()
+    assert ahead == "1"  # only the child's own commit on top of main
+
+
+def _stacked_child_with_closed_base(sched, fake_github, tmp_path):
+    """Drive DM-002 to an open PR stacked on DM-001, then simulate GitHub closing that PR because
+    the parent's branch was deleted (base_ref_deleted). DM-001 is marked done in place so it does
+    not re-run `_on_merged` during the poll under test."""
+    sched.tick()
+    sched.tick()  # DM-001 in_review + PR; DM-002 stacks and dispatches
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    child_branch = "garden/dm-002-second-task"
+    assert fake_github.prs[child_branch].base == "garden/dm-001-first-task"
+
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", "origin/garden/dm-001-first-task", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    t1 = sched.store.task("DM-001")
+    t1.status = Status.DONE
+    sched.store.save(t1)
+    child = fake_github.prs[child_branch]
+    child.state = "CLOSED"
+    fake_github.base_deleted.add(child.number)  # a base_ref_deleted timeline event
+    fake_github.deleted_branches.add("garden/dm-001-first-task")
+    return child
+
+
+def test_child_pr_closed_by_base_deletion_is_reopened(sched, fake_github, tmp_path):
+    """A child PR GitHub closed because its base branch was deleted is reopened onto the final
+    base and rebased, not failed."""
+    child = _stacked_child_with_closed_base(sched, fake_github, tmp_path)
+    rep = sched.tick()  # poll DM-002: recognise the base deletion and reopen onto main
+    assert child.number in fake_github.reopened
+    assert child.state == "OPEN" and child.base == "main"
+    assert statuses(sched)["DM-002"] == "in_review"  # not failed
+    assert "DM-002 -> failed (PR closed)" not in rep.transitions
+    assert sched.state.get("DM-002")["pr_base"] == "main"
+
+
+def test_child_pr_recreated_when_github_refuses_reopen(sched, fake_github, tmp_path):
+    """When GitHub refuses to reopen the closed child PR, a fresh PR is opened from the same
+    branch against the final base."""
+    child = _stacked_child_with_closed_base(sched, fake_github, tmp_path)
+    old_number = child.number
+    fake_github.refuse_reopen.add(old_number)
+    sched.tick()  # poll DM-002: reopen refused, so a new PR is opened from the same branch
+    reopened = fake_github.prs["garden/dm-002-second-task"]
+    assert reopened.number != old_number and reopened.state == "OPEN" and reopened.base == "main"
+    assert sched.state.get("DM-002")["pr_number"] == reopened.number
+    assert statuses(sched)["DM-002"] == "in_review"
+
+
 # ---- 6. conflict detection ---------------------------------------------------
 def test_conflicting_pr_dispatches_rebase_agent(sched, fake_github, tmp_path, monkeypatch):
     """When GitHub reports a PR as CONFLICTING and the actual rebase conflicts textually,

@@ -39,6 +39,8 @@ class PollMixin:
             self._cleanup(task)
             return
         if pr.state == "CLOSED":
+            if self._reopen_if_base_deleted(task, slug, pr, rep):
+                return
             self.events.emit("pr_closed", task.id, pr=task.pr)
             self._transition(task, Status.FAILED, f"PR closed without merging: {task.pr}")
             rep.transitions.append(f"{task.id} -> failed (PR closed)")
@@ -208,6 +210,49 @@ class PollMixin:
         return [t for t in self.store.tasks().values()
                 if self.state.get(t.id).get("stack_parent") == task.id and not t.status.terminal]
 
+    def _parent_merged(self, task: Task) -> bool:
+        """Whether this task's stack parent has reached a terminal status (merged): its branch is
+        gone or going, so the child must target the final base, not the parent's branch."""
+        st = self.state.get(task.id)
+        if st.get("restack_pending"):
+            return True
+        parent_id = st.get("stack_parent")
+        if not parent_id:
+            return False
+        parent = self.store.tasks().get(parent_id)
+        return parent is not None and parent.status.terminal
+
+    def _retarget_children_before_delete(self, task: Task) -> bool:
+        """Before a parent's branch is deleted (on merge), point every open stacked-child PR at
+        the final base so GitHub does not close it the instant the branch goes. Returns True when
+        every child that needed retargeting was retargeted (so the caller may delete the branch),
+        False when any retarget failed (so the caller keeps the branch and lets a later pass retry).
+        The child's branch is rebased onto the final base later, by `_on_merged`/`_restack`."""
+        slug = self.slug_for(task)
+        if not (slug and self.github.available):
+            return True
+        all_ok = True
+        for child in self.stacked_children(task):
+            number = self._pr_number(child)
+            new_base = self.final_base_for(child)
+            if not number:
+                continue
+            try:
+                pr = self.github.get_pr(slug, number)
+            except (GitHubError, KeyError):
+                continue
+            if pr.state != "OPEN" or pr.base == new_base:
+                continue
+            try:
+                self.github.update_pr(slug, number, base=new_base)
+                self.events.emit("retargeted", child.id, parent=task.id, base=new_base)
+                child.log(f"stack parent {task.id} merging; retargeted this PR to {new_base} before the parent branch is deleted")
+                self.store.save(child)
+            except GitHubError as e:
+                all_ok = False
+                self.log(f"{child.id}: could not retarget before parent branch delete: {e}")
+        return all_ok
+
     def _on_merged(self, task: Task, rep: TickReport) -> None:
         if self.cfg.product(task.product).get("provides_tool"):
             try:
@@ -264,6 +309,53 @@ class PollMixin:
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
         # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
         self._dispatch_rebase_agent(child, new_base, files, hunks, rep, f"parent {parent_id} merged")
+
+    def _reopen_if_base_deleted(self, task: Task, slug: str | None, pr: PRInfo, rep: TickReport) -> bool:
+        """A PR GitHub closed because its base branch was deleted (a stack parent that merged with
+        `--delete-branch`) is not a task failure: reopen it onto the final base and rebase, or —
+        when GitHub refuses to reopen — open a fresh PR from the same head branch. Returns True
+        when the PR was recovered, so the caller stops treating the close as a failure."""
+        if not task.status.pr_open:
+            return False  # a terminal/failed task keeps its close; only the active review flow recovers
+        final_base = self.final_base_for(task)
+        number = self._pr_number(task)
+        if not (slug and number and self.github.available):
+            return False
+        if not pr.base or pr.base == final_base:
+            return False  # a PR already on the final base was not closed by a base deletion
+        try:
+            deleted = self.github.base_ref_deleted(slug, number)
+        except GitHubError:
+            deleted = False
+        if not deleted:
+            try:
+                deleted = not self.github.branch_exists(slug, pr.base)
+            except GitHubError:
+                deleted = False
+        if not deleted:
+            return False
+        st = self.state.get(task.id)
+        branch = pr.head or task.branch or task.default_branch()
+        try:
+            self.github.reopen_pr(slug, number)
+            self.events.emit("pr_reopened", task.id, pr=task.pr, base=final_base, how="reopen")
+        except GitHubError as reopen_err:
+            self.log(f"{task.id}: could not reopen PR #{number} after base deletion: {reopen_err}")
+            try:
+                new = self.github.create_pr(slug, branch, final_base,
+                                            pr.title or f"{task.id}: {task.title}", pr.body or task.body)
+            except GitHubError as create_err:
+                self.log(f"{task.id}: could not recreate PR after base deletion: {create_err}")
+                return False
+            task.pr = new.url
+            st["pr_number"] = new.number
+            self.events.emit("pr_reopened", task.id, pr=new.url, base=final_base, how="recreate")
+        st["pr_state"] = "OPEN"
+        task.log(f"PR was closed when its base branch `{pr.base}` was deleted; recovered it onto {final_base}")
+        self.store.save(task)
+        # Retarget the recovered PR to the final base and rebase the branch onto it.
+        self._restack(task, rep)
+        return True
 
     def _handle_pr_conflict(self, task: Task, rep: TickReport) -> None:
         """PR is CONFLICTING with its base: run a rebase round. Mechanical first (no model),
