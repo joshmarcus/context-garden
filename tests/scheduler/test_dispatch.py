@@ -296,3 +296,39 @@ def test_audit_does_not_flag_dispatchable_changes_requested(sched, fake_github):
     sched.state.save()
     sched.tick(dispatch=False)  # audit runs even with dispatch off
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_dispatch_ready_failure_does_not_abort_the_tick(sched, fake_github, monkeypatch):
+    """CG-203: dispatch_ready is wrapped in the same guard as every other tick phase — an
+    exception is logged with the phase name and the tick still runs the phases after it
+    (audit), instead of the exception escaping tick() and skipping everything past it."""
+    sched.cfg.data["stack"] = False
+
+    def boom(rep):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sched, "dispatch_ready", boom)
+    rep = sched.tick()
+    assert any("dispatch ready failed" in e and "boom" in e for e in rep.errors)
+    assert "audit" in rep.steps  # the tick kept going past the failing phase
+
+
+def test_exception_in_dispatch_does_not_lose_an_earlier_transition(sched, fake_github, monkeypatch):
+    """CG-203: state.save() runs in a `finally`, so a state.json field an earlier phase in the
+    same tick wrote — here, the PR-open reap's pr_number cache — is not lost when a later
+    phase (dispatch) blows up before the tick would otherwise have saved it."""
+    from garden.scheduler import State
+
+    sched.cfg.data["stack"] = False
+    sched.tick()  # dispatch DM-001 (the in-process worker finishes synchronously)
+
+    def boom(rep):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sched, "dispatch_ready", boom)
+    rep = sched.tick()  # reaps the finished run (opens the PR, caches pr_number), then dispatch blows up
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert any("dispatch ready failed" in e for e in rep.errors)
+
+    fresh = State(sched.state.path).get("DM-001")  # reload from disk, not the in-memory copy
+    assert fresh.get("pr_number")  # persisted despite the exception in dispatch
