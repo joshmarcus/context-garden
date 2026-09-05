@@ -118,6 +118,51 @@ def test_review_description_only_rewrite_applied_without_a_round(sched, fake_git
     assert "description rewritten by the reviewer" in task.body
 
 
+def test_description_only_revise_dispatches_on_easy_tier(sched, fake_github, monkeypatch):
+    """CG-109: a review with no code findings, only a description fix, is a paragraph
+    rewrite, so the revise round should not cost a code-review-tier model."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap review -> request_changes -> revise dispatched
+    assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "revise"
+    assert run.model == "haiku"  # the easy tier, not the task's (medium) tier
+    assert run.difficulty == "easy"
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.difficulty == "medium"  # the task's own tier is unchanged
+    assert "description only; easy tier" in task.body
+
+
+def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatch):
+    """A revise round with a blocking code finding is a real review round, so it keeps
+    the task's own tier rather than dropping to easy."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap review -> request_changes -> revise dispatched
+    assert "DM-001(revise)" in rep.dispatched
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "revise"
+    assert run.model == "sonnet"  # the task's own (medium) tier
+    assert run.difficulty == "medium"
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert "description only; easy tier" not in task.body
+
+
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     from tests.conftest import wait_for_runs
 
