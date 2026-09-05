@@ -243,6 +243,27 @@ def test_cli_digest_prints_decisions_and_notices_line(garden: Path):
     assert "1 notice" in r.output and "no action needed" in r.output
 
 
+def test_merged_task_with_review_cap_stop_shows_no_inbox_card(garden: Path, fake_github):
+    """CG-175: a review-cap card set in the same tick automerge merges the PR must not leave
+    the finished task counted on the Inbox."""
+    from garden.scheduler import Scheduler
+
+    store = _store(garden)
+    sched = Scheduler(store, github=fake_github, log=print)
+    sched.tick()
+    sched.tick()  # DM-001 -> in_review, PR opened
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "review_cap", "reason": "2 automated review round(s) used", "at": "t"}
+    sched.state.save()
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    sched.tick()
+    assert sched.store.task("DM-001").status.value == "done"
+
+    items = build_inbox(store, sched)
+    assert not [i for i in items if i["task"] == "DM-001"], "a done task must not appear on the Inbox"
+    assert not [i for i in decisions(items) if i["task"] == "DM-001"]
+
+
 def test_web_inbox_count_excludes_retrying(garden: Path):
     from fastapi.testclient import TestClient
 

@@ -168,6 +168,33 @@ def test_gate_over_budget(sched, fake_github):
     assert not ok and "budget" in reason
 
 
+def test_gate_needs_human(sched, fake_github):
+    """CG-175: a needs-human stop (e.g. a review cap hit by a rebase right before the merge)
+    must hold automerge rather than let it merge on a verdict recorded before the stop."""
+    t, st, pr = _in_review(sched, fake_github)
+    st["needs_human"] = {"kind": "review_cap", "reason": "1 automated review round(s) used", "at": "t"}
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "needs-human" in reason
+
+
+def test_review_cap_hit_by_rebase_holds_automerge_instead_of_merging_stale(sched, fake_github):
+    """CG-175: `_run_merge_queue` rebases the head of the queue right before merging it (rule
+    2 in rebase.py). When that rebase changes the diff and a fresh review is due but the
+    review cap is already used up, the cap sets a needs-human stop instead of dispatching a
+    review — the merge must not go through on the stale, pre-rebase verdict."""
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["review"]["enabled"] = True
+    sched.cfg.data["review"]["max_rounds"] = 1
+    st["review_rounds"] = 1  # already at the cap
+    st["last_diff_hash"] = "stale-hash-that-will-not-match-the-real-diff"
+    sched.state.save()
+    sched.tick()
+    assert fake_github.merged == []
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    st = sched.state.get("DM-001")
+    assert st.get("needs_human", {}).get("kind") == "review_cap"
+
+
 def test_gate_stacked_on_parent_branch(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     pr.base = "garden/dm-000-parent-task"

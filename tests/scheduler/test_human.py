@@ -74,6 +74,24 @@ def test_state_changing_actions_refuse_a_merged_done_task(sched, fake_github, ac
     assert statuses(sched)["DM-001"] == "done"  # untouched by the refused action
 
 
+def test_cancel_clears_needs_human_and_automerge_blocked(sched, fake_github):
+    """CG-175: cancelling a task with a stop recorded (a review cap, feedback waiting for a
+    revise run, an automerge hold) must drop them so the cancelled task never shows as a
+    decision on the Inbox."""
+    task = sched.store.task("DM-001")
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "stall", "reason": "revise round changed nothing", "at": "t"}
+    st["pending_feedback"] = "- please fix the thing"
+    st["automerge_blocked"] = "the PR checks rollup is pending"
+    sched.state.save()
+    sched.cancel(task, "cancelled by hand")
+    assert statuses(sched)["DM-001"] == "cancelled"
+    st = sched.state.get("DM-001")
+    assert not st.get("needs_human")
+    assert not st.get("pending_feedback")
+    assert not st.get("automerge_blocked")
+
+
 def test_cancel_refuses_an_already_cancelled_task(sched):
     task = sched.store.task("DM-001")
     sched.cancel(task, "cancelled by hand")

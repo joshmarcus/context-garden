@@ -247,6 +247,15 @@ class Scheduler(
         task.status = status
         task.log(note)
         self.store.save(task)
+        if status in (Status.DONE, Status.CANCELLED):
+            # A task that reached done or cancelled is finished; any stop recorded while it
+            # was still active (a review-cap card, feedback waiting for a revise run, an
+            # automerge hold) must not linger and be counted as a decision on the Inbox.
+            st = self.state.get(task.id)
+            st.pop("needs_human", None)
+            st.pop("pending_feedback", None)
+            st.pop("automerge_blocked", None)
+            self.state.save()
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
         if notify_now and should_notify(status.value, needs_human=needs_human):

@@ -151,6 +151,26 @@ def test_pr_number_prefers_pr_url_over_a_stale_cache(sched, fake_github):
     assert sched.state.get("DM-001")["pr_number"] == stale + 999
 
 
+def test_merged_pr_clears_needs_human_and_automerge_blocked(sched, fake_github):
+    """CG-175: a task can reach `done` still carrying a stop recorded while it was in_review
+    (e.g. a review-cap card set in the same tick automerge merged it). The transition to
+    done must drop it so a finished task never shows as a decision on the Inbox."""
+    sched.tick()
+    sched.tick()  # DM-001 -> in_review, PR opened
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "review_cap", "reason": "2 automated review round(s) used", "at": "t"}
+    st["pending_feedback"] = "- please fix the thing"
+    st["automerge_blocked"] = "the automated review verdict is request_changes, not approve"
+    sched.state.save()
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "done"
+    st = sched.state.get("DM-001")
+    assert not st.get("needs_human")
+    assert not st.get("pending_feedback")
+    assert not st.get("automerge_blocked")
+
+
 def test_untrusted_feedback_is_logged_once_and_never_dispatched(sched, fake_github):
     """CG-154: a comment from an author the garden does not trust is logged on the task (with
     an event) but never becomes a revise brief; the same comment is not logged again on the
