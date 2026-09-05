@@ -467,7 +467,7 @@ def trial(
     task_id: str,
     contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5.6-terra (repeat)"),
     wait: bool = typer.Option(False, "--wait", help="Block, ticking the scheduler, until the trial reaches a terminal state (done or inconclusive)"),
-    interval: int = typer.Option(0, help="Seconds between polls with --wait (default: garden.yaml tick_interval)"),
+    interval: int | None = typer.Option(None, help="Seconds between polls with --wait (default: garden.yaml tick_interval)"),
 ):
     """Run a task with several models; a comparison run scores the PRs and keeps the best one."""
     store = _store()
@@ -481,7 +481,7 @@ def trial(
     for r in runs:
         console.print(f"{t.id}: {r.harness}:{r.model or 'default'} -> run {r.run_id} on {r.branch}")
     if wait:
-        interval = interval or int(store.config.get("tick_interval", 60))
+        interval = interval if interval is not None else int(store.config.get("tick_interval", 60))
         console.print("waiting for the trial to conclude (ctrl-c to stop waiting)...")
         try:
             while sc.state.get(t.id).get("trial", {}).get("status") not in ("done", "inconclusive"):
