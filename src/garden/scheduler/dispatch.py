@@ -98,6 +98,8 @@ class DispatchMixin:
             # These statuses wait on a human or GitHub and have their own Inbox handling.
             elif t.status in (Status.WAITING_HUMAN, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.FAILED, Status.DRAFT, Status.READY):
                 continue  # (a ready task not in the ready set is blocked by deps, i.e. waiting)
+            elif t.status == Status.MERGED_INTO_PARENT:
+                continue  # waits on the stack parent's own merge to the base (CG-228), not a human
             elif t.id in ready_ids:
                 continue  # a work run is dispatchable (slots/pause aside)
             elif t.status == Status.CHANGES_REQUESTED:

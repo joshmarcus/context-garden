@@ -48,6 +48,10 @@ class PollMixin:
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
+            final_base = self.final_base_for(task)
+            if pr.base and pr.base != final_base:
+                self._mark_merged_into_parent(task, pr, rep)
+                return
             by_garden = bool(st.get("automerged"))
             self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}")
             rep.transitions.append(f"{task.id} -> done")
@@ -347,6 +351,64 @@ class PollMixin:
         except Exception as e:  # noqa: BLE001
             self.log(f"{task.id}: worktree cleanup failed: {e}")
 
+    # ---- merged into a non-base branch (CG-228) -----------------------------
+    def _mark_merged_into_parent(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
+        """The PR merged, but into a stack parent's branch rather than the product's base: the
+        task's commits sit on that branch now, not on the base, so `done` would be a lie (the
+        CG-225 incident: a dependent was approved against a "done" dependency whose code had
+        never reached main). Record the parent branch's tip right after absorbing this PR — not
+        this task's own branch tip, which a squash merge would rewrite to a new sha — so a later
+        poll of the parent can check whether that content actually made it onto the base."""
+        st = self.state.get(task.id)
+        parent_id = str(st.get("stack_parent") or "")
+        parent_label = parent_id or pr.base
+        repo = self.repo_for(task)
+        sha = ""
+        try:
+            gitops.fetch(repo)
+            sha = gitops.rev_parse(repo, gitops.base_ref(repo, pr.base))
+        except gitops.GitError:
+            sha = ""
+        st["merged_into_parent"] = {"parent": parent_id, "branch": pr.base, "sha": sha}
+        for k in ("needs_human", "pending_feedback"):
+            st.pop(k, None)
+        self._queue_leave(task)
+        final_base = self.final_base_for(task)
+        self._transition(task, Status.MERGED_INTO_PARENT,
+                         f"PR merged into {parent_label}'s branch (`{pr.base}`), not the base `{final_base}`; "
+                         f"will be done once {parent_label} reaches the base")
+        rep.transitions.append(f"{task.id} -> merged_into_parent")
+
+    def _promote_if_ancestor(self, child: Task, parent: Task, rep: TickReport) -> None:
+        """`child` already merged into `parent`'s branch (Status.MERGED_INTO_PARENT) and `parent`
+        has just reached the base itself: promote `child` to `done`, but only once its commits
+        (the parent branch's tip recorded at the time, see `_mark_merged_into_parent`) actually
+        show up as an ancestor of the base's new tip. Not automatic: a force-push or a rewritten
+        rebase between the two merges could in principle have dropped them."""
+        st = self.state.get(child.id)
+        info = st.get("merged_into_parent") or {}
+        sha = str(info.get("sha") or "")
+        final_base = self.final_base_for(child)
+        repo = self.repo_for(child)
+        ancestor = False
+        if sha:
+            try:
+                gitops.fetch(repo)
+                ancestor = gitops.is_ancestor(repo, sha, gitops.base_ref(repo, final_base))
+            except gitops.GitError:
+                ancestor = False
+        if not ancestor:
+            child.log(f"parent {parent.id} merged to {final_base}, but this task's commits are not on "
+                     f"{final_base} yet; still waiting")
+            self.store.save(child)
+            return
+        st.pop("stack_parent", None)
+        self._transition(child, Status.DONE,
+                         f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}")
+        rep.transitions.append(f"{child.id} -> done")
+        self._on_merged(child, rep)
+        self._cleanup(child)
+
     # ---- stacking ----------------------------------------------------------
     def stacked_children(self, task: Task) -> list[Task]:
         return [t for t in self.store.tasks().values()
@@ -403,6 +465,9 @@ class PollMixin:
                 self.log(f"{task.id}: tool upgrade check failed: {e}")
         for child in self.stacked_children(task):
             st = self.state.get(child.id)
+            if child.status == Status.MERGED_INTO_PARENT:
+                self._promote_if_ancestor(child, task, rep)
+                continue
             if child.status in (Status.RUNNING, Status.WAITING_HUMAN):
                 st["restack_pending"] = True
                 child.log(f"parent {task.id} merged; will rebase onto {self.final_base_for(child)} when the current run finishes")
