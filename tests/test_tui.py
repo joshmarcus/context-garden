@@ -1,4 +1,5 @@
 import asyncio
+import textwrap
 
 from textual.widgets import DataTable
 
@@ -50,6 +51,58 @@ def test_tui_wires_decision_cards_to_accept_and_reject(sched, fake_github, monke
     from garden.scheduler import Scheduler
 
     assert Scheduler(Store(sched.store.root)).pending_decisions() == []  # both cards resolved
+
+
+def test_tui_inbox_decisions_count_excludes_retrying(garden):
+    """A retrying (notice) task doesn't inflate the 'need you' figure in the status bar,
+    but still shows up (dimmed) in the Inbox tab."""
+    (garden / "demo" / "p1" / "tasks" / "DM-001-first.md").write_text(textwrap.dedent("""\
+        ---
+        id: DM-001
+        title: First task
+        status: ready
+        depends_on: []
+        priority: 1
+        reading: []
+        attempts: 1
+        created: '2026-01-01T00:00:00+00:00'
+        updated: '2026-01-01T00:00:00+00:00'
+        ---
+
+        ## Goal
+
+        Do the first thing.
+
+        ## Log
+
+        - 2026-01-01T00:00:00+00:00 attempt 1 failed: max turns reached; will retry
+        """))
+    (garden / "demo" / "p1" / "tasks" / "DM-002-second.md").write_text(textwrap.dedent("""\
+        ---
+        id: DM-002
+        title: Second task
+        status: draft
+        depends_on: []
+        priority: 2
+        reading: []
+        created: '2026-01-01T00:00:00+00:00'
+        updated: '2026-01-01T00:00:00+00:00'
+        ---
+
+        ## Goal
+
+        Do the second thing.
+        """))
+
+    async def run():
+        app = GardenTUI(Store(garden))
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            inbox = app.query_one("#inbox", DataTable)
+            assert inbox.row_count == 2
+            assert app._inbox_decisions == 1
+
+    asyncio.run(run())
 
 
 def test_tui_mounts_and_lists_tasks(garden, tmp_path):

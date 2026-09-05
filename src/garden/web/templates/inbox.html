@@ -6,15 +6,15 @@
   <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
 <div class="kpis">
-  <div class="kpi {{ 'hot' if items else '' }}"><div class="v">{{ items|length }}</div><div class="l">need you</div></div>
+  <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
   <div class="kpi"><div class="v">{{ running|length }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
   <div class="kpi"><div class="v">{{ prs_open }}</div><div class="l">PRs open</div></div>
   <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
 </div>
-{% if not items %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
-{% for group, gtitle, gdesc in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
-<section class="group">
-  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}</h2><p>{{ gdesc }}</p></header>
+{% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
+{% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
+<section class="group {{ 'notice' if gkind == 'notice' else '' }}">
+  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no action needed{% endif %}</h2><p>{{ gdesc }}</p></header>
   {% for it in gitems %}
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>

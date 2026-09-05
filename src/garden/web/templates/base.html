@@ -231,6 +231,8 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .group > header { display:flex; align-items:center; gap:12px; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); }
 .group > header h2 { margin:0; font:500 17px/1.2 var(--display); }
 .group > header p { margin:0; color:var(--muted); font-size:13px; }
+.group.notice { opacity:.75; }
+.group.notice > header h2 { font:400 15px/1.2 var(--display); color:var(--muted); }
 .item { display:grid; grid-template-columns: 34px 140px minmax(0,1fr) auto; gap:14px; align-items:center; padding:11px 12px; border-bottom:1px solid var(--line); }
 .item:last-child { border-bottom:none; }
 .item .who { display:flex; flex-direction:column; gap:3px; }

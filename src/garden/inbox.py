@@ -12,17 +12,22 @@ from .model import Status, Task
 from .runs import RunStore
 from .store import Store
 
+# Each group carries a "kind": "decision" means a person's call is what unblocks the
+# item, so it counts toward the badge, the "need you" figure and the digest. "notice" is
+# informational — the loop is already handling it — so it renders but never counts.
 GROUPS = [
-    ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code."),
-    ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer."),
-    ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note."),
-    ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back."),
-    ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents."),
-    ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker."),
-    ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel."),
-    ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go."),
-    ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused."),
+    ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
+    ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer.", "decision"),
+    ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note.", "decision"),
+    ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
+    ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
+    ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
+    ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
+    ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go.", "decision"),
+    ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused.", "decision"),
 ]
+
+GROUP_KIND = {g[0]: g[3] for g in GROUPS}
 
 
 def _last_log_line(t: Task) -> str:
@@ -338,6 +343,16 @@ def counts(items: list[dict[str, Any]]) -> dict[str, int]:
     for it in items:
         out[it["group"]] = out.get(it["group"], 0) + 1
     return out
+
+
+def decisions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Items whose group needs a person's call — what the badge and digest count."""
+    return [i for i in items if GROUP_KIND.get(i["group"]) == "decision"]
+
+
+def notices(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Items whose group is informational only — rendered, never counted."""
+    return [i for i in items if GROUP_KIND.get(i["group"]) == "notice"]
 
 
 def running_now(store: Store) -> list[dict[str, Any]]:
