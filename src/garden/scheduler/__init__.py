@@ -144,11 +144,30 @@ class Scheduler(
             d = "medium"
         return runner.harness.model_for(d, task.model if not difficulty else "")
 
+    def git_identity(self) -> tuple[str, str]:
+        """The identity written into a fresh product clone (see CG-147): `git.user_name` /
+        `git.user_email` in garden.yaml, else the garden checkout's own git config, else the
+        authenticated `gh` login with a GitHub noreply email. Either half may still come back
+        blank if none of those resolve; `doctor` is what catches that, not this method."""
+        name = str(self.cfg.get("git.user_name") or "")
+        email = str(self.cfg.get("git.user_email") or "")
+        if not name or not email:
+            own_name, own_email = gitops.identity(self.store.root)
+            name = name or own_name
+            email = email or own_email
+        if (not name or not email) and self.github.available:
+            login = self.github.me()
+            if login:
+                name = name or login
+                email = email or f"{login}@users.noreply.github.com"
+        return name, email
+
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
+        git_name, git_email = self.git_identity()
         if isinstance(repo, str) and ("://" in repo or repo.startswith("git@")):
-            return gitops.ensure_repo(repo, self.cfg.repos_dir)
-        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir)
+            return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
+        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
     def worktree_for(self, task: Task) -> Path:
         override = self.state.get(task.id).get("worktree")

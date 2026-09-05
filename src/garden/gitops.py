@@ -35,8 +35,11 @@ def slug(repo: Path) -> str | None:
     return repo_slug_from_remote(url) if url else None
 
 
-def ensure_repo(repo: Path | str, clone_dir: Path) -> Path:
-    """Return a local checkout for `repo` (a path, or a URL cloned under clone_dir)."""
+def ensure_repo(repo: Path | str, clone_dir: Path, git_name: str = "", git_email: str = "") -> Path:
+    """Return a local checkout for `repo` (a path, or a URL cloned under clone_dir). A fresh
+    clone gets `git_name`/`git_email` as its repo-local identity (see CG-147), so a commit
+    made inside it — by the scheduler or a worker — never fails with "Author identity
+    unknown". An already-existing clone, or a path repo, is left untouched."""
     if isinstance(repo, Path):
         if not is_repo(repo):
             raise GitError(f"{repo} is not a git repository")
@@ -46,7 +49,25 @@ def ensure_repo(repo: Path | str, clone_dir: Path) -> Path:
     if not dest.exists():
         clone_dir.mkdir(parents=True, exist_ok=True)
         git("clone", repo, str(dest))
+        set_identity(dest, git_name, git_email)
     return dest
+
+
+def identity(repo: Path) -> tuple[str, str]:
+    """The effective `user.name` / `user.email` git would commit as in `repo` (local config,
+    falling back to global), or "" for either that resolves to nothing."""
+    name = git("config", "user.name", cwd=repo, check=False).strip()
+    email = git("config", "user.email", cwd=repo, check=False).strip()
+    return name, email
+
+
+def set_identity(repo: Path, name: str, email: str) -> None:
+    """Set `repo`'s local git identity. Either may be blank, in which case that half is left
+    alone (e.g. no resolvable name or email at all — see Scheduler.git_identity)."""
+    if name:
+        git("config", "user.name", name, cwd=repo)
+    if email:
+        git("config", "user.email", email, cwd=repo)
 
 
 def fetch(repo: Path, remote: str = "origin") -> bool:

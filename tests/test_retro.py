@@ -210,6 +210,43 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     assert not (root / "gdn" / "p2").exists()
 
 
+def test_retro_commit_failure_becomes_a_card_not_a_silent_vanish(tmp_path, fake_github, monkeypatch):
+    """CG-147: at the phase-02 retro, a commit that failed inside `reap_retro` (missing git
+    identity in the retro worktree) left the rendered doc staged but uncommitted, opened no
+    PR, and the retro entry just disappeared from state with nothing to show for it. A failed
+    commit (or push) must instead be logged and recorded as an error, so it is visible even
+    when the tick ran unattended (`garden serve`), not just when someone reads a CLI's output."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    # No test may depend on whatever git identity the machine running it happens to have.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-such-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "no-such-gitconfig"))
+    repo = _garden_repo(tmp_path)
+    # _garden_repo sets a local identity on the repo so its own setup commits work; strip it so
+    # a later plain `git commit` (the one reap_retro makes) has no identity to fall back on.
+    subprocess.run(["git", "config", "--unset", "user.email"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "--unset", "user.name"], cwd=repo, check=True)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    logs: list[str] = []
+    sched = Scheduler(store, github=fake_github, log=logs.append)
+    _register_prs(fake_github)
+
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+    _friction_run(sched, "GD-002", "The check command references $GARDEN_ROOT.")
+
+    ph = store.phase("gdn", "p1")
+    entry = sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert entry["stage"] == "reconciling", entry
+    rep = sched.tick()  # reap_retro -> render, commit (fails), no push, no PR
+
+    assert any("commit failed" in e for e in rep.errors), rep.errors
+    assert any("commit failed" in m for m in logs), logs  # reaches the running log, not just the CLI's rep
+    assert not fake_github.created, "no PR should open when the commit never happened"
+    # the render is left on disk in the worktree for a human to look at, uncommitted
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    assert (wt / "gdn" / "p1" / "docs" / "retro.md").exists()
+
+
 def test_retro_skip_personas_refuses_to_dispatch_with_no_reports_on_disk(tmp_path, fake_github, monkeypatch):
     """CG-160: `--skip-personas` means "reuse whatever's there", not "reconcile with nothing".
     Requesting a persona with no report at all yet must not silently dispatch the

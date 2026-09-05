@@ -391,6 +391,44 @@ def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
         assert "missing user.name or user.email" in r.output
 
 
+def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch):
+    """CG-147: `garden doctor` walks every clone under work_dir/repos/, not just the checkout
+    it happens to run from, so a clone made without an identity is caught before a worker or
+    the scheduler hits "Author identity unknown" on its first commit."""
+    import subprocess
+    from unittest import mock
+
+    from garden.store import Store
+
+    store = Store(garden)
+    clone = store.config.repos_dir / "some-product"
+    (clone / ".git").mkdir(parents=True)
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    if kwargs.get("cwd") == clone:
+                        return subprocess.CompletedProcess(cmd, 1, stdout="")
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    elif "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                elif "auth" in cmd and "status" in cmd:
+                    if "gh" in cmd_str or "claude" in cmd_str:
+                        return subprocess.CompletedProcess(cmd, 0)
+                elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+        assert r.exit_code == 1, r.output
+        assert "some-product" in r.output
+        assert "missing git identity" in r.output
+
+
 def test_priority_and_difficulty_commands(garden):
     from garden.store import Store
 

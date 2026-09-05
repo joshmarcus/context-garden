@@ -203,6 +203,17 @@ class RetroMixin:
                 self._retro_remove(entry)
         self.state.save()
 
+    def _retro_failed(self, phase: Phase, step: str, error: gitops.GitError, rep: TickReport) -> None:
+        """Record a failed commit or push inside a retro reconciliation (CG-147): logged (so a
+        human watching `garden watch` or the web dashboard sees it even on an otherwise silent
+        tick), added to the tick's own errors (the CLI's `tick`/`watch` output), and emitted as
+        a durable event so it outlives the in-memory log. `error`'s own text names the worktree
+        (GitError includes the `cwd` it ran in)."""
+        msg = f"retro {phase.key}: {step} failed: {error}"
+        self.log(msg)
+        rep.errors.append(msg)
+        self.events.emit("retro_failed", "", phase=phase.key, step=step, error=str(error))
+
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
         rev = parse_retro(final)
@@ -221,14 +232,23 @@ class RetroMixin:
         goals_path.parent.mkdir(parents=True, exist_ok=True)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store))
         goals_path.write_text(render_next_goals(phase, next_phase, rev))
-        gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
+        try:
+            gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
+        except gitops.GitError as e:
+            # A failed commit here (e.g. no git identity in the worktree, CG-147) must not just
+            # vanish: the rendered retro doc is already on disk, uncommitted, and nothing else
+            # will ever surface that. self.log reaches the running log a human can see (the web
+            # dashboard, `garden watch`) even when the tick that hit this is otherwise silent;
+            # the event makes it durable on the Timeline too, not just in a 200-entry ring buffer.
+            self._retro_failed(phase, "commit", e, rep)
+            return
         if gitops.commits_ahead(wt, base) == 0:
             rep.errors.append(f"retro {phase.key}: nothing to commit")
             return
         try:
             gitops.push(wt, branch, base=base)
         except gitops.GitError as e:
-            rep.errors.append(f"retro {phase.key}: push failed: {e}")
+            self._retro_failed(phase, "push", e, rep)
             return
         n_items = len([f for f in rev.get("reconciliation") or [] if isinstance(f, dict)])
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
