@@ -274,6 +274,71 @@ def test_trial_two_prs_still_runs_the_comparison(sched, fake_github, monkeypatch
     assert trial["status"] == "done" and trial["winner"] == "claude:opus"
 
 
+def test_trial_again_closes_prior_prs_deletes_branches_and_resets_state(sched, fake_github, monkeypatch):
+    """CG-232: relaunching a trial with --again closes the previous contenders' PRs, deletes
+    their branches, drops their worktrees, and starts fresh contenders named from the task's
+    own branch — never from the previous winner's, so a later --again never doubles a trial
+    suffix onto itself (the CG-225 incident behind this task)."""
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    sched.tick()  # both contenders finish -> comparison run
+    sched.tick()  # comparison reaped -> winner kept, loser closed
+    t = sched.store.task("DM-001")
+    old_branch = t.branch
+    assert old_branch == "garden/dm-001-first-task-trial-claude-opus"
+    winner_pr = fake_github.prs[old_branch]
+    assert winner_pr.state == "OPEN"
+    st = sched.state.get("DM-001")
+    assert st.get("pr_number") and st.get("worktree")
+
+    monkeypatch.delenv("FAKE_CLAUDE_WINNER", raising=False)
+    runs = sched.start_trial(t, ["claude:sonnet", "codex:gpt"], again=True)
+
+    # the previous winner's PR is closed (with a comment) and its branch deleted
+    assert winner_pr.state == "CLOSED" and winner_pr.number in fake_github.closed
+    assert old_branch in fake_github.deleted_branches
+    assert any("Closing this contender" in c for c in fake_github.comments)
+
+    # the new contenders are named from the task's own branch, not the old winner's
+    assert {r.branch for r in runs} == {"garden/dm-001-first-task-trial-claude-sonnet", "garden/dm-001-first-task-trial-codex-gpt"}
+    assert not any(old_branch in r.branch for r in runs)
+
+    # cached PR/review state is gone
+    t = sched.store.task("DM-001")
+    assert t.pr == "" and t.branch == "garden/dm-001-first-task"
+    st = sched.state.get("DM-001")
+    assert not st.get("pr_number") and not st.get("worktree")
+
+
+def test_trial_without_again_refuses_naming_the_flag(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    sched.tick()
+    sched.tick()
+    t = sched.store.task("DM-001")
+    with pytest.raises(RuntimeError, match="--again"):
+        sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
+
+
+def test_trial_again_keep_prs_leaves_the_previous_pr_open(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    sched.tick()
+    sched.tick()
+    t = sched.store.task("DM-001")
+    old_branch = t.branch
+    winner_pr = fake_github.prs[old_branch]
+
+    monkeypatch.delenv("FAKE_CLAUDE_WINNER", raising=False)
+    sched.start_trial(t, ["claude:sonnet", "codex:gpt"], again=True, keep_prs=True)
+
+    assert winner_pr.state == "OPEN" and winner_pr.number not in fake_github.closed
+    assert old_branch not in fake_github.deleted_branches
+
+
 # ---- personas -----------------------------------------------------------------
 def test_default_personas_written(tmp_path):
     out = write_default_personas(tmp_path)
