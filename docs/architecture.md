@@ -98,6 +98,7 @@ of the loop touch different files.
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
+| `canary.py` | `garden canary`: install a pinned build into a throwaway venv and drive it (the scripted QA flows plus a stacked-PR and a merge-queue scenario against the in-memory GitHub) before the pin is trusted with real PRs (CG-180) |
 
 ## Where state lives
 

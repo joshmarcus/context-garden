@@ -97,12 +97,23 @@ def make_garden(root: Path) -> Path:
 
 class MemoryGitHub:
     """An in-memory stand-in for `garden.github.GitHub`: PRs are numbered as they are opened,
-    merging marks a PR merged (no branch moves), comments are kept for the page."""
+    merging marks a PR merged, comments are kept for the page.
+
+    It behaves like the real thing in the two ways that broke the loop on 2026-09-05 (CG-180):
+    a pushed rollup is PENDING for `check_latency` polls before it settles (`set_checks` arms a
+    target), and deleting a branch closes every open PR still targeting it with a
+    `base_ref_deleted` timeline event (`delete_branch`, reached by a merge with `delete_branch`)."""
 
     def __init__(self) -> None:
         self.available = True
         self.prs: dict[str, PRInfo] = {}  # head branch -> PR
         self.comments: dict[int, list[str]] = {}
+        self.deleted_branches: set[str] = set()
+        self.base_deleted: set[int] = set()       # PR numbers with a base_ref_deleted timeline event
+        self.refuse_reopen: set[int] = set()      # PR numbers GitHub refuses to reopen
+        self.check_latency = 0                     # polls a fresh push stays PENDING before it settles
+        self._check_pending: dict[int, int] = {}
+        self._check_target: dict[int, str] = {}
         self._n = 0
 
     def describe(self) -> str:
@@ -123,8 +134,24 @@ class MemoryGitHub:
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None:
         return self.prs.get(head_branch)
 
+    def set_checks(self, branch: str, state: str, latency: int | None = None) -> None:
+        """Arm a PR's checks rollup the way a push does on real GitHub: PENDING for `latency`
+        polls (default `check_latency`), then `state` (SUCCESS/FAILURE)."""
+        pr = self.prs[branch]
+        n = self.check_latency if latency is None else latency
+        self._check_target[pr.number] = state
+        self._check_pending[pr.number] = n
+        pr.checks = "PENDING" if n > 0 else state
+
     def get_pr(self, slug: str, number: int) -> PRInfo:
-        return self._by_number(number)
+        pr = self._by_number(number)
+        left = self._check_pending.get(number, 0)
+        if left > 0:
+            self._check_pending[number] = left - 1
+            pr.checks = "PENDING"
+        elif number in self._check_target:
+            pr.checks = self._check_target[number]
+        return pr
 
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str, draft: bool = False,
                   reviewers: list[str] | None = None) -> PRInfo:
@@ -132,6 +159,8 @@ class MemoryGitHub:
         pr = PRInfo(number=self._n, url=f"/qa/github/pull/{self._n}", state="OPEN", title=title, head=head, base=base,
                     mergeable="MERGEABLE", updated_at=f"t{self._n}", body=body, is_draft=draft)
         self.prs[head] = pr
+        if self.check_latency > 0:  # a fresh push starts CI
+            self.set_checks(head, "SUCCESS")
         return pr
 
     def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
@@ -157,6 +186,30 @@ class MemoryGitHub:
             raise RuntimeError(f"PR #{number} is a draft; mark it ready for review first")
         pr.state = "MERGED"
         pr.updated_at += "m"
+        if delete_branch:
+            self.delete_branch(slug, pr.head)
+
+    def delete_branch(self, slug: str, branch: str) -> None:
+        """Delete a branch the way real GitHub does on merge: every open PR still targeting it
+        is closed with a `base_ref_deleted` timeline event (the incident behind CG-173)."""
+        self.deleted_branches.add(branch)
+        for child in self.prs.values():
+            if child.base == branch and child.state == "OPEN":
+                child.state = "CLOSED"
+                self.base_deleted.add(child.number)
+
+    def branch_exists(self, slug: str, branch: str) -> bool:
+        return branch not in self.deleted_branches
+
+    def base_ref_deleted(self, slug: str, number: int) -> bool:
+        return number in self.base_deleted
+
+    def reopen_pr(self, slug: str, number: int) -> None:
+        from ..github import GitHubError
+
+        if number in self.refuse_reopen:
+            raise GitHubError("cannot reopen: base branch was deleted")
+        self._by_number(number).state = "OPEN"
 
     def issue_comments(self, slug: str, number: int) -> list[str]:
         return list(self.comments.get(number, []))

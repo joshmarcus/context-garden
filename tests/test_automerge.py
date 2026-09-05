@@ -216,6 +216,21 @@ def test_stacked_pr_is_not_automerged(sched, fake_github):
     assert blocked == "stacked on DM-000; waits for the restack"
 
 
+# ---- check latency: the rollup is PENDING for a poll or two after a push -----
+def test_automerge_waits_out_a_pending_rollup(sched, fake_github):
+    """A freshly-pushed rollup is PENDING for a poll before it turns green (the fake models
+    real GitHub's latency, N >= 1): the merge holds until the rollup settles, then goes."""
+    t, st, pr = _in_review(sched, fake_github)
+    fake_github.set_checks(BRANCH, "SUCCESS", latency=1)  # one poll PENDING, then green
+    sched.tick()  # poll sees PENDING -> held, not merged
+    assert fake_github.merged == []
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    assert "pending" in (sched.state.get("DM-001").get("automerge_blocked") or "")
+    sched.tick()  # poll sees the rollup settle to green -> merge
+    assert fake_github.merged == [{"number": pr.number, "method": "squash", "delete_branch": True}]
+    assert pr.state == "MERGED"
+
+
 # ---- a failing gate records the reason and leaves the PR in review -----------
 def test_red_ci_holds_the_merge_with_reason_on_the_task(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)

@@ -175,6 +175,43 @@ def test_pending_rollup_keeps_head_and_does_not_rotate(sched, fake_github, tmp_p
     assert len([r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]) == 1
 
 
+def test_merge_queue_waits_out_check_latency_after_the_force_push(sched, fake_github, tmp_path):
+    """CG-176: the pre-merge rebase force-pushes the head, which restarts CI. With the fake's
+    check latency (N >= 1) modelling that, the queue keeps the head while its rollup is PENDING
+    (it does not rotate to another PR), then merges once the rollup settles — each PR rebased once."""
+    _independent_tasks(sched, 2)
+    sched.cfg.data["max_parallel"] = 2
+    sched.cfg.data["github"]["automerge"] = True
+
+    sched.tick()
+    sched.tick()
+    b1, b2 = sched.store.task("DM-001").branch, sched.store.task("DM-002").branch
+    _advance_main(tmp_path, "moved")  # both behind: the head needs a rebase + force-push
+    _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")  # older -> head
+    _approve(sched, fake_github, "DM-002", b2, "2026-09-05T03:05:00+00:00")
+    sched.state.save()
+
+    sched.tick()  # DM-001 rebased and force-pushed; it is the in-flight head
+    assert sched.state.get("DM-001").get("merge_head") is True
+    assert fake_github.merged == []
+    # the force-push restarted CI: arm the rollup PENDING (N >= 1), the way real GitHub reports it.
+    fake_github.set_checks(b1, "SUCCESS", latency=4)
+
+    sched.tick()  # rollup still PENDING: the head is kept and no other PR is rebased
+    assert fake_github.merged == []
+    assert sched.state.get("DM-001").get("merge_head") is True
+    assert not [r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]
+
+    for _ in range(30):  # the rollup settles green; DM-001 merges, then DM-002 in turn
+        sched.tick()
+        if fake_github.prs[b2].state == "MERGED":
+            break
+    assert fake_github.prs[b1].state == "MERGED" and fake_github.prs[b2].state == "MERGED"
+    assert [m["number"] for m in fake_github.merged] == [fake_github.prs[b1].number, fake_github.prs[b2].number]
+    assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
+    assert len([r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]) == 1
+
+
 def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_path):
     """CG-182: the pre-merge rebase's checks run as a detached check run, not in the tick — the
     incident that grew ticks to a minute. The head is held until the check reaps, then merges."""
