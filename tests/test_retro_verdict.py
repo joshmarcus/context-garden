@@ -237,6 +237,12 @@ def test_retro_questions_use_shared_cards_and_record_web_and_cli_answers(tmp_pat
 
     questions = [d for d in sched.pending_decisions() if d.get("source") == "retro:gdn/p1"]
     assert len(questions) == 2
+    from garden.inbox import build_inbox
+    from garden.web.pages.phase import _kickoff_panel
+
+    assert _kickoff_panel(store, sched, store.phase("gdn", "p1"))["questions"] == []
+    retro_card = next(item for item in build_inbox(store, sched) if item.get("decision") == questions[0]["id"])
+    assert retro_card["why"] == "the gdn/p1 retro is asking"
     by_question = {d["question"]: d["id"] for d in questions}
     c = TestClient(create_app(Store(root), watch=False))
     response = c.post(f"/decisions/{by_question['Which rollout should the next phase use?']}/answer",

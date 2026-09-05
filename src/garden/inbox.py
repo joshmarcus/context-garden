@@ -384,11 +384,13 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
 
     for d in getattr(sched, "pending_decisions", list)():
         if d.get("kind") == "question":
+            source = str(d.get("source") or d.get("discovered_from") or "")
+            origin = "retro" if source.startswith("retro:") else "kickoff"
             items.append({
                 "group": "attention", "group_title": titles["attention"], "task": "",
                 "title": str(d.get("question") or ""),
                 "phase": str(d.get("phase") or ""), "status": "", "pr": "",
-                "why": f"the {d.get('phase') or 'phase'} kickoff is asking",
+                "why": f"the {d.get('phase') or 'phase'} {origin} is asking",
                 "question_context": str(d.get("context") or ""),
                 "question_options": list(d.get("options") or []),
                 "actions": [
