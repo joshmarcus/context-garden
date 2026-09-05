@@ -11,6 +11,7 @@ from garden.cli import app
 from garden.model import dispatch_sort_key
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import complete_brief
 
 runner = CliRunner()
 
@@ -77,6 +78,7 @@ def test_move_up_down_buttons_reorder_without_js(garden):
     assert run(garden, "new-task", "demo/p1", "Alpha").exit_code == 0  # DM-003, draft, priority 3
     assert run(garden, "new-task", "demo/p1", "Beta").exit_code == 0   # DM-004, draft, priority 3
     for tid in ("DM-003", "DM-004"):
+        complete_brief(garden, tid)
         assert run(garden, "approve", tid).exit_code == 0
     assert p1_order(garden, priority=3) == ["DM-003", "DM-004"]  # by id to start
 
@@ -99,6 +101,7 @@ def test_reorder_only_touches_the_destination_band(garden):
     assert run(garden, "new-task", "demo/p1", "Alpha").exit_code == 0  # DM-003, priority 3
     assert run(garden, "new-task", "demo/p1", "Beta").exit_code == 0   # DM-004, priority 3
     for tid in ("DM-003", "DM-004"):
+        complete_brief(garden, tid)
         assert run(garden, "approve", tid).exit_code == 0
     before1 = Store(garden).task("DM-001").path.read_text()
     before2 = Store(garden).task("DM-002").path.read_text()
