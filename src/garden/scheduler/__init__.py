@@ -92,10 +92,14 @@ class Scheduler(
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
+        # PR feedback becomes a worker prompt only from trusted authors: the login the garden
+        # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
+        trusted = [*(self.cfg.get("github.trusted_authors") or []), *(self.cfg.get("github.reviewers") or [])]
         self.github = github if github is not None else GitHub(
             use_gh=bool(self.cfg.get("github.use_gh", True)),
             bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
             bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
+            trusted_authors=[str(a) for a in trusted],
         )
         self._runner_factory = runner_factory
         self.log = log or (lambda msg: None)

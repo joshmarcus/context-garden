@@ -62,6 +62,8 @@ DEFAULTS: dict[str, Any] = {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
+        "trusted_authors": [],    # logins whose PR comments may become a worker prompt, besides the
+                                  # garden's own login, `reviewers` and [bot] accounts; others are logged and ignored
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds

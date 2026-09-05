@@ -70,9 +70,7 @@ class PollMixin:
         since = task.last_dispatched_at
         fb = self.github.feedback_since(slug, number, since)
         if fb.ignored:
-            for note in fb.ignored:
-                task.log(f"bot notice ignored: {note['author']}: {note['body'].strip()[:200]}")
-            self.store.save(task)
+            self._log_ignored_feedback(task, fb.ignored)
         st["head_sha"] = pr.head_sha
         ci_note = ""
         if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
@@ -126,6 +124,27 @@ class PollMixin:
             return
         self._transition(task, Status.CHANGES_REQUESTED, note)
         rep.transitions.append(f"{task.id} -> changes_requested")
+
+    def _log_ignored_feedback(self, task: Task, ignored: list[dict[str, Any]]) -> None:
+        """One task-log line and one event per skipped comment (a bot notice, or an author
+        the garden does not trust), once: the same comment comes back on every poll until
+        the next dispatch, so `state.json` remembers which ones were already logged."""
+        st = self.state.get(task.id)
+        seen = list(st.get("feedback_ignored") or [])
+        logged = False
+        for note in ignored:
+            key = f"{note.get('author', '')}@{note.get('created', '')}"
+            if key in seen:
+                continue
+            seen.append(key)
+            reason = str(note.get("reason") or "notice")
+            what = "feedback from an untrusted author ignored" if reason == "untrusted" else "bot notice ignored"
+            task.log(f"{what}: {note['author']}: {str(note.get('body') or '').strip()[:200]}")
+            self.events.emit("feedback_ignored", task.id, author=note.get("author", ""), reason=reason)
+            logged = True
+        if logged:
+            st["feedback_ignored"] = seen[-50:]
+            self.store.save(task)
 
     # ---- automerge ---------------------------------------------------------
     def _github_cfg(self, key: str, product: str, default: Any) -> Any:

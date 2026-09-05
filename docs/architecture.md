@@ -351,9 +351,18 @@ files under `tasks/` must not be hand-edited.
     poll. So exactly one PR is rebased and merged per tick, each rebased once, right before
     it merges.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
-  `last_dispatched_at` count, minus the garden's own login (the `gh` user or the token's
-  user) and `[bot]` accounts, so the scheduler's own review comments never trigger a
-  revise run. The revise brief carries only those new items, not the whole thread.
+  `last_dispatched_at` count, minus the garden's own comments (recognised by a hidden
+  marker) and the accounts in `github.bot_logins`, so the scheduler's own review comments
+  never trigger a revise run. The revise brief carries only those new items, not the whole
+  thread.
+- **Only trusted authors prompt a worker.** A comment is text a worker would carry out, and
+  on a public repo anyone can leave one. `GitHub.is_trusted` admits the login the garden
+  authenticates as, `github.trusted_authors`, the `github.reviewers` it requests, and
+  `[bot]` accounts (review apps the owner installed). Everything else, a `CHANGES_REQUESTED`
+  review included, is returned as `ignored` with the reason `untrusted`, logged once on the
+  task with a `feedback_ignored` event, and never reaches a brief. The GitHub review
+  decision still gates automerge, so an untrusted request for changes blocks a merge
+  without steering a worker.
 - **CI.** The scheduler reads the checks rollup on the PR head, whichever system posts
   it. Log analysis is whatever `checks.ci` names; nothing assumes GitHub Actions.
 

@@ -401,6 +401,10 @@ github:
   automerge_method: squash  # squash | merge | rebase
   automerge_min_review_rounds: 1   # require at least this many automated review rounds
   automerge_tiers: [easy, medium]  # only these difficulty tiers automerge; hard waits for a person
+  trusted_authors: []       # logins whose PR comments may become a worker's revise brief, besides the
+                            # login the garden authenticates as, the `reviewers` above and [bot] accounts.
+                            # A comment by anyone else is logged on the task and ignored: on a public
+                            # repo anyone can comment, and a comment is text a worker would carry out
   bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
                             # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
   bot_notice_patterns:      # a bot comment matching one of these (case-insensitive substring) is a
