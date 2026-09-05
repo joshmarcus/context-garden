@@ -1,0 +1,194 @@
+"""Model trials: contenders on their own branches, a comparison run, a winner."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from .. import gitops
+from ..github import GitHubError, mark_garden_comment
+from ..model import Status, Task, now_iso
+from ..runner.base import Runner
+from ..runs import Run
+from ..trials import compare_brief, parse_compare, parse_contender, ranking_markdown
+from .report import TickReport
+
+
+class TrialsMixin:
+    # ---- model trials ------------------------------------------------------
+    def start_trial(self, task: Task, contenders: list[str]) -> list[Run]:
+        if task.status not in (Status.READY, Status.DRAFT, Status.FAILED) or task.pr:
+            raise RuntimeError(f"{task.id} must be ready/draft/failed without a PR to start a trial (is {task.status.value})")
+        if len(contenders) < 2:
+            raise RuntimeError("a trial needs at least two contenders")
+        default_h = task.harness or self.cfg.product_harness(task.product)
+        st = self.state.get(task.id)
+        trial: dict[str, Any] = {"id": now_iso(), "status": "running", "contenders": []}
+        runs: list[Run] = []
+        base_branch = task.branch or task.default_branch()
+        for spec in contenders:
+            label, harness, model = parse_contender(spec, default_h)
+            suffix = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+            branch = f"{base_branch}-trial-{suffix}"
+            wt = self.cfg.worktree_path(f"{task.id}-trial-{suffix}")
+            runner = self.runner_for(task, "local", harness)
+            run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
+            trial["contenders"].append({"label": label, "harness": harness, "model": model, "branch": branch, "worktree": str(wt),
+                                        "run_id": run.run_id, "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None})
+            runs.append(run)
+        st["trial"] = trial
+        task.branch = base_branch
+        task.log(f"trial started with {', '.join(c['label'] for c in trial['contenders'])}")
+        self.store.save(task)
+        self.events.emit("trial_started", task.id, contenders=[c["label"] for c in trial["contenders"]])
+        self.state.save()
+        return runs
+
+    def reap_trial(self, task: Task, rep: TickReport) -> bool:
+        st = self.state.get(task.id)
+        trial = st["trial"]
+        if trial["status"] == "comparing":
+            return False
+        changed = False
+        for c in trial["contenders"]:
+            if c["status"] != "running":
+                continue
+            run = next((r for r in self.runs.runs_for(task.id) if r.run_id == c["run_id"]), None)
+            if run is None:
+                c["status"] = "failed"
+                c["note"] = "run record missing"
+                changed = True
+                continue
+            runner = self.runner_for(task, run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                continue
+            changed = True
+            self._finalize_contender(task, c, run, runner)
+        if not changed:
+            return False
+        if any(c["status"] == "running" for c in trial["contenders"]):
+            return True
+        with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
+        base = self.base_for(task)
+        if len(with_pr) >= 2:
+            diffs = {c["label"]: gitops.diff(Path(c["worktree"]), base) for c in with_pr}
+            text = compare_brief(self.store, task, with_pr, diffs, base, int(self.cfg.get("review.max_diff_chars", 60000)))
+            trial["status"] = "comparing"
+            self.dispatch_aux("compare", task, text, Path(with_pr[0]["worktree"]), {"trial_id": trial["id"]},
+                              harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or "hard"))
+            rep.dispatched.append(f"{task.id}(compare)")
+            task.log("all contenders finished; comparison run started")
+            self.store.save(task)
+        elif len(with_pr) == 1:
+            self._conclude_trial(task, {"winner": with_pr[0]["label"], "rationale": "only one contender produced a PR", "ranking": []}, rep)
+        else:
+            trial["status"] = "done"
+            self._transition(task, Status.FAILED, "trial: no contender produced a PR")
+            rep.transitions.append(f"{task.id} -> failed (trial)")
+        return True
+
+    def _finalize_contender(self, task: Task, c: dict[str, Any], run: Run, runner: Runner) -> None:
+        run.exit_code = run.read_exit_code()
+        run.finished_at = now_iso()
+        collected = runner.collect(run) if run.status != "timeout" else {"result": {}, "error": "timed out"}
+        run.result = collected.get("result") or {}
+        run.usage = collected.get("usage") or {}
+        run.cost_usd = collected.get("cost_usd")
+        run.error = collected.get("error") or ""
+        c["cost"] = run.cost_usd
+        c["input_tokens"] = int((run.usage or {}).get("input_tokens", 0) or 0)
+        c["output_tokens"] = int((run.usage or {}).get("output_tokens", 0) or 0)
+        self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
+                         status=str(run.result.get("status") or ("error" if run.error else "no_result")), cost_usd=run.cost_usd, usage=run.usage)
+        result = run.result
+        wt = Path(c["worktree"])
+        if str(result.get("status", "")).lower() != "done":
+            run.status = "failed"
+            run.save()
+            c["status"], c["note"] = "failed", (result.get("summary") or run.error or "no result")[:200]
+            return
+        try:
+            if gitops.has_uncommitted_changes(wt):
+                gitops.commit_all(wt, f"{task.id}: leftover changes from trial run {run.run_id}")
+            if gitops.commits_ahead(wt, self.base_for(task)) == 0:
+                raise gitops.GitError("no commits")
+            gitops.push(wt, c["branch"])
+        except gitops.GitError as e:
+            run.status = "failed"
+            run.save()
+            c["status"], c["note"] = "failed", str(e)[:200]
+            return
+        run.status = "done"
+        run.save()
+        c["pr_title"] = str(result.get("pr_title") or f"{task.id}: {task.title}")
+        c["pr_body"] = str(result.get("pr_body") or result.get("summary") or "")
+        slug = self.slug_for(task)
+        if slug and self.github.available:
+            try:
+                pr = self.github.create_pr(slug, c["branch"], self.base_for(task), f"[trial {c['label']}] {c['pr_title']}",
+                                           c["pr_body"] + f"\n\n---\nTrial contender `{c['label']}` for task `{task.id}`.",
+                                           draft=bool(self.cfg.get("github.draft_pr", False)))
+                c["pr"], c["pr_number"] = pr.url, pr.number
+            except GitHubError as e:
+                c["note"] = f"PR failed: {e}"[:200]
+        c["status"] = "pr"
+
+    def _finish_trial(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
+        task = self.store.task(entry["task"])
+        verdict = parse_compare(final)
+        if not verdict:
+            st = self.state.get(task.id)
+            with_pr = [c for c in st["trial"]["contenders"] if c["status"] == "pr"]
+            verdict = {"winner": with_pr[0]["label"], "rationale": "comparison run produced no verdict; first contender kept", "ranking": []}
+        self._conclude_trial(task, verdict, rep, compare_cost=run.cost_usd, run_id=run.run_id)
+
+    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None, run_id: str = "") -> None:
+        st = self.state.get(task.id)
+        trial = st["trial"]
+        scores = {str(r.get("label")): r for r in verdict.get("ranking") or [] if isinstance(r, dict)}
+        for c in trial["contenders"]:
+            r = scores.get(c["label"])
+            if r:
+                c["score"] = r.get("score")
+                c["summary"] = r.get("summary", "")
+        winner = next((c for c in trial["contenders"] if c["label"] == verdict.get("winner") and c["status"] == "pr"), None)
+        if winner is None:
+            with_pr = sorted([c for c in trial["contenders"] if c["status"] == "pr"], key=lambda c: -(c.get("score") or 0))
+            winner = with_pr[0]
+        trial["winner"] = winner["label"]
+        trial["rationale"] = str(verdict.get("rationale") or "")
+        trial["status"] = "done"
+        trial["compare_cost"] = compare_cost
+        record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": winner["label"], "rationale": trial["rationale"],
+                  "compare_cost": compare_cost,
+                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "score", "cost", "input_tokens", "output_tokens", "pr", "summary", "note")} for c in trial["contenders"]]}
+        self.trials.record(record)
+        md = ranking_markdown({"task": task.id, **record})
+        slug = self.slug_for(task)
+        for c in trial["contenders"]:
+            if c.get("pr_number") and slug and self.github.available:
+                try:
+                    comment_body = mark_garden_comment(md, run_id)
+                    self.github.comment(slug, c["pr_number"], comment_body)
+                    if c is not winner:
+                        self.github.close_pr(slug, c["pr_number"])
+                except GitHubError as e:
+                    self.log(f"{task.id}: trial PR update failed: {e}")
+            if c is not winner and c.get("worktree"):
+                try:
+                    gitops.remove_worktree(self.repo_for(task), Path(c["worktree"]))
+                except Exception:  # noqa: BLE001
+                    pass
+        task.branch = winner["branch"]
+        task.pr = winner.get("pr", "")
+        st["pr_number"] = winner.get("pr_number") or 0
+        st["worktree"] = winner["worktree"]
+        st["revisions"] = 0
+        st["review_rounds"] = int(self.cfg.get("review.max_rounds", 2))  # the comparison stands in for the review pass
+        self.events.emit("trial_done", task.id, winner=winner["label"],
+                         scores={c["label"]: c.get("score") for c in trial["contenders"]})
+        st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True)) and bool(winner.get("pr"))
+        self._transition(task, self._pr_status(task), f"trial won by {winner['label']} (scores: " +
+                         ", ".join(f"{c['label']}={c.get('score') if c.get('score') is not None else '–'}" for c in trial["contenders"]) + f"): {task.pr or 'no PR'}")
+        rep.transitions.append(f"{task.id} -> {task.status.value} (trial winner {winner['label']})")

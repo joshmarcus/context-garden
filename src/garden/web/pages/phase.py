@@ -1,0 +1,178 @@
+"""A phase's page (open or closed), its documents, and the Herbarium of closed phases."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+
+from ...brief import build_brief
+from ...charts import burnup_svg, tier_bars_svg
+from ...events import EventLog, metrics, phase_summary
+from ...graph import effective_status
+from ...plants import plant_info
+from ...runs import RunStore
+from ...scheduler import Scheduler, State
+from ...trials import TrialLog
+from ..common import Site, _split_log, render_md, tier_rows
+
+
+def register(app: FastAPI, site: Site) -> None:
+    hub, templates, ctx = site.hub, site.templates, site.ctx
+
+    @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
+    def phase_page(request: Request, product: str, phase: str, hide: str | None = None):
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        tasks = s.tasks()
+        from ...model import goals_text
+
+        goals = goals_text(ph.goals_path)
+        specs = [(s.rel(p), p.read_text()) for p in ph.specs]
+        docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
+        state = State(s.config.garden_dir / "state.json")
+        stack = bool(s.config.get("stack", True))
+        sched = hub.scheduler()
+        phase_tasks = {t.id: t for t in ph.tasks}
+        all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        m = metrics(all_events, phase_tasks)
+        reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
+        usage = RunStore(s.config.garden_dir).usage_by_task()
+        in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
+        merged = sum(1 for t in in_scope if t.status.value == "done")
+        prs_open = sum(1 for t in in_scope if t.pr and t.status.value != "done")
+        complete = bool(in_scope) and merged == len(in_scope)
+        sheet = {"merged": merged, "total": len(in_scope), "prs_open": prs_open, "complete": complete, "info": plant_info(ph.plant)}
+        spent = sched.spent_for(ph.key)
+
+        if ph.closed:
+            # the closing header: the record of what the phase did, no working controls
+            summary = phase_summary(all_events, phase_tasks)
+
+            def doc_url(p: Path) -> str:
+                return f"/phases/{ph.product}/{ph.name}/doc/{p.relative_to(ph.path)}"
+
+            merged_rows = [{"t": t, "number": t.pr.rsplit("/", 1)[-1], "merged": (summary["done_at"].get(t.id) or "")[:10]}
+                           for t in ph.tasks if t.pr and t.status.value == "done"]
+            unmerged_rows = [{"t": t, "why": (_split_log(t.body)[1] or ["closed unmerged"])[-1]}
+                             for t in ph.tasks if t.pr and t.status.value != "done"]
+            review_heads = []
+            for p in reviews:
+                head = _review_head(p)
+                head["url"] = doc_url(p)
+                head["tasks"] = [t for t in ph.tasks if t.discovered_from == f"persona:{head['persona']}"]
+                review_heads.append(head)
+            closing = next((p for p in ph.docs if "closing" in p.name and p.suffix == ".md"), None)
+            friction = ph.path / "docs" / "friction.md"
+            artifacts = [("closing document", doc_url(closing))] if closing else []
+            if friction.exists():
+                artifacts.append(("friction report (docs/friction.md)", doc_url(friction)))
+            artifacts += [(s.rel(p), doc_url(p)) for p in ph.specs]
+            artifacts += [(s.rel(p), doc_url(p)) for p in ph.docs
+                          if p.suffix == ".md" and p != closing and p != friction and "reviews" not in p.parts]
+            trials_n = sum(1 for tr in TrialLog(s.config.garden_dir / "trials.jsonl").read() if tr.get("task") in phase_tasks)
+            return templates.TemplateResponse(request, "phase_closed.html", ctx(
+                request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), sheet=sheet,
+                summary=summary, metrics=m, spent=spent, review_heads=review_heads, artifacts=artifacts,
+                trials_n=trials_n, merged_rows=merged_rows, unmerged_rows=unmerged_rows,
+                rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}))
+                      for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+            ))
+
+        fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
+        fixed_tokens = fixed.fixed_tokens if fixed else 0
+        from ...brief import estimate_brief_tokens
+        from ...personas import DEFAULT_PERSONAS, list_personas
+
+        phase_events = [e for e in all_events if e.get("task") in phase_tasks]
+        hide_done = hide == "done"
+        all_rows = [(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
+        hidden_count = sum(1 for row in all_rows if row[1] in ("done", "cancelled"))
+        rows = [row for row in all_rows if not hide_done or row[1] not in ("done", "cancelled")]
+        return templates.TemplateResponse(request, "phase.html", ctx(
+            request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
+            sheet=sheet,
+            burnup=burnup_svg(phase_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, phase_tasks)),
+            personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)), reviews=[(s.rel(p), p.read_text()) for p in reviews[:10]],
+            budget=sched.budget_for(ph.key), spent=spent, metrics=m,
+            rows=rows, hide_done=hide_done, hidden_count=hidden_count,
+            planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
+        ))
+
+    @app.get("/herbarium", response_class=HTMLResponse)
+    def herbarium(request: Request):
+        s = hub.fresh()
+        all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        sched = Scheduler(s, log=lambda m: None)
+        entries = []
+        for p in s.products():
+            for ph in p.phases:
+                if not ph.closed:
+                    continue
+                phase_tasks = {t.id: t for t in ph.tasks}
+                friction = ph.path / "docs" / "friction.md"
+                closing = next((f for f in ph.docs if "closing" in f.name and f.suffix == ".md"), None)
+                entries.append({
+                    "phase": ph, "info": plant_info(ph.plant),
+                    "summary": phase_summary(all_events, phase_tasks),
+                    "spent": sched.spent_for(ph.key),
+                    "friction_url": f"/phases/{ph.product}/{ph.name}/doc/docs/friction.md" if friction.exists() else "",
+                    "closing_url": f"/phases/{ph.product}/{ph.name}/doc/{closing.relative_to(ph.path)}" if closing else "",
+                })
+        entries.sort(key=lambda e: str(e["phase"].closed), reverse=True)
+        groups: list[tuple[str, list]] = []
+        if len({e["phase"].product for e in entries}) > 1:
+            for e in entries:
+                if not groups or groups[-1][0] != e["phase"].product:
+                    groups.append((e["phase"].product, []))
+                groups[-1][1].append(e)
+        else:
+            groups = [("", entries)]
+        return templates.TemplateResponse(request, "herbarium.html", ctx(request, page="herbarium", groups=groups, n=len(entries)))
+
+    @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
+    def phase_doc(request: Request, product: str, phase: str, name: str):
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+        target = (ph.path / name).resolve()
+        allowed = {p.resolve() for p in [*ph.docs, *ph.specs]}
+        if target not in allowed or target.suffix != ".md":
+            raise HTTPException(404)
+        return templates.TemplateResponse(request, "doc.html", ctx(
+            request, page="phase", phase_key=ph.key, phase=ph, name=name, doc_html=render_md(target.read_text())))
+
+
+def _review_head(path: Path) -> dict[str, Any]:
+    """Persona, date, score, headline and high findings of a docs/reviews report
+    (written by personas.report_markdown as <persona>-<date>[-n].md)."""
+    m = re.match(r"(.+?)-(\d{4}-\d{2}-\d{2})(?:-\d+)?$", path.stem)
+    persona, date = (m.group(1), m.group(2)) if m else (path.stem, "")
+    score = ""
+    overall = ""
+    highs: list[str] = []
+    section = ""
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            section = stripped[3:].lower()
+            continue
+        if "**Score:**" in stripped:
+            sm = re.search(r"\*\*Score:\*\*\s*([^·]+)", stripped)
+            score = sm.group(1).strip() if sm else ""
+            continue
+        if not stripped or stripped.startswith("#") or stripped.startswith("_"):
+            continue
+        if not section and not overall:
+            overall = stripped
+        elif section == "high" and stripped.startswith("- "):
+            highs.append(stripped[2:])
+    return {"persona": persona, "date": date, "score": score, "overall": overall, "highs": highs}
