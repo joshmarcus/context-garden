@@ -112,6 +112,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     first_review: dict[str, str] = {}
     cost: dict[str, float] = defaultdict(float)
     runs: dict[str, int] = defaultdict(int)
+    rebases = 0
+    rebase_cost = 0.0
+    merges = 0
     for ev in events:
         t = ev.get("task", "")
         k = ev.get("kind")
@@ -124,10 +127,14 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
                 revisions[t] += 1
         elif k == "transition" and ev.get("to") == "done":
             done_at[t] = ev["at"]
+            merges += 1
         elif k == "review":
             first_review.setdefault(t, str(ev.get("verdict", "")))
         elif k == "run_finished":
             cost[t] += float(ev.get("cost_usd") or 0.0)
+            if ev.get("mode") == "rebase":
+                rebases += 1
+                rebase_cost += float(ev.get("cost_usd") or 0.0)
     per_task = []
     for tid, task in tasks.items():
         if tid not in first_dispatch:
@@ -159,7 +166,13 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         d["first_pass_rate"] = round(d["first_pass_approve"] / d["reviewed"], 2) if d["reviewed"] else None
         d["avg_revisions"] = round(d["revisions"] / d["tasks"], 2) if d["tasks"] else 0
         del d["lead_hours"]
-    return {"tasks": per_task, "by_difficulty": by_diff}
+    rebase = {
+        "rebases": rebases,
+        "cost_usd": round(rebase_cost, 4),
+        "merges": merges,
+        "per_merge": round(rebases / merges, 2) if merges else None,
+    }
+    return {"tasks": per_task, "by_difficulty": by_diff, "rebase": rebase}
 
 
 def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
