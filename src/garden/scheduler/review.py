@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
+from ..criteria import criteria_counts
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -148,11 +149,14 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
-        pr_title, pr_body, pr_comment = task.title, "", ""
+        pr_title, pr_body, pr_comment, verified = task.title, "", "", None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
             pr_comment = str(work_run.result.get("pr_comment") or "")
+            verified = work_run.result.get("verified")
+        if verified is None:
+            verified = self._last_worker_verified(task)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available and not pr_body:
@@ -163,7 +167,7 @@ class ReviewMixin:
                 pass
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment)
+                            pr_comment=pr_comment, verified=verified)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         review_difficulty = str(self.cfg.get("review.difficulty") or task.difficulty or "medium")
@@ -238,9 +242,11 @@ class ReviewMixin:
         st["last_review"] = review
         st["last_review_run"] = run.run_id
         verdict = str(review.get("verdict", ""))
+        criteria_met, criteria_total = criteria_counts(review.get("criteria"))
         self.events.emit("review", task.id, run=run.run_id, verdict=verdict, summary=str(review.get("summary", "")),
                          blocking=sum(1 for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"),
-                         description_ok=bool(review.get("description_ok", True)))
+                         description_ok=bool(review.get("description_ok", True)),
+                         criteria_met=criteria_met, criteria_total=criteria_total)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available:
