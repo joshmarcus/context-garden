@@ -25,11 +25,16 @@ def test_every_decision_kind_becomes_an_item():
         {"at": "2026-09-05T10:06:00+00:00", "kind": "discovered", "task": "DM-009", "new_task": "DM-010", "title": "A follow-up"},
         {"at": "2026-09-05T10:07:00+00:00", "kind": "retro_done", "task": "", "phase": "demo/p1"},
         {"at": "2026-09-05T10:08:00+00:00", "kind": "retro_question", "task": "", "phase": "demo/p1"},
-        {"at": "2026-09-05T10:09:00+00:00", "kind": "phase_closed", "task": "", "phase": "demo/p1"},
+        {"at": "2026-09-05T10:09:00+00:00", "kind": "retro_verdict", "task": "", "phase": "demo/p1", "status": "pending"},
+        {"at": "2026-09-05T10:10:00+00:00", "kind": "phase_closed", "task": "", "phase": "demo/p1"},
+        # a retro_verdict that closed the phase at once needs no separate notification
+        # (retro_done already fired in the same tick); it must not become an item.
+        {"at": "2026-09-05T10:11:00+00:00", "kind": "retro_verdict", "task": "", "phase": "demo/p2", "status": "accepted"},
     ]
     items = decision_notifications(evs, titles={"DM-001": "Set up the store"})
-    # every listed kind produces exactly one item, and each carries a kind we recognise
-    assert len(items) == len(evs)
+    # every listed kind produces exactly one item, except the accepted retro_verdict, which
+    # is filtered out (it does not need a fresh decision)
+    assert len(items) == len(evs) - 1
     assert {i["kind"] for i in items} == set(DECISION_KINDS)
     # each item has a non-empty title and a URL to open the task or phase it is about
     assert all(i["title"] and i["url"] for i in items)
@@ -42,7 +47,7 @@ def test_every_decision_kind_becomes_an_item():
     assert "base branch is broken" in by_kind["needs_human"]["title"]
     assert by_kind["stall"]["url"] == "/tasks/DM-008"
     assert by_kind["discovered"]["url"] == "/tasks/DM-010"
-    for k in ("retro_done", "retro_question", "phase_closed"):
+    for k in ("retro_done", "retro_question", "retro_verdict", "phase_closed"):
         assert by_kind[k]["url"] == "/phases/demo/p1"
 
 

@@ -90,7 +90,15 @@ token-free scripts; `events` records history; `store` and `model` read and write
    process: it harvests the PR-body friction, runs (or reuses) the persona reviews,
    reconciles every friction item against what actually merged — still true, fixed by
    which task, outdated or disputed — and opens a PR to the garden's own repo with the
-   retro document and a draft of the next phase's goals.
+   retro document and a draft of the next phase's goals. The reconciliation ends in a
+   **verdict** on the phase itself: `close` (nothing blocks; the phase joins the
+   herbarium at once), `close_with_followups` (close now, and the named items become
+   draft tasks in the next phase) or `reopen` (the named items become tasks in *this*
+   phase with a freeze exception and `retro_blocking: true`, and `garden close-phase`
+   refuses until each is done). A `close` closes without waiting for approval; a
+   `reopen` records a decision that approves the blocking tasks when a person accepts
+   it. `garden retro-decide product/phase close|followups|reopen` accepts or changes
+   the verdict; the phase page and the retro document show it.
 
 ## Bounded loops, on purpose
 

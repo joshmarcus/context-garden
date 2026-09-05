@@ -90,6 +90,29 @@ def register(app: FastAPI, site: Site) -> None:
             return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 
+    @app.post("/phases/{product}/{phase}/retro-decide")
+    def retro_decide(product: str, phase: str, choice: str = Form(""), note: str = Form("")):
+        back = f"/phases/{product}/{phase}"
+        try:
+            with hub.action_lock:
+                sched = hub.scheduler()
+                try:
+                    ph = sched.store.phase(product, phase)
+                except KeyError:
+                    raise HTTPException(404) from None
+                sched.retro_decide(ph, choice, note=note, by="web")
+        except HTTPException:
+            raise
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"retro-decide {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("retro-decide %s/%s failed", product, phase)
+            hub._log(f"retro-decide {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
+
     @app.post("/phases/{product}/{phase}/budget")
     def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
         key = f"{product}/{phase}"

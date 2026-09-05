@@ -1,0 +1,17 @@
+{% if retro_verdict %}
+<div class="panel {{ 'warn' if retro_verdict.pending else '' }}">
+  <div class="eyebrow">Retro verdict</div>
+  <h3>{{ retro_verdict.word }}{% if retro_verdict.pending %} <span class="badge hot">needs a decision</span>{% endif %}</h3>
+  <p class="muted">{% if retro_verdict.accepted_by %}accepted by {{ retro_verdict.accepted_by }}{% if retro_verdict.accepted_at %} at {{ retro_verdict.accepted_at }}{% endif %}{% else %}recorded {{ retro_verdict.at }}{% endif %}{% if retro_verdict.note %} · {{ retro_verdict.note }}{% endif %}{% if retro_verdict.pr %} · <a href="{{ retro_verdict.pr }}" target="_blank">retro PR ↗</a>{% endif %}</p>
+  {% if retro_verdict.tasks %}<table style="font-size:13px;margin-top:8px"><tr><th>task</th><th>kind</th><th>status</th><th>title</th></tr>
+  {% for t in retro_verdict.tasks %}<tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td>{{ t.kind }}</td><td><span class="state s-{{ t.status }}">{{ t.status.replace('_',' ') }}</span></td><td class="title">{{ t.title }}</td></tr>{% endfor %}</table>{% endif %}
+  <div class="actions" style="margin-top:10px">
+    {% if retro_verdict.pending %}
+      <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/retro-decide"><input type="hidden" name="choice" value="reopen"><button class="primary" title="Approve the blocking tasks and keep the phase open">Accept reopen</button></form>
+      <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/retro-decide"><input type="hidden" name="choice" value="close"><button class="quiet" title="Close the phase instead of reopening">Change to close</button></form>
+    {% else %}
+      <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/retro-decide"><input type="hidden" name="choice" value="reopen"><button class="quiet" title="Reverse the verdict and reopen for the blocking tasks">Reopen</button></form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}

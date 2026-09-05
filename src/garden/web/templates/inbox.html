@@ -66,6 +66,10 @@
       {% elif it.group == 'decision' %}
         <form method="post" action="/tasks/{{ it.task }}/accept"><button class="primary">Accept{% if it.decision_kind == 'wont_do' %} (won't do){% else %} (resume){% endif %}</button></form>
         <form method="post" action="/tasks/{{ it.task }}/reject" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Why you disagree. It goes back to the worker in a revise round." required></textarea><button>Reject and send back</button></form>
+      {% elif it.group == 'retro_verdict' %}
+        <form method="post" action="/phases/{{ it.product }}/{{ it.phase_name }}/retro-decide"><input type="hidden" name="choice" value="reopen"><button class="primary" title="Approve the blocking tasks and keep the phase open">Accept reopen</button></form>
+        <form method="post" action="/phases/{{ it.product }}/{{ it.phase_name }}/retro-decide"><input type="hidden" name="choice" value="close"><button class="quiet" title="Close the phase instead of reopening">Change to close</button></form>
+        <a class="btn quiet" href="/phases/{{ it.product }}/{{ it.phase_name }}">Phase page ↗</a>
       {% elif it.group == 'triage' %}
         <form method="post" action="/tasks/{{ it.task }}/triage-ready"><button class="primary">Ready for review</button>{% if it.pr %}<a class="btn quiet" href="{{ it.pr }}" target="_blank">Open PR ↗</a>{% endif %}</form>
         <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>

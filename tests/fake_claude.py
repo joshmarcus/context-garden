@@ -178,9 +178,21 @@ def retro(call: Call) -> None:
     if task_titles:
         features.append({"title": task_titles[0], "difficulty": "easy", "priority": 4,
                          "body": "Already covered.", "rationale": "already tracked"})
+    # The phase verdict: `close` by default; a test sets FAKE_RETRO_VERDICT to drive the
+    # `close_with_followups` (a follow-up in the next phase) and `reopen` (a blocking task in
+    # this phase) paths.
+    verdict = os.environ.get("FAKE_CLAUDE_RETRO_VERDICT", "close")
+    followups, blocking = [], []
+    if verdict == "close_with_followups":
+        followups = [{"title": "Document the retro verdict flow", "difficulty": "easy", "priority": 2,
+                      "body": "Write up how a retro ends in a verdict."}]
+    elif verdict == "reopen":
+        blocking = [{"title": "Fix the broken base check", "difficulty": "medium", "priority": 1,
+                     "body": "The pre-PR check fails at the phase's base.", "reason": "the base is red"}]
     rev = {"reconciliation": recon, "summary": "The phase mostly held together.",
            "personas": "The personas liked the onboarding.", "still_open": ["live worker output"],
-           "features": features, "next_goals": "# Next\n\n- Make waiting visible.\n"}
+           "features": features, "verdict": verdict, "followups": followups, "blocking": blocking,
+           "next_goals": "# Next\n\n- Make waiting visible.\n"}
     print(result_json("Reconciled.\nGARDEN_RETRO: " + json.dumps(rev), {"input_tokens": 4000, "output_tokens": 300}, 0.04))
 
 

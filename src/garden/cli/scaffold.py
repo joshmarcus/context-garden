@@ -171,6 +171,9 @@ def close_phase(
         err.print(f"[red]{e}[/red]")
         err.print("finish or cancel them, or close anyway with --force")
         raise typer.Exit(1) from None
+    if sched.retro_verdict(ph.key) is None:
+        console.print(f"[yellow]note: {ph.key} has no retro verdict; closing anyway. "
+                      f"Run `garden retro {ph.key}` to record one.[/yellow]")
     console.print(f"{ph.key} closed ({date}); it now appears in the herbarium")
 
 

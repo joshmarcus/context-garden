@@ -52,6 +52,7 @@ def register(app: FastAPI, site: Site) -> None:
         complete = bool(in_scope) and merged == len(in_scope)
         sheet = {"merged": merged, "total": len(in_scope), "prs_open": prs_open, "complete": complete, "info": plant_info(ph.plant)}
         spent = sched.spent_for(ph.key)
+        verdict_view = _verdict_view(sched.retro_verdict(ph.key), tasks)
 
         if ph.closed:
             # the closing header: the record of what the phase did, no working controls
@@ -86,6 +87,7 @@ def register(app: FastAPI, site: Site) -> None:
                 has_retro=bool(_retro_doc(ph)),
                 rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id) or no_usage)
                       for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
+                retro_verdict=verdict_view,
             ))
 
         from ...brief import estimate_brief_tokens, phase_fixed_tokens
@@ -110,6 +112,7 @@ def register(app: FastAPI, site: Site) -> None:
             retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
             new_task=_new_task_prefill(request),
             kickoff=_kickoff_panel(s, sched, ph),
+            retro_verdict=verdict_view,
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
@@ -165,20 +168,23 @@ def register(app: FastAPI, site: Site) -> None:
             head = _review_head(p)
             head["url"] = doc_url(p)
             persona_heads.append(head)
-        retro_tasks = sorted((t for t in s.tasks().values() if t.discovered_from == f"retro:{ph.key}"),
+        tasks = s.tasks()
+        retro_tasks = sorted((t for t in tasks.values() if t.discovered_from == f"retro:{ph.key}"),
                              key=lambda t: (t.phase, t.priority, t.id))
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
         phase_tasks = {t.id: t for t in ph.tasks}
         summary = phase_summary(all_events, phase_tasks)
         runs = sum(r["runs"] for r in summary["metrics"]["tasks"])
         cancelled = sum(1 for t in ph.tasks if t.status.value == "cancelled")
-        spent = hub.reader().spent_for(ph.key)
+        sched = hub.reader()
+        spent = sched.spent_for(ph.key)
         return templates.TemplateResponse(request, "phase_retro.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, summary=summary,
             runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
-            persona_heads=persona_heads, retro_tasks=retro_tasks))
+            persona_heads=persona_heads, retro_tasks=retro_tasks,
+            retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks)))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
     def phase_doc(request: Request, product: str, phase: str, name: str):
@@ -250,6 +256,27 @@ NEW_TASK_DEFAULTS = {"difficulty": "medium", "priority": "3", "acceptance": "- [
 
 def _new_task_prefill(request: Request) -> dict[str, str]:
     return {f: request.query_params.get(f"nt_{f}", NEW_TASK_DEFAULTS.get(f, "")) for f in NEW_TASK_FIELDS}
+
+
+def _verdict_view(rec: dict[str, Any] | None, tasks: dict[str, Any]) -> dict[str, Any] | None:
+    """The retro verdict for the phase page: the record plus the generated tasks with their
+    current status. A follow-up filed in the next phase lands only when the retro PR merges,
+    so until then it shows as `in retro PR`."""
+    from ...retro import PHASE_VERDICTS
+
+    if not rec:
+        return None
+
+    def row(tid: str, kind: str) -> dict[str, str]:
+        t = tasks.get(tid)
+        return {"id": tid, "title": t.title if t else "", "kind": kind,
+                "status": t.status.value if t else "in retro PR"}
+
+    generated = ([row(i, "blocking") for i in rec.get("blocking_ids") or []]
+                 + [row(i, "follow-up") for i in rec.get("followup_ids") or []])
+    word = PHASE_VERDICTS.get(rec.get("verdict"), rec.get("verdict") or "none")
+    return {**rec, "tasks": generated, "word": word,
+            "pending": rec.get("status") == "pending", "verdict": rec.get("verdict") or ""}
 
 
 def _review_head(path: Path) -> dict[str, Any]:
