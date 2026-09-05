@@ -272,24 +272,23 @@ every gap as a task so the loop needs you less next time. Written from the first
 ## First look, every time
 
 ```bash
-garden status                      # counts, cost, "dispatch paused" if it is
-garden inbox                       # decisions vs notices
+garden observe                     # status line, cards, stuck runs, tracebacks, a digest of the window
 gh pr list --repo <owner/repo> --state open --json number,title,mergeable,statusCheckRollup
-python3 - <<'EOF'                  # active runs and whether they are alive
-import json,glob,os,time
-for p in glob.glob('.garden/runs/*/*/run.json'):
-    r=json.load(open(p))
-    if r['status']=='running':
-        so=os.path.join(os.path.dirname(p),'stdout.json'); age=int(time.time()-os.path.getmtime(so)) if os.path.exists(so) else -1
-        print(r['task_id'], r['mode'], r.get('model'), r['started_at'][11:19], f'last output {age}s ago')
-EOF
-tail -5 .garden/events.jsonl | cut -c1-200
-stat -c %y .garden/state.json      # last tick; if it is minutes old, the server is dead or wedged
 ```
 
-A worker writing to `stdout.json` within the last minute is working. Silence for ten
-minutes with no events and no active runs means the loop is waiting on a person: read
-`needs_human` for every non-terminal task before assuming a crash.
+`garden observe` is the one command: a status line (service pulse, worker slots, spend,
+counts per status), then only what needs a hand (decision cards, stuck runs — no output past
+`observe.stuck_after` or a process that finished without being reaped — and tracebacks), then
+a digest of the window; a section with nothing to say is omitted. Run `garden observe
+--follow` to keep it open beside the loop: it repeats every `observe.interval` and streams
+the event kinds in `observe.events` as they land. Cadence and volume are `observe:` in
+garden.yaml (see docs/architecture.md in the tool's own repo) — pick `--profile quiet`
+(the default, cheapest) to sit beside a long-running loop, `watch` for more of the loop's own
+decisions, or `debug` while chasing something specific; `--json` emits the same fields as one
+object per pass, for parsing instead of reading. A worker producing output within the last
+minute is working; a stuck-run card or a status line stuck for many passes means the loop is
+waiting on a person — read `needs_human` for every non-terminal task before assuming a crash.
+The table below says what each stall means and which action clears it.
 
 ## Act through the product, not around it
 

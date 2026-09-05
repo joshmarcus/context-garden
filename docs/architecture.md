@@ -93,6 +93,7 @@ of the loop touch different files.
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents; friction harvesting; task suggestions |
+| `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
@@ -464,7 +465,8 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
 `dispatch_persona_*`, `tick`) and render.
 
 - **CLI** (`cli/`, Typer): every operation, scriptable; `garden inbox` and `garden
-  digest` are the text versions of the home page. Split by command family, one module
+  digest` are the text versions of the home page, and `garden observe` (below) is the one
+  feed that combines them for an operator or an agent's heartbeat. Split by command family, one module
   each — `scaffold`, `views`, `state`, `loop`, `planning`, `diagnostics` — over a shared
   `common` (the `app`, the consoles and the store/task/target helpers); `__init__`
   imports them so their `@app.command()` decorators register and re-exports `app`/`main`.
@@ -526,6 +528,58 @@ command (typo, missing binary, unreachable webhook) is caught there rather than 
 time a task actually needs a human. At runtime, a command that exits non-zero, times out
 or fails to start does not stop the scheduler, but is logged as a warning (logger
 `garden.notify`) instead of failing silently.
+
+## `garden observe`: the operator's feed
+
+One command replaces a hand-rolled heartbeat script and a firehose event tail: `garden
+observe` prints a status line (service pulse, worker slots, spend, and counts per status for
+the open phases), then only what needs a hand (inbox decision cards, one line each with the
+task, its kind and the action that clears it — from `inbox.py`'s decision table), stuck runs
+(no output for longer than `stuck_after`, or a process that finished without being reaped),
+tracebacks (an unhandled exception in a recent run's stderr — a bug in the harness or
+scheduler, not an ordinary task failure), and a digest of the window; a section that has
+nothing to say is omitted. `--json` emits the same fields as one object, for an agent that
+parses. `garden observe --follow` repeats every `observe.interval` and, between passes,
+prints one line for each event whose kind is in `observe.events` as it lands.
+
+Every knob lives under `observe:` in garden.yaml (`config.DEFAULTS["observe"]`):
+
+| key | default | meaning |
+|---|---|---|
+| `interval` | `30m` | `--follow`'s sleep between passes (`Nm`/`Nh`/`Nd`/`Nw`, or a bare number of seconds) |
+| `digest_window` | `30m` | how far back each pass's digest and traceback scan look |
+| `events` | `[question, needs_human, failed]` | the kinds (or aliases, below) `--follow` streams between passes |
+| `stuck_after` | `15m` | a running run idle this long (no output, no worktree change) is a stuck card |
+| `line_width` | `160` | wrap width for the text output |
+| `phases` | `open` | `"open"` (every phase that is not closed) or a list of `product/phase` keys, scoping the status line's counts |
+| `profile` | `""` | a name from the built-ins or `profiles`, applied on top of the fields above |
+| `profiles` | `{}` | name -> partial override of any of the fields above (only the fields it names change) |
+
+`observe.events` names either a literal event kind (as `events.py` emits them: `transition`,
+`dispatch`, `review`, `needs_human`, `stall`, `decision`, `budget`, ...) or one of a few
+aliases for a kind that only means something with one more field checked (`garden.observe.
+EVENT_ALIASES`): `question` (a worker's question is a `waiting_human` event, not a `decision`,
+which is a wont_do/no_change call), `failed` (a `transition` to `failed`), `phase`
+(`phase_closed`/`phase_reopened`), `retro` (any `retro_*` event), `review_changes_requested`
+(a `review` event whose verdict is `request_changes`), and `merge` (`merge_head`,
+`automerged`, or a `transition` to `done`).
+
+**Profiles** are named presets: `observe.profile` (or `--profile` for one invocation) picks
+one, and a same-named entry under `observe.profiles` replaces a built-in outright. Three
+ship built in (`garden.observe.BUILTIN_PROFILES`):
+
+| profile | interval | events | notes |
+|---|---|---|---|
+| `quiet` | 30m | question, needs_human, failed | the default: cheap to run beside a long loop |
+| `watch` | 10m | quiet's events, plus decision, stall, budget, phase, retro, review_changes_requested | more of the loop's own decisions, still not the firehose |
+| `debug` | 5m (stuck_after 5m) | transition, dispatch, review, merge | every transition, worth it only while chasing something |
+
+Profile selection is live, like `max_parallel`: `garden set observe.profile <name>` (or the
+Config page's Profile select, which posts to `/config/observe-profile`) stores it in
+`state.json` under `_control.overrides` the same way (`Scheduler.set_override`/`effective` in
+`scheduler/budget.py`), so a running `garden observe --follow` picks up the switch on its next
+pass without a restart — the same mechanism that lets a garden.yaml edit to `observe.profile`
+take effect within one tick.
 
 ## Extension points
 
