@@ -253,7 +253,7 @@ def test_set_budget_none_removes_cap(sched):
     rep = sched.tick()
     assert len(rep.dispatched) == 2
     wait_for_runs(sched)
-    sched.tick()  # reap the finished runs before retrying, as above
+    sched.tick()  # reap the first batch so its finished runs free their slots
     for t in sched.store.tasks().values():
         sched.retry(t)
     assert len(sched.tick().dispatched) == 2  # still dispatching despite the config cap
