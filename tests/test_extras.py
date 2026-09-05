@@ -299,6 +299,21 @@ def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, 
     assert "security persona" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
 
 
+def test_persona_reviews_resolve_model_from_retro_difficulty_not_review_difficulty(sched, fake_github):
+    """CG-207: review.difficulty governs PR reviews only; persona reviews (phase and PR) and
+    the retro reconciliation resolve their model from retro.difficulty (default hard), so a
+    retro always runs on the best tier without anyone editing garden.yaml first."""
+    sched.cfg.data["review"]["difficulty"] = "easy"
+    sched.cfg.data["retro"]["difficulty"] = "hard"
+    sched.tick()
+    sched.tick()  # DM-001 has a PR
+    ph = sched.store.phase("demo", "p1")
+    phase_run = sched.dispatch_persona_phase(ph, "security")
+    assert phase_run.difficulty == "hard" and phase_run.model == "opus"
+    pr_run = sched.dispatch_persona_pr(sched.store.task("DM-001"), "security")
+    assert pr_run.difficulty == "hard" and pr_run.model == "opus"
+
+
 def test_configured_personas_run_on_every_pr(sched, fake_github):
     sched.cfg.data["review"] = {"enabled": False, "personas": ["user"], "max_rounds": 2, "max_diff_chars": 60000}
     sched.tick()

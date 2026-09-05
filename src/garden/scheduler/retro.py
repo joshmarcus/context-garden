@@ -126,6 +126,11 @@ class RetroMixin:
         base = self.cfg.product_base_branch(self_prod or phase.product)
         recon = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                 reports, task_rows, merged, nxt)
+        difficulty = str(self.cfg.get("retro.difficulty") or "hard")
+        probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
+                     product=self_prod or phase.product, phase="")
+        runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
+        model = self.model_for(probe, runner, difficulty)
         persona_toks = 0
         if to_run:
             persona_toks = estimate_tokens(phase_brief(self.store, phase, to_run[0], base, self.phase_prs(phase))) * len(to_run)
@@ -139,7 +144,8 @@ class RetroMixin:
                 "personas_run": to_run, "personas_reuse": reuse, "friction": len(friction),
                 "reported": reported_entries, "comment_friction": comment_items,
                 "merged": len(merged), "tasks": len(task_rows), "est_tokens": est_tokens,
-                "est_cost": round(est_tokens * rate, 2), "have_cost_history": bool(seen)}
+                "est_cost": round(est_tokens * rate, 2), "have_cost_history": bool(seen),
+                "difficulty": difficulty, "model": model}
 
     def start_retro(self, phase: Phase, personas: list[str] | None = None, skip_personas: bool = False,
                     next_phase: str = "") -> dict[str, Any]:
@@ -201,7 +207,7 @@ class RetroMixin:
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                reports, task_rows, merged, entry["next_phase"])
-        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("review.difficulty") or "hard"))
+        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("retro.difficulty") or "hard"))
         entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
@@ -378,7 +384,8 @@ class RetroMixin:
                                                persona_feats=persona_feats)
         persona_findings = self._persona_findings(phase, reports)
         filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product, prefix, num)
-        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed, filed_findings=filed_findings))
+        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed, filed_findings=filed_findings,
+                                               difficulty=run.difficulty, model=run.model))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")

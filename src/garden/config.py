@@ -61,8 +61,12 @@ DEFAULTS: dict[str, Any] = {
         "max_rounds": 2,          # automated review rounds per PR
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
-        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard
+        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
+    },
+    "retro": {
+        "difficulty": "hard",     # tier for persona reviews (phase and PR) and the retro reconciliation;
+                                  # separate from review.difficulty so nobody has to edit config before a retro
     },
     "harnesses": {},
     "ssh": {"hosts": []},
