@@ -171,6 +171,31 @@ class DiscoveredMixin:
         self.state.get(task.id)["needs_human"] = {
             "kind": kind, "reason": reason, "prior_status": task.status.value, "at": now_iso(), **extra}
 
+    # ---- question decision cards (kickoff's or the retro's) -----------------
+    def _file_question_decision(self, phase: Any, item: dict[str, Any], idx: int, run_id: str,
+                                source: str, next_phase: str = "") -> dict[str, Any]:
+        """A "question for the owner" raised by a kickoff or a retro becomes one pending
+        decision card of kind "question" (CG-224, extended to the retro by CG-225): one
+        mechanism for both, so `garden decide --answer/--dismiss` and the Inbox handle either
+        the same way, distinguished only by `source` ("kickoff" or "retro"). `next_phase`
+        (retro only) is where an answered question's resolution also lands, under that
+        phase's goals.md '## Decisions' section."""
+        question = str(item.get("question") or "").strip()
+        if not question:
+            return {}
+        decisions = self.state.get("_decisions")
+        did = f"{run_id}-q{idx}"
+        decisions[did] = {
+            "id": did, "kind": "question", "target": "", "target_title": question[:80],
+            "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
+            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"{source}:{phase.key}",
+            "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
+            "discovered_from": f"{source}:{phase.key}", "source": source,
+            "blocking": bool(item.get("blocking")), "next_phase": next_phase,
+        }
+        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
+        return {"question": question, "decision_id": did}
+
     # ---- decisions (discovered work that is a choice, not a task) -----------
     def _record_decision(self, task: Task, run: Run, kind: str, item: dict[str, Any]) -> None:
         """A `duplicate`/`cancel` discovery: propose cancelling a named task. It becomes a

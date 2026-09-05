@@ -23,6 +23,8 @@ from ..personas import (
 )
 from ..retro import (
     PHASE_VERDICTS,
+    append_retro_answer,
+    append_retro_decision_to_goals,
     flatten_findings,
     group_findings,
     next_phase_name,
@@ -432,6 +434,39 @@ class RetroMixin:
             self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
         return filed
 
+    def _file_retro_questions(self, phase: Phase, rev: dict[str, Any], next_phase: str, run_id: str) -> list[dict[str, Any]]:
+        """The reconciliation's `questions`, filed live as decision cards the same way a
+        kickoff's are (CG-225: one mechanism, shared by kickoff and retro) — not into the
+        retro's own worktree, since they must reach the Inbox and `garden decide` right away,
+        the same tick, regardless of whether the retro's own PR ever merges."""
+        items = [q for q in rev.get("questions") or [] if isinstance(q, dict)]
+        return [f for f in (self._file_question_decision(phase, it, i, run_id, source="retro",
+                                                          next_phase=f"{phase.product}/{next_phase}")
+                            for i, it in enumerate(items)) if f]
+
+    def _resolve_retro_question(self, d: dict[str, Any], status: str, answer: str, by: str) -> None:
+        """Fold a retro question's resolution back into the two documents CG-225 asks for: the
+        retro's own document (this phase's '## Answers') and the next phase's goals draft (its
+        '## Decisions') — each a no-op while its document isn't live yet (the retro's PR hasn't
+        merged, or the next phase doesn't exist), the same rule a kickoff's resolution follows."""
+        product, _, phase_name = str(d.get("phase") or "").partition("/")
+        if not product or not phase_name:
+            return
+        question, at = str(d.get("question") or ""), now_iso()
+        retro_path = self.store.root / product / phase_name / "docs" / "retro.md"
+        append_retro_answer(retro_path, question, status, answer, by or "?", at)
+        next_product, _, next_name = str(d.get("next_phase") or "").partition("/")
+        if next_product and next_name:
+            goals_path = self.store.root / next_product / next_name / "goals.md"
+            append_retro_decision_to_goals(goals_path, question, status, answer, by or "?", at)
+
+    def retro_blocking_questions_open(self, phase: Phase) -> list[dict[str, Any]]:
+        """The phase's still-pending retro questions marked `blocking` — what `retro_decide`
+        refuses on, the same way `close_phase` refuses on an open `retro_blocking` task."""
+        return [d for d in self.pending_decisions()
+                if d.get("kind") == "question" and d.get("source") == "retro"
+                and d.get("phase") == phase.key and d.get("blocking")]
+
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
         rev = parse_retro(final)
@@ -454,6 +489,7 @@ class RetroMixin:
         # not exist yet) to land with the retro PR. Blocking is filed first so the live id counter
         # is past those ids before the worktree drafts reserve theirs.
         blocking = self._file_retro_blocking(phase, rev, existing_titles)
+        filed_questions = self._file_retro_questions(phase, rev, next_phase, run.run_id)
         prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
         num = int(num_s)
         persona_feats = persona_features(self._persona_sections(reports))
@@ -469,7 +505,8 @@ class RetroMixin:
         numbers = numbers_section(summary["cost_usd"], operator_cost)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, followups=followups,
-                                               blocking=blocking, next_phase=next_phase,
+                                               blocking=blocking, filed_questions=filed_questions,
+                                               next_phase=next_phase,
                                                difficulty=run.difficulty, model=run.model, numbers=numbers))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
@@ -610,6 +647,11 @@ class RetroMixin:
         vs = self.state.get("_retro_verdicts")
         if phase.key not in vs:
             raise RuntimeError(f"{phase.key} has no retro verdict to decide; run `garden retro {phase.key}` first")
+        open_qs = self.retro_blocking_questions_open(phase)
+        if open_qs:
+            names = ", ".join(f'"{q["question"]}" ({q["id"]})' for q in open_qs)
+            raise RuntimeError(f"{phase.key}: answer the retro's blocking question(s) first (`garden decide "
+                               f"--answer/--dismiss`): {names}")
         rec = vs[phase.key]
         if choice == "reopen":
             if phase.closed:

@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .model import Phase, now_iso, slugify
+from .model import Phase, join_frontmatter, now_iso, slugify, split_frontmatter
 from .store import Store
 
 RETRO_MARKER = "GARDEN_RETRO:"
@@ -84,6 +84,15 @@ already exists (check the phase task list and the titles of tasks in other phase
 as part of the persona reports and task list above), say so by putting that task's id in
 `duplicate_of` instead of proposing it again; do not guess an id that is not shown to you.
 
+If reconciling this phase or drafting the next surfaces a decision only the owner can make —
+a product tradeoff, a scope call the next phase's goals need before planning starts — list it
+under `questions`, the same way a kickoff review would. Give the context and, if there are
+natural options, list them. Mark `blocking: true` only when your own verdict below must wait on
+the answer (typically a `reopen` verdict that depends on it); a question the next phase's own
+kickoff could just as well answer is not blocking. Each becomes a decision card in the Inbox,
+answered or dismissed the same way as a kickoff's question; the answer is folded back into this
+document's '## Answers' and into the next phase's goals once given.
+
 Finally, end the retro with a verdict on the phase itself — the one decision the whole
 retrospective is for:
 
@@ -100,7 +109,7 @@ and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -426,6 +435,74 @@ def resolve_retro_tasks(items: Any, existing_titles: dict[str, str]) -> list[dic
     return out
 
 
+def questions_section(items: list[dict[str, Any]], filed: list[dict[str, Any]]) -> str:
+    """The retro document's '## Questions for the owner' body: every question the
+    reconciliation raised, with the decision card it became — the same rendering shape as a
+    kickoff's (see `kickoff._questions_section`), since it is the same card (CG-225)."""
+    if not items:
+        return "_No open questions._"
+    by_q = {f["question"]: f for f in filed if f.get("question")}
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        question = str(it.get("question") or "").strip()
+        if not question:
+            continue
+        f = by_q.get(question)
+        head = f"- **{question}**" + (f" — decision card `{f['decision_id']}`" if f and f.get("decision_id") else "")
+        if it.get("blocking"):
+            head += " _(blocking the verdict)_"
+        out.append(head)
+        context = str(it.get("context") or "").strip()
+        if context:
+            out.append(f"  - {context}")
+        options = [str(o) for o in (it.get("options") or [])]
+        if options:
+            out.append(f"  - options: {', '.join(options)}")
+    return "\n".join(out) if out else "_No open questions._"
+
+
+def _append_under_heading(text: str, heading: str, line: str) -> str:
+    """Append `line` at the end of `heading`'s section in `text`, creating the heading (at
+    the document's end) if it isn't there yet, and replacing a lone italic placeholder (e.g.
+    "_Not yet answered._") rather than piling `line` up underneath it."""
+    idx = text.find(heading)
+    if idx == -1:
+        return text.rstrip("\n") + "\n\n" + heading + "\n\n" + line + "\n"
+    end = text.find("\n## ", idx + len(heading))
+    section_end = end if end != -1 else len(text)
+    body = text[idx + len(heading) : section_end].strip()
+    if body.startswith("_") and body.endswith("_") and "\n" not in body:
+        section = heading + "\n\n" + line + "\n\n"
+    else:
+        section = text[idx:section_end].rstrip("\n") + "\n" + line + "\n\n"
+    return text[:idx] + section + text[section_end:].lstrip("\n")
+
+
+def append_retro_answer(retro_path: Path, question: str, status: str, answer: str, by: str, at: str) -> None:
+    """Record a retro question's resolution onto the live retro document's own '## Answers'
+    section (created if missing), with who decided and when (CG-225). A no-op while the
+    document isn't live yet (the retro's own PR hasn't merged) — the same rule a kickoff's
+    `append_question_resolution` follows for its own document."""
+    if not retro_path.exists():
+        return
+    line = f"- **{question}** — {status} by {by} on {at[:10]}" + (f": {answer}" if answer else "")
+    retro_path.write_text(_append_under_heading(retro_path.read_text(), "## Answers", line))
+
+
+def append_retro_decision_to_goals(goals_path: Path, question: str, status: str, answer: str, by: str, at: str) -> None:
+    """Same resolution, onto the next phase's goals.md '## Decisions' section, so `garden
+    plan` for that phase inlines it (goals_text carries the whole body). A no-op while that
+    goals file isn't live yet (the retro's own PR hasn't merged, or the phase doesn't exist)."""
+    if not goals_path.exists():
+        return
+    meta, body = split_frontmatter(goals_path.read_text())
+    line = f"- **{question}** — {status} by {by} on {at[:10]}" + (f": {answer}" if answer else "")
+    body = _append_under_heading(body.rstrip("\n") + "\n", "## Decisions", line)
+    goals_path.write_text(join_frontmatter(meta, body) if meta else body.lstrip("\n"))
+
+
 def verdict_section(phase: Phase, verdict: str, followups: list[dict[str, Any]] | None,
                     blocking: list[dict[str, Any]] | None, next_phase: str) -> str:
     """The retro document's `## Verdict` body: the choice, and the tasks it named by id."""
@@ -484,6 +561,7 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
                      filed_findings: list[dict[str, Any]] | None = None,
                      followups: list[dict[str, Any]] | None = None,
                      blocking: list[dict[str, Any]] | None = None,
+                     filed_questions: list[dict[str, Any]] | None = None,
                      next_phase: str = "",
                      difficulty: str = "", model: str = "", numbers: str = "") -> str:
     tier = f" · {difficulty} tier ({model})" if difficulty else ""
@@ -503,6 +581,10 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     still_open = [str(s).strip() for s in rev.get("still_open") or [] if str(s).strip()]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
+    questions = [q for q in rev.get("questions") or [] if isinstance(q, dict) and str(q.get("question") or "").strip()]
+    out += ["## Questions for the owner", "", questions_section(questions, filed_questions or []), ""]
+    if questions:
+        out += ["## Answers", "", "_Not yet answered._", ""]
     out += ["## Findings from persona reviews", "", findings_section(filed_findings or []), ""]
     out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:

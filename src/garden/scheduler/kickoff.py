@@ -90,35 +90,31 @@ class KickoffMixin:
         return {"path": path, "issue": issue, "task_id": t.id}
 
     def _file_kickoff_question(self, phase: Phase, item: dict[str, Any], idx: int, run_id: str) -> dict[str, Any]:
-        question = str(item.get("question") or "").strip()
-        if not question:
-            return {}
-        decisions = self.state.get("_decisions")
-        did = f"{run_id}-q{idx}"
-        decisions[did] = {
-            "id": did, "kind": "question", "target": "", "target_title": question[:80],
-            "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
-            "options": [str(o) for o in (item.get("options") or [])], "proposed_by": f"kickoff:{phase.key}",
-            "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
-            "discovered_from": f"kickoff:{phase.key}",
-        }
-        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
-        return {"question": question, "decision_id": did}
+        return self._file_question_decision(phase, item, idx, run_id, source="kickoff")
 
-    def answer_kickoff_question(self, decision_id: str, answer: str) -> dict[str, Any]:
+    def answer_kickoff_question(self, decision_id: str, answer: str, by: str = "") -> dict[str, Any]:
+        """Answer a question decision card — a kickoff's or a retro's (CG-225): the card
+        itself doesn't say which document to fold the answer back into, so that is dispatched
+        on `source` instead of guessed from the caller."""
         d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "answered", answer.strip())
+        if d.get("source") == "retro":
+            self._resolve_retro_question(d, "answered", answer.strip(), by)
+        else:
+            phase = self._phase_of_decision(d)
+            if phase is not None:
+                append_question_resolution(phase, str(d["question"]), "answered", answer.strip())
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=True)
         self.state.save()
         return d
 
-    def dismiss_kickoff_question(self, decision_id: str) -> dict[str, Any]:
+    def dismiss_kickoff_question(self, decision_id: str, by: str = "") -> dict[str, Any]:
         d = self._pop_kickoff_question(decision_id)
-        phase = self._phase_of_decision(d)
-        if phase is not None:
-            append_question_resolution(phase, str(d["question"]), "dismissed", "")
+        if d.get("source") == "retro":
+            self._resolve_retro_question(d, "dismissed", "", by)
+        else:
+            phase = self._phase_of_decision(d)
+            if phase is not None:
+                append_question_resolution(phase, str(d["question"]), "dismissed", "")
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=False)
         self.state.save()
         return d
