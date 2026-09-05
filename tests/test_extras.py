@@ -310,6 +310,13 @@ def test_trial_again_closes_prior_prs_deletes_branches_and_resets_state(sched, f
     st = sched.state.get("DM-001")
     assert not st.get("pr_number") and not st.get("worktree")
 
+    # the earlier trial's own trials.jsonl record is updated in place: the winner's contender,
+    # recorded open, now shows closed too, so the trial-history views don't lie about a PR
+    # --again has since closed
+    first_record = TrialLog(sched.cfg.garden_dir / "trials.jsonl").read()[0]
+    winner_entry = next(c for c in first_record["contenders"] if c["label"] == "claude:opus")
+    assert winner_entry["closed"] is True
+
 
 def test_trial_without_again_refuses_naming_the_flag(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")

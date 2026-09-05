@@ -106,6 +106,7 @@ class TrialsMixin:
         worktrees and branches, and clearing state.json keys one at a time under the lock."""
         slug = self.slug_for(task)
         repo = self.repo_for(task)
+        closed_prs: set[str] = set()
         for c in prior.get("contenders", []):
             wt = c.get("worktree")
             if wt:
@@ -122,6 +123,8 @@ class TrialsMixin:
                     self.github.comment(slug, number, mark_garden_comment(
                         f"Closing this contender: {task.id}'s trial is being run again."))
                     self.github.close_pr(slug, number)
+                    if c.get("pr"):
+                        closed_prs.add(c["pr"])
                 except GitHubError as e:
                     self.log(f"{task.id}: could not close trial contender PR #{number}: {e}")
             if branch and slug and self.github.available:
@@ -129,6 +132,8 @@ class TrialsMixin:
                     self.github.delete_branch(slug, branch)
                 except GitHubError as e:
                     self.log(f"{task.id}: could not delete trial contender branch {branch}: {e}")
+        if closed_prs:
+            self.trials.mark_closed(task.id, closed_prs)
         self._queue_leave(task)
         st = self.state.get(task.id)
         for key in AGAIN_RESET_KEYS:

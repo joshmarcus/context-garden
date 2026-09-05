@@ -132,6 +132,28 @@ class TrialLog:
                     continue
         return out
 
+    def mark_closed(self, task_id: str, prs: set[str]) -> None:
+        """Flip `closed` on already-recorded contenders whose PR is closed after the record was
+        written — `--again` (CG-232) can close a trial's surviving PR (the winner's, kept open
+        at record time) well after `record()` ran, and the trial-history views read this file
+        back, so a rewrite is the only way to keep them honest."""
+        if not prs:
+            return
+        records = self.read()
+        changed = False
+        for t in records:
+            if t.get("task") != task_id:
+                continue
+            for c in t.get("contenders", []):
+                if c.get("pr") in prs and not c.get("closed"):
+                    c["closed"] = True
+                    changed = True
+        if not changed:
+            return
+        with self.path.open("w") as f:
+            for t in records:
+                f.write(json.dumps(t, sort_keys=True) + "\n")
+
     def leaderboard(self) -> list[dict[str, Any]]:
         agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"trials": 0, "wins": 0, "scores": [], "costs": [], "failed": 0, "env_failed": 0,
                                                               "input_tokens": 0, "output_tokens": 0, "cost_per_point": []})
