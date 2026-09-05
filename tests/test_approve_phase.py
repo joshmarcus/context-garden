@@ -10,6 +10,7 @@ from garden.cli import app
 from garden.model import Status
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import complete_brief
 
 runner = CliRunner()
 
@@ -53,6 +54,7 @@ def test_inbox_card_defaults_the_pulldown_to_the_current_phase(garden):
 def test_approve_into_another_phase_moves_then_approves(garden):
     assert run(garden, "new-phase", "demo", "p2").exit_code == 0
     assert run(garden, "new-task", "demo/p1", "Late idea").exit_code == 0  # DM-003, draft
+    complete_brief(garden, "DM-003")
 
     c = client(garden)
     r = c.post("/tasks/DM-003/approve", data={"note": "demo/p2"}, follow_redirects=False)
@@ -92,6 +94,7 @@ def test_approve_into_a_frozen_phase_is_refused_without_a_freeze_exception(garde
     tt.freeze_exception = True
     tt.freeze_exception_reason = "hotfix"
     store.save(tt)
+    complete_brief(garden, "DM-003")
 
     r = c.post("/tasks/DM-003/approve", data={"note": "demo/p2"}, follow_redirects=False)
     assert r.status_code == 303

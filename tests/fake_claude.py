@@ -381,8 +381,19 @@ def escape_worktree(call: Call) -> None:
 def add_discovered(call: Call, result: dict) -> None:
     result["discovered"] = [
         {"title": "Fix the flaky widget test", "body": "## Goal\n\nIt flakes.", "difficulty": "easy", "blocking": False},
-        {"title": "Add the missing config schema", "body": "## Goal\n\nNeeded first.", "difficulty": "medium", "blocking": True},
+        {"title": "Add the missing config schema",
+         "body": "## Goal\n\nNeeded first.\n\n## Acceptance criteria\n\n- [ ] The schema validates a config with every known key.\n",
+         "difficulty": "medium", "blocking": True},
         {"title": "First task", "body": "duplicate title, must be skipped"},
+    ]
+
+
+def add_discovered_incomplete_brief(call: Call, result: dict) -> None:
+    # A blocking discovery whose brief is not ready to dispatch (placeholder criteria):
+    # `_file_discovered` must hold it as a draft, not send it straight to ready (CG-209).
+    result["discovered"] = [
+        {"title": "Add the missing config schema", "body": "## Goal\n\nNeeded first.\n\n## Acceptance criteria\n\n- [ ] ...\n",
+         "difficulty": "medium", "blocking": True},
     ]
 
 
@@ -439,6 +450,7 @@ WORKERS: dict[str, Worker] = {
     "discover": Worker(tweak=add_discovered),
     "discover-kinds": Worker(tweak=add_discovered_kinds),
     "discover-same": Worker(tweak=add_discovered_same),
+    "discover-incomplete-brief": Worker(tweak=add_discovered_incomplete_brief),
     "nochange": Worker(early=nothing_to_change),
     "revise-with-comment": Worker(tweak=add_pr_comment),
     "conflict": Worker(prepare=collide_with_main),

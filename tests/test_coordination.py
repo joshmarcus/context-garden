@@ -98,6 +98,28 @@ def test_discovered_work_files_tasks(sched, fake_github, monkeypatch):
     assert {e["new_task"] for e in evs} == set(new)
 
 
+def test_blocking_discovery_with_incomplete_brief_is_held_as_draft(sched, fake_github, monkeypatch):
+    """A blocking discovery skips `approve` straight to ready, but its brief must still pass
+    brief_gaps (CG-193); one with placeholder acceptance criteria is held as a draft instead
+    of dispatching a run against it (CG-209)."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover-incomplete-brief")
+    sched.tick()
+    rep = sched.tick()
+    sched.store.invalidate()
+    tasks = sched.store.tasks()
+    new = [t for t in tasks.values() if t.discovered_from == "DM-001"]
+    assert len(new) == 1
+    schema = new[0]
+    assert schema.status == Status.DRAFT
+    assert "held as draft" in schema.body and "incomplete brief" in schema.body
+    assert f"{schema.id}(work)" not in rep.dispatched
+
+    from garden.inbox import build_inbox
+
+    card = next(i for i in build_inbox(sched.store, sched) if i.get("task") == schema.id)
+    assert card["group"] == "approve" and card["gaps"]
+
+
 # ---- diff summary on run records (CG-115) -------------------------------------
 def test_run_records_diff_stat_on_finish(sched, fake_github):
     sched.tick()

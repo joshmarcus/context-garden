@@ -181,3 +181,61 @@ def test_brief_omits_max_turns_when_unset(garden):
     store = Store(garden)
     b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
     assert "You have **" not in b.text
+
+
+# ---- brief_gaps: placeholder criteria and unresolved reading paths (CG-193) ----
+
+
+def _task_with(store, body="", reading=None):
+    """A draft task in demo/p1 with the given body and reading list, for brief_gaps."""
+    t = store.create_task("demo", "p1", "Gap probe", body, reading=reading or [], status="draft")
+    return t
+
+
+def test_brief_gaps_flags_missing_criteria_section(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    t = _task_with(store, "## Goal\n\nDo a thing.\n")
+    gaps = brief_gaps(store, t)
+    assert any("Acceptance criteria" in g for g in gaps)
+
+
+def test_brief_gaps_flags_placeholder_criteria(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    for placeholder in ("- [ ] ...", "- [ ] to be written at planning", "- [ ] TBD", "- [ ] TODO"):
+        t = _task_with(store, f"## Goal\n\nX\n\n## Acceptance criteria\n\n{placeholder}\n")
+        assert any("placeholder" in g for g in brief_gaps(store, t)), placeholder
+
+
+def test_brief_gaps_flags_non_checkbox_criteria(garden):
+    """A plain bullet (no `- [ ] ` checkbox) is invisible to criteria.parse_criteria — the same
+    parser review, reap and the task page use — so approve must not treat it as real, either."""
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- The parser rejects an empty file.\n"
+    t = _task_with(store, body)
+    gaps = brief_gaps(store, t)
+    assert any("Acceptance criteria" in g for g in gaps)
+
+
+def test_brief_gaps_accepts_real_criteria(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    t = _task_with(store, "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] The parser rejects an empty file.\n")
+    assert brief_gaps(store, t) == []
+
+
+def test_brief_gaps_flags_unresolved_reading_path(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works and is tested.\n"
+    t = _task_with(store, body, reading=["demo/p1/specs/spec.md", "demo/p1/specs/missing.md"])
+    gaps = brief_gaps(store, t)
+    assert any("missing.md" in g for g in gaps)
+    assert not any("spec.md`" in g for g in gaps)  # the resolvable one is not flagged

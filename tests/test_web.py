@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import complete_brief
 
 
 def client(garden):
@@ -81,6 +82,7 @@ def test_actions(garden):
     assert "cancelled" in c.get("/tasks/DM-002").text
     c.post("/tasks/DM-001/unapprove")
     assert "draft" in c.get("/api/tasks").json()[0]["status"]
+    complete_brief(garden, "DM-001")  # CG-193: approve refuses a task with no real criteria
     c.post("/phases/demo/p1/approve-all")
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
@@ -318,6 +320,7 @@ def test_approve_all_flashes_a_message_instead_of_500(garden, monkeypatch):
 
     c = client(garden)
     c.post("/tasks/DM-001/unapprove")  # DM-001 is now draft, so approve-all has work to do
+    complete_brief(garden, "DM-001")  # CG-193: get past the brief gate so save() is what fails
 
     def boom(self, task):
         raise RuntimeError("save boom")

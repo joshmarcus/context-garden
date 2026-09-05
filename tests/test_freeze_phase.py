@@ -11,6 +11,7 @@ from garden.cli import app
 from garden.model import Status
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import complete_brief
 
 runner = CliRunner()
 
@@ -72,6 +73,7 @@ def test_approve_cli_refuses_frozen_task_without_exception(garden):
     assert Store(garden).task("DM-003").status == Status.DRAFT
 
     grant_exception(garden, "DM-003")
+    complete_brief(garden, "DM-003")
     r = run(garden, "approve", "DM-003")
     assert r.exit_code == 0, r.output
     assert Store(garden).task("DM-003").status == Status.READY
@@ -159,6 +161,7 @@ def test_web_approve_action_refuses_frozen_task(garden):
     assert Store(garden).task("DM-003").status == Status.DRAFT
 
     grant_exception(garden, "DM-003")
+    complete_brief(garden, "DM-003")
     r = c.post("/tasks/DM-003/approve", follow_redirects=False)
     assert r.status_code == 303
     assert Store(garden).task("DM-003").status == Status.READY
