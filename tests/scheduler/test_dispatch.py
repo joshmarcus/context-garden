@@ -42,6 +42,33 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     assert not sched.worktree_for(sched.store.task("DM-001")).exists()
 
 
+def test_brief_inlines_reading_from_the_target_checkout(sched, tmp_path):
+    """A reading-list file that exists on the task's branch but not on the product base must be
+    inlined from the worktree the worker actually gets — the target checkout — and not marked
+    'not found' because the base repo does not have it yet. The worktree is prepared before the
+    brief is built for exactly this reason (a stacked task's parent-created files, too)."""
+    from tests.conftest import git, write
+
+    repo = tmp_path / "repo"
+    branch = "garden/dm-001-first-task"  # DM-001's default branch
+    # Commit a file only on the task's branch; main never gets it.
+    git("checkout", "-q", "-b", branch, cwd=repo)
+    write(repo / "src" / "onbranch.py", "ANSWER = 42\n")
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", "add onbranch", cwd=repo)
+    git("checkout", "-q", "main", cwd=repo)
+
+    t = sched.store.task("DM-001")
+    t.reading = ["src/onbranch.py"]
+    sched.store.save(t)
+    sched.store.invalidate()
+
+    sched.tick()  # dispatch DM-001 (the in-process worker runs synchronously)
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "### src/onbranch.py" in brief and "ANSWER = 42" in brief
+    assert "not found when the brief was built" not in brief
+
+
 def test_max_parallel(sched, garden):
     for t in sched.store.tasks().values():
         t.depends_on = []

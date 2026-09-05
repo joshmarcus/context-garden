@@ -172,6 +172,13 @@ class DispatchMixin:
                     commits_ahead = commits_log.strip().split("\n")
             except gitops.GitError:
                 pass
+        # Prepare the worktree before building the brief so reading-list snippets are inlined
+        # from the *target checkout* — the branch the worker will actually edit, including a
+        # stacked parent's changes and files a dependency created — not the stale base repo.
+        # build_brief's product_dirs prefers this worktree once it exists.
+        wt: Path | None = None
+        if worktree and not runner.remote:
+            wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
         if mode == "rebase":
             from ..brief import rebase_brief
 
@@ -190,9 +197,7 @@ class DispatchMixin:
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())
-        wt: Path | None = None
-        if worktree and not runner.remote:
-            wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
+        if wt is not None:
             run.worktree = str(wt)
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
