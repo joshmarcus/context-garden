@@ -230,6 +230,7 @@ def finish(
     result_json: str = typer.Option("", "--result", help="Full GARDEN_RESULT JSON"),
     result_file: Path | None = typer.Option(None, "--result-file"),
     blocked: bool = typer.Option(False, help="Report the task as blocked"),
+    cost: float | None = typer.Option(None, help="What this round cost in USD, so manual work counts toward the same cost metrics as a worker run"),
 ):
     """Complete a manually-taken task: pushes and opens the PR if the runner made a worktree."""
     store = _store()
@@ -245,6 +246,8 @@ def finish(
     if pr_url:
         result["pr"] = pr_url
         t.pr = pr_url
+    if cost is not None:
+        result["cost_usd"] = cost
     rep = _scheduler(store).finish_manual(t, result)
     console.print(rep.summary())
 

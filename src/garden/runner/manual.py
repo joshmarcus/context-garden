@@ -27,7 +27,11 @@ class ManualRunner(Runner):
         out: dict[str, Any] = {"result": {}, "usage": {}, "cost_usd": None, "final_text": "", "error": ""}
         if p.exists():
             try:
-                out["result"] = json.loads(p.read_text())
+                result = json.loads(p.read_text())
+                out["result"] = result
+                cost = result.get("cost_usd")
+                if isinstance(cost, (int, float)):
+                    out["cost_usd"] = float(cost)
             except json.JSONDecodeError as e:
                 out["error"] = f"bad result.json: {e}"
         else:

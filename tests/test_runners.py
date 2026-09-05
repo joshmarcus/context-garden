@@ -7,6 +7,7 @@ import yaml
 
 from garden.model import Status
 from garden.runner.local import LocalRunner
+from garden.runner.manual import ManualRunner
 
 
 def _wait_for_child(run) -> None:
@@ -253,3 +254,29 @@ def test_codex_planning_review_and_resume(sched, monkeypatch, fake_github):
     assert fake_github.created[0]["title"] == "Codex PR"
     assert any("checked" in c for c in fake_github.comments)
     assert "Use SQLite" in (sched.worktree_for(task) / "codex-resumed.txt").read_text()
+
+
+def test_manual_runner_collects_cost_from_finish(garden):
+    """CG-158: `garden finish --cost` records what a manual round cost, the same field an
+    automated run reports from its harness usage, so a hand-worked task counts toward cost
+    metrics instead of always showing as free."""
+    from garden.runs import RunStore
+
+    rs = RunStore(garden / ".garden")
+    run = rs.new_run("DM-001", "manual", "work")
+    ManualRunner.finish(run, {"status": "done", "summary": "by hand", "cost_usd": 3.5})
+
+    collected = ManualRunner({}).collect(run)
+    assert collected["cost_usd"] == 3.5
+    assert collected["result"]["status"] == "done"
+
+
+def test_manual_runner_collect_with_no_cost_reported(garden):
+    from garden.runs import RunStore
+
+    rs = RunStore(garden / ".garden")
+    run = rs.new_run("DM-001", "manual", "work")
+    ManualRunner.finish(run, {"status": "done", "summary": "by hand"})
+
+    collected = ManualRunner({}).collect(run)
+    assert collected["cost_usd"] is None
