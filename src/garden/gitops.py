@@ -105,6 +105,24 @@ def prepare_worktree(repo: Path, path: Path, branch: str, base: str) -> Path:
     return path
 
 
+def add_detached_worktree(repo: Path, path: Path, commit: str) -> Path:
+    """Check `commit` out into a throwaway detached worktree (no branch). Used to probe a
+    check at the branch's base without disturbing the branch's own worktree."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git("worktree", "prune", cwd=repo)
+    git("worktree", "add", "--detach", str(path), commit, cwd=repo)
+    return path
+
+
+def merge_base(worktree: Path, ref: str) -> str:
+    """The commit where `worktree`'s HEAD and `ref` diverge — the branch's base commit."""
+    return git("merge-base", ref, "HEAD", cwd=worktree).strip()
+
+
+def rev_parse(worktree: Path, ref: str) -> str:
+    return git("rev-parse", ref, cwd=worktree).strip()
+
+
 def remove_worktree(repo: Path, path: Path) -> None:
     if path.exists():
         try:
