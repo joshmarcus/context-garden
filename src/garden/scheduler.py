@@ -821,6 +821,7 @@ class Scheduler:
             self._transition(task, Status.IN_REVIEW, f"branch pushed but PR failed ({e}); open it by hand and run `garden pr {task.id} <url>`{cost}")
             rep.transitions.append(f"{task.id} -> in_review (PR failed)")
             return
+        self._record_friction(task, run, result)
         self._maybe_review(task, run, rep)
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
@@ -927,6 +928,30 @@ class Scheduler:
         self.events.emit("decision", target, decision=did, decision_kind=kind, proposed_by=task.id,
                          of=of, reason=reason, run=run.run_id)
         self.log(f"{task.id}: {kind} decision on {target}: {reason[:80]}")
+
+    def _record_friction(self, task: Task, run: Run, result: dict[str, Any]) -> None:
+        """A worker's reported friction (the result's `friction` list): post it as one marked
+        PR comment and append it to the phase's friction record. It never goes in the PR body;
+        the next planning round harvests it with `garden friction`."""
+        from .friction import friction_comment, friction_items, record_friction
+
+        items = friction_items(result)
+        if not items:
+            return
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if slug and number and self.github.available:
+            try:
+                self.github.comment(slug, number, mark_garden_comment(friction_comment(items), run.run_id))
+            except GitHubError as e:
+                self.log(f"{task.id}: could not post friction comment: {e}")
+        try:
+            ph = self.store.phase(task.product, task.phase)
+            doc = ph.path / "docs" / "friction.md"
+            record_friction(doc, items, f"reported by {task.id} ({task.title}) in run {run.run_id}", now_iso()[:10])
+        except KeyError:
+            self.log(f"{task.id}: cannot file friction; phase {task.key} not found")
+        self.events.emit("friction", task.id, run=run.run_id, phase=task.key, items=len(items))
 
     def _record_note(self, task: Task, run: Run, item: dict[str, Any]) -> None:
         """A `note` discovery: information for the phase's friction record, no card, no task."""
@@ -1162,6 +1187,12 @@ class Scheduler:
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         st["last_findings"] = keys
         if verdict == "request_changes" and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
+            # Only the description is wrong (no blocking finding) and the reviewer supplied the
+            # corrected body: apply it directly instead of spending a revise round on wording.
+            rewrite = str(review.get("description_rewrite") or "").strip()
+            if not keys and not bool(review.get("description_ok", True)) and rewrite:
+                self._apply_description_rewrite(task, run, rewrite, rep, cost)
+                return True
             if repeated and bool(self.cfg.get("stall.enabled", True)):
                 self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                 return True
@@ -1175,6 +1206,25 @@ class Scheduler:
         self.store.save(task)
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
+        """The reviewer found nothing blocking but the description, and returned the corrected
+        body: update the PR through the GitHub API and stay in review. No revise round runs."""
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        applied = False
+        if slug and number and self.github.available:
+            try:
+                self.github.update_pr(slug, number, body=rewrite)
+                applied = True
+            except GitHubError as e:
+                self.log(f"{task.id}: could not apply the reviewer's description rewrite: {e}")
+        self.events.emit("description_rewritten", task.id, run=run.run_id, applied=applied)
+        note = "description rewritten by the reviewer" + ("" if applied else " (GitHub update failed)")
+        task.log(f"{note}{cost}")
+        self.store.save(task)
+        self.log(f"{task.id}: {note}")
+        rep.transitions.append(f"{task.id} {note}")
 
     def _verdict_is_moot(self, task: Task | None) -> bool:
         """True when a verdict-bearing run (review/persona/compare) can no longer be
@@ -1492,7 +1542,9 @@ class Scheduler:
         st["pending_feedback"] = (
             f"- **garden**: the parent task {parent_id} merged into `{new_base}`, but rebasing this branch onto "
             f"`origin/{new_base}` conflicts in: {', '.join(files) or 'unknown files'}. Run `git fetch origin && git rebase origin/{new_base}`, "
-            f"resolve the conflicts keeping the intent of both sides, and continue the rebase. The runner will force-push the rebased branch."
+            f"resolve the conflicts keeping the intent of both sides, and continue the rebase. The runner will force-push the rebased branch. "
+            f"Then drop from the PR description anything `{new_base}` now already contains; the description must cover only what this branch still adds. "
+            f"Put the corrected description in `pr_body` (only if it must change)."
         )
         st["force_push"] = True
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
@@ -1530,7 +1582,9 @@ class Scheduler:
             f"Run `git fetch origin && git rebase origin/{base}`, "
             f"resolve the conflicts keeping the intent of both sides"
             + (f" (conflicting files: {', '.join(files)})" if files else "")
-            + ". The runner will force-push the rebased branch."
+            + ". The runner will force-push the rebased branch. "
+            + f"Then drop from the PR description anything `{base}` now already contains; the description must cover only what this branch still adds. "
+            + "Put the corrected description in `pr_body` (only if it must change)."
         )
         st["force_push"] = True
         max_rev = int(self.cfg.get("max_revisions", 3))
