@@ -96,6 +96,20 @@ def test_new_phase_assigns_next_plant(garden):
     assert not (garden / "demo" / "p5").exists()
 
 
+def test_new_phase_refuses_an_unregistered_product(garden):
+    """CG-205: an unregistered product used to scaffold silently, leaving a directory that
+    every later command failed on with a bare `no product 'nope'`; refuse up front instead
+    and name garden.yaml's products block."""
+    import pytest
+
+    from garden.scaffold import new_phase
+
+    store = Store(garden)
+    with pytest.raises(ValueError, match="not registered in garden.yaml's products block"):
+        new_phase(store, "nope", "p1")
+    assert not (garden / "nope").exists()
+
+
 def test_background_vine_is_generated_from_the_shared_symbols():
     from garden.plants import vine_svg
 
