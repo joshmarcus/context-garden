@@ -9,7 +9,7 @@ from ..common import Site
 
 
 def register(app: FastAPI, site: Site) -> None:
-    from . import api, board, config, events, inbox, phase, runs, task, trellis, trials
+    from . import api, board, config, costs, events, inbox, phase, runs, task, trellis, trials
 
-    for module in (inbox, board, task, runs, trellis, trials, events, phase, config, api):
+    for module in (inbox, board, task, runs, trellis, trials, events, phase, costs, config, api):
         module.register(app, site)
