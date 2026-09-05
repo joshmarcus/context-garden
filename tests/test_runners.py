@@ -101,6 +101,38 @@ def test_local_runner_harness_shell_resolves_bin(tmp_path):
     assert cmd.startswith(str(fake))
 
 
+def test_local_runner_launch_flips_process_finished(tmp_path):
+    """The real LocalRunner.launch shell wrapper, end to end: it starts the harness detached
+    and writes exit_code when the process ends. process_finished() is False while the process
+    runs (pid alive, no exit_code yet) and True once the wrapper has written exit_code. Uses a
+    trivial `cat` harness that echoes the brief — no model, no tokens (the whole suite otherwise
+    runs the in-process runner, so this is the only coverage of the real launch mechanics)."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    # A "harness" that sleeps briefly (long enough to observe the running state) then echoes
+    # its stdin (the brief) to stdout, so the wrapper's redirects and exit_code are exercised.
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 0.5; cat"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    d = tmp_path / "run"
+    d.mkdir()
+    run = Run(task_id="T-001", run_id="r1", dir=str(d), runner="local")
+    brief = tmp_path / "brief.md"
+    brief.write_text("hello from the brief\n")
+
+    runner.launch(run, tmp_path, brief, dict(os.environ))
+    assert run.pid is not None and run.harness == "tiny"
+    assert not run.process_finished()  # still sleeping: pid alive, exit_code not written yet
+
+    try:
+        os.waitpid(run.pid, 0)  # wait for the detached wrapper to finish (no sleep, no timeout)
+    except ChildProcessError:
+        pass
+    assert run.process_finished()
+    assert (d / "exit_code").read_text().strip() == "0"
+    assert "hello from the brief" in (d / "stdout.json").read_text()
+
+
 def test_ssh_runner_uses_bare_bin(sched, fake_github):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
