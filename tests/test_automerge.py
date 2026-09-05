@@ -147,6 +147,27 @@ def test_gate_over_budget(sched, fake_github):
     assert not ok and "budget" in reason
 
 
+def test_gate_stacked_on_parent_branch(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    pr.base = "garden/dm-000-parent-task"
+    st["stack_parent"] = "DM-000"
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and reason == "stacked on DM-000; waits for the restack"
+
+
+def test_stacked_pr_is_not_automerged(sched, fake_github):
+    """Every other gate green, but the PR targets the parent's branch: held, not merged."""
+    t, st, pr = _in_review(sched, fake_github)
+    pr.base = "garden/dm-000-parent-task"
+    st["stack_parent"] = "DM-000"
+    sched.state.save()
+    sched.tick()
+    assert fake_github.merged == []
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    blocked = sched.state.get("DM-001").get("automerge_blocked")
+    assert blocked == "stacked on DM-000; waits for the restack"
+
+
 # ---- a failing gate records the reason and leaves the PR in review -----------
 def test_red_ci_holds_the_merge_with_reason_on_the_task(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)

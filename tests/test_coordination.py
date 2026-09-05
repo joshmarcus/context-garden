@@ -287,6 +287,80 @@ def test_stacked_dispatch_and_restack_on_merge(sched, fake_github, tmp_path):
     assert s["DM-001"] == "done" and s["DM-002"] == "in_review"
 
 
+def test_stacked_child_automerges_only_after_restack(sched, fake_github, tmp_path):
+    """A stacked child with every other gate green waits for the restack, then automerges."""
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 in_review; DM-002 stacks on it and dispatches
+    wait_for_runs(sched)
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    child_branch = "garden/dm-002-second-task"
+    st2 = sched.state.get("DM-002")
+    assert st2["stack_parent"] == "DM-001" and st2["pr_base"] == "garden/dm-001-first-task"
+    st2["last_review"] = {"verdict": "approve", "summary": "ok"}
+    st2["last_review_run"] = "rev-2"
+    st2["review_rounds"] = 1
+    sched.state.save()
+    pr2 = fake_github.prs[child_branch]
+    pr2.mergeable = "MERGEABLE"
+    pr2.checks = "SUCCESS"
+
+    # every gate green but the base is the parent's branch: held, not merged, reason names the parent
+    sched.tick()
+    assert {"number": pr2.number} not in [{"number": m["number"]} for m in fake_github.merged]
+    assert pr2.state == "OPEN"
+    assert sched.state.get("DM-002").get("automerge_blocked") == "stacked on DM-001; waits for the restack"
+
+    # the parent merges: DM-002 is retargeted to main and rebased
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", "origin/garden/dm-001-first-task", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    rep = sched.tick()
+    assert "DM-002 restacked onto main" in rep.transitions
+    assert sched.state.get("DM-002")["pr_base"] == "main" and pr2.base == "main"
+
+    # now that its base is the product base, the next poll automerges it
+    sched.tick()
+    assert pr2.state == "MERGED"
+    assert sched.state.get("DM-002").get("automerged")
+
+
+def test_restack_keeps_remote_only_commits(sched, fake_github, tmp_path):
+    """A rebase round on the restack path folds in commits pushed only to the remote branch."""
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # DM-001 in_review; DM-002 stacks
+    wait_for_runs(sched)
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    child_branch = "garden/dm-002-second-task"
+
+    # seed a commit that exists only on the remote child branch (as if merged into it)
+    rc = tmp_path / "remote-clone"
+    gitc("fetch", "origin", cwd=rc)
+    gitc("checkout", "-B", "child", f"origin/{child_branch}", cwd=rc)
+    (rc / "remote-only.txt").write_text("only on the remote\n")
+    gitc("add", "-A", cwd=rc)
+    gitc("commit", "-q", "-m", "remote-only commit", cwd=rc)
+    gitc("push", "-q", "origin", f"child:{child_branch}", cwd=rc)
+
+    # the parent merges -> DM-002 is restacked onto main and force-pushed
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", "origin/garden/dm-001-first-task", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    rep = sched.tick()
+    assert "DM-002 restacked onto main" in rep.transitions
+
+    # the remote-only commit survived the rebase and force-push
+    gitc("fetch", "origin", cwd=repo)
+    files = gitc("ls-tree", "-r", "--name-only", f"origin/{child_branch}", cwd=repo)
+    assert "remote-only.txt" in files
+
+
 def test_restack_conflict_routes_to_revise(sched, fake_github, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "conflict")  # both tasks rewrite README.md
     sched.tick()
