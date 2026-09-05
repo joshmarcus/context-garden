@@ -27,6 +27,17 @@ from tests.test_retro import _garden_repo, _live_garden, _register_prs
 runner = CliRunner()
 
 
+def _merge_retro_doc_into_live(store: Store, root: Path) -> None:
+    """Simulate the retro PR merging: copy the retro document the retro wrote in its worktree
+    into the live garden, where the retro page reads it from."""
+    import shutil
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    src, dst = wt / "gdn" / "p1" / "docs" / "retro.md", root / "gdn" / "p1" / "docs" / "retro.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dst)
+
+
 def _cli(root, *args):
     cwd = os.getcwd()
     os.chdir(root)
@@ -248,6 +259,7 @@ def test_retro_page_also_shows_the_reopen_verdict_and_its_task(tmp_path, fake_gi
     store = Store(root)
     sched = _run_retro(root, store, fake_github)
     bid = sched.retro_verdict("gdn/p1")["blocking_ids"][0]
+    _merge_retro_doc_into_live(store, root)  # simulate the retro PR merging into the live garden
 
     c = TestClient(create_app(Store(root), watch=False))
     html = c.get("/phases/gdn/p1/retro").text
