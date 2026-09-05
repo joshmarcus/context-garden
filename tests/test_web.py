@@ -87,6 +87,21 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
+def test_task_page_lists_stashed_changes(garden):
+    """CG-198: the named stash a dispatch set aside on a dirty worktree is listed on the task
+    page so a person can recover it."""
+    from garden.scheduler import State
+
+    state = State(Store(garden).config.garden_dir / "state.json")
+    state.get("DM-001")["stashes"] = [{"name": "garden:DM-001:2026-09-05T13:00:00+00:00",
+                                       "sha": "aa0ade13b0536e80a91c3852bae858cc84cc9163",
+                                       "at": "2026-09-05T13:00:00+00:00"}]
+    state.save()
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Stashed changes" in page
+    assert "aa0ade13b053" in page and "git stash apply" in page
+
+
 def test_trial_with_one_contender_shows_a_message_not_a_500(garden):
     c = client(garden)
     r = c.post("/tasks/DM-001/trial", data={"note": "claude:sonnet"}, follow_redirects=False)
