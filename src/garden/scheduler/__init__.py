@@ -217,6 +217,16 @@ class Scheduler(
         """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
         return [r for r in self.active_runs() if r.mode in WORKER_MODES]
 
+    def worker_run_in_flight(self, task_id: str) -> bool:
+        """Whether a worker-mode run (work/revise/resume/trial/rebase) is active for this task —
+        the branch is being written to right now. `_handle_pr_conflict` (the conflict rebase)
+        checks this before touching a branch, the same way CG-182 fences a check run, so a
+        mechanical rebase never races a worker writing the same branch (CG-220). The merge
+        queue's pre-merge rebase and the stale-base probe already refuse a task with any run in
+        flight — `_automerge_gate`'s "a run is in flight" gate and the base-broken stop being
+        cleared by `dispatch()` before any run starts — so they do not need this helper too."""
+        return any(r.task_id == task_id and r.mode in WORKER_MODES for r in self.active_runs())
+
     def latest_worker_run(self, task_id: str) -> Run | None:
         """The run the ordinary `reap()` should reap for a RUNNING task: the latest run whose
         mode occupies a `max_parallel` slot (work/revise/resume/trial/rebase), preferring one

@@ -488,6 +488,8 @@ class PollMixin:
         """PR is CONFLICTING with its base: run a rebase round. Mechanical first (no model),
         an easy-tier agent only on a real textual conflict — never a full revise run, and never
         against `max_revisions` (see RebaseMixin.mechanical_rebase)."""
+        if self.worker_run_in_flight(task.id):
+            return  # a worker is writing this branch right now (CG-220); try again next tick
         base = self.base_for(task)
         self.mechanical_rebase(task, base, rep, reason=f"PR conflicts with {base}")
 
