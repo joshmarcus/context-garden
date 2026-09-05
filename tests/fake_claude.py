@@ -15,6 +15,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) |
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
+       | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -173,7 +174,21 @@ if mode == "no_change" and "Revision round" in brief:
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
-if mode in ("done", "noresult", "needs_input", "discover", "discover-kinds", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change", "friction", "omit-body"):
+escaped_path = ""
+if mode == "escape":
+    # Do what CG-092's worker did: leave the worktree and write/commit in another repo
+    # (the live garden or the product clone), whatever the brief said.
+    escape_dir = os.environ["FAKE_CLAUDE_ESCAPE_DIR"]
+    escape_file = os.environ.get("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+    fp = Path(escape_dir) / escape_file
+    escaped_path = str(fp)  # a real worker names the path it wrote (Edit file_path / Bash / final msg)
+    fp.write_text((fp.read_text() if fp.exists() else "") + "\n# edited by a runaway worker\n")
+    if os.environ.get("FAKE_CLAUDE_ESCAPE_COMMIT", "1") == "1":
+        subprocess.run(["git", "add", "-A"], cwd=escape_dir, check=True)
+        subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
+                        "commit", "-q", "-m", "runaway commit"], cwd=escape_dir, check=True)
+
+if mode in ("done", "noresult", "needs_input", "discover", "discover-kinds", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change", "friction", "omit-body", "escape"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
@@ -223,6 +238,8 @@ else:
         # a revise round that only reworded things: no description change, so pr_body is omitted
         result.pop("pr_body")
         result["summary"] = "reworded; description unchanged"
+    if mode == "escape" and escaped_path:
+        result["notes"] = f"I stepped out of the worktree and edited {escaped_path}."
     final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
 result_obj = {
     "type": "result", "subtype": "success", "is_error": False, "result": final,

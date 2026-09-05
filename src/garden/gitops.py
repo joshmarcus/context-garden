@@ -290,6 +290,64 @@ def diff(worktree: Path, base: str) -> str:
         return ""
 
 
+def head_sha(repo: Path) -> str:
+    """The current HEAD commit, or '' if the path is not a usable git repo."""
+    try:
+        return git("rev-parse", "HEAD", cwd=repo).strip()
+    except GitError:
+        return ""
+
+
+def status_lines(repo: Path) -> list[str]:
+    """`git status --porcelain` as a list of non-empty lines (worktree + untracked)."""
+    try:
+        out = git("status", "--porcelain", cwd=repo)
+    except GitError:
+        return []
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def commits_between(repo: Path, old: str, new: str) -> list[str]:
+    """One-line subjects of the commits in old..new (empty if either ref is unknown)."""
+    if not old or not new:
+        return []
+    out = git("log", "--oneline", "--no-decorate", f"{old}..{new}", cwd=repo, check=False)
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def changed_files(repo: Path, old: str, new: str) -> list[str]:
+    """Paths changed between two commits (old..new), for undoing a worker's commits."""
+    if not old or not new:
+        return []
+    out = git("diff", "--name-only", f"{old}..{new}", cwd=repo, check=False)
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def path_at(repo: Path, ref: str, rel: str) -> bool:
+    """True if `rel` exists as a tracked path in `ref`'s tree."""
+    proc = subprocess.run(["git", "cat-file", "-e", f"{ref}:{rel}"], cwd=repo, capture_output=True)
+    return proc.returncode == 0
+
+
+def reset_soft(repo: Path, ref: str) -> None:
+    """Move the current branch to `ref` without touching the index or working tree, so a
+    worker's commits are dropped from history while unrelated in-flight edits survive."""
+    git("reset", "--soft", ref, cwd=repo)
+
+
+def restore_path(repo: Path, ref: str, rel: str) -> None:
+    """Restore one path's content to what it was at `ref`."""
+    git("checkout", ref, "--", rel, cwd=repo)
+
+
+def unstage_and_remove(repo: Path, rel: str) -> None:
+    """Drop a path the worker added: remove it from the index and delete it from disk."""
+    git("rm", "-f", "--quiet", "--cached", "--", rel, cwd=repo, check=False)
+    fp = repo / rel
+    if fp.exists():
+        fp.unlink()
+
+
 def uncommitted_task_files(repo: Path) -> list[str]:
     """Return relative paths of task files (under tasks/) with uncommitted changes.
 

@@ -45,6 +45,7 @@ class Run:
     cost_usd: float | None = None
     brief_tokens: int = 0
     error: str = ""
+    fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
 
     @property
     def path(self) -> Path:

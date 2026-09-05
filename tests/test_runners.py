@@ -83,7 +83,7 @@ def test_local_runner_harness_shell_resolves_bin(tmp_path):
     fake.chmod(0o755)
     run = Run(task_id="T-001", run_id="r1", dir=str(tmp_path), runner="local")
     with patch("shutil.which", side_effect=lambda name: str(fake) if name == "claude" else None):
-        cmd = runner.harness_shell(run, None)
+        cmd = runner.harness_shell(run, tmp_path, None)
     assert cmd.startswith(str(fake))
 
 
