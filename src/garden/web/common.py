@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..events import EventLog, metrics
 from ..graph import blockers, effective_status, validate
-from ..inbox import build_inbox, decisions, needs_human_info, running_now
+from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import now_iso
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
@@ -171,8 +171,6 @@ class Site:
         }
 
     def board_data(self, product: str | None, phase: str | None, include_closed: bool = False) -> dict[str, Any]:
-        from ..inbox import _last_log_line
-
         s = self.hub.fresh()
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
@@ -197,7 +195,7 @@ class Site:
             review = str(st.get("review_decision") or rev.get("verdict") or "").replace("_", " ").strip()
             cols[eff].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
                               "stack": st.get("stack_parent", ""),
-                              "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
+                              "needs_human": "" if t.status.terminal else (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
                               "question": st.get("question", "") if eff == "waiting_human" else "",
                               "review": review if eff in ("awaiting_triage", "in_review", "changes_requested") else "",
                               "reason": _last_log_line(t) if eff == "failed" else ""})
@@ -205,11 +203,3 @@ class Site:
         active = {r.task_id: r for r in runs.active()}
         return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
                 "closed": include_closed, "problems": validate(tasks)}
-
-
-def _split_log(body: str) -> tuple[str, list[str]]:
-    if "\n## Log" in body:
-        head, _, tail = body.partition("\n## Log")
-        lines = [ln[2:] for ln in tail.strip().splitlines() if ln.startswith("- ")]
-        return head, lines
-    return body, []

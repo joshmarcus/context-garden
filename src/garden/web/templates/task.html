@@ -75,7 +75,7 @@
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="{{ 'primary' if task.status.value != 'draft' else '' }}" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
-  {% if task.status.value in ('failed','cancelled','changes_requested') or state.needs_human %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
+  {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
@@ -148,7 +148,7 @@
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}
     </div>{% endif %}
     {% if friction_text %}<div class="panel"><div class="eyebrow">Friction</div><div class="prose" style="margin-top:6px">{{ friction_text|md|safe }}</div></div>{% endif %}
-    {% if state.pending_feedback %}<div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
+    {% if state.pending_feedback and not task.status.terminal %}<div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
     {% if state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
     {% if discovered %}<div class="panel"><div class="eyebrow">Discovered work</div><ul style="margin:6px 0 0;padding-left:18px">{% for d in discovered %}<li><a href="/tasks/{{ d.id }}" class="id">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
@@ -181,7 +181,7 @@
         <dt>PR</dt><dd>{% if task.pr %}<a href="{{ task.pr }}" target="_blank">{{ task.pr }}</a>{% if state.pr_draft %} <span class="badge">draft</span>{% endif %}{% else %}<span class="faint">—</span>{% endif %}</dd>
         {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}{% if state.failed_checks %} ({{ state.failed_checks|join(', ') }}){% endif %}</dd>{% endif %}
         {% if state.last_review %}<dt>auto review</dt><dd>{{ state.last_review.verdict.replace('_',' ') }} ({{ state.review_rounds }} round{{ 's' if state.review_rounds != 1 else '' }}){% if state.review_run %} · running{% endif %}</dd>{% endif %}
-        {% if state.automerge_blocked %}<dt>automerge</dt><dd>held: {{ state.automerge_blocked }}</dd>{% endif %}
+        {% if state.automerge_blocked and not task.status.terminal %}<dt>automerge</dt><dd>held: {{ state.automerge_blocked }}</dd>{% endif %}
         {% if state.automerged %}<dt>automerge</dt><dd>merged by the garden ({{ state.automerged.method }}, {{ state.automerged.review_rounds }} review round{{ 's' if state.automerged.review_rounds != 1 else '' }})</dd>{% endif %}
         <dt>attempts</dt><dd>{{ task.attempts }}{% if state.revisions %} · {{ state.revisions }} revision(s){% endif %}</dd>
         <dt>runner</dt><dd>{{ task.runner or 'default' }} / {{ task.harness or 'default harness' }}{% if task.model %} / {{ task.model }}{% endif %}</dd>
