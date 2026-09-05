@@ -16,6 +16,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) |
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
+       | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
