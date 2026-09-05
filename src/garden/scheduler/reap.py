@@ -38,7 +38,10 @@ class ReapMixin:
                 self._retry_or_fail(task, run, rep, "worker timed out")
             else:
                 runner = self.runner_for(task, run.runner, run.harness)
-                self.finalize(task, run, runner, rep)
+                # The interrupted tick already emitted run_finished before it wrote
+                # the run's terminal status, so this resumed finalize must not emit it
+                # a second time (which would double-count the run's cost).
+                self.finalize(task, run, runner, rep, resumed=True)
             return True
         if run is None or run.status != "running" or run.mode == "review":
             # Record what happened to the run we expected to reap: if something else
@@ -88,7 +91,7 @@ class ReapMixin:
             return True
         return False
 
-    def finalize(self, task: Task, run: Run, runner: Runner, rep: TickReport) -> None:
+    def finalize(self, task: Task, run: Run, runner: Runner, rep: TickReport, resumed: bool = False) -> None:
         run.exit_code = run.read_exit_code()
         run.finished_at = now_iso()
         collected = runner.collect(run)
@@ -102,9 +105,13 @@ class ReapMixin:
             (run.path / "final.md").write_text(final_text)
         result = run.result
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
-        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
-                         status=str(result.get("status") or ("error" if run.error else "no_result")),
-                         cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
+        # Emit exactly once per run: a resumed finalize (the tick that first finalized this
+        # run was killed after emitting run_finished but before the task transition) skips
+        # the emit so the run's cost is not counted twice.
+        if not resumed:
+            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
+                             status=str(result.get("status") or ("error" if run.error else "no_result")),
+                             cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
 
         # The runner's fence, not the brief's: whatever the worker was told, a write to the
         # live garden or the product clone is reverted here and the run fails (see the
