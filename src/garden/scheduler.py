@@ -297,9 +297,13 @@ class Scheduler:
         """A run whose record reached a terminal status while its task is still RUNNING:
         an earlier tick wrote the run's final status but was killed before the task
         transition / push / PR step ran. `reap()` resumes these instead of treating them
-        as abandoned; `garden runs` labels them "finished, not yet reaped" until then."""
+        as abandoned; `garden runs` labels them "finished, not yet reaped" until then.
+        `finished_at` is only ever set by our own finalize()/timeout code, so its presence
+        distinguishes a genuinely interrupted reap from a run whose status was flipped out
+        from under us by something else (e.g. a stale record with no real completion)."""
         return (run is not None and run.runner != "manual" and run.mode != "review"
-                and run.status != "running" and task.status == Status.RUNNING)
+                and run.status != "running" and bool(run.finished_at)
+                and task.status == Status.RUNNING)
 
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()

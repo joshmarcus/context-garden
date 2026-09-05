@@ -109,6 +109,7 @@ def test_runs_shows_unreaped_finished_run(garden, monkeypatch):
     rs = RunStore(garden / ".garden")
     r0 = rs.new_run("DM-001", "local", "work")
     r0.status = "done"
+    r0.finished_at = "2026-01-01T00:00:00+00:00"
     r0.save()
 
     store = Store(garden)
