@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
-from ..brief import resume_prompt
+from ..brief import brief_gaps, resume_prompt
 from ..github import GitHubError, mark_garden_comment
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..runs import Run
@@ -19,8 +19,10 @@ class HumanMixin:
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> None:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
-        task that is not a draft, and a closed or frozen phase without a freeze exception
-        (`phase_refusal`), then logs and saves. `by` names the surface ("cli"/"web"/"tui"),
+        task that is not a draft, a closed or frozen phase without a freeze exception
+        (`phase_refusal`), and a brief that would cost a run without being ready to work —
+        placeholder acceptance criteria or a reading-list path that names no file
+        (`brief_gaps`) — then logs and saves. `by` names the surface ("cli"/"web"/"tui"),
         recorded in the log line. Raises RuntimeError on a refusal so each surface reports it in
         its own idiom (a skipped line, a flash, a status message)."""
         if task.status != Status.DRAFT:
@@ -29,6 +31,11 @@ class HumanMixin:
             refusal = phase_refusal(phase, task)
             if refusal:
                 raise RuntimeError(refusal)
+        gaps = brief_gaps(self.store, task)
+        if gaps:
+            raise RuntimeError(
+                f"{task.id} has an incomplete brief; fix it before approving: " + "; ".join(gaps)
+            )
         task.status = Status.READY
         task.log(f"approved ({by})" if by else "approved")
         self.store.save(task)
