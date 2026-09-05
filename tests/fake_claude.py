@@ -9,7 +9,8 @@ thing as a script (stdin, argv, os.environ, the process cwd) for the one path th
 launches a real command: the ssh runner's remote script.
 
 The modes are two tables. `SPECIAL` holds the runs that are not a worker round (crash, stall,
-the planner, a comparison, a persona, a retro, an edit, and every `review-*` verdict);
+the planner, a comparison, a persona, a retro, a kickoff review, an edit, and every `review-*`
+verdict);
 `WORKERS` holds one row per worker mode, describing what the round does before it commits,
 whether it commits, and how its final message differs from a plain "done". Add a mode by
 adding a row, not a branch.
@@ -183,6 +184,22 @@ def retro(call: Call) -> None:
     print(result_json("Reconciled.\nGARDEN_RETRO: " + json.dumps(rev), {"input_tokens": 4000, "output_tokens": 300}, 0.04))
 
 
+def kickoff(call: Call) -> None:
+    tm = re.findall(r"^### (\S+) \[", call.brief, flags=re.M)
+    task_id = tm[0] if tm else "CG-001"
+    data = {
+        "design_needed": [{"topic": "Undecided storage format", "why": "Two tasks assume different shapes for the same file.",
+                           "tasks": [task_id], "spike": "A short note naming the shape."}],
+        "goals_gaps": [{"goal": "The loop runs overnight", "missing": "no task's acceptance criteria measure this"}],
+        "questions": [{"question": "Should hard-tier merges wait for two rounds or one?",
+                       "context": "affects the default", "options": ["one round", "two rounds"]}],
+        "docs": [{"path": "docs/architecture.md", "issue": "still describes the old module layout", "tasks": [task_id]}],
+        "ready": False,
+        "summary": "Mostly ready; one design question and one doc need attention first.",
+    }
+    print(result_json("Reviewed the kickoff.\nGARDEN_KICKOFF: " + json.dumps(data), {"input_tokens": 2000, "output_tokens": 150}, 0.02))
+
+
 def edit(call: Call) -> None:
     cm = re.search(r"## Current task body\n\n(.*?)\n+## Current metadata", call.brief, re.S)
     cur = cm.group(1).strip() if cm else ""
@@ -284,7 +301,8 @@ def qa(call: Call) -> None:
 
 
 SPECIAL: dict[str, Callable[[Call], int | None]] = {
-    "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro, "edit": edit, "qa": qa,
+    "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro,
+    "kickoff": kickoff, "edit": edit, "qa": qa,
 }
 
 
@@ -537,6 +555,8 @@ def handle(call: Call) -> int:
         mode = "persona"
     if "GARDEN_RETRO:" in call.brief:
         mode = "retro"
+    if "GARDEN_KICKOFF:" in call.brief:
+        mode = "kickoff"
     if "GARDEN_EDIT:" in call.brief:
         mode = "edit"
     if "GARDEN_QA:" in call.brief:
