@@ -117,6 +117,29 @@ def test_gate_run_in_flight(sched, fake_github):
     assert not ok and "in flight" in reason
 
 
+def test_gate_run_in_flight_for_a_real_running_review(sched, fake_github):
+    """A `review_run` pointer to a run that really is still `running` still blocks."""
+    t, st, pr = _in_review(sched, fake_github)
+    run = sched.runs.new_run("DM-001", "local", mode="review")
+    st["review_run"] = run.run_id
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "in flight" in reason
+
+
+def test_gate_not_held_by_a_superseded_review_run(sched, fake_github):
+    """CG-144: a `review_run` pointer left over from a run that has since been closed
+    (superseded by a newer review, or reaped by the dead-run sweep) must not hold
+    automerge forever."""
+    t, st, pr = _in_review(sched, fake_github)
+    for status in ("superseded", "done", "failed"):
+        run = sched.runs.new_run("DM-001", "local", mode="review")
+        run.status = status
+        run.save()
+        st["review_run"] = run.run_id
+        ok, reason = sched._automerge_gate(t, pr)
+        assert ok, (status, reason)
+
+
 def test_gate_red_ci(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     pr.checks = "FAILURE"

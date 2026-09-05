@@ -160,7 +160,15 @@ class PollMixin:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
-        if st.get("review_run") or any(r.task_id == task.id for r in self.active_runs()):
+        review_run = st.get("review_run")
+        if review_run:
+            run = next((r for r in self.runs.runs_for(task.id) if r.run_id == review_run), None)
+            # A pointer to a run that has since been superseded or otherwise closed (but
+            # never cleared, e.g. by the orphan/dead-run sweeps) must not hold automerge
+            # forever; a pointer with no run behind it at all still fails closed (CG-144).
+            if run is None or run.status == "running":
+                return False, "a run is in flight"
+        elif any(r.task_id == task.id for r in self.active_runs()):
             return False, "a run is in flight"
         if pr.checks not in ("SUCCESS", ""):
             return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
