@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..brief import brief_gaps
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
-from ..model import Task, now_iso
+from ..model import Status, Task, now_iso
 from ..runs import Run
 
 
@@ -46,21 +47,35 @@ class DiscoveredMixin:
                 deferred = bool(self.store.phase(task.product, task.phase).frozen)
             except KeyError:
                 deferred = False
+            want_ready = blocking and auto_blocking and not deferred
             t = self.store.create_task(
                 task.product, task.phase, title, body,
                 priority=int(item.get("priority") or task.priority), reading=[str(r) for r in (item.get("reading") or [])] or list(task.reading),
-                status="draft" if deferred else ("ready" if (blocking and auto_blocking) else "draft"),
+                status="draft" if deferred else ("ready" if want_ready else "draft"),
                 difficulty=diff if diff in DIFFICULTIES else "medium",
             )
             t.discovered_from = task.id
+            # A blocking discovery normally skips the `approve` gate straight to ready; but
+            # its brief must still be complete (CG-193's brief_gaps), or it dispatches a run
+            # against placeholder criteria or a dead reading path. Hold it as a draft instead
+            # so it shows up in the approve queue with the gap flagged, same as any other draft.
+            gaps = brief_gaps(self.store, t) if want_ready else []
+            if gaps:
+                t.status = Status.DRAFT
             note = f"discovered by {task.id}"
-            note += "; deferred by the freeze" if deferred else (" (blocking)" if blocking else "")
+            if deferred:
+                note += "; deferred by the freeze"
+            elif gaps:
+                note += "; blocking, but held as draft: incomplete brief (" + "; ".join(gaps) + ")"
+            elif blocking:
+                note += " (blocking)"
             t.log(note)
             self.store.save(t)
             existing.add(title.lower())
             created.append(t)
             self.events.emit("discovered", task.id, new_task=t.id, title=title, blocking=blocking, status=t.status.value)
-            self.log(f"{task.id}: discovered {t.id} {title!r}" + (" [blocking, ready]" if blocking and auto_blocking else ""))
+            tag = " [blocking, ready]" if t.status == Status.READY else (" [blocking, held: incomplete brief]" if gaps else "")
+            self.log(f"{task.id}: discovered {t.id} {title!r}" + tag)
         if created:
             st = self.state.get(task.id)
             st["discovered_ids"] = sorted(set(st.get("discovered_ids", []) + [t.id for t in created]))
