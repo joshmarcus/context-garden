@@ -168,6 +168,7 @@ class Store:
         status: str = "draft",
         task_id: str | None = None,
         difficulty: str = "medium",
+        discovered_from: str = "",
     ) -> Task:
         from .model import Status, slugify
 
@@ -186,6 +187,7 @@ class Store:
             estimate=estimate,
             reading=list(reading or []),
             difficulty=difficulty,
+            discovered_from=discovered_from,
             created=now_iso(),
             updated=now_iso(),
             body=body,
