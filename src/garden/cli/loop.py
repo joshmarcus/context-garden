@@ -102,7 +102,7 @@ def resume(task_id: str = typer.Argument(..., help="The task to clear")):
 
 
 # keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
-LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int}
+LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int, "observe.profile": str}
 
 
 @app.command("set", rich_help_panel=PANEL_LOOP)
@@ -273,6 +273,45 @@ def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to th
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     console.print(f"{t.id}: {'resumed session' if run.session_id else 'fresh run with the answer'} ({run.run_id})")
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
+def observe(
+    follow: bool = typer.Option(False, "--follow", help="Print a pass every observe.interval, streaming the configured events between passes"),
+    profile: str = typer.Option("", "--profile", help="quiet | watch | debug, or a name from observe.profiles (default: observe.profile in garden.yaml)"),
+    json_out: bool = typer.Option(False, "--json", help="One JSON object per pass instead of text"),
+):
+    """The operator's feed: a status line, cards that need a hand, stuck runs, tracebacks and
+    a digest of the window — for a person or an agent's heartbeat. Cadence, event kinds and
+    the digest window are `observe:` in garden.yaml (see docs/architecture.md); `--profile`
+    picks a built-in (quiet, watch, debug) or a custom one for this run only."""
+    from .. import observe as observe_mod
+
+    store = _store()
+
+    def render(p: observe_mod.ObservePass) -> None:
+        if json_out:
+            print(json.dumps(p.to_dict(), sort_keys=True))
+        else:
+            for line in p.render_lines():
+                console.print(line)
+
+    sched = _scheduler(store)
+    settings = observe_mod.resolve(store.config, sched, profile)
+    render(observe_mod.make_pass(store, sched, settings))
+    if not follow:
+        return
+    since = now_iso()
+    try:
+        while True:
+            time.sleep(settings.interval_s)
+            store.invalidate()
+            sched = _scheduler(store)
+            settings = observe_mod.resolve(store.config, sched, profile)
+            since = observe_mod.follow_pass(store, settings, since, log=console.print)
+            render(observe_mod.make_pass(store, sched, settings))
+    except KeyboardInterrupt:
+        console.print("stopped")
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
