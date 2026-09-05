@@ -172,6 +172,25 @@ def test_audit_flags_stuck_changes_requested(sched, fake_github):
     assert any(c["group"] == "attention" and "stuck" in c["why"] for c in cards)
 
 
+def test_audit_flags_pending_feedback_stuck_on_in_review(sched, fake_github):
+    """CG-140: a stored pending_feedback always comes with the changes_requested
+    transition; if it ever appears on an in_review task instead (no run dispatches from
+    there), the tick audit must flag it rather than let automerge hold on it silently."""
+    t = sched.store.task("DM-001")
+    t.status = Status.IN_REVIEW
+    t.pr = "https://example.com/pr/1"
+    sched.store.save(t)
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- **automated review** PR description: needs work"
+    sched.state.save()
+
+    rep = sched.tick()
+    st = sched.state.get("DM-001")
+    assert str(st.get("needs_human", "")).startswith("stuck:")
+    assert "in_review" in st["needs_human"]
+    assert any("stuck" in tr for tr in rep.transitions)
+
+
 def test_audit_does_not_flag_dispatchable_changes_requested(sched, fake_github):
     """A changes_requested task with feedback under the cap is dispatchable; not stuck."""
     t = sched.store.task("DM-001")
