@@ -796,14 +796,12 @@ def commit_tasks():
 
 @app.command()
 def pr(task_id: str, url: str):
-    """Attach a PR URL to a task (when the PR was opened by hand)."""
+    """Attach a PR URL to a task (when the PR was opened, or reopened, by hand). Resets the
+    scheduler's cached PR state so the next poll follows the new PR instead of the old one."""
     store = _store()
     t = _task(store, task_id)
-    t.pr = url
-    if t.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
-        t.status = Status.IN_REVIEW
-    t.log(f"PR attached: {url}")
-    store.save(t)
+    sched = _scheduler(store)
+    sched.attach_pr(t, url)
     console.print(f"{t.id}: pr={url} status={t.status.value}")
 
 

@@ -257,13 +257,21 @@ class Scheduler(
         return Status.AWAITING_TRIAGE if self.state.get(task.id).get("pr_draft") else Status.IN_REVIEW
 
     def _pr_number(self, task: Task) -> int | None:
+        """The PR number to poll: the task's `pr` URL is the source of truth (a hand-attached
+        PR replaces it directly), the cache is just there to avoid re-parsing every time. When
+        the two disagree — e.g. `garden pr` attached a new URL but something left the old
+        cached number in place — repair the cache instead of following the stale number."""
         st = self.state.get(task.id)
-        if st.get("pr_number"):
-            return int(st["pr_number"])
         m = re.search(r"/pull/(\d+)", task.pr or "")
-        if m:
-            st["pr_number"] = int(m.group(1))
-            return int(m.group(1))
+        url_number = int(m.group(1)) if m else None
+        cached = int(st["pr_number"]) if st.get("pr_number") else None
+        if url_number and cached != url_number:
+            if cached:
+                self.log(f"{task.id}: pr_number cache #{cached} disagreed with pr url #{url_number}; repaired")
+            st["pr_number"] = url_number
+            return url_number
+        if cached:
+            return cached
         return None
 
     # ---- tick --------------------------------------------------------------
