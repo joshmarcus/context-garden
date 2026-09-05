@@ -21,7 +21,10 @@ def test_codex_command():
     assert cmd[:3] == ["codex", "exec", "--json"] and 'sandbox_mode="workspace-write"' in cmd
     assert cmd[cmd.index("-m") + 1] == "gpt-x" and cmd[-1] == "-"
     assert "--output-last-message" in cmd
-    assert h.model_for("medium") == ""  # cli default
+    assert [h.model_for(t) for t in ("easy", "medium", "hard")] == [
+        "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"
+    ]
+    assert Harness("codex", {"models": {}}).model_for("medium") == ""  # explicit CLI default
 
 
 def test_custom_harness():

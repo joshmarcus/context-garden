@@ -29,7 +29,7 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "bin": "codex",
         "output": "codex-jsonl",         # codex exec --json
         "permission_mode": "workspace-write",  # or "read-only", "bypass"
-        "models": {},                    # empty = the CLI default for every tier
+        "models": {"easy": "gpt-5.6-luna", "medium": "gpt-5.6-terra", "hard": "gpt-5.6-sol"},
         "review_model": "",
         "resume": True,                  # `codex exec resume <id>` after a human answers
     },

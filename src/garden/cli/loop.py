@@ -393,7 +393,7 @@ def events(task_id: str | None = typer.Argument(None), since: str = typer.Option
 @app.command(rich_help_panel=PANEL_INSIGHT)
 def trial(
     task_id: str,
-    contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5 (repeat)"),
+    contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5.6-terra (repeat)"),
 ):
     """Run a task with several models; a comparison run scores the PRs and keeps the best one."""
     store = _store()

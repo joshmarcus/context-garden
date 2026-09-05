@@ -1,6 +1,8 @@
 """Trials, persona reviews, and token-free checks."""
 
 
+import pytest
+
 from garden.checks import run_check, run_checks, to_feedback
 from garden.model import Status
 from garden.personas import DEFAULT_PERSONAS, parse_persona, write_default_personas
@@ -321,3 +323,28 @@ def test_configured_personas_run_on_every_pr(sched, fake_github):
     assert "DM-001(persona:user)" in rep.dispatched
     sched.tick()
     assert any("user review of DM-001" in c for c in fake_github.comments)
+
+
+@pytest.mark.parametrize("judge", ["claude", "codex"])
+def test_cross_provider_trial_preserves_winner_and_unknown_cost(sched, fake_github, judge):
+    sched.cfg.data["review"]["harness"] = judge
+    task = sched.store.task("DM-001")
+    runs = sched.start_trial(task, ["claude:sonnet", "codex:gpt-5.6-terra"])
+    assert [(r.harness, r.model) for r in runs] == [
+        ("claude", "sonnet"), ("codex", "gpt-5.6-terra")]
+    assert len({r.branch for r in runs}) == 2
+    rep = sched.tick()
+    assert "DM-001(compare)" in rep.dispatched
+    compare = next(r for r in sched.runs.runs_for(task.id) if r.mode == "compare")
+    assert compare.harness == judge
+    sched.tick()
+    task = sched.store.task(task.id)
+    assert task.harness == "codex" and task.model == "gpt-5.6-terra"
+    assert len(fake_github.closed) == 1
+    rows = {r["label"]: r for r in sched.trials.leaderboard()}
+    assert rows["codex:gpt-5.6-terra"]["wins"] == 1
+    assert rows["codex:gpt-5.6-terra"]["avg_cost"] is None
+    assert rows["codex:gpt-5.6-terra"]["cost_per_point"] is None
+    assert rows["claude:sonnet"]["avg_cost"] > 0
+    revised = sched.dispatch(task, mode="revise")
+    assert (revised.harness, revised.model) == ("codex", "gpt-5.6-terra")

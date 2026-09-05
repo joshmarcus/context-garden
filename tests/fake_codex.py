@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -25,6 +26,12 @@ def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> in
     if brief.startswith("# Planning request"):
         final = json.dumps([{"title": "Codex planned task", "difficulty": "medium", "reading": [],
                              "body": "## Goal\nImplement the spec.\n## Acceptance criteria\n- Tests pass."}])
+    elif "GARDEN_COMPARE:" in brief:
+        labels = re.findall(r"^- \*\*(.+?)\*\* — branch", brief, flags=re.M)
+        final = "GARDEN_COMPARE: " + json.dumps({
+            "winner": labels[-1], "rationale": "checked both implementations",
+            "ranking": [{"label": label, "score": 9 if label == labels[-1] else 6,
+                         "summary": "checked"} for label in labels]})
     elif "GARDEN_REVIEW:" in brief:
         final = 'GARDEN_REVIEW: {"verdict":"approve","summary":"checked","description_ok":true,"findings":[]}'
     else:

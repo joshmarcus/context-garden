@@ -274,7 +274,7 @@ Borrowed from graph-based agent systems; all deterministic:
   cached on some machines); with no browser it captures HTML and text only and says so in
   the index. Pass `--url http://127.0.0.1:8765` to capture an already-running server
   instead of the in-process test app.
-- **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
+- **Model trials.** `garden trial ID -c claude:sonnet -c codex:gpt-5.6-terra` runs the task once
   per contender on separate branches, has one comparison run score the PRs, keeps the
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.
 - **Checks without tokens.** `checks.pre_pr` commands gate PR creation in the worktree;
@@ -298,8 +298,12 @@ hard`, assigned by the planner and editable) to a model, so cost follows difficu
 ```yaml
 harnesses:
   claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
-  codex:  {models: {}}  # use the configured Codex model, or map tiers to available IDs
+  codex:  {models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}}
 ```
+
+Claude remains the default harness. Switching to `harness: codex` uses the recommended
+Luna/Terra/Sol tiers; an explicit Codex `models: {}` uses the CLI default instead. See
+[Codex model recommendations and cross-provider trials](docs/codex.md#recommended-models).
 
 An explicit `model:` on a task wins. Every run records harness, model and usage, plus
 cost when the harness supplies it.
@@ -427,7 +431,7 @@ harnesses:
   codex:
     bin: codex
     permission_mode: workspace-write  # or read-only, bypass
-    models: {}
+    models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}
 ssh:
   hosts:
     - {name: box1, host: user@box1, repos: {widget: /srv/repos/widget}, max_parallel: 4}

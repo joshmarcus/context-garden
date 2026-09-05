@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from .config import CONFIG_NAME
+from .harness import DEFAULT_HARNESSES
 from .store import Store
 
 AGENTS_TEMPLATE = """\
@@ -442,7 +443,10 @@ def init_garden(directory: Path, name: str) -> list[Path]:
             "review": {"enabled": True, "max_rounds": 2, "personas": []},
             "checks": {"pre_pr": [], "ci": []},
             "github": {"draft_pr": True},
-            "harnesses": {"claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}}},
+            "harnesses": {
+                "claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}},
+                "codex": {"models": dict(DEFAULT_HARNESSES["codex"]["models"])},
+            },
             "ssh": {"hosts": []},
             "products": {},
         }, sort_keys=False))

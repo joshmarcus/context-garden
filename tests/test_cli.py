@@ -597,6 +597,9 @@ def test_init_keeps_claude_default_and_preserves_codex_instructions(tmp_path):
     assert cfg.get("harness") == "claude"
     assert cfg.harness("claude").model_for("medium") == "sonnet"
     assert cfg.harness("codex").can_resume
+    assert cfg.get("harnesses.codex.models") == {
+        "easy": "gpt-5.6-luna", "medium": "gpt-5.6-terra", "hard": "gpt-5.6-sol"
+    }
     agents = tmp_path / "AGENTS.md"
     assert "garden brief ID" in agents.read_text()
     agents.write_text("User instructions\n")
