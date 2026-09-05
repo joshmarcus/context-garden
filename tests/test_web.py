@@ -521,6 +521,26 @@ def test_inbox_and_trials_render_with_no_products_or_trials(tmp_path):
     assert trials.status_code == 200 and "No trials yet" in trials.text
 
 
+def test_trial_env_failed_contender_renders_on_task_and_trials_pages(sched, fake_github, monkeypatch):
+    """CG-229: an env_failed contender and an inconclusive trial carry fields (kind, note,
+    kept) that a `pr`/`done` contender never sets; under the strict template environment a
+    missing key raises rather than defaulting, so this is the cheapest proof both pages
+    still render once a real environment failure has happened, not just the happy path."""
+    sched.cfg.data["worker_env"]["pass"].append("FAKE_CODEX_*")
+    monkeypatch.setenv("FAKE_CODEX_MODE", "sandboxed")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
+    sched.tick()
+
+    c = TestClient(create_app(sched.store, watch=False))
+    task_page = c.get("/tasks/DM-001")
+    assert task_page.status_code == 200
+    assert "kept claude:sonnet" in task_page.text
+    assert "env_failed (sandbox)" in task_page.text
+    trials_page = c.get("/trials")
+    assert trials_page.status_code == 200 and "env failed" in trials_page.text
+
+
 def test_trials_page_and_persona_form(garden):
     c = client(garden)
     r = c.get("/trials")
