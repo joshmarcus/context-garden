@@ -588,13 +588,14 @@ def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "resume").exit_code != 0
 
 
-def test_init_codex_defaults_and_preserves_instructions(tmp_path):
+def test_init_keeps_claude_default_and_preserves_codex_instructions(tmp_path):
     from garden.config import Config
     from garden.scaffold import init_garden
 
     init_garden(tmp_path, "codex-garden")
     cfg = Config.load(tmp_path)
-    assert cfg.get("harness") == "codex"
+    assert cfg.get("harness") == "claude"
+    assert cfg.harness("claude").model_for("medium") == "sonnet"
     assert cfg.harness("codex").can_resume
     agents = tmp_path / "AGENTS.md"
     assert "garden brief ID" in agents.read_text()

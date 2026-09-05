@@ -10,7 +10,8 @@ Install the Codex CLI and authenticate with `codex login`. Install this package 
 `uv venv && uv pip install -e ".[dev]"`, then activate the environment. Git and an
 authenticated `gh` CLI (or `GITHUB_TOKEN`) are required for the PR loop.
 
-New gardens (`garden init my-garden`) select Codex. For an existing garden, set:
+New gardens (`garden init my-garden`) default to Claude. To opt into Codex for a
+new or existing garden, set:
 
 ```yaml
 harness: codex

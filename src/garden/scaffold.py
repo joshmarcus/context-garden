@@ -428,7 +428,7 @@ def init_garden(directory: Path, name: str) -> list[Path]:
         cfg.write_text(yaml.safe_dump({
             "name": name,
             "runner": "local",
-            "harness": "codex",
+            "harness": "claude",
             "max_parallel": 10,
             "max_attempts": 2,
             "max_revisions": 3,
@@ -442,7 +442,7 @@ def init_garden(directory: Path, name: str) -> list[Path]:
             "review": {"enabled": True, "max_rounds": 2, "personas": []},
             "checks": {"pre_pr": [], "ci": []},
             "github": {"draft_pr": True},
-            "harnesses": {"codex": {"models": {}, "permission_mode": "workspace-write", "resume": True}},
+            "harnesses": {"claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}}},
             "ssh": {"hosts": []},
             "products": {},
         }, sort_keys=False))

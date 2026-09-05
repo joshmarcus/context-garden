@@ -77,7 +77,7 @@ Subsystem for Linux) instead; `garden doctor` reports this if Windows is detecte
 
 ## Codex setup
 
-New gardens use Codex by default. Install the Codex CLI, run
+New gardens default to Claude. To opt into Codex, install the Codex CLI, run
 `codex login`, and follow [the Codex workflow](docs/codex.md) for model configuration,
 interactive sessions, and the autonomous loop. Existing gardens keep their configured
 harness. `AGENTS.md` gives Codex the repository navigation and development rules.
@@ -371,7 +371,7 @@ name: my-garden
 runner: local               # local | ssh | manual
 work_dir: ""                # where product clones and task worktrees go; empty = .garden. Set a directory
                             # outside the garden so workers cannot reach the garden, its venv or its state
-harness: codex              # claude | codex | a name under harnesses:
+harness: claude             # claude | codex | a name under harnesses:
 max_parallel: 10            # concurrent detached runs (work + revise + review)
 max_attempts: 2             # work runs before failed
 max_revisions: 3            # auto revise rounds per PR before a human must step in
@@ -467,7 +467,7 @@ products:
     base_branch: main
     id_prefix: WID
     runner: local           # per-product overrides
-    harness: codex
+    harness: claude
     # github: owner/name    # only if the origin remote isn't a github.com URL
     setup:                  # how this product's working environment is prepared (all keys optional)
       command: "uv sync --extra dev"   # run once in a fresh worktree before the worker; "" = nothing
