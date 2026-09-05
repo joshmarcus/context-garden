@@ -11,6 +11,7 @@ from rich.table import Table
 from .. import operator_spend as ops
 from ..costs import BUCKET_CHOICES, GROUP_BY_CHOICES, cost_series
 from ..events import EventLog, parse_since
+from ..runs import RunStore
 from .common import PANEL_INSIGHT, _store, app, console
 
 
@@ -27,15 +28,22 @@ def costs(
     task: str = typer.Option("", "--task", help="a single task id"),
     session: str = typer.Option("", "--session", help="an operator session id"),
     json_out: bool = typer.Option(False, "--json"),
+    backfill: bool = typer.Option(False, "--backfill",
+                                  help="recompute cost_usd for existing codex runs from their stored transcripts, then exit"),
 ) -> None:
     """Spend over time, sliced one way and filtered by the rest — the same numbers /costs shows."""
+    store = _store()
+    if backfill:
+        events = EventLog(store.config.garden_dir / "events.jsonl")
+        updated = RunStore(store.config.garden_dir).backfill_codex_costs(store.config, events)
+        console.print(f"[green]backfilled cost_usd for {updated} codex run(s)[/green]")
+        return
     if bucket not in BUCKET_CHOICES:
         console.print(f"[red]--bucket must be one of {', '.join(BUCKET_CHOICES)}[/red]")
         raise typer.Exit(2)
     if by not in GROUP_BY_CHOICES:
         console.print(f"[red]--by must be one of {', '.join(GROUP_BY_CHOICES)}[/red]")
         raise typer.Exit(2)
-    store = _store()
     tasks = store.tasks()
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
     events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))

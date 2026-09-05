@@ -61,6 +61,38 @@ class EventLog:
             out.append(ev)
         return out
 
+    def patch_run_costs(self, patches: dict[str, dict[str, Any]]) -> int:
+        """Rewrite each `run_finished` event whose `run` id is a key of `patches`, updating
+        its `cost_usd`/`usage`/`model` in place. The log is append-only for everything else;
+        this is the one exception, for a one-off correction (`garden costs --backfill`
+        recomputing codex cost from stored transcripts after CG-233) where the alternative —
+        the old, wrong figure standing forever alongside a corrective event that duplicates
+        its `run_finished` — would double-count the run wherever something counts events
+        rather than sums their cost. Returns the number of lines changed."""
+        if not patches or not self.path.exists():
+            return 0
+        lines = self.path.read_text().splitlines()
+        changed = 0
+        out_lines = []
+        for line in lines:
+            stripped = line.strip()
+            ev = None
+            if stripped:
+                try:
+                    ev = json.loads(stripped)
+                except json.JSONDecodeError:
+                    ev = None
+            patch = patches.get(ev.get("run")) if isinstance(ev, dict) and ev.get("kind") == "run_finished" else None
+            if patch is None:
+                out_lines.append(line)
+                continue
+            ev.update(patch)
+            out_lines.append(json.dumps(ev, sort_keys=True))
+            changed += 1
+        if changed:
+            self.path.write_text("\n".join(out_lines) + "\n")
+        return changed
+
 
 def parse_since(text: str) -> str:
     """'24h', '3d', '90m' or an ISO timestamp -> ISO timestamp."""
