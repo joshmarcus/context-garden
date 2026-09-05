@@ -297,6 +297,14 @@ if (localStorage.getItem("garden.trellisHideDone") === "done") {
     if (!url.searchParams.has("hide")) { url.searchParams.set("hide", "done"); a.setAttribute("href", url.pathname + url.search); }
   });
 }
+document.querySelectorAll('a[href^="/phases/"]:not([data-hide-toggle])').forEach(a => {
+  const url = new URL(a.getAttribute("href"), location.origin);
+  const m = url.pathname.match(/^\/phases\/([^/]+)\/([^/]+)$/);
+  if (m && !url.searchParams.has("hide") && localStorage.getItem(`garden.phaseHideDone:${m[1]}/${m[2]}`) === "done") {
+    url.searchParams.set("hide", "done");
+    a.setAttribute("href", url.pathname + url.search);
+  }
+});
 </script>
 </body>
 </html>
