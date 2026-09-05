@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Inbox{% endblock %} · {{ garden_name }}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
 <style>
@@ -82,7 +83,8 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 /* ---- shell: rail + main ----------------------------------------------------------- */
 .shell { display:grid; grid-template-columns: 236px minmax(0, 1fr); min-height:100vh; position:relative; z-index:1; }
 .rail { position:sticky; top:0; height:100vh; overflow:auto; padding:22px 16px; border-right:1px solid var(--line); background:var(--surface-2); display:flex; flex-direction:column; gap:22px; }
-.wordmark { font:700 13px/1.4 var(--mono); letter-spacing:.14em; text-transform:uppercase; text-decoration:none; color:var(--ink); }
+.wordmark { display:flex; align-items:center; gap:8px; font:700 13px/1.4 var(--mono); letter-spacing:.14em; text-transform:uppercase; text-decoration:none; color:var(--ink); }
+.wordmark svg.mark { flex:none; }
 .wordmark small { display:block; font-weight:400; letter-spacing:.08em; color:var(--muted); font-size:10.5px; text-transform:none; }
 .nav { display:flex; flex-direction:column; gap:2px; }
 .nav a { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:40px; padding:0 8px; text-decoration:none; color:var(--ink); font:13px/1 var(--mono); border-left:3px solid transparent; }
@@ -269,7 +271,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 {{ VINE }}
 <div class="shell">
 <aside class="rail">
-  <a class="wordmark" href="/">{{ garden_name }}<small>context garden</small></a>
+  <a class="wordmark" href="/">{{ mark(18) }}<span>{{ garden_name }}<small>context garden</small></span></a>
   <nav class="nav">
     <a href="/" class="{{ 'on' if page == 'inbox' else '' }}">Inbox <span class="count {{ 'hot' if inbox_count else '' }}">{{ inbox_count }}</span></a>
     <a href="/board" class="{{ 'on' if page == 'board' else '' }}">Board</a>

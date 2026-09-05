@@ -18,6 +18,18 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_header_has_seedling_mark_and_favicon(garden):
+    c = client(garden)
+    page = c.get("/").text
+    assert '<link rel="icon" type="image/svg+xml" href="/favicon.svg">' in page
+    assert '<a class="wordmark" href="/">' in page
+    assert 'class="mark"' in page and "st-sprout" in page
+    fav = c.get("/favicon.svg")
+    assert fav.status_code == 200
+    assert fav.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in fav.text and "viewBox=\"0 0 24 24\"" in fav.text
+
+
 def test_board_columns_and_list_views(garden):
     c = client(garden)
     # Default is the columns view.
