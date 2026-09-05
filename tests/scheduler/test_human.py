@@ -92,6 +92,44 @@ def test_cancel_clears_needs_human_and_automerge_blocked(sched, fake_github):
     assert not st.get("automerge_blocked")
 
 
+def test_wont_do_clears_needs_human_and_automerge_blocked(sched, fake_github):
+    """CG-195: `wont_do` is terminal alongside done and cancelled, so it must clear the same
+    stale stops on transition — it was missing from the CG-175 fix, which only checked
+    Status.DONE/CANCELLED."""
+    task = sched.store.task("DM-001")
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "stall", "reason": "revise round changed nothing", "at": "t"}
+    st["pending_feedback"] = "- please fix the thing"
+    st["automerge_blocked"] = "the PR checks rollup is pending"
+    sched.state.save()
+    sched.mark_wont_do(task, reason="not worth doing")
+    assert statuses(sched)["DM-001"] == "wont_do"
+    st = sched.state.get("DM-001")
+    assert not st.get("needs_human")
+    assert not st.get("pending_feedback")
+    assert not st.get("automerge_blocked")
+
+
+def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):
+    """CG-195: a task that reached done/cancelled/wont_do before `_transition` cleared these
+    fields (or through a path that bypassed it, e.g. a hand-edited state.json) must not keep
+    showing a decision forever — a plain tick sweeps every terminal task's stale needs_human,
+    pending feedback and automerge stop, not just the moment of transition."""
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "stall", "reason": "revise round changed nothing", "at": "t"}
+    st["pending_feedback"] = "- please fix the thing"
+    st["automerge_blocked"] = "the PR checks rollup is pending"
+    sched.state.save()
+    sched.tick()
+    st = sched.state.get("DM-001")
+    assert not st.get("needs_human")
+    assert not st.get("pending_feedback")
+    assert not st.get("automerge_blocked")
+
+
 def test_cancel_refuses_an_already_cancelled_task(sched):
     task = sched.store.task("DM-001")
     sched.cancel(task, "cancelled by hand")

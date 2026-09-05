@@ -119,6 +119,23 @@ class DispatchMixin:
             self.store.save(t)
             rep.transitions.append(f"{t.id} stuck ({reason})")
 
+    def _sweep_terminal_state(self, rep: TickReport) -> None:
+        """Backstop for a terminal task (done, cancelled, wont_do) still carrying a stale
+        needs_human, pending-feedback or automerge stop — left over from before `_transition`
+        cleared these on every terminal transition, or from a hand-edited state.json. Runs
+        once a tick over every terminal task; a no-op once its state is clean, so a finished
+        task never wears a decision on the Inbox, the Board or its own page (CG-195)."""
+        for t in self.store.tasks().values():
+            if not t.status.terminal:
+                continue
+            st = self.state.get(t.id)
+            cleared = [k for k in ("needs_human", "pending_feedback", "pending_feedback_easy", "pending_feedback_rebase")
+                       if st.pop(k, None) is not None]
+            if self._queue_leave(t):
+                cleared.append("queue state")
+            if cleared:
+                rep.transitions.append(f"{t.id}: swept stale {', '.join(cleared)} (terminal)")
+
     def _stack_for(self, task: Task) -> dict[str, Any] | None:
         """Decide the base for a fresh run: a stack parent's branch, or the product base."""
         st = self.state.get(task.id)

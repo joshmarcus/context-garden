@@ -276,10 +276,11 @@ class Scheduler(
         self.store.save(task)
         st = self.state.get(task.id)
         changed = False
-        if status in (Status.DONE, Status.CANCELLED):
-            # A task that reached done or cancelled is finished; any stop recorded while it
-            # was still active (a review-cap card, feedback waiting for a revise run, an
-            # automerge hold) must not linger and be counted as a decision on the Inbox.
+        if status.terminal:
+            # A task that reached a terminal status (done, cancelled, wont_do) is finished;
+            # any stop recorded while it was still active (a review-cap card, feedback
+            # waiting for a revise run, an automerge hold) must not linger and be counted as
+            # a decision on the Inbox, the Board or the task page.
             for k in ("needs_human", "pending_feedback"):
                 changed = st.pop(k, None) is not None or changed
             changed = self._queue_leave(task) or changed
@@ -437,3 +438,4 @@ class Scheduler(
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
+            self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))
