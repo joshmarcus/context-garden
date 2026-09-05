@@ -312,3 +312,43 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
     assert "DM-001 review: approve" in rep.transitions
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_review_after_conflict_rebase_does_not_count_toward_review_cap(sched, fake_github, monkeypatch):
+    """CG-139: a review that follows a conflict rebase re-reads code the reviewer already
+    approved, so it must not count toward review.max_rounds — otherwise a busy merge queue
+    that rebases several clean PRs in a row sends them all to the review cap at once for no
+    code reason."""
+    from garden import gitops
+
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
+    assert "DM-001(review)" in rep.dispatched
+    sched.tick()  # reap review -> approve
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+    sched.store.invalidate()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+    # the mechanical rebase can't resolve this one, so a revise round rebases it by hand
+    monkeypatch.setattr(gitops, "rebase_onto", lambda worktree, onto: (False, ["README.md"]))
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.mergeable = "CONFLICTING"
+    rep = sched.tick()
+    assert "DM-001 -> changes_requested (conflict)" in rep.transitions
+    assert "DM-001(revise)" in rep.dispatched
+    # a real force-push would leave GitHub recomputing mergeability; without that, avoid
+    # re-triggering the conflict handler again before this round's reap
+    pr.mergeable = "MERGEABLE"
+    rep = sched.tick()  # reap the rebase round -> pushed -> review dispatched again
+    assert "DM-001(review)" in rep.dispatched
+    # the review ran, but it must not have counted: still 1, not 2
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+    assert sched.state.get("DM-001")["rebase_rounds"] == 1
+
+    sched.tick()  # reap the free review -> approve
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+    sched.store.invalidate()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    assert not sched.state.get("DM-001").get("needs_human")
