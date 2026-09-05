@@ -119,6 +119,7 @@ class KickoffMixin:
                 paths = [Path(p) for p in d.get("document_paths") or []]
                 if len(paths) >= 2:
                     append_retro_question_resolution(paths, str(d["question"]), "answered", answer.strip(), by, now_iso())
+                    self._publish_retro_question_answer(d)
             else:
                 append_question_resolution(phase, str(d["question"]), "answered", answer.strip(), by=by, at=now_iso())
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=True)
@@ -134,6 +135,7 @@ class KickoffMixin:
                 paths = [Path(p) for p in d.get("document_paths") or []]
                 if len(paths) >= 2:
                     append_retro_question_resolution(paths, str(d["question"]), "dismissed", "", by, now_iso())
+                    self._publish_retro_question_answer(d)
             else:
                 append_question_resolution(phase, str(d["question"]), "dismissed", "", by=by, at=now_iso())
         self.events.emit("decision_resolved", "", decision=decision_id, decision_kind="question", accepted=False)

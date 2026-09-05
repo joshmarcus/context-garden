@@ -454,6 +454,10 @@ class RetroMixin:
                 retro_path, goals_path, phase.path / "docs" / "retro.md", phase.path.parent / next_phase / "goals.md",
             ]
         ) for i, item in enumerate(rev.get("questions") or []) if isinstance(item, dict)) if f]
+        for question in questions:
+            question.update(retro_worktree=str(wt), retro_branch=branch, retro_base=base,
+                            live_retro_path=str(phase.path / "docs" / "retro.md"))
+            self.state.get("_decisions")[question["decision_id"]].update(question)
         existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
         # Blocking tasks go live into the current phase (it exists, they must dispatch and block
         # the close); features, followups and findings go into the worktree next phase (which may
@@ -636,3 +640,19 @@ class RetroMixin:
         self.events.emit("retro_verdict", "", phase=phase.key, verdict=choice, status="accepted", by=by)
         self.state.save()
         return dict(rec)
+
+    def _publish_retro_question_answer(self, decision: dict[str, Any]) -> None:
+        """An answer made before the retro PR merges belongs on that PR branch; after merge
+        the live document was updated directly and needs no branch mutation."""
+        if Path(str(decision.get("live_retro_path") or "")).exists():
+            return
+        worktree = Path(str(decision.get("retro_worktree") or ""))
+        branch, base = str(decision.get("retro_branch") or ""), str(decision.get("retro_base") or "")
+        if not worktree.exists() or not branch or not base:
+            return
+        try:
+            gitops.commit_all(worktree, "garden retro: record owner question answer")
+            if gitops.commits_ahead(worktree, base):
+                gitops.push(worktree, branch, base=base)
+        except gitops.GitError as e:
+            self.log(f"retro question {decision.get('id', '')}: could not update its PR branch: {e}")
