@@ -87,6 +87,7 @@ of the loop touch different files.
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
 | `review.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; the event log, digest and metrics; trial records; persona briefs and reports; token-free checks; the retro brief and documents; friction harvesting; task suggestions |
+| `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py` | `create_app` and the template environment; the `Hub`, the `Site` (base template context, board data) and shared helpers |
