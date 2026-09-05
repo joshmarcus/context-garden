@@ -116,6 +116,21 @@ For Codex the inner command is `codex exec --json --skip-git-repo-check
 harness is whatever `command:` template the config gives, with `{model}` and `{final}`
 filled in.
 
+An isolated `HOME` would also hide each harness's own saved login: claude keeps
+`.credentials.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`) and codex keeps its
+whole state under `CODEX_HOME` (default `~/.codex`). `scrubbed_env` sets both to the
+*operator's* real home by default — unless the operator already passed one through (they
+ride the `CLAUDE_*`/`CODEX_*` allowlist), or `worker_env.config_dirs` in `garden.yaml`
+overrides it, keyed by the variable name (e.g. `{CLAUDE_CONFIG_DIR: /srv/claude-creds}`).
+A custom harness reads whatever variable its own CLI defines; name that variable under
+`worker_env.config_dirs` too. `garden doctor` checks each configured harness is actually
+logged in through this exact scrubbed environment (`Harness.check_login`): a trivial
+one-line prompt, not an ambient "auth status" call, so the check fails the same way a real
+dispatch would if the private HOME hid the credentials. `Harness.parse` tags an output
+that looks like a login failure (`"not logged in"`) with `env_error: true, env_kind:
+"auth"`, so this is told apart from a worker's own failure and pauses the harness (an
+environment stop) rather than counting toward the task's attempts.
+
 `start` returns at once. The scheduler records the `running` transition, bumps
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick
 moves on.

@@ -161,3 +161,62 @@ def test_codex_resume_and_permissions():
 def test_codex_usage_does_not_double_count_cache():
     parsed = Harness("codex", {}).parse('{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}')
     assert parsed["usage"] == {"input_tokens": 8, "cache_read_input_tokens": 2, "output_tokens": 3}
+
+
+def test_parse_classifies_not_logged_in_as_an_auth_env_error():
+    """CG-217: a worker's isolated HOME can leave a harness unable to find its own saved
+    login; that must read as an environment problem (env_error/auth), not a task failure."""
+    h = Harness("claude", {})
+    out = h.parse("", "Not logged in · Please run /login\n")
+    assert out["env_error"] is True and out["env_kind"] == "auth"
+    assert "not logged in" in out["error"].lower()
+
+    # a run that used its own explicit error message keeps it, only tagged
+    tagged = Harness("codex", {}).parse('{"type":"error","message":"not authenticated: run codex login"}')
+    assert tagged["env_error"] is True and tagged["env_kind"] == "auth"
+    assert tagged["error"] == "not authenticated: run codex login"
+
+    # an ordinary failure carries no env_error at all
+    ordinary = h.parse("", "some other crash\n")
+    assert ordinary["env_error"] is False and ordinary["env_kind"] == ""
+
+
+def test_login_probe_and_check_login():
+    h = Harness("claude", {"bin": "/x/claude"})
+    cmd, stdin_text = h.login_probe()
+    assert cmd[0] == "/x/claude" and "-p" in cmd and "--output-format" in cmd
+    assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "haiku"
+    assert "ready" in cmd[-1].lower() and stdin_text == ""
+
+    codex = Harness("codex", {"bin": "/x/codex"})
+    cmd2, stdin2 = codex.login_probe()
+    assert cmd2[:2] == ["/x/codex", "exec"] and cmd2[-1] == "-"
+    assert "ready" in stdin2.lower()  # the trivial prompt goes on stdin for codex
+
+
+def test_check_login_reports_auth_failure(monkeypatch):
+    import subprocess
+
+    h = Harness("claude", {"bin": "/x/claude"})
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Not logged in · Please run /login\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, detail = h.check_login({})
+    assert ok is False and "not logged in" in detail.lower()
+
+
+def test_check_login_ok(monkeypatch):
+    import json as _json
+    import subprocess
+
+    h = Harness("claude", {"bin": "/x/claude"})
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=_json.dumps(
+            {"type": "result", "subtype": "success", "is_error": False, "result": "ready"}), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok, detail = h.check_login({})
+    assert ok is True and detail == ""

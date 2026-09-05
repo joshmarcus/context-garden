@@ -342,6 +342,23 @@ def test_new_phase_cli_refuses_an_unregistered_product(garden):
     assert not (garden / "nope").exists()
 
 
+# The harness login check now runs a trivial one-line prompt through the scrubbed environment
+# (Harness.check_login) rather than an "auth status" subcommand, so garden doctor sees what a
+# worker actually gets (CG-217). These helpers build the claude-shaped subprocess result for
+# a mocked `subprocess.run`.
+def _claude_probe_result(cmd, logged_in: bool):
+    import subprocess
+
+    if logged_in:
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+            {"type": "result", "subtype": "success", "is_error": False, "result": "ready"}), stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Not logged in · Please run /login\n")
+
+
+def _is_claude_login_probe(cmd) -> bool:
+    return isinstance(cmd, list) and "-p" in cmd and "--output-format" in cmd
+
+
 def test_doctor_success_with_valid_setup(garden, monkeypatch):
     import subprocess
     from unittest import mock
@@ -355,9 +372,10 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
                         return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                     elif "user.name" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
-                elif "auth" in cmd and "status" in cmd:
-                    if "gh" in cmd_str or "claude" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
+                elif _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                elif "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
                 elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
                     return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
             raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
@@ -376,11 +394,10 @@ def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
         def side_effect(cmd, *args, **kwargs):
             if isinstance(cmd, list):
                 cmd_str = " ".join(cmd)
-                if "auth" in cmd and "status" in cmd:
-                    if "gh" in cmd_str:
-                        raise subprocess.CalledProcessError(1, cmd)
-                    if "claude" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
+                if _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                if "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    raise subprocess.CalledProcessError(1, cmd)
                 if "git" in cmd and "config" in cmd:
                     if "user.email" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
@@ -404,11 +421,10 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         def side_effect(cmd, *args, **kwargs):
             if isinstance(cmd, list):
                 cmd_str = " ".join(cmd)
-                if "auth" in cmd and "status" in cmd:
-                    if "claude" in cmd_str:
-                        raise subprocess.CalledProcessError(1, cmd)
-                    if "gh" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
+                if _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=False)
+                if "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
                 if "git" in cmd and "config" in cmd:
                     if "user.email" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
@@ -424,6 +440,7 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         # Collapse whitespace: the harness line embeds the (long) fake_claude path, so Rich
         # wraps at the console width and can split "NOT LOGGED IN" across a newline.
         assert "NOT LOGGED IN" in " ".join(r.output.split())
+        assert "not logged in" in r.output.lower()  # the fix hint carries Harness.parse's detail
 
 
 def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
@@ -436,11 +453,10 @@ def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
                 cmd_str = " ".join(cmd)
                 if "git" in cmd and "config" in cmd:
                     raise subprocess.CalledProcessError(1, cmd)
-                if "auth" in cmd and "status" in cmd:
-                    if "claude" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
-                    if "gh" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
+                if _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                if "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
                 if "api" in cmd and "user" in cmd and "gh" in cmd_str:
                     return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
             raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
@@ -475,9 +491,10 @@ def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch):
                         return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                     elif "user.name" in cmd:
                         return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
-                elif "auth" in cmd and "status" in cmd:
-                    if "gh" in cmd_str or "claude" in cmd_str:
-                        return subprocess.CompletedProcess(cmd, 0)
+                elif _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                elif "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
                 elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
                     return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
             raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
@@ -507,6 +524,8 @@ def test_doctor_tests_notify_command(garden, monkeypatch):
                     return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                 elif "user.name" in cmd:
                     return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif _is_claude_login_probe(cmd):
+                return _claude_probe_result(cmd, logged_in=True)
             elif "auth" in cmd and "status" in cmd:
                 return subprocess.CompletedProcess(cmd, 0)
             elif "api" in cmd and "user" in cmd:
@@ -539,6 +558,8 @@ def test_doctor_warns_on_a_notify_command_that_splices_message_into_json(garden,
                     return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                 elif "user.name" in cmd:
                     return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif _is_claude_login_probe(cmd):
+                return _claude_probe_result(cmd, logged_in=True)
             elif "auth" in cmd and "status" in cmd:
                 return subprocess.CompletedProcess(cmd, 0)
             elif "api" in cmd and "user" in cmd:
@@ -566,6 +587,8 @@ def test_doctor_flags_a_failing_notify_command(garden, monkeypatch):
                     return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
                 elif "user.name" in cmd:
                     return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+            elif _is_claude_login_probe(cmd):
+                return _claude_probe_result(cmd, logged_in=True)
             elif "auth" in cmd and "status" in cmd:
                 return subprocess.CompletedProcess(cmd, 0)
             elif "api" in cmd and "user" in cmd:
