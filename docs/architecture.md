@@ -42,8 +42,9 @@ flowchart LR
   H -- "review, merge" --> GH
 ```
 
-- **The scheduler** is one Python function, `Scheduler.tick()` in `scheduler.py`, with no
-  model behind it. It is called by `garden tick` (one pass), `garden watch` (a loop that
+- **The scheduler** is one Python function, `Scheduler.tick()` in `scheduler/__init__.py`,
+  with no model behind it (the class is assembled from one module per tick phase; see the
+  module map below). It is called by `garden tick` (one pass), `garden watch` (a loop that
   sleeps `tick_interval` seconds between passes), `garden serve` (the same loop in a
   background thread beside the web server) and the TUI's `t` key. Every call starts by
   re-reading the task files and `state.json` from disk, so any number of these can run
@@ -60,6 +61,38 @@ flowchart LR
 - **The filesystem** carries everything between those three: the garden's markdown, the
   run directories, the git worktrees, the JSON side-store and the event log. There is no
   queue, no database and no socket.
+
+## Module map
+
+`src/garden/`, thin to thick: `cli`, `web`, `tui` render and forward; `scheduler` owns
+every status change; `store`, `graph`, `brief`, `model` are offline. The two packages that
+every feature used to edit in one place are split so that two changes in different parts
+of the loop touch different files.
+
+| module | what it holds |
+|---|---|
+| `model.py`, `store.py`, `graph.py`, `brief.py` | task frontmatter and statuses; discovery of products, phases and tasks on disk; the dependency graph and ready set; the worker brief and `GARDEN_RESULT` parsing |
+| `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` and `_transition()`; `WORKER_MODES`, `REVIEW_MODES` |
+| `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` |
+| `scheduler/reap.py` | `reap`, `finalize`, the pre-PR checks and the base probe, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall |
+| `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
+| `scheduler/discovered.py` | discovered tasks, duplicate/cancel decision cards, friction and notes a worker reports |
+| `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it) and the orphan sweep |
+| `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
+| `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; automerge; stacking, restack and conflicts |
+| `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch` |
+| `scheduler/human.py` | answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
+| `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
+| `scheduler/upgrades.py` | the pinned tool install: note a merge, upgrade, auto-upgrade on an idle tick |
+| `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
+| `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
+| `review.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; the event log, digest and metrics; trial records; persona briefs and reports; token-free checks; the retro brief and documents; friction harvesting; task suggestions |
+| `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
+| `web/app.py`, `web/common.py` | `create_app` and the template environment; the `Hub`, the `Site` (base template context, board data) and shared helpers |
+| `web/pages/` | one module per page family (`inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes |
+| `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
+| `tui/` | the Textual TUI |
 
 ## Where state lives
 
@@ -326,10 +359,14 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
 
 - **CLI** (`cli.py`, Typer): every operation, scriptable; `garden inbox` and `garden
   digest` are the text versions of the home page.
-- **Web** (`web/app.py`, FastAPI and Jinja templates): the Inbox, Board, Trellis,
-  Timeline, Trials, Runs, task and phase pages. No build step and no CDN: charts and the
-  trellis are server-rendered SVG, live regions poll a partial every few seconds. `garden
-  serve` runs the scheduler loop in a background thread unless `--no-watch`.
+- **Web** (`web/`, FastAPI and Jinja templates): the Inbox, Board, Trellis, Timeline,
+  Trials, Runs, task and phase pages. `web/app.py` builds the app and the template
+  environment; each page family under `web/pages/` and each action module under
+  `web/actions/` registers its own routes (`register(app, site)`), and the task actions
+  are a registry (`web/actions/tasks.py`: one function per action, `@action("name")`,
+  and `POST /tasks/{id}/{action}` is a table lookup). No build step and no CDN: charts
+  and the trellis are server-rendered SVG, live regions poll a partial every few seconds.
+  `garden serve` runs the scheduler loop in a background thread unless `--no-watch`.
 - **TUI** (`tui/app.py`, Textual): an Inbox tab and a Tasks tab with the same actions,
   refreshing every few seconds so it can sit beside a `garden watch`.
 - **Skills** (`.claude/skills/`): `garden-take`, `garden-plan` and `garden-review` let an
@@ -365,11 +402,17 @@ Hitting a cap flags the task for a human instead of retrying.
 binaries: the fake harness reads the brief from stdin, commits something in the worktree
 and prints a `claude -p --output-format json` shaped result, with an environment variable
 choosing the scenario (done, crash, no result line, blocked, needs a decision, discovered
-work, a revise round that changes nothing, a rebase conflict). The `garden` fixture in
-`tests/conftest.py` builds a garden with one product whose repo is a local git repo with a
-bare `origin`, and a fake GitHub records PRs, comments and feedback in memory. That is
-enough to drive every state transition end to end without a network. `pytest -q` runs it
-all in about half a minute; CI for this repository runs the same in
+work, a revise round that changes nothing, a rebase conflict). The scenarios are two
+tables in that file: `SPECIAL` for runs that are not a worker round (crash, stall, the
+planner, a comparison, a persona, a retro, an edit, the `review-*` verdicts) and
+`WORKERS` with one row per worker mode; a new scenario is a new row. The `garden`
+fixture in `tests/conftest.py` builds a garden with one product whose repo is a local git
+repo with a bare `origin`, and a fake GitHub records PRs, comments and feedback in memory.
+That is enough to drive every state transition end to end without a network. The
+scheduler's own tests sit under `tests/scheduler/`, one file per tick phase (`test_reap.py`,
+`test_poll.py`, `test_dispatch.py`, `test_human.py`, `test_notify.py`,
+`test_orphan_sweep.py`) with shared helpers in `tests/scheduler/conftest.py`. `pytest -q`
+runs it all in about a minute; CI for this repository runs the same in
 `.github/workflows/ci.yml`.
 
 ## Rules the code keeps
