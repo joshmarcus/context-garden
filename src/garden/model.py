@@ -280,6 +280,36 @@ class Task:
         self.updated = now_iso()
 
 
+def _terminal_reason(task: Task) -> str:
+    """What happened when a task reached `done` or `cancelled`, from its last log line,
+    for `ensure_open`'s refusal message."""
+    message, time = "", ""
+    for ln in reversed(task.body.splitlines()):
+        if ln.startswith("- "):
+            stamp, _, rest = ln[2:].partition(" ")
+            message = rest.strip()
+            if "T" in stamp:
+                time = stamp.split("T", 1)[1].split("+", 1)[0].rstrip("Z")
+            break
+    if task.status == Status.DONE and "merged" in message.lower():
+        m = re.search(r"/pull/(\d+)", task.pr or "")
+        pr_ref = f"#{m.group(1)}" if m else (task.pr or "the PR")
+        return f"{pr_ref} was merged" + (f" at {time}" if time else "")
+    if not message:
+        return "no reason recorded"
+    return f"{message} at {time}" if time else message
+
+
+def ensure_open(task: Task) -> None:
+    """Refuse a state-changing action on a task that is `done` or `cancelled`: the loop is
+    over for it, and every action that would move it back in is a race, not a decision.
+    Raises RuntimeError naming the state and what happened, e.g. "CG-074 is done: #71 was
+    merged at 02:17:55". The only way out is `garden set-status ID STATUS --force`."""
+    if task.status not in (Status.DONE, Status.CANCELLED):
+        return
+    raise RuntimeError(f"{task.id} is {task.status.value}: {_terminal_reason(task)}")
+
+
 @dataclass
 class Phase:
     product: str

@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from garden.model import Status, Task, join_frontmatter, split_frontmatter
+import pytest
+
+from garden.model import Status, Task, ensure_open, join_frontmatter, split_frontmatter
 
 
 def test_roundtrip_preserves_unknown_keys(tmp_path):
@@ -42,6 +44,26 @@ def test_split_join():
     assert data == {} and body == "no frontmatter"
     out = join_frontmatter({"a": 1}, "\n\nbody\n\n")
     assert out == "---\na: 1\n---\n\nbody\n"
+
+
+def test_ensure_open_allows_active_tasks():
+    for status in (Status.DRAFT, Status.READY, Status.RUNNING, Status.IN_REVIEW, Status.CHANGES_REQUESTED, Status.WAITING_HUMAN, Status.FAILED):
+        ensure_open(Task(path=Path("x"), id="A-1", title="t", status=status))  # must not raise
+
+
+def test_ensure_open_refuses_a_merged_done_task():
+    """CG-142: the refusal names the state and, for a merge, the PR number and time."""
+    t = Task(path=Path("x"), id="CG-074", title="t", status=Status.DONE, pr="https://github.com/o/r/pull/71",
+             body="## Log\n\n- 2026-09-05T02:17:55+00:00 PR merged: https://github.com/o/r/pull/71\n")
+    with pytest.raises(RuntimeError, match=r"CG-074 is done: #71 was merged at 02:17:55"):
+        ensure_open(t)
+
+
+def test_ensure_open_refuses_a_cancelled_task_with_its_last_log_line():
+    t = Task(path=Path("x"), id="CG-005", title="t", status=Status.CANCELLED,
+             body="## Log\n\n- 2026-01-01T00:00:00+00:00 cancelled (web)\n")
+    with pytest.raises(RuntimeError, match=r"CG-005 is cancelled: cancelled \(web\) at 00:00:00"):
+        ensure_open(t)
 
 
 def test_default_branch():
