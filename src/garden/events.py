@@ -280,6 +280,11 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
         "avg_lead_hours": round(sum(leads) / len(leads), 1) if leads else None,
         "first_pass_rate": round(sum(1 for r in reviewed if r["first_review"] == "approve") / len(reviewed), 2) if reviewed else None,
         "cost_usd": round(sum(r["cost_usd"] for r in m["tasks"]), 2),
+        # No dispatch event for any task in the phase means it predates run records (the
+        # scheduler didn't exist yet, or events.jsonl was started later): PRs-merged and cost
+        # read as a real zero then, which looks like the phase did nothing rather than that
+        # the loop was never tracking it (CG-205).
+        "has_records": bool(dispatches),
     }
 
 
