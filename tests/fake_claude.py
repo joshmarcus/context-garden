@@ -28,6 +28,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
        | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
+       | skip-criterion (done, but the `verified` list silently omits the first acceptance criterion)
        | qa (the `garden qa` agent: every flow ok, or FAKE_CLAUDE_QA_FAIL's flow failed, plus one finding)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY;
 with FAKE_CLAUDE_ENV_DUMP set it also writes its own environment there (used to assert on the
@@ -210,8 +211,46 @@ REVIEWS: dict[str, dict] = {
 REVIEW_OK = {"verdict": "approve", "summary": "looks good", "description_ok": True, "description_feedback": "", "findings": []}
 
 
+def brief_criteria(brief: str) -> list[str]:
+    """The acceptance-criteria bullets from the brief's task body (a local copy of
+    garden.criteria.parse_criteria, so the script has no garden import on the ssh path)."""
+    m = re.search(r"(?im)^#{1,6}\s+Acceptance criteria\s*$", brief)
+    if not m:
+        return []
+    tail = brief[m.end():]
+    nxt = re.search(r"(?m)^#{1,6}\s+\S", tail)
+    section = tail[: nxt.start()] if nxt else tail
+    return [cm.group(1).strip() for cm in re.finditer(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+(.*\S)\s*$", section)]
+
+
+def verified_for(call: Call, skip: bool = False) -> list[dict]:
+    """One `verified` entry per acceptance criterion, each with evidence. With `skip`, the
+    first criterion is left out of the list entirely (a silently skipped criterion)."""
+    crits = brief_criteria(call.brief)
+    out = []
+    for i, c in enumerate(crits):
+        if skip and i == 0:
+            continue
+        out.append({"criterion": c, "evidence": f"proved by test_criterion_{i}"})
+    return out
+
+
 def review(call: Call) -> None:
-    rev = REVIEWS.get(call.mode, REVIEW_OK)
+    rev = dict(REVIEWS.get(call.mode, REVIEW_OK))
+    # Build one `criteria` entry per criterion from the author's verification section: met
+    # unless the author gave no evidence or marked it not done.
+    m = re.search(r"(?im)^## Author's verification\s*$", call.brief)
+    criteria = []
+    if m:
+        tail = call.brief[m.end():]
+        nxt = re.search(r"(?m)^## \S", tail)
+        section = tail[: nxt.start()] if nxt else tail
+        for line in re.finditer(r"(?m)^- \*\*(.+?)\*\* — (.*)$", section):
+            crit, ev = line.group(1), line.group(2)
+            met = "gave no evidence" not in ev and not ev.startswith("author says NOT DONE")
+            criteria.append({"criterion": crit, "met": met,
+                             "reason": "evidence checks out" if met else "no evidence for this criterion"})
+    rev["criteria"] = criteria
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
 
 
@@ -361,6 +400,10 @@ def note_escape(call: Call, result: dict) -> None:
         result["notes"] = f"I stepped out of the worktree and edited {call.escaped_path}."
 
 
+def skip_a_criterion(call: Call, result: dict) -> None:
+    result["verified"] = verified_for(call, skip=True)
+
+
 WORKERS: dict[str, Worker] = {
     "done": Worker(),
     "nocommit": Worker(commits=False),
@@ -378,6 +421,7 @@ WORKERS: dict[str, Worker] = {
     "friction": Worker(tweak=add_friction),
     "omit-body": Worker(tweak=drop_body_on_revise),
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),
+    "skip-criterion": Worker(tweak=skip_a_criterion),
 }
 
 
@@ -401,6 +445,7 @@ def done_result(call: Call) -> dict:
         "summary": "revised per feedback" if call.revise else ("resumed and finished" if call.resumed else "implemented the thing"),
         "pr_title": "Fake: implemented the thing",
         "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
+        "verified": verified_for(call),
         "notes": "",
     }
 

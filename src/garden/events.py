@@ -179,6 +179,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     done_at: dict[str, str] = {}
     revisions: dict[str, int] = defaultdict(int)
     first_review: dict[str, str] = {}
+    first_review_criteria: dict[str, tuple[int, int]] = {}
     cost: dict[str, float] = defaultdict(float)
     runs: dict[str, int] = defaultdict(int)
     rebases_mechanical = 0
@@ -200,7 +201,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             done_at[t] = ev["at"]
             merges += 1
         elif k == "review":
-            first_review.setdefault(t, str(ev.get("verdict", "")))
+            if t not in first_review:
+                first_review[t] = str(ev.get("verdict", ""))
+                first_review_criteria[t] = (int(ev.get("criteria_met") or 0), int(ev.get("criteria_total") or 0))
         elif k == "run_finished":
             cost[t] += float(ev.get("cost_usd") or 0.0)
             if ev.get("mode") == "rebase":
@@ -219,14 +222,16 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         lead_h = None
         if tid in done_at:
             lead_h = (_ts(done_at[tid]) - _ts(first_dispatch[tid])).total_seconds() / 3600
+        crit_met, crit_total = first_review_criteria.get(tid, (0, 0))
         per_task.append({
             "id": tid, "difficulty": getattr(task, "difficulty", ""), "phase": getattr(task, "key", ""),
             "status": getattr(task, "status", ""), "runs": runs[tid], "revisions": revisions[tid],
             "first_review": first_review.get(tid, ""), "cost_usd": round(cost[tid], 4), "lead_hours": lead_h,
+            "criteria_met": crit_met, "criteria_total": crit_total,
         })
     by_diff: dict[str, dict[str, Any]] = {}
     for row in per_task:
-        d = by_diff.setdefault(row["difficulty"] or "medium", {"tasks": 0, "cost_usd": 0.0, "revisions": 0, "first_pass_approve": 0, "reviewed": 0, "done": 0, "lead_hours": []})
+        d = by_diff.setdefault(row["difficulty"] or "medium", {"tasks": 0, "cost_usd": 0.0, "revisions": 0, "first_pass_approve": 0, "reviewed": 0, "done": 0, "lead_hours": [], "criteria_met": 0, "criteria_total": 0})
         d["tasks"] += 1
         d["cost_usd"] += row["cost_usd"]
         d["revisions"] += row["revisions"]
@@ -234,6 +239,8 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             d["reviewed"] += 1
             if row["first_review"] == "approve":
                 d["first_pass_approve"] += 1
+            d["criteria_met"] += row["criteria_met"]
+            d["criteria_total"] += row["criteria_total"]
         if row["lead_hours"] is not None:
             d["done"] += 1
             d["lead_hours"].append(row["lead_hours"])
@@ -242,6 +249,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         d["avg_lead_hours"] = round(sum(d["lead_hours"]) / len(d["lead_hours"]), 2) if d["lead_hours"] else None
         d["first_pass_rate"] = round(d["first_pass_approve"] / d["reviewed"], 2) if d["reviewed"] else None
         d["avg_revisions"] = round(d["revisions"] / d["tasks"], 2) if d["tasks"] else 0
+        d["criteria_rate"] = round(d["criteria_met"] / d["criteria_total"], 2) if d["criteria_total"] else None
         del d["lead_hours"]
     rebases = rebases_mechanical + rebases_agent
     rebase = {

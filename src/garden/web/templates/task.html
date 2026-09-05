@@ -126,6 +126,18 @@
 <div class="grid2">
   <div class="stack">
     <div class="panel prose">{{ body_html|safe }}</div>
+    {% if criteria_rows %}<div class="panel"><div class="eyebrow">Acceptance criteria</div>
+      <table style="margin-top:6px;width:100%">
+        <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>
+        {% for c in criteria_rows %}
+        <tr>
+          <td style="vertical-align:top">{{ c.criterion }}</td>
+          <td style="vertical-align:top">{% if c.not_done %}<span class="pill s-failed">not done</span> {{ c.worker_reason or 'no reason given' }}{% elif c.evidence %}<span class="pill s-done">✓</span> {{ c.evidence }}{% elif c.has_worker %}<span class="pill s-failed">no evidence</span>{% else %}<span class="faint">—</span>{% endif %}</td>
+          <td style="vertical-align:top">{% if c.met is true %}<span class="pill s-done">met</span>{% elif c.met is false %}<span class="pill s-failed">not met</span>{% else %}<span class="faint">—</span>{% endif %}{% if c.review_reason %} <span class="muted">{{ c.review_reason }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>{% endif %}
     {% if suggestions %}<div class="panel"><div class="eyebrow">Suggestions{% if edit_running %} · integrating…{% endif %}</div>
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for sg in suggestions %}<li style="margin-bottom:4px"><span class="pill s-{{ 'done' if sg.integrated else 'ready' }}">{{ 'integrated' if sg.integrated else 'pending' }}</span> {% if sg.applies_to %}<span class="muted">{{ sg.applies_to }}</span> {% endif %}{{ sg.text }} <span class="faint mono">— {{ sg.author }}{% if sg.date %}, {{ sg.date }}{% endif %}</span></li>{% endfor %}</ul>
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}

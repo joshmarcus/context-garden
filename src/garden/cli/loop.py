@@ -334,14 +334,16 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"{r['lead_hours']:.1f}" if r["lead_hours"] is not None else "")
     console.print(table)
     table = Table(title="per difficulty tier (is 'easy' really easy?)")
-    for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "cost", "avg lead h"):
+    for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "criteria met", "cost", "avg lead h"):
         table.add_column(c)
     for tier in ("easy", "medium", "hard"):
         d = m["by_difficulty"].get(tier)
         if not d:
             continue
+        criteria = f"{d['criteria_met']}/{d['criteria_total']}" + (f" · {d['criteria_rate']:.0%}" if d["criteria_rate"] is not None else "") if d["criteria_total"] else ""
         table.add_row(tier, str(d["tasks"]), str(d["done"]), str(d["avg_revisions"]),
                       f"{d['first_pass_rate']:.0%}" if d["first_pass_rate"] is not None else "",
+                      criteria,
                       f"${d['cost_usd']:.2f}", f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
     console.print(table)
     rb = m.get("rebase") or {}

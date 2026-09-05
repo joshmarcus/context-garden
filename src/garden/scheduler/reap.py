@@ -8,6 +8,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import to_feedback
+from ..criteria import apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -341,6 +342,17 @@ class ReapMixin:
                 return {k: r.result[k] for k in ("pr_title", "pr_body", "summary") if r.result.get(k)}
         return {}
 
+    def _last_worker_verified(self, task: Task) -> list[dict[str, Any]] | None:
+        """The `verified` per-criterion evidence from the most recent worker round that reported
+        it, so a review dispatched without a `work_run` in hand (a re-review, a re-probe) still
+        shows the reviewer the author's claims."""
+        for r in reversed(self.runs.runs_for(task.id)):
+            if r.mode in ("work", "revise", "resume") and isinstance(r.result, dict):
+                v = r.result.get("verified")
+                if isinstance(v, list) and v:
+                    return v
+        return None
+
     def _reprobe_base_broken(self, task: Task, rep: TickReport) -> bool:
         """A task parked with the `base_broken` stop re-probes its base every tick and continues
         by itself once the base goes green: compare the base branch's tip with the commit that was
@@ -473,6 +485,8 @@ class ReapMixin:
                            rep: TickReport, cost: str) -> None:
         slug = self.slug_for(task)
         summary = str(result.get("summary") or "")
+        criteria = parse_criteria(task.body)
+        verified = result.get("verified")
         st = self.state.get(task.id)
         if not slug or not self.github.available:
             self._transition(task, Status.IN_REVIEW,
@@ -485,6 +499,8 @@ class ReapMixin:
                 task.pr = existing.url
                 st["pr_number"] = existing.number
                 body = str(result.get("pr_body") or "")
+                if body:
+                    body = apply_verification(body, criteria, verified)
                 title = str(result.get("pr_title") or "")
                 st["pr_draft"] = bool(existing.is_draft)
                 if run.mode in ("revise", "resume", "rebase"):
@@ -505,7 +521,7 @@ class ReapMixin:
                 rep.transitions.append(f"{task.id} -> {nxt.value} (revised)")
             else:
                 title = str(result.get("pr_title") or f"{task.id}: {task.title}")
-                body = str(result.get("pr_body") or summary or task.body)
+                body = apply_verification(str(result.get("pr_body") or summary or task.body), criteria, verified)
                 footer = f"\n\n---\nTask `{task.id}` from the context garden ({task.product}/{task.phase})."
                 if st.get("stack_parent"):
                     footer += f" Stacked on `{st['stack_parent']}` (targets `{base}` until it merges)."
