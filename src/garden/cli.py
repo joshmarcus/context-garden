@@ -1326,8 +1326,11 @@ def friction_report(
 
 @app.command()
 def friction(target: str = typer.Argument(..., help="product/phase")):
-    """Collect ## Friction sections from task PR bodies and write <phase>/docs/friction.md."""
-    from .friction import harvest, write_friction_doc
+    """Write <phase>/docs/friction.md: reported friction from the record and marked PR comments,
+    plus any legacy ## Friction sections in old PR bodies."""
+    import datetime as _dt
+
+    from .friction import collect_comment_friction, harvest, record_friction, write_friction_doc
     from .github import GitHub
     from .runs import RunStore
 
@@ -1353,11 +1356,17 @@ def friction(target: str = typer.Argument(..., help="product/phase")):
 
     gh = GitHub(use_gh=bool(cfg.get("github.use_gh", True))) if github_slug else None
 
-    entries = harvest(ph, rs, github=gh, slug=github_slug or None)
     doc = ph.path / "docs" / "friction.md"
+    date = _dt.date.today().isoformat()
+    # Reconcile marked friction comments into the record; write_friction_doc preserves it.
+    reconciled = 0
+    for task, items in collect_comment_friction(ph, gh, github_slug or None):
+        reconciled += len(record_friction(doc, items, f"reported on {task.pr or task.id}", date))
+    entries = harvest(ph, rs, github=gh, slug=github_slug or None)
     write_friction_doc(doc, entries)
     n = len(entries)
-    console.print(f"wrote {doc} ({n} task{'s' if n != 1 else ''} with friction)")
+    extra = f", reconciled {reconciled} from PR comments" if reconciled else ""
+    console.print(f"wrote {doc} ({n} task{'s' if n != 1 else ''} with friction{extra})")
 
 
 @app.command()

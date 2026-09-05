@@ -57,6 +57,18 @@ def test_parse_result():
     assert parse_result("nothing") == {}
 
 
+def test_brief_states_the_pr_body_contract(garden):
+    store = Store(garden)
+    b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
+    # the permanent-description contract and where friction/process narration go
+    assert "permanent description" in b.text
+    assert "as if the change were right the first time" in b.text
+    assert "omit `pr_body` unless the description itself must change" in b.text
+    assert '"friction"' in b.text and "`friction` items" in b.text
+    # the JSON schema line advertises the friction field
+    assert '"friction": ["<short friction item>"]' in b.text
+
+
 def test_brief_pre_pr_revision(garden):
     store = Store(garden)
     task = store.task("DM-001")

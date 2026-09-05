@@ -43,9 +43,16 @@ Check, in this order:
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
 
+If the *only* problem is the description (`description_ok` is false and there is no blocking
+finding), do not send the change back for another round: rewrite the description yourself and
+return the full corrected body in `description_rewrite`. The garden applies it directly. Write
+it to the same contract the author was given — the permanent description of the change, with
+no process narration, no review or rebase references, no scar tissue. Leave `description_rewrite`
+empty when a blocking finding means the change is going back anyway.
+
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
 
 The JSON must be on one line.
 """

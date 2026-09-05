@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from garden.friction import (
+    FRICTION_COMMENT_MARKER,
     append_friction_report,
+    collect_comment_friction,
     extract_friction,
+    friction_comment,
+    friction_from_comment,
+    friction_items,
     harvest,
     pr_body_for,
+    record_friction,
     write_friction_doc,
 )
 
@@ -260,3 +266,126 @@ def test_append_friction_report_creates_file(tmp_path):
     text = doc.read_text()
     assert "Brand new report." in text
     assert "## Reported" in text
+
+
+# --------------------------------------------------------------------------- friction field
+
+
+def test_friction_items_normalises():
+    assert friction_items({"friction": ["a", " b ", "", "  "]}) == ["a", "b"]
+    assert friction_items({"friction": "just one"}) == ["just one"]
+    assert friction_items({"friction": None}) == []
+    assert friction_items({}) == []
+    assert friction_items({"friction": 5}) == []
+
+
+def test_friction_comment_round_trips():
+    items = ["First thing.", "Second thing."]
+    body = friction_comment(items)
+    assert FRICTION_COMMENT_MARKER in body
+    assert "**Friction reported**" in body
+    assert friction_from_comment(body) == items
+
+
+def test_friction_from_comment_ignores_unmarked():
+    assert friction_from_comment("- not friction\n- also not") == []
+    assert friction_from_comment("") == []
+
+
+def test_record_friction_skips_duplicates(tmp_path):
+    doc = tmp_path / "docs" / "friction.md"
+    first, second = "Spec had no schema link.", "Env needed PYTHONPATH."
+    third = "The CLI help was stale."
+    fresh = record_friction(doc, [first, second], "run r1", "2026-09-04")
+    assert fresh == [first, second]
+    # second already recorded; only third is new
+    fresh = record_friction(doc, [second, third], "run r2", "2026-09-04")
+    assert fresh == [third]
+    text = doc.read_text()
+    assert text.count(second) == 1
+    assert third in text
+
+
+class _FakeCommentGitHub:
+    def __init__(self, comments):
+        self.available = True
+        self._comments = comments
+
+    def issue_comments(self, slug, number):
+        return list(self._comments)
+
+
+def test_collect_comment_friction():
+    tasks = [_FakeTask("T-001", pr="https://example.com/pull/7")]
+    phase = _FakePhase(tasks)
+    gh = _FakeCommentGitHub([friction_comment(["Config was undocumented."]), "unrelated comment"])
+    out = collect_comment_friction(phase, gh, "owner/repo")
+    assert out == [(tasks[0], ["Config was undocumented."])]
+
+
+def test_collect_comment_friction_without_github():
+    phase = _FakePhase([_FakeTask("T-001", pr="https://example.com/pull/7")])
+    assert collect_comment_friction(phase, None, "owner/repo") == []
+
+
+# --------------------------------------------------------------------------- through the scheduler
+
+
+def test_worker_friction_reaches_record_and_comment_not_body(sched, fake_github, monkeypatch):
+    from garden.runs import RunStore
+    from tests.conftest import wait_for_runs
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "friction")
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened -> friction recorded
+
+    items = ["The spec never linked the schema.", "Tests needed PYTHONPATH set."]
+    # one marked PR comment carries every item
+    friction_comments = [c for c in fake_github.comments if "Friction reported" in c]
+    assert len(friction_comments) == 1
+    for it in items:
+        assert it in friction_comments[0]
+    # the phase's friction record has them under ## Reported
+    doc = sched.store.phase("demo", "p1").path / "docs" / "friction.md"
+    text = doc.read_text()
+    assert "## Reported" in text
+    for it in items:
+        assert it in text
+    # never in the PR body
+    body = fake_github.created[-1]["body"]
+    for it in items:
+        assert it not in body
+    # garden friction harvests it: the record survives a rewrite of the doc
+    entries = harvest(sched.store.phase("demo", "p1"), RunStore(sched.cfg.garden_dir))
+    write_friction_doc(doc, entries)
+    text = doc.read_text()
+    for it in items:
+        assert it in text
+
+
+def test_revise_omitting_pr_body_keeps_the_description(sched, fake_github, monkeypatch):
+    from garden.model import Status
+    from tests.conftest import wait_for_runs
+
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()  # reap work -> PR opened with a description
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    original_body = fake_github.prs[task.branch].body
+    assert original_body
+
+    # a revise round that only reworded: it omits pr_body, so the description must stay
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "omit-body")
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "please reword the summary"
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    sched.state.save()
+    sched.dispatch(task, mode="revise")
+    wait_for_runs(sched)
+    sched.tick()  # reap revise -> PR updated (title only), body untouched
+
+    assert fake_github.prs[task.branch].body == original_body
+    assert fake_github.updated[-1]["body"] == ""  # scheduler passed no fabricated body

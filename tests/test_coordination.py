@@ -386,6 +386,8 @@ def test_restack_conflict_routes_to_revise(sched, fake_github, tmp_path, monkeyp
     assert "DM-002(revise)" in rep.dispatched  # the revise run is told to rebase, in the same tick
     brief = (sched.runs.latest("DM-002").path / "brief.md").read_text()
     assert "git rebase origin/main" in brief and "README.md" in brief
+    # a rebase round tells the worker to drop from the description what main now already has
+    assert "drop from the PR description anything `main` now already contains" in brief
     assert sched.state.get("DM-002")["force_push"] is True  # the rebased branch will be force-pushed
 
 
@@ -415,6 +417,7 @@ def test_conflicting_pr_triggers_revise_run(sched, fake_github, tmp_path, monkey
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
     assert "Revision round" in brief
     assert "rebase" in brief.lower() and "README.md" in brief
+    assert "drop from the PR description anything `main` now already contains" in brief
     # force_push is set for the upcoming push after the revise resolves the conflict
     assert sched.state.get("DM-001").get("force_push") is True
     evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["conflict"])

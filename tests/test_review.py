@@ -80,6 +80,44 @@ def test_review_flow(sched, fake_github, monkeypatch):
     assert sched.state.get("DM-001")["last_review"]["verdict"] == "approve"
 
 
+def test_review_parses_description_rewrite():
+    rev = parse_review('GARDEN_REVIEW: {"verdict": "request_changes", "summary": "s", "description_ok": false, '
+                       '"description_feedback": "d", "description_rewrite": "## What\\n\\nBetter.", "findings": []}')
+    assert rev["description_rewrite"] == "## What\n\nBetter."
+
+
+def test_review_brief_advertises_description_rewrite(garden):
+    store = Store(garden)
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
+                        diff="+a", max_diff_chars=1000)
+    assert "description_rewrite" in text
+    assert "rewrite the description yourself" in text
+
+
+def test_review_description_only_rewrite_applied_without_a_round(sched, fake_github, monkeypatch):
+    """description_ok false, no blocking finding, rewrite supplied: the scheduler updates the PR
+    body through the API and starts no revise round."""
+    from tests.conftest import wait_for_runs
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-rewrite")
+    sched.tick()
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched (as review-rewrite)
+    assert "DM-001(review)" in rep.dispatched
+    wait_for_runs(sched)
+    rep = sched.tick()  # reap review -> apply the rewrite, no round
+    assert any("description rewritten by the reviewer" in t for t in rep.transitions)
+    assert "DM-001(revise)" not in rep.dispatched
+    assert not any("changes_requested" in t for t in rep.transitions)
+    # the corrected body reached GitHub
+    assert fake_github.updated and fake_github.updated[-1]["body"] == "## What\n\nThe corrected description."
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.status.value == "in_review"
+    assert "description rewritten by the reviewer" in task.body
+
+
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     from tests.conftest import wait_for_runs
 

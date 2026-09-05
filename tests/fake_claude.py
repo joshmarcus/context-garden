@@ -5,8 +5,11 @@ Reads the brief from stdin, does something to the cwd (a git worktree) depending
 FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
 Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad | review-desc
+       | review-rewrite (description-only review that returns description_rewrite)
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | discover-kinds (done + a task, a duplicate + cancel decision, and a note)
+       | friction (done + a friction list in the result, none in the body)
+       | omit-body (a revise round that omits pr_body, leaving the description unchanged)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
@@ -82,6 +85,12 @@ if mode.startswith("review"):
         # blocking findings.
         rev = {"verdict": "request_changes", "summary": "description needs work", "description_ok": False,
                "description_feedback": "explain why this change is needed", "findings": []}
+    elif mode == "review-rewrite":
+        # description-only feedback with the corrected body supplied: the scheduler applies it
+        # directly and starts no revise round.
+        rev = {"verdict": "request_changes", "summary": "only the description", "description_ok": False,
+               "description_feedback": "give the reader context",
+               "description_rewrite": "## What\n\nThe corrected description.", "findings": []}
     else:
         rev = {"verdict": "approve", "summary": "looks good", "description_ok": True, "description_feedback": "", "findings": []}
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev),
@@ -117,7 +126,7 @@ if mode == "no_change" and "Revision round" in brief:
 if mode == "conflict":
     Path("README.md").write_text("# demo\n\nchanged by worker\n")
 
-if mode in ("done", "noresult", "needs_input", "discover", "discover-kinds", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change"):
+if mode in ("done", "noresult", "needs_input", "discover", "discover-kinds", "nochange", "revise-with-comment", "conflict", "wont_do", "no_change", "friction", "omit-body"):
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
@@ -159,6 +168,14 @@ else:
         ]
     if mode == "revise-with-comment":
         result["pr_comment"] = "I addressed the feedback by adding the missing test."
+    if mode == "friction":
+        # friction travels in its own field, not the body
+        result["pr_body"] = "## What\n\nA fake change."
+        result["friction"] = ["The spec never linked the schema.", "Tests needed PYTHONPATH set."]
+    if mode == "omit-body" and revise:
+        # a revise round that only reworded things: no description change, so pr_body is omitted
+        result.pop("pr_body")
+        result["summary"] = "reworded; description unchanged"
     final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
 result_obj = {
     "type": "result", "subtype": "success", "is_error": False, "result": final,

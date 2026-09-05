@@ -15,7 +15,7 @@ for interactive sessions.
 
 ## Next (phase-02-friction)
 
-Run the tool on itself and fix what hurts: harvest friction from PR bodies into the phase
+Run the tool on itself and fix what hurts: harvest friction workers report into the phase
 docs, live worker output in the web UI, a notification hook, a brief cost report,
 replanning after failures. Every task in that phase is meant to ship through
 `garden tick`, not by hand.
