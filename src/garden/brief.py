@@ -8,6 +8,7 @@ Workers are told not to go exploring the garden; if something is missing, the ta
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -202,6 +203,77 @@ def resolve_reading(store: Store, task: Task, rel: str) -> tuple[Path | None, Pa
         if p.exists():
             return p, base
     return None, None
+
+
+# A criterion whose text is only one of these is a planning placeholder, not a real,
+# testable acceptance criterion: the template's own `...`, filler words, or a "to be
+# written at planning" promise. Matched against a single line after its list/checkbox
+# marker is stripped, case-insensitively.
+_PLACEHOLDER_CRITERION = re.compile(
+    r"^(?:"
+    r"[.\-_?x]+"  # ..., ---, ___, ???, xxx and the template's `...`
+    r"|tbd|tba|todo|fixme|n/?a|none|placeholder"
+    r"|to be (?:written|added|filled|filled in|specified|decided|determined|defined|planned)\b.*"
+    r"|written at planning\b.*|filled (?:in )?at planning\b.*"
+    r"|<[^>]*>"  # <fill me in>
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _section_lines(body: str, heading: str) -> list[str] | None:
+    """The lines under a `## heading` (case-insensitive, trailing colon ignored), up to the
+    next heading. `None` if the section is absent."""
+    out: list[str] | None = None
+    for ln in body.splitlines():
+        m = re.match(r"^#{1,6}\s+(.*?)\s*$", ln)
+        if m:
+            if out is not None:
+                break  # reached the next heading
+            if m.group(1).rstrip(":").strip().lower() == heading.lower():
+                out = []
+            continue
+        if out is not None:
+            out.append(ln)
+    return out
+
+
+def _criteria_are_placeholder(body: str) -> str:
+    """Empty if the task's `## Acceptance criteria` section holds at least one real,
+    non-placeholder criterion; otherwise the reason it does not (missing section, or every
+    item is a placeholder)."""
+    lines = _section_lines(body, "Acceptance criteria")
+    if lines is None:
+        return "no `## Acceptance criteria` section"
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        m = re.match(r"^[-*+]\s*(?:\[[ xX]\]\s*)?(.*)$", s)
+        text = (m.group(1) if m else s).strip()
+        if text and not _PLACEHOLDER_CRITERION.match(text):
+            return ""
+    return "acceptance criteria are placeholders (fill `## Acceptance criteria` with testable items)"
+
+
+def brief_gaps(store: Store, task: Task) -> list[str]:
+    """What would make this task's brief cost a run without being ready to work: placeholder
+    acceptance criteria, and reading-list paths that resolve to no file in the garden or the
+    product checkout. Empty when the brief is complete. The one place `approve` and the Inbox
+    card ask 'is this brief good enough to dispatch?'."""
+    gaps: list[str] = []
+    crit = _criteria_are_placeholder(task.body)
+    if crit:
+        gaps.append(crit)
+    seen: set[str] = set()
+    for rel in task.reading:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        p, _ = resolve_reading(store, task, rel)
+        if p is None:
+            gaps.append(f"reading-list path not found: `{rel}`")
+    return gaps
 
 
 def build_brief(
