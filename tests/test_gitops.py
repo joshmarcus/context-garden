@@ -204,6 +204,91 @@ def test_sync_remote_branch_noop_without_remote_commits(origin_repo: tuple[Path,
     assert ok and files == [] and _sha(repo) == head
 
 
+# ---- CG-220: sync_to_origin_head and a lease-protected push ------------------
+def test_sync_to_origin_head_backs_up_local_only_commits(origin_repo: tuple[Path, Path]) -> None:
+    """A worktree with commits origin never saw (a killed prior run's progress) is reset onto
+    origin's head, and those commits are kept on a named backup ref, not dropped."""
+    repo, remote = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "pushed work", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+    origin_sha = _sha(repo)
+
+    _git("commit", "--allow-empty", "-q", "-m", "stray local commit", cwd=repo)
+    local_sha = _sha(repo)
+
+    subjects = gitops.sync_to_origin_head(repo, "feature", "backup/run-1")
+
+    assert len(subjects) == 1 and subjects[0].endswith("stray local commit")
+    assert _sha(repo) == origin_sha  # reset onto origin's head
+    assert _sha(repo, "backup/run-1") == local_sha  # nothing lost
+
+
+def test_sync_to_origin_head_noop_when_already_synced(origin_repo: tuple[Path, Path]) -> None:
+    repo, _ = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "work", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+    head = _sha(repo)
+
+    subjects = gitops.sync_to_origin_head(repo, "feature", "backup/run-1")
+
+    assert subjects == []
+    assert _sha(repo) == head
+    assert not gitops.branch_exists(repo, "backup/run-1")
+
+
+def test_sync_to_origin_head_noop_without_an_origin_branch(origin_repo: tuple[Path, Path]) -> None:
+    """A branch never pushed to origin has nothing to sync to: left untouched."""
+    repo, _ = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "work", cwd=repo)
+    head = _sha(repo)
+
+    subjects = gitops.sync_to_origin_head(repo, "feature", "backup/run-1")
+
+    assert subjects == [] and _sha(repo) == head
+
+
+def test_push_with_matching_lease_succeeds(origin_repo: tuple[Path, Path]) -> None:
+    repo, remote = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "first", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+    start_head = _sha(repo)
+    _git("commit", "--allow-empty", "-q", "-m", "second", cwd=repo)
+
+    gitops.push(repo, "feature", lease=start_head)
+
+    assert _sha(remote, "refs/heads/feature") == _sha(repo)
+
+
+def test_push_with_stale_lease_raises_naming_both_heads(origin_repo: tuple[Path, Path]) -> None:
+    """Someone else pushed to the same branch after this run started: the lease push is
+    rejected with both the head we started from and the head origin actually holds now."""
+    repo, remote = origin_repo
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "first", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+    start_head = _sha(repo)
+
+    other = repo.parent / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    _git("checkout", "feature", cwd=other)
+    _git("commit", "--allow-empty", "-q", "-m", "interloper", cwd=other)
+    _git("push", "-q", "origin", "feature", cwd=other)
+    interloper_sha = _sha(other)
+
+    _git("commit", "--allow-empty", "-q", "-m", "this run's work", cwd=repo)
+
+    with pytest.raises(gitops.LeaseRejected) as exc:
+        gitops.push(repo, "feature", lease=start_head)
+
+    assert exc.value.expected == start_head
+    assert exc.value.actual == interloper_sha
+    assert _sha(remote, "refs/heads/feature") == interloper_sha  # origin untouched by the rejected push
+
+
 # ---- CG-210: patch id is blind to context/line-number churn, not to real content changes ----
 def _write_lines(path: Path, n: int) -> None:
     path.write_text("".join(f"line{i}\n" for i in range(1, n + 1)))

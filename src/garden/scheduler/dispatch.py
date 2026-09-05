@@ -227,8 +227,28 @@ class DispatchMixin:
         # attempt left with real, unreported progress — the "back to ready" case in reap
         # (CG-125). A truly clean start has no commits ahead of base, so the section is
         # omitted and nothing changes.
-        commits_ahead = None
         wt_path = worktree_override or self.worktree_for(task)
+        # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
+        # below as a commit) before anything else touches the worktree, so they are recovered
+        # by `git stash apply`, not buried in a backup branch's synthetic commit.
+        if worktree and not runner.remote:
+            self._stash_dirty_worktree(task, wt_path)
+        # A revise, rebase or resume run writes to a branch another writer may have just moved
+        # (a prior revise round's push, the merge queue's own rebase): sync the worktree to
+        # origin's head first so this run starts from the same head, instead of racing a stale
+        # local copy toward a rejected push (CG-220). Any commits sitting only in the worktree —
+        # a killed prior run's progress — are kept on `backup/<run-id>`, never silently dropped.
+        # The reservation and the run created below share the same id (see RunStore.next_run_id).
+        run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
+        if run_id and worktree and not runner.remote:
+            backed_up = gitops.sync_to_origin_head(wt_path, branch, f"backup/{run_id}")
+            if backed_up:
+                note = (f"kept {len(backed_up)} local-only commit(s) on `backup/{run_id}` before "
+                        f"syncing to origin/{branch}'s head: " + "; ".join(backed_up))
+                task.log(note)
+                self.store.save(task)
+                self.log(f"{task.id}: {note}")
+        commits_ahead = None
         if wt_path.exists():
             try:
                 commits_log = gitops.log_summary(wt_path, base, n=20)
@@ -242,8 +262,11 @@ class DispatchMixin:
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
         if worktree and not runner.remote:
-            self._stash_dirty_worktree(task, wt_path)
             wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+        # The head this run starts from, for a lease-protected push once it finishes (CG-220):
+        # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
+        # case the push falls back to its previous, non-leased behaviour.
+        start_head = gitops.remote_head(wt, branch) if wt is not None else ""
         if mode == "rebase":
             from ..brief import rebase_brief
 
@@ -253,8 +276,9 @@ class DispatchMixin:
         else:
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
             text = prompt_override or brief.text
-        run = self.runs.new_run(task.id, runner.name, mode=mode)
+        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
+        run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
