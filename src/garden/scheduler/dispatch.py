@@ -220,7 +220,12 @@ class DispatchMixin:
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
         revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
         easy_tier = revise_easy or mode == "rebase"
+        # Snapshot what this dispatch is about to clear from state, before it clears it, so a
+        # quota env_error on this very run can put it back (see reap._handle_quota_env_error):
+        # the point is not to burn the round's context on the harness's own account trouble.
         if mode == "revise":
+            run.env_snapshot = {"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
+                                "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))}
             from ..suggestions import pending_suggestions
 
             pend = pending_suggestions(task.body)
@@ -229,6 +234,8 @@ class DispatchMixin:
                           "suggestions; take them into account in this round:\n"
                           + "\n".join(f"- {s.text}" for s in pend))
                 feedback = f"{feedback}\n\n{sug_fb}".strip() if feedback else sug_fb
+        elif mode == "rebase":
+            run.env_snapshot = {"rebase_pending": True}
         qa = list(st.get("qa") or [])
         # List any commits already on the branch in the brief, so a re-dispatched worker
         # builds on the prior attempt instead of reverse-engineering it from git. This

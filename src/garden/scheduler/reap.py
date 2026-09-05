@@ -624,8 +624,11 @@ class ReapMixin:
     def _handle_quota_env_error(self, task: Task, run: Run, rep: TickReport, collected: dict[str, Any]) -> None:
         """A quota/spend-limit stop: the harness's account, not the task, is at fault. Undo
         the attempt dispatch() counted when this run started (revise/rebase/resume never
-        counted one), pause dispatch for the harness, and send the task back to ready with
-        nothing burned."""
+        counted one), pause dispatch for the harness, and put the round back where dispatch
+        found it. A work round has no PR yet, so it goes back to ready. A revise or rebase
+        round always has an open PR and stored feedback (or a pending rebase) that dispatch
+        already cleared to start this very run; restore it from the run's `env_snapshot` and
+        go back to changes_requested instead, so the PR and the feedback survive the stop."""
         kind = str(collected.get("env_kind") or "quota")
         run.status = "env_error"
         run.save()
@@ -638,6 +641,31 @@ class ReapMixin:
         note = f"environment stop ({kind}): {reason}; not counted as an attempt"
         if harness_name:
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
+
+        st = self.state.get(task.id)
+        snap = run.env_snapshot or {}
+        if run.mode == "revise" and task.pr:
+            st["pending_feedback"] = snap.get("pending_feedback", "")
+            if snap.get("pending_feedback_easy"):
+                st["pending_feedback_easy"] = True
+            else:
+                st.pop("pending_feedback_easy", None)
+            if snap.get("pending_feedback_rebase"):
+                st["pending_feedback_rebase"] = True
+                st["rebases"] = max(0, int(st.get("rebases", 0)) - 1)
+            else:
+                st["revisions"] = max(0, int(st.get("revisions", 0)) - 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}; feedback restored, will retry the revise round")
+            rep.transitions.append(f"{task.id} -> changes_requested (env_error: {kind})")
+            return
+        if run.mode == "rebase" and task.pr:
+            st["rebase_pending"] = True
+            st["rebases"] = max(0, int(st.get("rebases", 0)) - 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, f"{note}; will retry the rebase round")
+            rep.transitions.append(f"{task.id} -> changes_requested (env_error: {kind})")
+            return
         self._transition(task, Status.READY, note)
         rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")
 

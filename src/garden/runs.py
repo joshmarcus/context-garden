@@ -53,6 +53,10 @@ class Run:
     brief_tokens: int = 0
     error: str = ""
     fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
+    # What dispatch() cleared from state to start a revise/rebase round (the feedback text,
+    # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
+    # these instead of losing the round's context (see reap._handle_quota_env_error).
+    env_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
