@@ -69,7 +69,7 @@ class ReviewMixin:
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
         if any(r.task_id == task.id for r in self.worker_runs_active()):
-            st["pending_reviews"] = list(st.get("pending_reviews") or []) + wanted
+            self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
                 self.log(f"{task.id}: review deferred while a worker run is in flight")
@@ -94,7 +94,23 @@ class ReviewMixin:
                 self.store.save(task)
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
         if deferred:
-            st["pending_reviews"] = list(st.get("pending_reviews") or []) + deferred
+            self._queue_pending_reviews(st, deferred)
+
+    @staticmethod
+    def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
+        """Merge `items` into `st["pending_reviews"]`, keyed by (kind, persona name): a round
+        already queued for this task is not queued again, so a review deferred on one tick and
+        re-offered on the next (the same worker still in flight) does not pile up duplicate
+        entries for the same round (CG-203)."""
+        pending = list(st.get("pending_reviews") or [])
+        seen = {(i.get("kind"), i.get("name", "")) for i in pending}
+        for item in items:
+            key = (item.get("kind"), item.get("name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append(item)
+        st["pending_reviews"] = pending
 
     def _drain_pending_reviews(self, tasks: dict[str, Task], rep: TickReport) -> None:
         for task in tasks.values():
