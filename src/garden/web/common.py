@@ -242,11 +242,3 @@ class Site:
                 sections.append({"phase": ph, "rows": rows})
         return {"sections": sections, "move_phases": move_phases, "active": active,
                 "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
-
-
-def _split_log(body: str) -> tuple[str, list[str]]:
-    if "\n## Log" in body:
-        head, _, tail = body.partition("\n## Log")
-        lines = [ln[2:] for ln in tail.strip().splitlines() if ln.startswith("- ")]
-        return head, lines
-    return body, []
