@@ -151,7 +151,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | the PR | `pr_number`, `pr_draft`, `pr_base`, `pr_state`, `pr_updated_at`, `head_sha`, `review_decision`, `checks`, `failed_checks`, `ci_failed_at`, `ci_reruns`, `last_polled` | what the last poll saw; `pr_updated_at` lets the poll skip PRs nothing has touched |
 | the revise loop | `pending_feedback`, `pending_feedback_rebase`, `revisions`, `needs_human`, `last_diff_hash`, `force_push` | feedback waiting for a revise run, whether that round only resolves a stale-base rebase conflict (CG-131, exempt from `max_revisions`), how many ordinary rounds were used, why the loop stopped |
 | automated review | `review_run`, `review_rounds`, `last_round_rebase`, `last_review`, `last_findings` | the review run in flight, rounds used, whether the last dispatched round was a rebase round (its review does not count toward `review.max_rounds`), the last verdict and its blocking findings (for stall detection) |
-| rebase and automerge | `rebases`, `rebase_pending`, `rebase_base`, `rebase_files`, `rebase_hunks`, `automerge_candidate`, `automerge_ready_at`, `automerge_blocked`, `automerged` | rebase rounds used (its own counter, shared with a hand-resolved stale-base conflict), a pending agent rebase and its hunks, whether the PR is a merge-queue candidate and since when, why automerge is held, and the record of a garden merge |
+| rebase and automerge | `rebases`, `rebase_pending`, `rebase_base`, `rebase_files`, `rebase_hunks`, `automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`, `automerged` | rebase rounds used (its own counter, shared with a hand-resolved stale-base conflict), a pending agent rebase and its hunks, whether the PR is a merge-queue candidate and since when, whether it is the in-flight queue head (rebased, waiting for its rollup), why automerge is held, and the record of a garden merge |
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
@@ -349,10 +349,16 @@ files under `tasks/` must not be hand-edited.
     base is compared with `last_diff_hash` from the reviewed push. When they match, the last
     verdict is kept, `rebased; diff unchanged; verdict kept` is logged, and no review is
     dispatched. Only a textual resolution that changed the diff is reviewed again.
-  - **Automerge is a queue.** Approved candidates are ordered oldest-approved-first and only
-    the head is rebased, checked and merged; the next candidate is taken on the following
-    poll. So exactly one PR is rebased and merged per tick, each rebased once, right before
-    it merges.
+  - **Automerge is a queue that keeps its head.** Approved candidates are ordered
+    oldest-approved-first; only the head is rebased, checked and merged, and the next candidate
+    is taken once the head is off the queue. A branch already on the base's tip is merged as it
+    stands — not rebased or pushed. A rebase that has to move the branch restarts its rollup, so
+    the head goes **in flight** (`merge_head`, holding its `automerge_ready_at`): the queue does
+    not pick another head while one is in flight, and it merges the head the moment the rollup
+    goes green. A head leaves the queue only on a conflict, a failed check, a changed diff that
+    needs a review, a closed PR or a human change request — the reason is logged and the
+    next-oldest candidate becomes head. So each PR is rebased at most once, right before it
+    merges, and a pending rollup never rotates the head.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is

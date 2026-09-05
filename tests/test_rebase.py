@@ -55,15 +55,7 @@ def test_clean_rebase_keeps_verdict_and_dispatches_no_review(sched, fake_github,
     assert any("rebased; diff unchanged; verdict kept" in ln for ln in sched.store.task("DM-001").body.splitlines())
 
 
-# ---- rule 3: the merge queue merges only the head, one per tick --------------
-def _independent_two_task_garden(sched):
-    """Drop DM-002's dependency and turn off stacking so both PRs target main independently."""
-    sched.cfg.data["stack"] = False
-    p = sched.store.root / "demo" / "p1" / "tasks" / "DM-002-second.md"
-    p.write_text(p.read_text().replace("depends_on: [DM-001]", "depends_on: []"))
-    sched.store.invalidate()
-
-
+# ---- rule 3: the merge queue keeps its head, one merge per PR ----------------
 def _approve(sched, fake_github, task_id, branch, ready_at):
     st = sched.state.get(task_id)
     st["last_review"] = {"verdict": "approve", "summary": "ok"}
@@ -75,34 +67,111 @@ def _approve(sched, fake_github, task_id, branch, ready_at):
     pr.checks = "SUCCESS"
 
 
-def test_merge_queue_merges_head_only_each_rebased_once(sched, fake_github, tmp_path):
-    _independent_two_task_garden(sched)
+def _advance_main(tmp_path, name):
+    """Push an unrelated commit onto origin/main so every open branch falls one commit behind
+    and needs exactly one rebase to come forward (mirrors the incident: eight stale PRs)."""
+    repo = tmp_path / "repo"
+    (repo / f"{name}.txt").write_text("unrelated\n")
+    gitc("add", f"{name}.txt", cwd=repo)
+    gitc("commit", "-q", "-m", f"main moves: {name}", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+
+
+def _independent_tasks(sched, n):
+    """Write DM-001..DM-00n as independent (no deps) tasks and turn stacking off, so each PR
+    targets main on its own."""
+    sched.cfg.data["stack"] = False
+    tasks_dir = sched.store.root / "demo" / "p1" / "tasks"
+    for p in tasks_dir.glob("*.md"):
+        p.unlink()
+    for i in range(1, n + 1):
+        (tasks_dir / f"DM-{i:03d}-task.md").write_text(
+            f"---\nid: DM-{i:03d}\ntitle: Task {i}\nstatus: ready\ndepends_on: []\n"
+            f"priority: {i}\nreading: []\ncreated: '2026-01-01T00:00:00+00:00'\n"
+            f"updated: '2026-01-01T00:00:00+00:00'\n---\n\n## Goal\n\nDo thing {i}.\n")
+    sched.store.invalidate()
+
+
+def test_merge_queue_merges_eight_prs_each_rebased_once(sched, fake_github, tmp_path):
+    """Eight approved, mergeable, green PRs merge one after another, each rebased exactly once
+    (the incident: eight stale PRs the operator had to merge by hand)."""
+    _independent_tasks(sched, 8)
+    sched.cfg.data["max_parallel"] = 8
     sched.cfg.data["github"]["automerge"] = True
-    b1, b2 = "garden/dm-001-first-task", "garden/dm-002-second-task"
+    ids = [f"DM-{i:03d}" for i in range(1, 9)]
 
-    sched.tick()  # dispatch both (max_parallel=2)
-    sched.tick()  # both -> in_review with PRs on main
-    assert sched.store.task("DM-001").status == Status.IN_REVIEW
-    assert sched.store.task("DM-002").status == Status.IN_REVIEW
+    sched.tick()  # dispatch all eight
+    sched.tick()  # all -> in_review with PRs on main
+    for tid in ids:
+        assert sched.store.task(tid).status == Status.IN_REVIEW, tid
+    branches = {tid: sched.store.task(tid).branch for tid in ids}
 
+    # every branch is one commit behind main, so each needs exactly one rebase.
+    _advance_main(tmp_path, "moved")
+    for i, tid in enumerate(ids):
+        _approve(sched, fake_github, tid, branches[tid], f"2026-09-05T03:{i:02d}:00+00:00")
+    sched.state.save()
+    numbers = {tid: fake_github.prs[branches[tid]].number for tid in ids}
+
+    for _ in range(40):
+        sched.tick()
+        if all(sched.store.task(tid).status == Status.DONE for tid in ids):
+            break
+
+    # all eight merged, oldest-approved first, each rebased exactly once.
+    assert [m["number"] for m in fake_github.merged] == [numbers[tid] for tid in ids]
+    for tid in ids:
+        rebases = [r for r in sched.runs.runs_for(tid) if r.mode == "rebase"]
+        assert len(rebases) == 1, (tid, len(rebases))
+        assert sched.store.task(tid).status == Status.DONE, tid
+
+
+def test_pending_rollup_keeps_head_and_does_not_rotate(sched, fake_github, tmp_path):
+    """After the pre-merge rebase, a still-running rollup keeps the same task as the queue head:
+    the queue does not rebase another PR, and it merges the head once the rollup goes green."""
+    _independent_tasks(sched, 2)
+    sched.cfg.data["max_parallel"] = 2
+    sched.cfg.data["github"]["automerge"] = True
+
+    sched.tick()
+    sched.tick()
+    b1, b2 = sched.store.task("DM-001").branch, sched.store.task("DM-002").branch
+    _advance_main(tmp_path, "moved")  # both branches behind: the head will need a rebase
     _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")  # older -> head
     _approve(sched, fake_github, "DM-002", b2, "2026-09-05T03:05:00+00:00")
     sched.state.save()
 
-    # first poll: only the head of the queue (DM-001) is rebased and merged
+    # first tick: the head (DM-001) is rebased and force-pushed; it is now in flight.
     sched.tick()
-    assert [m["number"] for m in fake_github.merged] == [fake_github.prs[b1].number]
-    assert fake_github.prs[b1].state == "MERGED" and fake_github.prs[b2].state == "OPEN"
-    rb1 = [r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]
-    assert len(rb1) == 1  # rebased once, right before it merged
-    assert not [r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]  # not yet touched
+    st = sched.state.get("DM-001")
+    assert st.get("merge_head") is True
+    assert fake_github.merged == []  # not merged yet: waits for its rollup
+    ready_at = st.get("automerge_ready_at")
+    assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
-    # next poll: DM-001 reaches done, and the next candidate (DM-002) is rebased and merged
+    # the force-push restarted CI: the rollup is pending. Several ticks must NOT rotate the head
+    # or touch any other PR, and DM-001's ready_at is preserved.
+    fake_github.prs[b1].checks = "PENDING"
+    for _ in range(3):
+        sched.tick()
+        assert sched.state.get("DM-001").get("merge_head") is True
+        assert sched.state.get("DM-001").get("automerge_ready_at") == ready_at
+        assert fake_github.merged == []
+        assert not [r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]
+
+    # the rollup goes green: the head merges on the next poll, without another rebase.
+    fake_github.prs[b1].checks = "SUCCESS"
     sched.tick()
-    assert sched.store.task("DM-001").status == Status.DONE
+    assert fake_github.prs[b1].state == "MERGED"
+    assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
+
+    # DM-002 becomes the head next and merges in turn.
+    for _ in range(4):
+        sched.tick()
+        if fake_github.prs[b2].state == "MERGED":
+            break
     assert fake_github.prs[b2].state == "MERGED"
-    rb2 = [r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]
-    assert len(rb2) == 1  # rebased exactly once
+    assert len([r for r in sched.runs.runs_for("DM-002") if r.mode == "rebase"]) == 1
 
 
 # ---- metrics ----------------------------------------------------------------

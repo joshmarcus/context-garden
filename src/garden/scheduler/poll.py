@@ -219,9 +219,15 @@ class PollMixin:
             st.pop("automerge_blocked", None)
             st.pop("automerge_candidate", None)
             st.pop("automerge_ready_at", None)
+            st.pop("merge_head", None)
             return
         ok, reason = self._automerge_gate(task, pr)
         if not ok:
+            if st.get("merge_head"):
+                # The merge queue owns the in-flight head: a pending rollup after its pre-merge
+                # rebase must not drop it here (that would rotate the head). _advance_merge_head
+                # decides when the head leaves the queue, and keeps its ready_at until then.
+                return
             st.pop("automerge_candidate", None)
             st.pop("automerge_ready_at", None)
             if st.get("automerge_blocked") != reason:

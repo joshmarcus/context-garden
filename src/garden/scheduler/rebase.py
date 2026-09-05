@@ -13,7 +13,13 @@ Three rules live here (see docs/architecture.md, beside stacking):
    verdict kept" is logged, and no review is dispatched. A textual resolution that changed the
    diff is reviewed as usual.
 3. Automerge is a queue: candidates are ordered oldest-approved-first and only the head is
-   rebased, checked and merged; the next candidate is taken on the following poll.
+   rebased, checked and merged. Once the queue picks a head it keeps it: a head whose rollup
+   is still running after the pre-merge rebase is "in flight" (a `merge_head` marker holding
+   its `automerge_ready_at`), the queue does not pick another head while one is in flight, and
+   it merges the head the moment the rollup goes green. A branch already on the base's tip is
+   not rebased or pushed. A head leaves the queue only on a conflict, a failed check, a changed
+   diff that needs a review, a closed PR or a human request for changes — the reason is logged
+   and the next-oldest candidate becomes head.
 """
 
 from __future__ import annotations
@@ -29,13 +35,15 @@ from .report import TickReport
 
 class RebaseMixin:
     # ---- mechanical rebase (rule 1) ----------------------------------------
-    def mechanical_rebase(self, task: Task, base: str, rep: TickReport, *, reason: str) -> str:
+    def mechanical_rebase(self, task: Task, base: str, rep: TickReport, *, reason: str,
+                          skip_if_current: bool = False) -> str:
         """Try to bring `task`'s branch onto `base` with no model. On a clean apply: record a
         `rebase` run (no harness call), force-push with a lease, re-run the pre-PR checks, then
         keep the verdict or dispatch a review (rule 2). On a textual conflict: dispatch an
         easy-tier agent that carries only the hunks. Returns one of:
-        `clean` (rebased, pushed, checks green), `checks` (a check revise was started),
-        `conflict` (an agent was dispatched), `error` (the push failed)."""
+        `clean` (rebased, pushed, checks green), `current` (the branch was already on the base's
+        tip, so nothing was rebased or pushed — only when `skip_if_current`), `checks` (a check
+        revise was started), `conflict` (an agent was dispatched), `error` (the push failed)."""
         st = self.state.get(task.id)
         branch = task.branch or task.default_branch()
         wt = self.worktree_for(task)
@@ -55,6 +63,22 @@ class RebaseMixin:
             self.events.emit("rebase", task.id, base=base, files=files, resolved=False, how="agent")
             self._dispatch_rebase_agent(task, base, files, hunks, rep, reason)
             return "conflict"
+        if skip_if_current:
+            # A branch already on the base's tip whose diff is exactly what was reviewed: the
+            # rebase above was a no-op, origin already holds this head, and the verdict still
+            # applies. Nothing to rebase or push (a force-push would only re-push the same sha and
+            # needlessly restart the rollup), so merge it as it stands. A diff that no longer
+            # matches the reviewed hash falls through to the normal path, which re-reviews it.
+            try:
+                head_now = gitops.rev_parse(wt, "HEAD")
+                remote_now = gitops.rev_parse(wt, f"origin/{branch}")
+                diff_h = gitops.diff_hash(wt, base)
+            except gitops.GitError:
+                head_now, remote_now, diff_h = "", "", ""
+            if head_now and head_now == remote_now and diff_h and diff_h == st.get("last_diff_hash"):
+                task.log(f"{reason}; already on {base}'s tip; not rebased or pushed")
+                self.store.save(task)
+                return "current"
         run = self.runs.new_run(task.id, "local", mode="rebase")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
         try:
@@ -98,6 +122,7 @@ class RebaseMixin:
         st["rebase_hunks"] = hunks
         st.pop("automerge_candidate", None)
         st.pop("automerge_ready_at", None)
+        st.pop("merge_head", None)  # a conflict takes the task off the merge queue
         st["force_push"] = True
         if task.status.pr_open:
             self._transition(task, Status.CHANGES_REQUESTED,
@@ -130,9 +155,14 @@ class RebaseMixin:
 
     # ---- merge queue (rule 3) ----------------------------------------------
     def _run_merge_queue(self, rep: TickReport) -> None:
-        """Automerge as a queue: order the approved candidates oldest-approved-first and act on
-        only the head — rebase it once, right before it merges, then merge it. The next candidate
-        is taken on the following poll, so exactly one PR is rebased and merged per tick."""
+        """Automerge as a queue that keeps its head. Once a head is picked and rebased it stays
+        the head (an in-flight `merge_head`) until it merges or leaves the queue, so a pending
+        rollup after the pre-merge rebase never rotates the head. When nothing is in flight, the
+        oldest-approved candidate becomes the head."""
+        head = self._current_merge_head()
+        if head is not None:
+            self._advance_merge_head(head, rep)
+            return
         candidates: list[tuple[str, str, Task]] = []
         for t in self.store.tasks().values():
             if t.status != Status.IN_REVIEW:
@@ -146,8 +176,25 @@ class RebaseMixin:
         candidates.sort(key=lambda c: (c[0], c[1]))
         self._merge_candidate(candidates[0][2], rep)
 
+    def _current_merge_head(self) -> Task | None:
+        """The task currently in flight (rebased, waiting for its rollup), or None. A stale marker
+        left on a task that is no longer an `in_review` automerge candidate is cleared here."""
+        head: Task | None = None
+        for t in self.store.tasks().values():
+            st = self.state.get(t.id)
+            if not st.get("merge_head"):
+                continue
+            if head is None and t.status == Status.IN_REVIEW and self._automerge_enabled(t):
+                head = t
+            else:
+                st.pop("merge_head", None)
+        return head
+
     def _merge_candidate(self, task: Task, rep: TickReport) -> None:
-        """Rebase the head of the queue once, right before it merges, then merge it."""
+        """Pick this candidate as the head: rebase it onto the final base once, right before it
+        merges. A branch already on the base's tip is merged as it stands (no rebase, no push);
+        a rebase that has to move the branch restarts its rollup, so the head goes in flight and
+        merges on a later poll once the rollup is green (see `_advance_merge_head`)."""
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if not slug or not number or not self.github.available:
@@ -162,26 +209,72 @@ class RebaseMixin:
             return
         # Rebase once, right before the merge. A clean rebase whose diff is unchanged keeps the
         # verdict (no re-review); a conflict or a failed check takes the task off the queue.
-        outcome = self.mechanical_rebase(task, self.final_base_for(task), rep, reason="rebasing before merge")
-        if outcome != "clean":
-            return
+        outcome = self.mechanical_rebase(task, self.final_base_for(task), rep,
+                                         reason="rebasing before merge", skip_if_current=True)
         st = self.state.get(task.id)
-        if st.get("review_run"):
-            return  # the rebase changed the diff and a review is now in flight
+        if outcome == "current":
+            # Already on the base's tip: no push, so the reported rollup is trustworthy — decide
+            # now, on this poll, whether to merge or (a still-running rollup) keep waiting.
+            st["merge_head"] = True
+            self._advance_merge_head(task, rep)
+            return
+        if outcome != "clean":
+            return  # conflict / failed check / push error already took it off the queue
+        if st.get("review_run") or st.get("needs_human"):
+            return  # the rebase changed the diff: a new review round (or a human) now owns it
+        # The rebase moved the branch and force-pushed it, restarting the rollup. Keep this task
+        # as the head (in flight) with its ready_at, and merge it once the rollup is green.
+        st["merge_head"] = True
+        self.events.emit("merge_head", task.id, waiting=True, reason="rebased; awaiting rollup")
+        self.log(f"{task.id}: rebased before merge; in flight until its rollup is green")
+
+    def _advance_merge_head(self, task: Task, rep: TickReport) -> None:
+        """Act on the in-flight head, which is already on the base's tip. Merge it (no rebase, no
+        push) the moment the gate passes; keep it as head while its rollup is still running; drop
+        it — logging why — only on a hard reason (a conflict, a failed check, a changed diff now
+        in review, a closed PR or a human change request), so the next candidate becomes head."""
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not slug or not number or not self.github.available:
+            return
         try:
             pr = self.github.get_pr(slug, number)
         except (GitHubError, KeyError):
             return
-        if pr.state != "OPEN":
-            return
         ok, reason = self._automerge_gate(task, pr)
-        if not ok:
-            self._hold_automerge(task, reason)
+        if ok:
+            self._do_merge(task, pr, rep)
             return
-        self._do_merge(task, pr, rep)
+        if self._head_in_flight(task, pr):
+            return  # rollup still running (or mergeability still being computed): stay the head
+        self.events.emit("merge_head", task.id, left=True, reason=reason)
+        self.log(f"{task.id}: merge head left the queue: {reason}")
+        self._hold_automerge(task, reason)
+
+    def _head_in_flight(self, task: Task, pr: PRInfo) -> bool:
+        """Whether the head should keep waiting rather than leave the queue. It waits only while
+        its rollup is still running (or GitHub is still recomputing mergeability after the rebase
+        push); a conflict, a failed check, a changed diff now in review, a closed PR or a human
+        change request all return False so the head is dropped."""
+        if pr.state != "OPEN":
+            return False
+        if pr.mergeable == "CONFLICTING" or pr.checks == "FAILURE":
+            return False
+        if pr.review_decision == "CHANGES_REQUESTED":
+            return False
+        st = self.state.get(task.id)
+        if str(st.get("pending_feedback") or "").strip() or st.get("review_run"):
+            return False  # the rebase changed the diff; a new review round owns it now
+        rev = st.get("last_review") or {}
+        if str(rev.get("verdict") or "") != "approve":
+            return False
+        # What is left is a rollup that has not reported yet, or a mergeability GitHub is still
+        # computing after the push: keep waiting.
+        return pr.checks == "PENDING" or pr.mergeable != "MERGEABLE"
 
     def _hold_automerge(self, task: Task, reason: str) -> None:
         st = self.state.get(task.id)
+        st.pop("merge_head", None)
         st.pop("automerge_candidate", None)
         st.pop("automerge_ready_at", None)
         if st.get("automerge_blocked") != reason:
@@ -215,6 +308,7 @@ class RebaseMixin:
         st.pop("automerge_blocked", None)
         st.pop("automerge_candidate", None)
         st.pop("automerge_ready_at", None)
+        st.pop("merge_head", None)
         st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
                             "verdict": "approve", "review_rounds": rounds}
         self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,
