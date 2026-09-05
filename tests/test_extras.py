@@ -1,6 +1,7 @@
 """Trials, persona reviews, and token-free checks."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -176,14 +177,101 @@ def test_trial_end_to_end(sched, fake_github, monkeypatch):
     assert statuses(sched)["DM-002"] == "running" and sched.runs.latest("DM-002").base == t.branch
 
 
+def test_trial_worktree_gets_product_setup(sched, fake_github, monkeypatch):
+    """CG-229: a trial contender's worktree is prepared through the same dispatch() path as a
+    work run's — the product's setup.command runs there and setup.log lands in its run dir,
+    exactly like a work run's, not a bare checkout with no dependencies installed."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    sched.cfg.data["products"]["demo"]["setup"] = {"command": "echo prepared | tee .prepared"}
+    t = sched.store.task("DM-001")
+    runs = sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    for r in runs:
+        assert (r.path / "setup.log").read_text().strip() == "prepared"
+        assert (Path(r.worktree) / ".prepared").exists()
+
+
 def test_trial_single_survivor(sched, fake_github, monkeypatch):
+    # CG-229: fewer than two PRs is inconclusive, not a declared win — the surviving PR still
+    # moves the task forward, but the other contender's crash does not make it "the winner".
     t = sched.store.task("DM-001")
     sched.cfg.data["harnesses"]["codex"]["bin"] = "/nonexistent/codex"  # this contender crashes
     sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
     rep = sched.tick()
-    assert "DM-001 -> in_review (trial winner claude:sonnet)" in rep.transitions
+    assert "DM-001 -> in_review (trial inconclusive, kept claude:sonnet)" in rep.transitions
     trial = sched.state.get("DM-001")["trial"]
     assert [c["status"] for c in trial["contenders"]] == ["pr", "failed"]
+    assert trial["status"] == "inconclusive" and trial["winner"] == "" and trial["kept"] == "claude:sonnet"
+    rows = {r["label"]: r for r in sched.trials.leaderboard()}
+    assert rows["claude:sonnet"]["wins"] == 0  # not credited as a win over a crash
+
+
+def test_trial_env_failure_is_not_a_loss(sched, fake_github, monkeypatch):
+    """CG-229: a contender whose harness reports an environment complaint (here: Codex's own
+    sandbox-denial message, the CG-030 incident) is marked env_failed, not failed, and excluded
+    from the comparison so the working contender does not get scored as having beaten it."""
+    sched.cfg.data["worker_env"]["pass"].append("FAKE_CODEX_*")
+    monkeypatch.setenv("FAKE_CODEX_MODE", "sandboxed")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
+    rep = sched.tick()
+    assert "DM-001 -> in_review (trial inconclusive, kept claude:sonnet)" in rep.transitions
+    trial = sched.state.get("DM-001")["trial"]
+    by_label = {c["label"]: c for c in trial["contenders"]}
+    assert by_label["codex:gpt"]["status"] == "env_failed"
+    assert by_label["codex:gpt"]["kind"] == "sandbox"
+    assert "writable Git metadata" in by_label["codex:gpt"]["note"] or "prepared dependencies" in by_label["codex:gpt"]["note"]
+    assert by_label["claude:sonnet"]["status"] == "pr"
+    assert trial["status"] == "inconclusive" and trial["winner"] == "" and trial["kept"] == "claude:sonnet"
+    rows = {r["label"]: r for r in sched.trials.leaderboard()}
+    assert rows["codex:gpt"]["env_failed"] == 1 and rows["codex:gpt"]["failed"] == 0
+    assert rows["claude:sonnet"]["wins"] == 0
+
+
+def test_trial_login_failure_reuses_the_harness_env_classifier(sched, fake_github, monkeypatch):
+    """CG-229: a contender's harness-level env_error/env_kind (here: CG-217's "auth" — a login
+    failure — the same convention CG-212 adds "quota" to) flows straight through to env_failed;
+    this task adds no new classification for it, it just consumes what Harness.parse gives."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "authnotloggedin")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
+    rep = sched.tick()
+    assert "DM-001 -> in_review (trial inconclusive, kept codex:gpt)" in rep.transitions
+    trial = sched.state.get("DM-001")["trial"]
+    by_label = {c["label"]: c for c in trial["contenders"]}
+    assert by_label["claude:sonnet"]["status"] == "env_failed" and by_label["claude:sonnet"]["kind"] == "auth"
+    assert "not logged in" in by_label["claude:sonnet"]["note"].lower()
+    assert by_label["codex:gpt"]["status"] == "pr"
+
+
+def test_trial_contender_setup_failure_is_env_failed_not_a_crash(sched, fake_github, monkeypatch):
+    """CG-229: a contender whose own worktree setup fails (never got a chance to run) is
+    recorded env_failed instead of crashing the whole trial and losing the other contender."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    sched.cfg.data["products"]["demo"]["setup"] = {
+        "command": 'case "$(pwd)" in *-trial-codex*) echo boom >&2; exit 5;; esac',
+    }
+    t = sched.store.task("DM-001")
+    runs = sched.start_trial(t, ["claude:sonnet", "codex:gpt"])
+    assert [r.harness for r in runs] == ["claude"]  # only the surviving contender actually dispatched
+    trial = sched.state.get("DM-001")["trial"]
+    by_label = {c["label"]: c for c in trial["contenders"]}
+    assert by_label["codex:gpt"]["status"] == "env_failed" and by_label["codex:gpt"]["kind"] == "setup"
+    assert "boom" in by_label["codex:gpt"]["note"]
+    rep = sched.tick()
+    assert "DM-001 -> in_review (trial inconclusive, kept claude:sonnet)" in rep.transitions
+
+
+def test_trial_two_prs_still_runs_the_comparison(sched, fake_github, monkeypatch):
+    """CG-229: the env_failed/inconclusive path never intercepts a real two-PR trial."""
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    rep = sched.tick()
+    assert "DM-001(compare)" in rep.dispatched
+    rep = sched.tick()
+    assert "DM-001 -> in_review (trial winner claude:opus)" in rep.transitions
+    trial = sched.state.get("DM-001")["trial"]
+    assert trial["status"] == "done" and trial["winner"] == "claude:opus"
 
 
 # ---- personas -----------------------------------------------------------------

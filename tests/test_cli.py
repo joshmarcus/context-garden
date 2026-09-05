@@ -612,6 +612,17 @@ def test_priority_and_difficulty_commands(garden):
     assert "difficulty medium -> hard" in t.body
 
 
+def test_trial_cli_prints_a_contenders_table(garden, monkeypatch):
+    """CG-229: `garden trial` prints the same contender states/costs/failure-kind info the
+    trials and task pages show, right after dispatching."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    r = run(garden, "trial", "DM-001", "-c", "claude:sonnet", "-c", "claude:opus")
+    assert r.exit_code == 0, r.output
+    assert "contenders" in r.output
+    assert "claude:sonnet" in r.output and "claude:opus" in r.output
+    assert "running" in r.output
+
+
 def test_version_flag_matches_subcommand():
     from garden import __version__
 

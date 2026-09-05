@@ -34,6 +34,10 @@ def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> in
                          "summary": "checked"} for label in labels]})
     elif "GARDEN_REVIEW:" in brief:
         final = 'GARDEN_REVIEW: {"verdict":"approve","summary":"checked","description_ok":true,"findings":[]}'
+    elif env.get("FAKE_CODEX_MODE") == "sandboxed":
+        # A contender whose sandbox denies it the things a work run needs (CG-030's incident):
+        # it never commits and never emits a GARDEN_RESULT, just this plain complaint.
+        final = "I need resume with writable Git metadata, prepared dependencies, asset network access to continue."
     else:
         waiting = env.get("FAKE_CODEX_MODE") == "needs_input" and "resume" not in args
         filename = "codex-resumed.txt" if "resume" in args else "codex-output.txt"

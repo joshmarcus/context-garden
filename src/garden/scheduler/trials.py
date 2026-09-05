@@ -14,6 +14,22 @@ from ..runs import Run
 from ..trials import compare_brief, parse_compare, parse_contender, ranking_markdown
 from .report import TickReport
 
+# Substrings (case-insensitive) in a finished contender's error, summary or final text that
+# mark its run a sandbox denial rather than a model result: the incident behind this task, a
+# Codex contender that stopped needing "resume with writable Git metadata, prepared
+# dependencies, asset network access" because its sandbox denied all three (CG-229). Checked
+# in addition to `env_error`/`env_kind` (Harness.parse's own classification of a login or
+# quota stop, e.g. CG-212/CG-217), which flows through unchanged whenever it fires.
+SANDBOX_DENIAL_MARKERS = (
+    "writable git metadata", "prepared dependencies", "asset network access",
+    "sandbox denied", "denied by the sandbox", "not a git repository",
+)
+
+
+def _sandbox_denial(*texts: str) -> bool:
+    haystack = " ".join(t for t in texts if t).lower()
+    return any(m in haystack for m in SANDBOX_DENIAL_MARKERS)
+
 
 class TrialsMixin:
     # ---- model trials ------------------------------------------------------
@@ -33,10 +49,26 @@ class TrialsMixin:
             branch = f"{base_branch}-trial-{suffix}"
             wt = self.cfg.worktree_path(f"{task.id}-trial-{suffix}")
             runner = self.runner_for(task, "local", harness)
-            run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
-            trial["contenders"].append({"label": label, "harness": harness, "model": run.model, "branch": branch, "worktree": str(wt),
-                                        "run_id": run.run_id, "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None})
+            contender: dict[str, Any] = {"label": label, "harness": harness, "model": model, "branch": branch, "worktree": str(wt),
+                                         "run_id": "", "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None,
+                                         "kind": "", "note": ""}
+            try:
+                run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
+            except Exception as e:  # noqa: BLE001
+                # A contender that never got to run at all (its setup command failed, its
+                # worktree could not be prepared) is a harness failure, not a model loss: record
+                # it env_failed and keep starting the rest instead of crashing the whole trial
+                # and losing every contender that *did* get a chance (CG-229).
+                contender["status"], contender["kind"], contender["note"] = "env_failed", "setup", str(e)[:200]
+                trial["contenders"].append(contender)
+                self.events.emit("trial_contender_env_failed", task.id, label=label, env_kind="setup", note=str(e)[:200])
+                continue
+            contender["model"], contender["run_id"] = run.model, run.run_id
+            trial["contenders"].append(contender)
             runs.append(run)
+        if not runs:
+            detail = "; ".join(f"{c['label']}: {c.get('note', '')}" for c in trial["contenders"])
+            raise RuntimeError(f"no contender could be dispatched for {task.id}: {detail}")
         st["trial"] = trial
         task.branch = base_branch
         task.log(f"trial started with {', '.join(c['label'] for c in trial['contenders'])}")
@@ -81,11 +113,19 @@ class TrialsMixin:
             task.log("all contenders finished; comparison run started")
             self.store.save(task)
         elif len(with_pr) == 1:
-            self._conclude_trial(task, {"winner": with_pr[0]["label"], "rationale": "only one contender produced a PR", "ranking": []}, rep)
+            # Fewer than two PRs means there was nothing to compare: the survivor's PR still
+            # moves the task forward, but the trial is inconclusive, not a win — the other
+            # contender's environment failure must not make this one look better than it is
+            # (CG-229).
+            self._conclude_trial(task, {"winner": with_pr[0]["label"],
+                                        "rationale": "only one contender produced a PR; the trial is inconclusive, not a win",
+                                        "ranking": []}, rep, inconclusive=True)
         else:
-            trial["status"] = "done"
-            self._transition(task, Status.FAILED, "trial: no contender produced a PR")
-            rep.transitions.append(f"{task.id} -> failed (trial)")
+            trial["status"] = "inconclusive"
+            trial["rationale"] = "no contender produced a PR"
+            detail = "; ".join(f"{c['label']}: {c.get('note') or c['status']}" for c in trial["contenders"])
+            self._transition(task, Status.FAILED, f"trial inconclusive: no contender produced a PR ({detail})")
+            rep.transitions.append(f"{task.id} -> failed (trial inconclusive)")
         return True
 
     def _finalize_contender(self, task: Task, c: dict[str, Any], run: Run, runner: Runner) -> None:
@@ -106,7 +146,15 @@ class TrialsMixin:
         if str(result.get("status", "")).lower() != "done":
             run.status = "failed"
             run.save()
-            c["status"], c["note"] = "failed", (result.get("summary") or run.error or "no result")[:200]
+            final_text = str(collected.get("final_text") or "").strip()
+            note = (result.get("summary") or run.error or final_text or "no result")[:200]
+            kind = str(collected.get("env_kind") or "") if collected.get("env_error") else ""
+            if not kind and _sandbox_denial(run.error, str(result.get("summary") or ""), final_text):
+                kind = "sandbox"
+            if kind:
+                c["status"], c["kind"], c["note"] = "env_failed", kind, note
+            else:
+                c["status"], c["note"] = "failed", note
             return
         try:
             if gitops.has_uncommitted_changes(wt):
@@ -117,7 +165,11 @@ class TrialsMixin:
         except gitops.GitError as e:
             run.status = "failed"
             run.save()
-            c["status"], c["note"] = "failed", str(e)[:200]
+            msg = str(e)[:200]
+            if _sandbox_denial(msg):
+                c["status"], c["kind"], c["note"] = "env_failed", "sandbox", msg
+            else:
+                c["status"], c["note"] = "failed", msg
             return
         run.status = "done"
         run.save()
@@ -143,7 +195,8 @@ class TrialsMixin:
             verdict = {"winner": with_pr[0]["label"], "rationale": "comparison run produced no verdict; first contender kept", "ranking": []}
         self._conclude_trial(task, verdict, rep, compare_cost=run.cost_usd, run_id=run.run_id)
 
-    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None, run_id: str = "") -> None:
+    def _conclude_trial(self, task: Task, verdict: dict[str, Any], rep: TickReport, compare_cost: float | None = None,
+                        run_id: str = "", inconclusive: bool = False) -> None:
         st = self.state.get(task.id)
         trial = st["trial"]
         scores = {str(r.get("label")): r for r in verdict.get("ranking") or [] if isinstance(r, dict)}
@@ -156,13 +209,23 @@ class TrialsMixin:
         if winner is None:
             with_pr = sorted([c for c in trial["contenders"] if c["status"] == "pr"], key=lambda c: -(c.get("score") or 0))
             winner = with_pr[0]
-        trial["winner"] = winner["label"]
         trial["rationale"] = str(verdict.get("rationale") or "")
-        trial["status"] = "done"
+        trial["status"] = "inconclusive" if inconclusive else "done"
         trial["compare_cost"] = compare_cost
-        record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": winner["label"], "rationale": trial["rationale"],
-                  "compare_cost": compare_cost,
-                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "score", "cost", "input_tokens", "output_tokens", "pr", "summary", "note")} for c in trial["contenders"]]}
+        # An inconclusive trial (fewer than two PRs) keeps the survivor's branch moving the task
+        # forward, but records no `winner`: the other contender's environment failure must not
+        # be scored as a loss, so the leaderboard's win credit (`trial.winner == label`) never
+        # fires for it either (CG-229).
+        if inconclusive:
+            trial["winner"] = ""
+            trial["kept"] = winner["label"]
+        else:
+            trial["winner"] = winner["label"]
+            trial.pop("kept", None)
+        record = {"task": task.id, "title": task.title, "difficulty": task.difficulty, "winner": trial["winner"],
+                  "kept": trial.get("kept", ""), "rationale": trial["rationale"], "compare_cost": compare_cost,
+                  "contenders": [{k: c.get(k) for k in ("label", "harness", "model", "status", "kind", "score", "cost",
+                                                        "input_tokens", "output_tokens", "pr", "summary", "note")} for c in trial["contenders"]]}
         self.trials.record(record)
         md = ranking_markdown({"task": task.id, **record})
         slug = self.slug_for(task)
@@ -188,9 +251,17 @@ class TrialsMixin:
         st["worktree"] = winner["worktree"]
         st["revisions"] = 0
         st["review_rounds"] = int(self.cfg.get("review.max_rounds", 2))  # the comparison stands in for the review pass
-        self.events.emit("trial_done", task.id, winner=winner["label"],
+        self.events.emit("trial_done", task.id, winner=trial["winner"], inconclusive=inconclusive,
                          scores={c["label"]: c.get("score") for c in trial["contenders"]})
         st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True)) and bool(winner.get("pr"))
-        self._transition(task, self._pr_status(task), f"trial won by {winner['label']} (scores: " +
-                         ", ".join(f"{c['label']}={c.get('score') if c.get('score') is not None else '–'}" for c in trial["contenders"]) + f"): {task.pr or 'no PR'}")
-        rep.transitions.append(f"{task.id} -> {task.status.value} (trial winner {winner['label']})")
+        if inconclusive:
+            msg = f"trial inconclusive ({trial['rationale']}); kept {winner['label']}'s PR: {task.pr or 'no PR'}"
+        else:
+            msg = (f"trial won by {winner['label']} (scores: " +
+                  ", ".join(f"{c['label']}={c.get('score') if c.get('score') is not None else '–'}" for c in trial["contenders"]) +
+                  f"): {task.pr or 'no PR'}")
+        self._transition(task, self._pr_status(task), msg)
+        if inconclusive:
+            rep.transitions.append(f"{task.id} -> {task.status.value} (trial inconclusive, kept {winner['label']})")
+        else:
+            rep.transitions.append(f"{task.id} -> {task.status.value} (trial winner {winner['label']})")
