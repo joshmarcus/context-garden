@@ -327,6 +327,13 @@ def test_init_scaffold(tmp_path):
         os.chdir(cwd)
 
 
+def test_new_phase_cli_refuses_an_unregistered_product(garden):
+    r = run(garden, "new-phase", "nope", "phase-01")
+    assert r.exit_code == 1
+    assert "not registered in garden.yaml's products block" in r.output
+    assert not (garden / "nope").exists()
+
+
 def test_doctor_success_with_valid_setup(garden, monkeypatch):
     import subprocess
     from unittest import mock

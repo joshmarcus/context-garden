@@ -474,6 +474,12 @@ def new_product(store: Store, name: str, repo: str, base_branch: str) -> list[Pa
 def new_phase(store: Store, product: str, phase: str, plant: str = "") -> list[Path]:
     from .plants import PLANT_BY_KEY, assign_plant, plant_info, roman
 
+    configured = store.config.data.get("products", {}) or {}
+    if product not in configured:
+        raise ValueError(
+            f"{product!r} is not registered in garden.yaml's products block; run "
+            f"`garden new-product {product}` first"
+        )
     if plant and plant not in PLANT_BY_KEY:
         raise ValueError(f"unknown plant {plant!r}; choose one of {', '.join(PLANT_BY_KEY)}")
     created = []

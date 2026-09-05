@@ -16,7 +16,7 @@
     <div class="mono muted" style="margin-top:4px; font-size:11.5px">{{ ph.product }} · plate {{ ph.plate }} · <i>{{ ph.latin }}</i><br>{% if sm.first_dispatch %}{{ sm.first_dispatch }} → {% endif %}closed {{ ph.closed }}</div>
     <dl class="kv" style="margin-top:10px">
       <dt>tasks done</dt><dd>{{ sm.tasks_done }} of {{ sm.tasks_total }}</dd>
-      <dt>cost</dt><dd>${{ '%.2f' % e.spent }}</dd>
+      <dt>cost</dt><dd>{% if sm.has_records %}${{ '%.2f' % e.spent }}{% else %}<span class="faint">no records</span>{% endif %}</dd>
       <dt>lead time</dt><dd>{% if sm.avg_lead_hours is not none %}{{ sm.avg_lead_hours }} h avg{% else %}<span class="faint">—</span>{% endif %}</dd>
       <dt>first pass</dt><dd>{% if sm.first_pass_rate is not none %}{{ (sm.first_pass_rate * 100)|round|int }}%{% else %}<span class="faint">—</span>{% endif %}</dd>
     </dl>
