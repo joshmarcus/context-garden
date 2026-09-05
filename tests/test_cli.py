@@ -623,6 +623,21 @@ def test_trial_cli_prints_a_contenders_table(garden, monkeypatch):
     assert "running" in r.output
 
 
+def test_trial_wait_polls_until_the_trial_concludes(garden, monkeypatch):
+    """CG-231: `garden trial ... --wait` blocks (ticking the scheduler) until the trial
+    reaches a terminal state and prints the resolved contender table, instead of the
+    just-dispatched "running" snapshot `garden trial` prints on its own."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    r = run(garden, "trial", "DM-001", "-c", "claude:sonnet", "-c", "claude:opus", "--wait", "--interval", "0")
+    assert r.exit_code == 0, r.output
+    assert "trial won by claude:opus" in r.output
+    assert "contenders" in r.output
+    table = r.output.rsplit("contenders", 1)[1]
+    assert "running" not in table
+    assert table.count(" pr ") == 2
+
+
 def test_version_flag_matches_subcommand():
     from garden import __version__
 
