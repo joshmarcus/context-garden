@@ -32,12 +32,20 @@ PASS_ENV: tuple[str, ...] = (
 )
 
 
+def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
+    """The environment-variable allowlist: `PASS_ENV` plus the names or globs under
+    `config['worker_env']['pass']`. Shared by `scrubbed_env` (the local runner and checks,
+    which filter this process's `os.environ`) and the ssh runner's remote scrub (which filters
+    the remote login environment the same way, in shell)."""
+    extra = [str(p) for p in (((config or {}).get("worker_env") or {}).get("pass") or []) if str(p)]
+    return [*PASS_ENV, *extra]
+
+
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
     the names or globs under `config['worker_env']['pass']`, then `setup['env']` on top.
     `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session."""
-    extra = [str(p) for p in (((config or {}).get("worker_env") or {}).get("pass") or []) if str(p)]
-    patterns = [*PASS_ENV, *extra]
+    patterns = pass_env_patterns(config)
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
     env.pop("CLAUDECODE", None)
     for k, v in ((setup or {}).get("env") or {}).items():

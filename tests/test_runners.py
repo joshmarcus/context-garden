@@ -122,6 +122,34 @@ def test_ssh_runner_sets_garden_root(sched, fake_github):
     assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
 
 
+def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_path, monkeypatch):
+    """The ssh runner's remote script must run the harness under the same allowlist as the
+    local worker (runner.base.PASS_ENV plus worker_env.pass and setup.env): a host's ambient
+    tokens (a GitHub token, cloud credentials, an ssh agent) must not reach the worker, while
+    the harness's own key, the locale and the run identity survive."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws_secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    dump = tmp_path / "worker-env.txt"
+    monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(dump))
+    t = sched.store.task("DM-001")
+    t.runner = "ssh"
+    sched.store.save(t)
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    _wait_for_child(run)
+    seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+    for name in ("GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "CLAUDECODE"):
+        assert name not in seen, f"{name} leaked into the remote worker"
+    assert seen["ANTHROPIC_API_KEY"] == "sk-ant"  # the claude harness's own key (ANTHROPIC_*) survives
+    assert seen["LC_ALL"] == "C.UTF-8"  # allowlisted locale survives
+    assert seen["GARDEN_TASK_ID"] == "DM-001" and seen["GARDEN_RUN_ID"] == run.run_id
+    assert seen["GARDEN_ROOT"].endswith(".garden-no-live-garden")
+
+
 def test_ssh_host_capacity(sched):
     for tid in ("DM-001", "DM-002"):
         t = sched.store.task(tid)

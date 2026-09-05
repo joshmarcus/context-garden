@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runs import Run
-from .base import Runner, RunnerError, setup_stamp
+from .base import Runner, RunnerError, pass_env_patterns, setup_stamp
 
 REMOTE_SCRIPT = r"""
 set -e
@@ -58,24 +58,40 @@ mkdir -p .garden-run
 cat > .garden-run/brief.md <<'GARDEN_BRIEF_EOF'
 {brief}
 GARDEN_BRIEF_EOF
-# Prevent the worker from finding and mutating a live garden: if the remote product repo is
-# itself a garden, find_root() walking up from the worktree would otherwise accept its
-# garden.yaml. GARDEN_ROOT points at a path with no garden.yaml, so any `garden` command refuses.
-export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
-# Prepare the environment per product config: extra env for setup, the worker and the checks,
-# then the setup command once per worktree (again only when it changes, tracked by a marker
-# kept beside the worktree so `git add -A` above cannot commit it). A setup failure fails the run.
+# The worker (harness) and its setup command run in an allowlisted environment, the same scrub
+# the local runner applies (runner.base.PASS_ENV plus worker_env.pass and setup.env): every
+# other variable of the remote login environment is dropped, so a remote host's ambient tokens
+# (a GitHub token, cloud credentials, an ssh agent) do not reach the worker. Only git's own
+# fetch above and push below keep the login environment, since the remote host does its own
+# pushing. GARDEN_ROOT points at a path with no garden.yaml so any `garden` command the worker
+# runs refuses: find_root() walking up from the worktree would otherwise accept the remote
+# product repo's own garden.yaml. `setup.env` rides on top, matching runner.base.scrubbed_env.
+GARDEN_ENV_ALLOW={env_allow}
+garden_scrub() {{
+  set -f  # keep `for pat in $GARDEN_ENV_ALLOW` below from globbing a bare `*` against the worktree
+  for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+    keep=0
+    for pat in $GARDEN_ENV_ALLOW; do case "$name" in $pat) keep=1; break;; esac; done
+    [ "$keep" = 1 ] || unset "$name" 2>/dev/null || :
+  done
+  set +f
+  unset CLAUDECODE 2>/dev/null || :
+  export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
+}}
+# Run the setup command once per worktree (again only when it changes, tracked by a marker kept
+# beside the worktree so `git add -A` above cannot commit it) in the scrubbed environment. A
+# setup failure fails the run before any push.
 GARDEN_SETUP_CMD={setup_cmd}
 GARDEN_SETUP_STAMP={setup_stamp}
 GARDEN_SETUP_TIMEOUT={setup_timeout}
 GARDEN_SETUP_MARKER="$REPO/.garden-worktrees/.garden-setup-{task}"
 if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" != "$GARDEN_SETUP_STAMP" ]; then
   if command -v timeout >/dev/null 2>&1; then GARDEN_SETUP_RUN="timeout $GARDEN_SETUP_TIMEOUT sh -c"; else GARDEN_SETUP_RUN="sh -c"; fi
-  if $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2; then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
+  if ( garden_scrub; $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2 ); then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
 fi
 set +e
-{harness} < .garden-run/brief.md
+( garden_scrub; {harness} < .garden-run/brief.md )
 RC=$?
 set -e
 rm -rf .garden-run
@@ -142,11 +158,12 @@ class SSHRunner(Runner):
         setup = self._setup_for(host)
         setup_cmd = str(setup.get("command") or "").strip()
         setup_env = "\n".join(
-            f"export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
+            f"  export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
         )
+        env_allow = shlex.quote(" ".join(pass_env_patterns(self.config)))
         script = REMOTE_SCRIPT.format(
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
-            brief=brief_text, harness=harness_cmd, run_id=run.run_id,
+            brief=brief_text, harness=harness_cmd, run_id=run.run_id, env_allow=env_allow,
             setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
             setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
