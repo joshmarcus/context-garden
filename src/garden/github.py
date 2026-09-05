@@ -137,6 +137,7 @@ class GitHubLike(Protocol):
     def branch_exists(self, slug: str, branch: str) -> bool: ...
     def base_ref_deleted(self, slug: str, number: int) -> bool: ...
     def merge_pr(self, slug: str, number: int, method: str = ..., delete_branch: bool = ...) -> None: ...
+    def delete_branch(self, slug: str, branch: str) -> None: ...
     def issue_comments(self, slug: str, number: int) -> list[str]: ...
     def comment(self, slug: str, number: int, body: str) -> None: ...
 
@@ -494,9 +495,20 @@ class GitHub:
                 pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")
                 ref = (pr.get("head") or {}).get("ref", "")
                 if ref:
-                    self._rest("DELETE", f"/repos/{slug}/git/refs/heads/{ref}")
+                    self.delete_branch(slug, ref)
             except GitHubError:
                 pass
+
+    def delete_branch(self, slug: str, branch: str) -> None:
+        """Delete a branch on the remote. Best-effort: a branch already gone (or never
+        pushed) is not an error worth surfacing."""
+        try:
+            if self.gh:
+                self._gh("api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{branch}")
+            else:
+                self._rest("DELETE", f"/repos/{slug}/git/refs/heads/{branch}")
+        except GitHubError:
+            pass
 
     def issue_comments(self, slug: str, number: int) -> list[str]:
         """Every issue-comment body on a PR, oldest first. Best-effort: [] on error."""
