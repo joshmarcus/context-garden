@@ -99,6 +99,21 @@ Every automatic loop has a cap in `garden.yaml`: `max_attempts`, `max_revisions`
 cap is hit the task is flagged for a human rather than retried. The garden should never
 be the thing that spends money while nobody is watching.
 
+## The operator seat
+
+The scheduler runs without a model, but someone still watches it, clears cards and moves
+pins — a person, or an operator agent. When that seat is filled by an agent it is the most
+expensive one in the system: every observation re-reads its whole context, so keeping it
+cheap is a goal on a par with keeping worker runs cheap. Three levers do that: **fewer
+cards** (the loop should need the operator rarely, and one press should be enough when it
+does); **a configurable observation feed** (`garden observe` and the efficient-to-fast
+slider size what the operator has to read to the garden it is watching); and
+**compaction at boundaries** — a phase closing, a retro merging, a pin moving — rather
+than mid-task. The operator's own spend is recorded beside the workers' (the `operator`
+activity in `garden costs` and the Costs page, read from `docs/operator-spend.jsonl`) and
+its share of the phase's total is quoted in the retro, so the two are compared, not
+guessed at.
+
 ## Extension points
 
 - **Harness**: a config block (`bin`, args, output format, tier-to-model map). Custom

@@ -180,6 +180,18 @@ def parse_retro(text: str) -> dict[str, Any]:
     return {}
 
 
+def numbers_section(worker_cost_usd: float, operator_cost_usd: float) -> str:
+    """The phase's spend, workers against the operator watching them (CG-223): what the
+    "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
+    loop's most expensive seat is compared against the workers', not guessed at."""
+    total = worker_cost_usd + operator_cost_usd
+    share = operator_cost_usd / total if total else None
+    lines = [f"- workers: ${worker_cost_usd:.2f}",
+             f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
+             f"- total: ${total:.2f}"]
+    return "\n".join(lines)
+
+
 def _verdict_word(v: str) -> str:
     return VERDICTS.get(str(v), str(v) or "?")
 
@@ -387,12 +399,14 @@ def features_section(filed: list[dict[str, Any]]) -> str:
 def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
                      filed: list[dict[str, Any]] | None = None,
                      filed_findings: list[dict[str, Any]] | None = None,
-                     difficulty: str = "", model: str = "") -> str:
+                     difficulty: str = "", model: str = "", numbers: str = "") -> str:
     tier = f" · {difficulty} tier ({model})" if difficulty else ""
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}{tier}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
         out += ["## What changed", "", summary, ""]
+    if numbers:
+        out += ["## Numbers", "", numbers, ""]
     out += ["## Friction reconciled", "", reconciliation_table(rev), ""]
     personas = str(rev.get("personas", "")).strip()
     if personas:

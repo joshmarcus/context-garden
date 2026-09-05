@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Costs{% endblock %}
 {% block body %}
-<div class="page-head"><div><h1>Costs</h1><p>Spend over time, sliced by activity, difficulty, model, harness, phase and task — the same numbers <code>garden costs</code> prints for the same filters.</p></div></div>
+<div class="page-head"><div><h1>Costs</h1><p>Spend over time, sliced by activity, difficulty, model, harness, phase, task and operator session — the same numbers <code>garden costs</code> prints for the same filters.</p></div></div>
 <div class="panel">
   <div class="eyebrow">Filter</div>
   <form method="get" action="/costs" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
@@ -15,7 +15,7 @@
     </select>
     <label class="muted" for="c-by">group by</label>
     <select id="c-by" name="by" onchange="this.form.submit()">
-      {% for v in ("activity", "difficulty", "model", "harness", "phase", "task") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+      {% for v in ("activity", "difficulty", "model", "harness", "phase", "task", "session") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
     </select>
     <label class="muted" for="c-diff">difficulty</label>
     <select id="c-diff" name="difficulty" onchange="this.form.submit()">
@@ -42,8 +42,13 @@
       <option value=""{% if not task %} selected{% endif %}>any</option>
       {% for v in task_ids %}<option value="{{ v }}"{% if task == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
     </select>
+    <label class="muted" for="c-session">session</label>
+    <select id="c-session" name="session" onchange="this.form.submit()">
+      <option value=""{% if not session %} selected{% endif %}>any</option>
+      {% for v in session_ids %}<option value="{{ v }}"{% if session == v %} selected{% endif %}>{{ v[:12] }}</option>{% endfor %}
+    </select>
     <button class="quiet">Filter</button>
-    {% if since or bucket != 'day' or by != 'activity' or difficulty or model or harness or phase or task %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
+    {% if since or bucket != 'day' or by != 'activity' or difficulty or model or harness or phase or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
   </form>
 </div>
 <div class="panel" style="margin-top:14px">

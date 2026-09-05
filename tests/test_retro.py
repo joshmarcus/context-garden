@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from garden.retro import (
     features_section,
     next_phase_name,
+    numbers_section,
     parse_retro,
     reconcile_brief,
     reconciliation_table,
@@ -89,6 +90,31 @@ def test_render_documents_carry_the_verdicts_and_the_next_goals():
     goals = render_next_goals(phase, "phase-03", rev)
     assert goals.startswith("# phase-03 goals (draft)")
     assert "do the next thing" in goals
+
+
+def test_numbers_section_reports_the_operators_share_of_total_spend():
+    text = numbers_section(80.0, 20.0)
+    assert "$80.00" in text and "$20.00" in text and "$100.00" in text
+    assert "20%" in text
+
+
+def test_numbers_section_handles_zero_total():
+    text = numbers_section(0.0, 0.0)
+    assert "$0.00" in text
+    assert "%" not in text  # no share line when there is nothing to divide
+
+
+def test_render_retro_doc_includes_numbers_when_given():
+    from garden.model import Phase
+
+    phase = Phase(product="context-garden", name="phase-04", path=Path("/x/context-garden/phase-04"),
+                  goals_path=None, specs=[], docs=[], tasks=[])
+    rev = {"reconciliation": [], "summary": "", "personas": "", "still_open": [], "next_goals": ""}
+    doc = render_retro_doc(phase, rev, {}, None, numbers=numbers_section(80.0, 20.0))
+    assert "## Numbers" in doc
+    assert "$80.00" in doc and "20%" in doc
+    # omitted entirely when there is nothing to report
+    assert "## Numbers" not in render_retro_doc(phase, rev, {}, None)
 
 
 def test_resolve_features_flags_a_title_match_and_an_explicit_duplicate():
@@ -289,6 +315,38 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     # nothing edited the live garden's own docs
     assert not (root / "gdn" / "p1" / "docs" / "retro.md").exists()
     assert not (root / "gdn" / "p2").exists()
+
+
+def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_github, monkeypatch):
+    """CG-223: docs/operator-spend.jsonl in the live garden feeds the retro's own '## Numbers'
+    section, so the operator's spend and its share of the phase's total are quoted, not
+    guessed at — no run_finished events exist for this phase's tasks here, so the whole
+    total is the operator's."""
+    import json
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    with (root / "docs" / "operator-spend.jsonl").open("w") as f:
+        f.write(json.dumps({"at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "list_price_usd": 3.5}) + "\n")
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+    _friction_run(sched, "GD-002", "The check command references $GARDEN_ROOT.")
+
+    ph = store.phase("gdn", "p1")
+    sched.start_retro(ph, ["designer"], skip_personas=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    retro_md = (wt / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "## Numbers" in retro_md
+    assert "$3.50" in retro_md
+    assert "100%" in retro_md  # no worker run_finished events recorded here, so it's all operator
 
 
 def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, fake_github, monkeypatch):

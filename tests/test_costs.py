@@ -167,3 +167,64 @@ def test_costs_page_shows_hourly_spend_dropping_after_the_tier_change(garden):
     page = client(garden).get("/costs?since=2026-09-05T00%3A00%3A00%2B00%3A00&bucket=hour").text
     assert page.count("<svg") >= 1  # the stacked chart rendered, not the empty state
     assert "$3.50" in page and "$0.35" in page
+
+
+# ---- the operator activity, read from docs/operator-spend.jsonl (CG-223) ----------------
+
+
+def _write_operator_records(garden, records: list[dict]) -> None:
+    path = garden / "docs" / "operator-spend.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_operator_activity_appears_in_cli_and_web_costs(garden):
+    from tests.test_cli import run
+    from tests.test_web import client
+
+    _write_events(garden, _events())
+    _write_operator_records(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "session": "sess-a", "list_price_usd": 1.5, "turns": 3, "avg_context": 100},
+        {"at": "2026-09-05T09:30:00+00:00", "session": "sess-a", "list_price_usd": 2.0, "turns": 5, "avg_context": 200},
+    ])
+
+    r = run(garden, "costs", "--by", "activity", "--json")
+    assert r.exit_code == 0, r.output
+    series = json.loads(r.output)
+    assert "operator" in series["groups"]
+    assert series["totals"]["operator"]["cost_usd"] == 2.0  # 1.5, then delta of 0.5
+
+    page = client(garden).get("/costs?by=activity").text
+    assert "operator" in page
+    assert "$2.00" in page
+
+
+def test_operator_activity_is_sliceable_by_session(garden):
+    from tests.test_cli import run
+
+    _write_operator_records(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "session": "sess-a", "list_price_usd": 1.0},
+        {"at": "2026-09-05T09:00:00+00:00", "session": "sess-b", "list_price_usd": 4.0},
+    ])
+    r = run(garden, "costs", "--by", "session", "--json")
+    series = json.loads(r.output)
+    assert series["totals"]["sess-a"]["cost_usd"] == 1.0
+    assert series["totals"]["sess-b"]["cost_usd"] == 4.0
+
+    r = run(garden, "costs", "--session", "sess-b", "--json")
+    only_b = json.loads(r.output)
+    assert only_b["grand_total"]["cost_usd"] == 4.0
+
+
+def test_costs_page_draws_a_compaction_annotation(garden):
+    from tests.test_web import client
+
+    _write_operator_records(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "session": "sess-a", "list_price_usd": 1.0},
+        {"at": "2026-09-05T09:00:00+00:00", "session": "sess-a", "kind": "compacted"},
+    ])
+    page = client(garden).get("/costs?since=2026-09-05T00%3A00%3A00%2B00%3A00").text
+    assert "compacted" in page
+
