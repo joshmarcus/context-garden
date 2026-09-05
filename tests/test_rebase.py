@@ -5,6 +5,7 @@ no review; automerge is a queue that rebases and merges only the head, one PR pe
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 from garden.events import EventLog
 from garden.events import metrics as _metrics
@@ -274,13 +275,32 @@ def test_in_flight_pre_merge_check_does_not_rebase_a_second_head(sched, fake_git
 def test_metrics_reports_rebases_per_merge_and_cost(sched, fake_github, tmp_path):
     events = [
         {"at": "2026-09-05T03:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
-        {"at": "2026-09-05T03:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.0},
+        {"at": "2026-09-05T03:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
         {"at": "2026-09-05T03:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.5},
         {"at": "2026-09-05T03:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
     ]
-    m = _metrics(events, {})
+    tasks = {"DM-001": SimpleNamespace(difficulty="medium", status="done", key="p/ph", product="p", phase="ph")}
+    m = _metrics(events, tasks)
     rb = m["rebase"]
     assert rb["rebases"] == 2
+    assert rb["mechanical"] == 1  # the cost-free git rebase, marked how="mechanical"
+    assert rb["agent"] == 1  # the model-run rebase, no marker
     assert rb["merges"] == 1
     assert rb["per_merge"] == 2.0
     assert rb["cost_usd"] == 0.5
+
+
+def test_metrics_rebase_block_is_scoped_to_the_phase_filter(sched, fake_github, tmp_path):
+    """The rebase block counts only tasks in the filtered set, so a phase's `rebases per merge`
+    is that phase's, not the whole garden's (CG-197)."""
+    events = [
+        {"at": "2026-09-05T03:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
+        {"at": "2026-09-05T03:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
+        {"at": "2026-09-05T03:02:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-05T03:03:00+00:00", "kind": "run_finished", "task": "OTHER-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
+        {"at": "2026-09-05T03:04:00+00:00", "kind": "transition", "task": "OTHER-001", "to": "done"},
+    ]
+    tasks = {"DM-001": SimpleNamespace(difficulty="medium", status="done", key="p/ph", product="p", phase="ph")}
+    rb = _metrics(events, tasks)["rebase"]
+    assert rb["rebases"] == 1  # OTHER-001 is outside the filter and not counted
+    assert rb["merges"] == 1

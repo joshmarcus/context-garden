@@ -244,7 +244,7 @@ def test_base_broken_task_stays_parked_while_base_stays_red(sched, fake_github):
 
 def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fake_github, monkeypatch):
     """CG-139: a stale base (CG-131) that has moved but is still red hands the branch a revise
-    round to resolve the mechanical rebase by hand once `gitops.rebase_onto` can't apply
+    round to resolve the mechanical rebase by hand once `gitops.rebase_onto_capture` can't apply
     cleanly. That round is bookkeeping, not a fix the worker was asked to make: it must keep
     its own `rebases` counter and never burn through max_revisions (0 in this fixture) or flag
     needs_human, however many times in a row it recurs."""
@@ -259,12 +259,12 @@ def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fa
     _seed_base_guard(sched, "still-bad")  # base moves, but stays red
 
     # the mechanical rebase onto the moved base never applies cleanly
-    monkeypatch.setattr(gitops, "rebase_onto", lambda worktree, onto: (False, ["sentinel.txt"]))
+    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto: (False, ["sentinel.txt"], {}))
 
     for i in range(3):
         # each cycle reaps the running round, runs the pre-PR check and base probe as detached
         # runs (guard fails on the branch and at the moved, still-red base), flags it as a rebase
-        # round when `rebase_onto` can't apply, and redispatches the exempt revise despite
+        # round when `rebase_onto_capture` can't apply, and redispatches the exempt revise despite
         # max_revisions=0 — never counting a revision or flagging needs_human
         got_revise = False
         for _ in range(6):

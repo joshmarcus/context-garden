@@ -343,33 +343,18 @@ class PollMixin:
                 self.github.update_pr(slug, number, base=new_base)
             except GitHubError as e:
                 self.log(f"{child.id}: could not retarget PR: {e}")
-        wt = self.worktree_for(child)
-        branch = child.branch or child.default_branch()
-        repo = self.repo_for(child)
-        try:
-            if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, new_base)
-            # Fold in any commits that only exist on origin/<branch> before rebasing, so the
-            # force-push below never discards them (e.g. something merged into this branch).
-            ok, files = gitops.sync_remote_branch(wt, branch)
-            hunks: dict[str, str] = {}
-            if ok:
-                ok, files, hunks = gitops.rebase_onto_capture(wt, gitops.base_ref(wt, new_base))
-        except gitops.GitError as e:
-            ok, files, hunks = False, [str(e)], {}
-        if ok:
-            try:
-                gitops.push(wt, branch, force=True)
-            except gitops.GitError as e:
-                self.log(f"{child.id}: push after rebase failed: {e}")
+        # The rebase-and-record helper (CG-197) folds in origin-only commits, rebases, force-pushes
+        # and records a `rebase` run so the restack is counted like every other rebase path.
+        outcome = self._rebase_and_record(child, new_base, reason=f"parent {parent_id} merged")
+        if outcome.status != "conflict":
             child.log(f"parent {parent_id} merged; rebased onto {new_base} and retargeted the PR")
             self.store.save(child)
             self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=False)
             rep.transitions.append(f"{child.id} restacked onto {new_base}")
             return
-        self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=files)
+        self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=outcome.files)
         # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
-        self._dispatch_rebase_agent(child, new_base, files, hunks, rep, f"parent {parent_id} merged")
+        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, rep, f"parent {parent_id} merged")
 
     def _reopen_if_base_deleted(self, task: Task, slug: str | None, pr: PRInfo, rep: TickReport) -> bool:
         """A PR GitHub closed because its base branch was deleted (a stack parent that merged with

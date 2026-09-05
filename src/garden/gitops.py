@@ -110,7 +110,7 @@ def _ensure_base(repo: Path, worktree: Path, base: str) -> bool:
     branch has no commits of its own (its HEAD is already contained in `base`) it is safe to
     fast-forward it onto `base`, which is the git surgery a worker otherwise had to do by hand.
     When the branch carries its own commits on a different base we leave it: a reset would
-    throw that work away, and rebasing is the caller's job (see rebase_onto / _restack)."""
+    throw that work away, and rebasing is the caller's job (see rebase_onto_capture / _restack)."""
     if not base:
         return False
     try:
@@ -268,24 +268,11 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
         return False, files
 
 
-def rebase_onto(worktree: Path, onto: str) -> tuple[bool, list[str]]:
-    """Rebase the worktree branch onto `onto` (e.g. origin/main). Returns (ok, conflicted files);
-    on conflict the rebase is aborted so the worktree is left clean."""
-    fetch(worktree)
-    try:
-        git("rebase", onto, cwd=worktree)
-        return True, []
-    except GitError:
-        files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
-        git("rebase", "--abort", cwd=worktree, check=False)
-        return False, files
-
-
 def rebase_onto_capture(worktree: Path, onto: str) -> tuple[bool, list[str], dict[str, str]]:
-    """Like rebase_onto, but on a textual conflict also captures each conflicted file's contents
-    (with conflict markers) before aborting, so a rebase brief can carry the conflicting hunks.
-    Returns (ok, conflicted files, {path: file contents}); on conflict the rebase is aborted so
-    the worktree is left clean for the agent to redo the rebase and resolve it."""
+    """Rebase the worktree branch onto `onto` (e.g. origin/main). Returns (ok, conflicted files,
+    {path: file contents}); on a textual conflict each conflicted file's contents (with conflict
+    markers) are captured before aborting, so a rebase brief can carry the conflicting hunks. The
+    rebase is aborted on conflict so the worktree is left clean for the agent to redo and resolve."""
     fetch(worktree)
     try:
         git("rebase", onto, cwd=worktree)
