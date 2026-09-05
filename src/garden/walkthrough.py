@@ -244,14 +244,21 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     shot: set[str] = set()
     browser_note = ""
     if screenshots:
-        if base_url:
-            shot, browser_note = _screenshot(base_url, specs, out_dir, log)
+        try:
+            import playwright.sync_api  # noqa: F401
+        except ImportError:
+            browser_note = "Playwright is not installed (pip install 'context-garden[walkthrough]' && playwright install chromium)."
         else:
-            url, stop = _serve(store)
-            try:
-                shot, browser_note = _screenshot(url, specs, out_dir, log)
-            finally:
-                stop()
+            if base_url:
+                shot, browser_note = _screenshot(base_url, specs, out_dir, log)
+            else:
+                # Playwright drives a real browser, so it needs the app on a port, not a
+                # test client: run it in a background thread just for the screenshots.
+                url, stop = _serve(store)
+                try:
+                    shot, browser_note = _screenshot(url, specs, out_dir, log)
+                finally:
+                    stop()
         if browser_note:
             log(browser_note)
 
