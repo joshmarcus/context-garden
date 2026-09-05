@@ -228,6 +228,11 @@ class DispatchMixin:
         # (CG-125). A truly clean start has no commits ahead of base, so the section is
         # omitted and nothing changes.
         wt_path = worktree_override or self.worktree_for(task)
+        # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
+        # below as a commit) before anything else touches the worktree, so they are recovered
+        # by `git stash apply`, not buried in a backup branch's synthetic commit.
+        if worktree and not runner.remote:
+            self._stash_dirty_worktree(task, wt_path)
         # A revise, rebase or resume run writes to a branch another writer may have just moved
         # (a prior revise round's push, the merge queue's own rebase): sync the worktree to
         # origin's head first so this run starts from the same head, instead of racing a stale
@@ -257,7 +262,6 @@ class DispatchMixin:
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
         if worktree and not runner.remote:
-            self._stash_dirty_worktree(task, wt_path)
             wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
