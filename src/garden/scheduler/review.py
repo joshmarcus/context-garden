@@ -195,6 +195,10 @@ class ReviewMixin:
                             pr_comment=pr_comment, verified=verified)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
+        # Remembered so a quota env_error on this run (reap_review, below) knows whether this
+        # dispatch actually counted a round — an after-rebase round is exempt from
+        # review.max_rounds and must not be charged for having been retried.
+        run.env_snapshot = {"count_round": count_round}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -256,18 +260,21 @@ class ReviewMixin:
             collected = runner.collect(run)
             if collected.get("env_error"):
                 # The reviewer's own account, not the PR: pause the harness, give back the
-                # round this dispatch counted (see dispatch_review's count_round), and rejoin
-                # the review queue so it is retried once the harness resumes instead of the
-                # PR silently never getting a verdict for this round.
+                # round this dispatch counted (see dispatch_review's count_round, snapshotted
+                # on the run since an after-rebase round is exempt and must not be charged),
+                # and rejoin the review queue so it is retried once the harness resumes
+                # instead of the PR silently never getting a verdict for this round.
                 st["review_run"] = ""
                 pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
+                counted = bool((run.env_snapshot or {}).get("count_round", True))
                 self._pause_for_env_error(run, collected)
                 run.status = "env_error"
                 run.save()
                 self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
                                  cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
-                st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
-                self._queue_pending_reviews(st, [{"kind": "review", "count_round": True}])
+                if counted:
+                    st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
+                self._queue_pending_reviews(st, [{"kind": "review", "count_round": counted}])
                 note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
                        f"{run.harness or 'the harness'}); will retry once it resumes")
                 task.log(note)

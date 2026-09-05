@@ -267,6 +267,55 @@ def test_configured_persona_env_error_pauses_the_harness_and_retries(sched, fake
     assert "DM-001(persona:user)" in rep3.dispatched
 
 
+def test_quota_during_exempt_after_rebase_review_does_not_charge_the_round(sched, fake_github, monkeypatch):
+    """CG-139's after-rebase review round (dispatch_review's count_round=False) does not
+    increment review_rounds when it is dispatched; a quota hit mid-round must not decrement
+    review_rounds either (nothing was counted to give back) and must re-queue the retry as
+    still exempt, not charge it against review.max_rounds on the next attempt."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
+    sched.tick()  # reap review -> approve
+    assert sched.state.get("DM-001")["review_rounds"] == 1
+
+    # Reproduce the state a stale-base rebase (CG-131) that failed to apply cleanly leaves
+    # behind: a revise round flagged exempt (rebases counter, not review.max_rounds).
+    st = sched.state.get("DM-001")
+    st["pending_feedback"] = "- **garden**: resolve the rebase conflict by hand."
+    st["pending_feedback_rebase"] = True
+    sched.state.save()
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+
+    sched.tick()  # dispatches the exempt revise round
+    assert sched.state.get("DM-001")["rebases"] == 1
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.tick()  # reap revise -> checks pass -> pushed -> review dispatched (exempt; hits quota)
+    st = sched.state.get("DM-001")
+    assert st.get("review_run")
+    assert st.get("review_rounds") == 1  # the exempt round was never counted at dispatch
+
+    rep = sched.tick()  # reap_review collects the quota output
+    assert sched.is_harness_paused("claude")
+    st = sched.state.get("DM-001")
+    assert st.get("review_run") == ""
+    assert st.get("review_rounds") == 1  # unchanged: nothing was counted to give back
+    pending = [p for p in (st.get("pending_reviews") or []) if p.get("kind") == "review"]
+    assert pending and pending[0].get("count_round") is False
+    assert any("review paused" in t for t in rep.transitions)
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    sched.tick()  # probe resumes claude; dispatch drains the pending review in the same pass
+    assert not sched.is_harness_paused("claude")
+    st = sched.state.get("DM-001")
+    assert st.get("review_run")
+    assert st.get("review_rounds") == 1  # still exempt on retry: not charged against the cap
+
+
 def test_trial_contender_env_error_pauses_the_harness_and_is_redispatched_on_resume(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
     sched.start_trial(sched.store.task("DM-001"), ["claude:sonnet", "claude:opus"])
