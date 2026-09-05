@@ -23,7 +23,7 @@ def _stub(monkeypatch, gh: GitHub, reviews, comments, issue_comments, login="jos
 
 
 def test_own_login_comments_count_but_garden_marked_ones_do_not(monkeypatch):
-    gh = GitHub(use_gh=True)
+    gh = GitHub(use_gh=True, trusted_bots=["ci[bot]"])
     _stub(
         monkeypatch, gh,
         reviews=[{"user": {"login": "josh"}, "submitted_at": "2026-09-04T10:00:00Z", "state": "COMMENTED", "body": "looks close"}],
@@ -42,7 +42,7 @@ def test_own_login_comments_count_but_garden_marked_ones_do_not(monkeypatch):
 
 
 def test_bot_logins_from_config_are_ignored(monkeypatch):
-    gh = GitHub(use_gh=True, bot_logins=["dependabot[bot]"])
+    gh = GitHub(use_gh=True, bot_logins=["dependabot[bot]"], trusted_bots=["chatgpt-codex-connector[bot]"])
     _stub(
         monkeypatch, gh, reviews=[], comments=[],
         issue_comments=[
@@ -54,7 +54,7 @@ def test_bot_logins_from_config_are_ignored(monkeypatch):
 
 
 def test_bot_notice_is_ignored_and_logged(monkeypatch):
-    gh = GitHub(use_gh=True)
+    gh = GitHub(use_gh=True, trusted_bots=["chatgpt-codex-connector[bot]"])
     _stub(
         monkeypatch, gh, reviews=[],
         comments=[],
@@ -75,7 +75,7 @@ def test_bot_notice_is_ignored_and_logged(monkeypatch):
 
 
 def test_bot_notice_with_finding_marker_still_counts(monkeypatch):
-    gh = GitHub(use_gh=True)
+    gh = GitHub(use_gh=True, trusted_bots=["chatgpt-codex-connector[bot]"])
     _stub(
         monkeypatch, gh, reviews=[],
         comments=[],
@@ -93,7 +93,7 @@ def test_bot_notice_with_finding_marker_still_counts(monkeypatch):
 
 
 def test_bot_notice_on_diff_line_still_counts(monkeypatch):
-    gh = GitHub(use_gh=True)
+    gh = GitHub(use_gh=True, trusted_bots=["chatgpt-codex-connector[bot]"])
     _stub(
         monkeypatch, gh, reviews=[],
         comments=[
@@ -127,7 +127,7 @@ def test_human_comment_matching_notice_pattern_still_counts(monkeypatch):
 
 
 def test_custom_bot_notice_patterns_from_config(monkeypatch):
-    gh = GitHub(use_gh=True, bot_notice_patterns=["out of credits"])
+    gh = GitHub(use_gh=True, bot_notice_patterns=["out of credits"], trusted_bots=["some-reviewer[bot]"])
     _stub(
         monkeypatch, gh, reviews=[],
         comments=[],
@@ -187,8 +187,9 @@ def test_comment_appends_marker_once(monkeypatch):
 
 def test_untrusted_author_is_ignored_and_recorded(monkeypatch):
     """CG-154: on a public repo anyone can comment on a PR; only the garden's own login,
-    `github.trusted_authors` and [bot] accounts may turn a comment into a revise brief."""
-    gh = GitHub(use_gh=True, trusted_authors=["alice"])
+    `github.trusted_authors` and [bot] accounts named in `github.trusted_bots` may turn a
+    comment into a revise brief."""
+    gh = GitHub(use_gh=True, trusted_authors=["alice"], trusted_bots=["review-app[bot]"])
     _stub(
         monkeypatch, gh,
         reviews=[
@@ -214,17 +215,28 @@ def test_untrusted_author_is_ignored_and_recorded(monkeypatch):
 
 
 def test_is_trusted_covers_own_login_trusted_list_and_bots(monkeypatch):
-    gh = GitHub(use_gh=True, trusted_authors=["alice", " bob ", ""])
+    gh = GitHub(use_gh=True, trusted_authors=["alice", " bob ", ""], trusted_bots=["codex[bot]", " ci[bot] "])
     _stub(monkeypatch, gh, reviews=[], comments=[], issue_comments=[], login="josh")
     assert gh.is_trusted("josh")  # the login the garden authenticates as
     assert gh.is_trusted("alice") and gh.is_trusted("bob")
-    assert gh.is_trusted("codex[bot]")
+    assert gh.is_trusted("codex[bot]") and gh.is_trusted("ci[bot]")  # opted in via trusted_bots
+    assert not gh.is_trusted("dependabot[bot]")  # a bot not in trusted_bots is not trusted
     assert not gh.is_trusted("mallory")
     assert not gh.is_trusted("")
 
 
+def test_bots_are_trusted_only_when_opted_in(monkeypatch):
+    """CG-200: the default is empty, so no [bot] account is trusted; naming one in
+    `github.trusted_bots` opts just that login in."""
+    default = GitHub(use_gh=True)
+    assert not default.is_trusted("review-app[bot]")
+    opted = GitHub(use_gh=True, trusted_bots=["review-app[bot]"])
+    assert opted.is_trusted("review-app[bot]")
+    assert not opted.is_trusted("other-app[bot]")
+
+
 def test_bot_notice_is_recorded_with_its_reason(monkeypatch):
-    gh = GitHub(use_gh=True)
+    gh = GitHub(use_gh=True, trusted_bots=["codex[bot]"])
     _stub(
         monkeypatch, gh, reviews=[], comments=[],
         issue_comments=[{"user": {"login": "codex[bot]"}, "created_at": "2026-09-04T10:00:00Z", "body": "usage limit reached"}],

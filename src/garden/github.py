@@ -149,6 +149,7 @@ class GitHub:
         bot_logins: list[str] | None = None,
         bot_notice_patterns: list[str] | None = None,
         trusted_authors: list[str] | None = None,
+        trusted_bots: list[str] | None = None,
     ):
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         self.gh = shutil.which("gh") if use_gh else None
@@ -157,6 +158,7 @@ class GitHub:
             str(p).lower() for p in (bot_notice_patterns if bot_notice_patterns is not None else DEFAULT_BOT_NOTICE_PATTERNS)
         ]
         self.trusted_authors = {str(a).strip() for a in (trusted_authors or []) if str(a).strip()}
+        self.trusted_bots = {str(b).strip() for b in (trusted_bots or []) if str(b).strip()}
         self._me: str | None = None
 
     @property
@@ -205,15 +207,18 @@ class GitHub:
     def is_trusted(self, author: str) -> bool:
         """Whether a PR comment by `author` may become a worker prompt.
 
-        Trusted: the login the garden authenticates as (the person driving it), a login in
-        `github.trusted_authors` (the scheduler adds `github.reviewers`), and `[bot]`
-        accounts (a review app the repo owner installed; `github.bot_logins` drops the
-        unwanted ones). Anyone else who can comment on a PR is not: on a public repo that is
-        everyone, and a comment is text a worker would carry out."""
+        Trusted: the login the garden authenticates as (the person driving it) and a login in
+        `github.trusted_authors` (the scheduler adds `github.reviewers`). A `[bot]` account is
+        trusted only when `github.trusted_bots` names it — a review app the owner installed and
+        opted in by login; the default is empty, so an unlisted app relaying untrusted comment
+        text cannot steer a worker. Anyone else who can comment on a PR is not trusted: on a
+        public repo that is everyone, and a comment is text a worker would carry out."""
         author = (author or "").strip()
         if not author:
             return False
-        if author in self.trusted_authors or author.endswith("[bot]"):
+        if author.endswith("[bot]"):
+            return author in self.trusted_bots
+        if author in self.trusted_authors:
             return True
         return author == self.me()
 
@@ -328,9 +333,9 @@ class GitHub:
         """Reviews, review (line) comments and issue comments newer than `since_iso`, from
         trusted authors only (see `is_trusted`); the rest is returned as `ignored`."""
         # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
-        # driving the garden usually is the login `gh` uses, and their comments must count.
-        # Bots count too (a review app is a reviewer the person installed); `bot_logins` from
-        # `github.bot_logins` in config is the list of accounts to ignore.
+        # driving the garden usually is the login `gh` uses, and their comments must count. A
+        # bot counts only when `github.trusted_bots` names it (see `is_trusted`); `bot_logins`
+        # (`github.bot_logins`) drops accounts entirely, before they are even logged as ignored.
         exclude = set(exclude_logins or set()) | self.bot_logins
         items: list[dict[str, Any]] = []
         ignored: list[dict[str, Any]] = []

@@ -80,7 +80,9 @@ DEFAULTS: dict[str, Any] = {
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
         "trusted_authors": [],    # logins whose PR comments may become a worker prompt, besides the
-                                  # garden's own login, `reviewers` and [bot] accounts; others are logged and ignored
+                                  # garden's own login and `reviewers`; others are logged and ignored
+        "trusted_bots": [],       # [bot] logins whose PR comments may become a worker prompt; empty by
+                                  # default, so no review app is trusted until its login is named here
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
