@@ -206,7 +206,6 @@ def _live_garden(tmp_path: Path, *, repo: str, work_dir: str) -> Path:
         "work_dir": work_dir,
         "worker_env": {"pass": ["FAKE_CLAUDE_*"]},
         "harnesses": {"claude": {"bin": str(FAKE_CLAUDE), "max_turns": {"easy": 40, "medium": 5, "hard": 80}}},
-        "worker_env": {"pass": ["FAKE_CLAUDE_*"]},
         "products": {"gdn": {"repo": repo, "base_branch": "main", "id_prefix": "GD", "self": True, "github": "test/garden"}},
     }
     (root / "garden.yaml").write_text(yaml.safe_dump(cfg))
