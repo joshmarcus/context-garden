@@ -15,7 +15,9 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -301,77 +303,102 @@ class Scheduler(
         return None
 
     # ---- tick --------------------------------------------------------------
+    @contextmanager
+    def _step(self, rep: TickReport, name: str) -> Iterator[None]:
+        """Time one phase of the tick into the report, so a slow pass can name the step that
+        cost it. Errors inside the block still propagate; the caller wraps what it wants to
+        keep the loop alive."""
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            rep.record_step(name, time.monotonic() - t0)
+
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
+        started = time.monotonic()
         self.store.invalidate()
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
-        try:
-            self.reap_aux(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"aux reap failed: {e}")
-        try:
-            self.reap_retro(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"retro reap failed: {e}")
-        tasks = self.store.tasks()
-        for t in list(tasks.values()):
+        with self._step(rep, "reap"):
             try:
-                if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
-                    rep.reaped.append(t.id)
-                    continue
-                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
-                    if self.reap_trial(t, rep):
+                self.reap_aux(rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"aux reap failed: {e}")
+            try:
+                self.reap_retro(rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"retro reap failed: {e}")
+            tasks = self.store.tasks()
+            for t in list(tasks.values()):
+                try:
+                    if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
                         rep.reaped.append(t.id)
-                    continue
-                if t.status == Status.RUNNING and self.reap(t, rep):
-                    rep.reaped.append(t.id)
-                elif t.status.pr_open and self.reap_review(t, rep):
-                    rep.reaped.append(t.id)
-            except Exception as e:  # noqa: BLE001 - keep the loop alive
-                rep.errors.append(f"{t.id}: reap failed: {e}")
-                self.log(f"{t.id}: reap failed: {e}")
-        try:
-            self.reap_orphaned(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"orphan reap failed: {e}")
-        try:
-            self.reap_dead_runs(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"dead-run reap failed: {e}")
+                        continue
+                    if self.state.get(t.id).get("check_run") and self.reap_check(t, rep):
+                        rep.reaped.append(t.id)
+                        continue
+                    if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
+                        if self.reap_trial(t, rep):
+                            rep.reaped.append(t.id)
+                        continue
+                    if t.status == Status.RUNNING and self.reap(t, rep):
+                        rep.reaped.append(t.id)
+                    elif t.status.pr_open and self.reap_review(t, rep):
+                        rep.reaped.append(t.id)
+                except Exception as e:  # noqa: BLE001 - keep the loop alive
+                    rep.errors.append(f"{t.id}: reap failed: {e}")
+                    self.log(f"{t.id}: reap failed: {e}")
+            try:
+                self.reap_orphaned(rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"orphan reap failed: {e}")
+            try:
+                self.reap_dead_runs(rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"dead-run reap failed: {e}")
         self.store.invalidate()
         tasks = self.store.tasks()
-        for t in list(tasks.values()):
-            if t.pr and t.status.pr_pending:
+        with self._step(rep, "poll"):
+            for t in list(tasks.values()):
+                if t.pr and t.status.pr_pending:
+                    try:
+                        self.poll(t, rep)
+                        rep.polled.append(t.id)
+                    except Exception as e:  # noqa: BLE001
+                        rep.errors.append(f"{t.id}: poll failed: {e}")
+                        self.log(f"{t.id}: poll failed: {e}")
+        with self._step(rep, "base_reprobe"):
+            for t in list(tasks.values()):
+                # A task parked because its base branch was broken re-probes the base and continues
+                # on its own once it goes green — a mechanical rebase and re-check, no worker.
                 try:
-                    self.poll(t, rep)
-                    rep.polled.append(t.id)
+                    self._reprobe_base_broken(t, rep)
                 except Exception as e:  # noqa: BLE001
-                    rep.errors.append(f"{t.id}: poll failed: {e}")
-                    self.log(f"{t.id}: poll failed: {e}")
-        for t in list(tasks.values()):
-            # A task parked because its base branch was broken re-probes the base and continues
-            # on its own once it goes green — a mechanical rebase and re-check, no worker.
+                    rep.errors.append(f"{t.id}: base re-probe failed: {e}")
+                    self.log(f"{t.id}: base re-probe failed: {e}")
+        with self._step(rep, "merge_queue"):
             try:
-                self._reprobe_base_broken(t, rep)
+                self._run_merge_queue(rep)
             except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"{t.id}: base re-probe failed: {e}")
-                self.log(f"{t.id}: base re-probe failed: {e}")
-        try:
-            self._run_merge_queue(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"merge queue failed: {e}")
-            self.log(f"merge queue failed: {e}")
+                rep.errors.append(f"merge queue failed: {e}")
+                self.log(f"merge queue failed: {e}")
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():
             dispatch = False
         if dispatch:
-            self.dispatch_edits(rep)
-            self.dispatch_ready(rep)
-        try:
-            self._audit_stuck(rep)
-        except Exception as e:  # noqa: BLE001
-            rep.errors.append(f"stuck audit failed: {e}")
+            with self._step(rep, "dispatch"):
+                self.dispatch_edits(rep)
+                self.dispatch_ready(rep)
+        with self._step(rep, "audit"):
+            try:
+                self._audit_stuck(rep)
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"stuck audit failed: {e}")
         self.state.save()
         self.maybe_auto_upgrade(rep)
+        rep.duration_s = time.monotonic() - started
+        budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
+        if budget and rep.duration_s > budget:
+            self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")
         return rep
