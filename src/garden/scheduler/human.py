@@ -68,6 +68,7 @@ class HumanMixin:
             f"Carry out the task as originally asked: make the change and, if there is no open PR yet, leave the branch ready for one."
         )
         st.pop("pending_feedback_easy", None)
+        st.pop("pending_feedback_rebase", None)
         self.events.emit("decision_rejected", task.id, decision=kind, note=note[:200])
         self._transition(task, Status.CHANGES_REQUESTED, f"decision rejected by the person; revise run will follow: {note.strip()[:100]}")
         self.state.save()
@@ -135,6 +136,7 @@ class HumanMixin:
         if changes:
             st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
             st.pop("pending_feedback_easy", None)
+            st.pop("pending_feedback_rebase", None)
             st.pop("needs_human", None)
             self._grant_one_more_round(st)
             self.events.emit("triaged", task.id, pr=task.pr, by="human", decision="changes", note=changes[:200])
@@ -240,6 +242,7 @@ class HumanMixin:
         st.pop("needs_human", None)
         st.pop("pending_feedback", None)
         st.pop("pending_feedback_easy", None)
+        st.pop("pending_feedback_rebase", None)
         self.events.emit("resumed", task.id, stop_kind=str(info.get("kind", "")), reason=str(info.get("reason", "")))
         prior = str(info.get("prior_status", ""))
         target: Status | None = None

@@ -46,7 +46,9 @@ class DispatchMixin:
             and self.state.get(t.id).get("pending_feedback")
             and not self.state.get(t.id).get("rebase_pending")
             and not self.state.get(t.id).get("needs_human")
-            and int(self.state.get(t.id).get("revisions", 0)) < max_rev
+            # a conflict/stale-base rebase round is exempt from the revision cap (CG-139)
+            and (self.state.get(t.id).get("pending_feedback_rebase")
+                 or int(self.state.get(t.id).get("revisions", 0)) < max_rev)
         ]
         queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
@@ -101,7 +103,7 @@ class DispatchMixin:
                 if st.get("rebase_pending"):
                     continue  # a rebase run is dispatchable (its own queue, no feedback needed)
                 has_fb = bool(str(st.get("pending_feedback") or "").strip())
-                under_cap = int(st.get("revisions", 0)) < max_rev
+                under_cap = bool(st.get("pending_feedback_rebase")) or int(st.get("revisions", 0)) < max_rev
                 if has_fb and under_cap:
                     continue  # a revise run is dispatchable
                 reason = ("no feedback recorded to revise against" if not has_fb
@@ -215,14 +217,25 @@ class DispatchMixin:
             task.branch = branch
         task.attempts += 1 if mode == "work" else 0
         task.last_dispatched_at = now_iso()
+        # A stale-base rebase that a worker had to resolve by hand (CG-131) is mechanical, not a
+        # fix the worker was asked to make: it shares the `rebases` counter with the mechanical/
+        # agent rebase mode above and never counts toward max_revisions, so a PR that waits out
+        # several merges under it does not burn through the revision cap for having been rebased.
+        is_rebase = bool(st.pop("pending_feedback_rebase", False))
+        rebase_note = ""
         if mode == "revise":
-            st["revisions"] = int(st.get("revisions", 0)) + 1
+            if is_rebase:
+                st["rebases"] = int(st.get("rebases", 0)) + 1
+                rebase_note = f", rebase round {st['rebases']} (not counted)"
+            else:
+                st["revisions"] = int(st.get("revisions", 0)) + 1
             st["pending_feedback"] = ""
             st.pop("pending_feedback_easy", None)
         elif mode == "rebase":
             # A rebase round has its own counter and never touches max_revisions.
             st["rebases"] = int(st.get("rebases", 0)) + 1
             st.pop("rebase_pending", None)
+        st["last_round_rebase"] = is_rebase
         where = f" on {run.host}" if run.host else ""
         model = f" model={run.model}" if run.model else ""
         how = "resumed session" if session_id else "fresh session"
@@ -230,6 +243,6 @@ class DispatchMixin:
         tier_note = ", description only; easy tier" if revise_easy else (", conflict only; easy tier" if mode == "rebase" else "")
         self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
-        self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}, ~{run.brief_tokens} tokens)")
+        self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}{rebase_note}, ~{run.brief_tokens} tokens)")
         self.state.save()
         return run

@@ -26,11 +26,14 @@ class ReviewMixin:
         if not task.pr:
             return
         st = self.state.get(task.id)
+        # A review that follows a conflict rebase (or a stale-base rebase, CG-131) re-reads
+        # code the reviewer already approved: it runs, but must not count toward review.max_rounds.
+        after_rebase = bool(st.pop("last_round_rebase", False))
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
             max_rounds = int(self.cfg.get("review.max_rounds", 2))
             if int(st.get("review_rounds", 0)) < max_rounds:
-                wanted.append({"kind": "review"})
+                wanted.append({"kind": "review", "count_round": not after_rebase})
             else:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
                 self._set_needs_human(task, "review_cap", reason)
@@ -58,7 +61,7 @@ class ReviewMixin:
             kind = item["kind"]
             try:
                 if kind == "review":
-                    run = self.dispatch_review(task, work_run)
+                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
                     rep.dispatched.append(f"{task.id}(review)")
                     self.log(f"{task.id}: review run {run.run_id} started")
                 else:
@@ -115,7 +118,7 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
-    def dispatch_review(self, task: Task, work_run: Run | None = None) -> Run:
+    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
         ensure_open(task)
         self._supersede_running_review(task)
         harness_name = str(self.cfg.get("review.harness") or "")
@@ -154,7 +157,8 @@ class ReviewMixin:
         runner.start(run, wt, text)
         st = self.state.get(task.id)
         st["review_run"] = run.run_id
-        st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
+        if count_round:
+            st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
@@ -242,6 +246,7 @@ class ReviewMixin:
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
+                    st.pop("pending_feedback_rebase", None)
                     self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
                     rep.transitions.append(f"{task.id} -> changes_requested (review)")
                     return True
@@ -253,6 +258,7 @@ class ReviewMixin:
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = True
+                    st.pop("pending_feedback_rebase", None)
                     self._transition(task, Status.CHANGES_REQUESTED,
                                       f"automated review approved but flagged the description: {review.get('description_feedback', '') or review.get('summary', '')}{cost}")
                     rep.transitions.append(f"{task.id} -> changes_requested (description round)")

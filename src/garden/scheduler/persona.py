@@ -123,5 +123,6 @@ class PersonaMixin:
             st = self.state.get(task.id)
             st["pending_feedback"] = "\n".join(f"- **{name} persona** ({f.get('area', '')}): {f.get('summary', '')} — {f.get('suggestion', '')}" for f in highs)
             st.pop("pending_feedback_easy", None)
+            st.pop("pending_feedback_rebase", None)
             self._transition(task, Status.CHANGES_REQUESTED, f"{name} persona review raised {len(highs)} high finding(s)")
             rep.transitions.append(f"{task.id} -> changes_requested (persona {name})")

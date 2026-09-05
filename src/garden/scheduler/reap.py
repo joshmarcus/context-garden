@@ -348,8 +348,10 @@ class ReapMixin:
                     self.events.emit("rebased_stale_base", task.id, base=base, base_sha=base_sha, resolved=False)
                     self._start_check_revise(task, rerun, rep, cost, note=f" (still failing after a rebase onto `{base}`)")
                     return "done"
-                # the rebase didn't apply cleanly; let a revise round resolve it
-                self._start_check_revise(task, failed, rep, cost)
+                # the rebase didn't apply cleanly; let a revise round resolve it. This is a
+                # stale-base rebase (CG-131), not a revision round: it must not count toward
+                # max_revisions.
+                self._start_check_revise(task, failed, rep, cost, is_rebase=True)
                 return "done"
             # the base branch has not moved: it is itself broken. Park the task; no revise, no spend.
             # Remember the base and its current tip so a later tick can tell when it has moved and
@@ -365,13 +367,15 @@ class ReapMixin:
         self._start_check_revise(task, failed, rep, cost)
         return "done"
 
-    def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "") -> None:
+    def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "",
+                            is_rebase: bool = False) -> None:
         """Queue a revise round (or hand off to a human at the cap) for a pre-PR check the branch
-        actually owns. Mirrors the historic inline behaviour of `_after_push`."""
+        actually owns. Mirrors the historic inline behaviour of `_after_push`. `is_rebase` marks a
+        stale-base rebase that failed to apply cleanly (CG-131): mechanical bookkeeping, not a
+        revision round, so it skips the cap and never hands the task to a human on its own."""
         st = self.state.get(task.id)
         names = ", ".join(str(f.get("name")) for f in failed)
         feedback = to_feedback(failed, "pre-PR check")
-        max_rev = int(self.cfg.get("max_revisions", 3))
         if not feedback.strip():
             # A killed or empty check leaves nothing to revise against; storing it as
             # empty feedback would make dispatch skip the task forever. Flag it instead.
@@ -383,15 +387,19 @@ class ReapMixin:
             return
         st["pending_feedback"] = feedback
         st.pop("pending_feedback_easy", None)
-        if int(st.get("revisions", 0)) >= max_rev:
-            # Cap reached: hand it to a human like the review path, rather than leaving a
-            # task in changes_requested that the dispatch queue skips forever.
-            reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"
-            st["needs_human"] = reason
-            self.events.emit("needs_human", task.id, reason=reason)
-            self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
-            rep.transitions.append(f"{task.id} -> changes_requested (checks, cap)")
-            return
+        if is_rebase:
+            st["pending_feedback_rebase"] = True
+        else:
+            max_rev = int(self.cfg.get("max_revisions", 3))
+            if int(st.get("revisions", 0)) >= max_rev:
+                # Cap reached: hand it to a human like the review path, rather than leaving a
+                # task in changes_requested that the dispatch queue skips forever.
+                reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"
+                st["needs_human"] = reason
+                self.events.emit("needs_human", task.id, reason=reason)
+                self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; needs a human{cost}", needs_human=True)
+                rep.transitions.append(f"{task.id} -> changes_requested (checks, cap)")
+                return
         if task.pr:
             self._transition(task, Status.CHANGES_REQUESTED, f"pre-PR checks failed ({names}){note}; revise run will fix before the PR is updated{cost}")
         else:
@@ -604,6 +612,7 @@ class ReapMixin:
                 st["pr_number"] = pr.number
                 st["revisions"] = 0
                 st["review_rounds"] = 0
+                st["rebase_rounds"] = 0
                 st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
                 self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
                 nxt = self._pr_status(task)
