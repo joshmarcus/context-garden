@@ -221,14 +221,25 @@ class ReviewMixin:
         if not run_id:
             return False
         run = next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
-        if run is None or run.status != "running":
+        if run is None:
             st["review_run"] = ""
             return False
+        if run.status != "running":
+            # The run record is already terminal. Usually a prior reap applied its verdict and
+            # only the tick that would clear this pointer was lost — but if the process was
+            # killed after the run's terminal save and before state.json recorded the verdict's
+            # effect (`last_review_run` still points elsewhere), the verdict was never applied.
+            # Re-apply it once from the stored result, without re-collecting or re-emitting
+            # run_finished (both already happened before the crash); otherwise drop the pointer.
+            # This is what lets a restart recover a review the old process reaped but never
+            # persisted, instead of needing a fresh review (CG-198).
+            if st.get("last_review_run") == run_id or not run.result:
+                st["review_run"] = ""
+                return False
+            return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
             return False
-        st["review_run"] = ""
-        pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         review: dict[str, Any] = {}
         if run.status != "timeout":
             run.exit_code = run.read_exit_code()
@@ -244,9 +255,20 @@ class ReviewMixin:
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
+        return self._apply_review(task, run, review, rep, emitted=False)
+
+    def _apply_review(self, task: Task, run: Run, review: dict[str, Any], rep: TickReport, emitted: bool) -> bool:
+        """Route a finished review run's verdict: post the comment, apply a description rewrite,
+        queue a revise round, or record the verdict. Split out of `reap_review` so a restart can
+        re-apply a verdict the previous process reaped but never persisted (`emitted=True` then
+        skips the run_finished emit, which the first pass already made)."""
+        st = self.state.get(task.id)
+        st["review_run"] = ""
+        pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
-                         status=str(review.get("verdict") or run.status))
+        if not emitted:
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
+                             status=str(review.get("verdict") or run.status))
         if not review:
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
             self.store.save(task)

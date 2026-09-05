@@ -153,6 +153,9 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
     interval = interval or int(store.config.get("tick_interval", 60))
     sched = _scheduler(store)
     console.print(f"watching {store.root} every {interval}s (ctrl-c to stop)")
+    start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
+    if start_rep.changed:
+        console.print(f"[dim]{now_iso()}[/dim] start-up reap: {start_rep.summary()}")
     try:
         while True:
             rep = sched.tick()
