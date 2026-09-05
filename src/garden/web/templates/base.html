@@ -103,6 +103,8 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .running-now .r { display:flex; gap:8px; align-items:center; color:var(--muted); }
 .running-now .dot { width:7px; height:7px; border-radius:50%; background:var(--s-running); flex:none; }
 .running-now .idle { color:var(--warn); }
+.notify { font:12px/1.4 var(--mono); color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+.notify .notify-state { font-size:11px; }
 .rail .foot { margin-top:auto; font:11.5px/1.5 var(--mono); color:var(--faint); display:flex; flex-direction:column; gap:8px; }
 main { padding:26px 32px 60px; max-width:1320px; min-width:0; }  /* min-width:0 so wide content (the board, tables) scrolls inside its container instead of widening the page */
 .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:18px; }
@@ -289,6 +291,10 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       {% for r in running %}<div class="r"><span class="dot"></span><a href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.mode }}{% if r.model %} · {{ r.model }}{% endif %} · {{ r.minutes }} min{% if r.idle %} · <span class="idle">idle {{ r.idle }} min</span>{% endif %}</span></div>{% else %}<span class="faint">nothing running</span>{% endfor %}
     </div>
   </div>
+  <div class="notify" id="notify">
+    <label class="check"><input type="checkbox" id="notify-toggle"> Notify me in this browser</label>
+    <span class="notify-state faint" id="notify-state"></span>
+  </div>
   <div class="foot">
     {% if dispatch_paused %}
     <span style="color:var(--warn)">dispatch paused{% if pause_ctrl.by %} · by {{ pause_ctrl.by }}{% endif %}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}{% endif %}{% if pause_ctrl.reason %} · {{ pause_ctrl.reason }}{% endif %}</span>
@@ -420,6 +426,71 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
     form.querySelector('input[name="model"]').value = v.model;
   });
 });
+
+// ---- browser notifications (CG-208): with the garden open in a tab, even a background one,
+// notify through the browser when a decision appears. The toggle asks for permission once
+// and remembers its state in localStorage; a 30s poll of /api/decisions coalesces new items
+// into one notification per interval, tagged so a repeat replaces rather than stacks.
+(function () {
+  const box = document.getElementById("notify");
+  const toggle = document.getElementById("notify-toggle");
+  const state = document.getElementById("notify-state");
+  if (!box || !toggle) return;
+  const ON = "garden.notify.on", SEEN = "garden.notify.seen";
+  const supported = "Notification" in window;
+
+  function nowIso() { return new Date().toISOString(); }
+  function wanted() { return supported && localStorage.getItem(ON) === "1" && Notification.permission === "granted"; }
+
+  function paint() {
+    if (!supported) { toggle.checked = false; toggle.disabled = true; state.textContent = "not supported in this browser"; return; }
+    if (Notification.permission === "denied") { toggle.checked = false; toggle.disabled = true; state.textContent = "blocked in browser settings"; return; }
+    toggle.disabled = false;
+    toggle.checked = wanted();
+    state.textContent = "";
+  }
+
+  toggle.addEventListener("change", async () => {
+    if (!toggle.checked) { localStorage.setItem(ON, "0"); paint(); return; }
+    let perm = Notification.permission;
+    if (perm === "default") { try { perm = await Notification.requestPermission(); } catch (e) { perm = "denied"; } }
+    if (perm === "granted") { localStorage.setItem(ON, "1"); localStorage.setItem(SEEN, nowIso()); }
+    else { localStorage.setItem(ON, "0"); }
+    paint();
+    poll();
+  });
+
+  function fire(items) {
+    const many = items.length > 1;
+    const title = many ? (items.length + " decisions need you") : "A decision needs you";
+    const body = many
+      ? items.slice(0, 3).map(i => i.title).join("; ") + (items.length > 3 ? "; …" : "")
+      : items[0].title;
+    const url = many ? "/" : items[0].url;
+    try {
+      const n = new Notification(title, { body: body, tag: "garden-decisions" });
+      n.onclick = () => { window.focus(); window.open(url, "_blank"); n.close(); };
+    } catch (e) {}
+  }
+
+  async function poll() {
+    if (!wanted()) return;
+    let since = localStorage.getItem(SEEN);
+    if (!since) { since = nowIso(); localStorage.setItem(SEEN, since); }
+    try {
+      const r = await fetch("/api/decisions?since=" + encodeURIComponent(since), { cache: "no-store" });
+      if (!r.ok) return;
+      const items = await r.json();
+      if (!items.length) return;
+      localStorage.setItem(SEEN, items.reduce((m, i) => (i.at > m ? i.at : m), since));
+      fire(items);
+    } catch (e) {}
+  }
+
+  paint();
+  if (wanted() && !localStorage.getItem(SEEN)) localStorage.setItem(SEEN, nowIso());
+  setInterval(poll, 30000);
+})();
 </script>
 </body>
 </html>
