@@ -20,6 +20,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | review-approve-desc (approve verdict, description_ok false, no rewrite: dispatches a description round)
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | discover-kinds (done + a task, a duplicate + cancel decision, and a note)
+       | discover-same (done + the identical discovery every run, to test dedup across workers)
        | friction (done + a friction list in the result, none in the body)
        | omit-body (a revise round that omits pr_body, leaving the description unchanged)
        | nochange (revise rounds commit nothing) | revise-with-comment (revise with pr_comment) | conflict (edits README.md to collide with main)
@@ -394,6 +395,15 @@ def add_discovered_kinds(call: Call, result: dict) -> None:
     ]
 
 
+def add_discovered_same(call: Call, result: dict) -> None:
+    # Every run in this mode reports the identical finding, whatever task ran it: three
+    # workers hitting the same bug should file one draft, not three (CG-199).
+    result["discovered"] = [
+        {"title": "Retry loop spins forever on a dead runner",
+         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."},
+    ]
+
+
 def add_pr_comment(call: Call, result: dict) -> None:
     result["pr_comment"] = "I addressed the feedback by adding the missing test."
 
@@ -428,6 +438,7 @@ WORKERS: dict[str, Worker] = {
     "needs_input": Worker(early=ask_once),
     "discover": Worker(tweak=add_discovered),
     "discover-kinds": Worker(tweak=add_discovered_kinds),
+    "discover-same": Worker(tweak=add_discovered_same),
     "nochange": Worker(early=nothing_to_change),
     "revise-with-comment": Worker(tweak=add_pr_comment),
     "conflict": Worker(prepare=collide_with_main),

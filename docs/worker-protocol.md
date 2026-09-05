@@ -223,7 +223,10 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   accepts (the round proceeds to the PR or the review as if it had pushed, with no new work
   run) or rejects (as above).
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
-  a `task` becomes a draft task file; a `duplicate` (`of`/`duplicates`) or `cancel`
+  a `task` becomes a draft task file, unless its title (normalised) or its body's file and
+  error already match an open task in this phase or the next one, in which case it is noted
+  on that task ("also found by") instead of filing a near-duplicate, with a
+  `discovered_duplicate` event; a `duplicate` (`of`/`duplicates`) or `cancel`
   (`task`) becomes a decision card for a human — Accept cancels the named task with the
   provenance in its log (and, for a `duplicate`, repoints any dependents onto the kept `of`
   task so they are not left blocked behind a cancelled one), Reject dismisses the card and

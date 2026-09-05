@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..github import GitHubError, mark_garden_comment
@@ -9,19 +10,94 @@ from ..harness import DIFFICULTIES
 from ..model import Task, now_iso
 from ..runs import Run
 
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# A file path with an extension (bare filename, or a path with slashes), and something that
+# names the symptom: backtick or quoted text, or an `XxxError`/`XxxException` identifier.
+_FILE_RE = re.compile(
+    r"\b(?:[\w.-]+/)+[\w.-]+\.[a-zA-Z]{1,6}\b"
+    r"|\b[\w-]+\.(?:py|ts|tsx|js|jsx|md|yaml|yml|json|toml|sh|rs|go|rb|c|cpp|h|hpp|java|cfg|ini)\b",
+    re.IGNORECASE,
+)
+_ERROR_RE = re.compile(r"`([^`]+)`|\"([^\"]{4,80})\"|\b([A-Z]\w*(?:Error|Exception)\b(?:[:\s][^`\"\n.]{0,60})?)")
+
+
+def _normalise_title(text: str) -> str:
+    """Case- and punctuation-insensitive title for matching a discovery against an open
+    task: lowercase, words only, whitespace collapsed."""
+    return " ".join(_WORD_RE.findall(str(text or "").lower()))
+
+
+def _finding_signature(text: str) -> tuple[set[str], set[str]]:
+    """Files and symptoms (error text) named in a discovery's free-text body. A backtick or
+    quoted span that turns out to just be one of the file names (agents often wrap a path in
+    backticks too) doesn't count as a symptom on its own."""
+    files = {m.group(0).lower() for m in _FILE_RE.finditer(text)}
+    errors = set()
+    for m in _ERROR_RE.finditer(text):
+        val = next(g for g in m.groups() if g).strip().lower()
+        if val and val not in files:
+            errors.add(val)
+    return files, errors
+
+
+def _same_finding(a: str, b: str) -> bool:
+    """Two free-text reports name the same finding if they share a file and a symptom;
+    either alone (e.g. two reports touching the same file) is too weak to merge on."""
+    a_files, a_errors = _finding_signature(a)
+    if not a_files or not a_errors:
+        return False
+    b_files, b_errors = _finding_signature(b)
+    return bool(a_files & b_files) and bool(a_errors & b_errors)
+
 
 class DiscoveredMixin:
     # ---- discovered work ---------------------------------------------------
+    def _open_discovery_candidates(self, task: Task) -> list[Task]:
+        """Open (non-terminal) tasks in `task`'s own phase and the phase right after it: the
+        scope a discovered item is checked against before it is filed as a new draft, so a
+        finding from a later phase's work still catches a duplicate filed against the phase
+        ahead of it."""
+        try:
+            names = [p.name for p in self.store.product(task.product).phases]
+            i = names.index(task.phase)
+            scope = {task.phase} | ({names[i + 1]} if i + 1 < len(names) else set())
+        except (KeyError, ValueError):
+            scope = {task.phase}
+        return [t for t in self.store.tasks().values()
+                if t.product == task.product and t.phase in scope and not t.status.terminal]
+
+    def _match_existing_discovery(self, title: str, body: str, candidates: list[Task]) -> Task | None:
+        norm = _normalise_title(title)
+        for cand in candidates:
+            if norm and norm == _normalise_title(cand.title):
+                return cand
+        if body.strip():
+            for cand in candidates:
+                if _same_finding(body, cand.body):
+                    return cand
+        return None
+
+    def _attach_discovery(self, existing: Task, task: Task, run: Run, title: str) -> None:
+        """A discovered item that matches a task already open: note who else found it on that
+        task instead of filing a second draft (CG-199)."""
+        existing.log(f"also found by {task.id} ({task.title}) during run `{run.run_id}`")
+        self.store.save(existing)
+        self.events.emit("discovered_duplicate", existing.id, found_by=task.id, run=run.run_id, title=title)
+        self.log(f"{task.id}: discovery {title!r} matches open {existing.id}; noted, not filed")
+
     def _file_discovered(self, task: Task, run: Run, result: dict[str, Any]) -> list[Task]:
         """File a worker's discoveries. Each item carries a `kind` (default `task`):
-        `task` becomes a draft task file (as before); `duplicate` and `cancel` become
+        `task` becomes a draft task file (as before, unless it matches an already-open task
+        in this phase or the next by title or by file+symptom, in which case it is noted on
+        that task instead - see `_attach_discovery`); `duplicate` and `cancel` become
         decision cards for a human (they never file work); `note` goes to the phase's
         friction record and makes no card."""
         items = result.get("discovered") or []
         if not isinstance(items, list) or not items:
             return []
         auto_blocking = bool(self.cfg.get("discovered.auto_approve_blocking", True))
-        existing = {t.title.strip().lower() for t in self.store.tasks().values()}
+        candidates = self._open_discovery_candidates(task)
         created: list[Task] = []
         for item in items:
             if not isinstance(item, dict):
@@ -36,10 +112,13 @@ class DiscoveredMixin:
             if not str(item.get("title") or "").strip():
                 continue
             title = str(item["title"]).strip()
-            if title.lower() in existing:
+            body_in = str(item.get("body") or "")
+            match = self._match_existing_discovery(title, body_in, candidates)
+            if match is not None:
+                self._attach_discovery(match, task, run, title)
                 continue
             blocking = bool(item.get("blocking"))
-            body = str(item.get("body") or "").strip() or f"## Goal\n\n{title}\n"
+            body = body_in.strip() or f"## Goal\n\n{title}\n"
             body += f"\n\n## Provenance\n\nDiscovered by {task.id} ({task.title}) during run `{run.run_id}`."
             diff = str(item.get("difficulty") or "medium")
             try:
@@ -57,7 +136,7 @@ class DiscoveredMixin:
             note += "; deferred by the freeze" if deferred else (" (blocking)" if blocking else "")
             t.log(note)
             self.store.save(t)
-            existing.add(title.lower())
+            candidates.append(t)
             created.append(t)
             self.events.emit("discovered", task.id, new_task=t.id, title=title, blocking=blocking, status=t.status.value)
             self.log(f"{task.id}: discovered {t.id} {title!r}" + (" [blocking, ready]" if blocking and auto_blocking else ""))
