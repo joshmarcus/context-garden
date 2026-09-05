@@ -176,6 +176,50 @@ def test_task_actions_refuse_a_merged_done_task(garden, monkeypatch):
     assert not sched.runs.runs_for("DM-001")  # no review or work run was dispatched
 
 
+def test_done_task_with_stale_state_shows_no_needs_you_badge_on_board(garden):
+    """CG-195: a done task carrying a stale needs_human flag (from before a terminal
+    transition cleared it, or a hand-edited state.json) must not wear a 'needs you' badge in
+    the done column."""
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["needs_human"] = {"kind": "stall", "reason": "revise round changed nothing", "at": "t"}
+    sched.state.save()
+
+    c = client(garden)
+    page = c.get("/board").text
+    assert "badge hot" not in page
+    page = c.get("/board?view=list").text
+    assert "badge hot" not in page
+
+
+def test_merged_task_page_with_stale_state_says_nothing_about_automerge(garden):
+    """CG-195: a merged task's page must never say automerge is held, even when the state
+    still carries a stale automerge_blocked (e.g. set the same tick the merge happened)."""
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    task.status = Status.DONE
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["automerge_blocked"] = "the automated review verdict is request_changes, not approve"
+    sched.state.save()
+
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert "held:" not in page
+
+
 def test_scheduler_errors_flash_a_message_instead_of_500(garden):
     """CG-092: a task whose precondition changed underneath the person (here: DM-001 is
     'ready', not 'waiting_human') must say so on the page, not 500 or silently drop the
