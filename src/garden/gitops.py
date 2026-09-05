@@ -334,6 +334,17 @@ def diff(worktree: Path, base: str) -> str:
         return ""
 
 
+def diff_names(worktree: Path, base: str) -> list[str]:
+    """Paths the PR changes against its base (merge-base diff, `base...HEAD`), for gating on
+    what a diff touches. Empty when the base ref is unknown."""
+    try:
+        ref = base_ref(worktree, base)
+        out = git("diff", "--name-only", f"{ref}...HEAD", cwd=worktree)
+    except GitError:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
 def head_sha(repo: Path) -> str:
     """The current HEAD commit, or '' if the path is not a usable git repo."""
     try:

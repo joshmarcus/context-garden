@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from typing import Any
 
 from .. import gitops
@@ -12,6 +13,20 @@ from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
 from .report import TickReport
+
+# Paths whose change makes a PR too sensitive to merge without a person: the garden's own
+# config, task files, CI config and principles. Automerge holds when the diff touches any of
+# them, so a self-approved PR cannot quietly rewrite the loop's own rules (CG-194).
+_GUARDED_PREFIXES = (".github/", "principles/")
+
+
+def _touches_guarded_path(rel: str) -> bool:
+    parts = rel.split("/")
+    if fnmatch.fnmatch(parts[-1], "garden*.yaml"):
+        return True
+    if "tasks" in parts[:-1]:  # a file under any **/tasks/ directory
+        return True
+    return rel.startswith(_GUARDED_PREFIXES)
 
 
 class PollMixin:
@@ -248,12 +263,26 @@ class PollMixin:
         budget = self.budget_for(task)
         if budget and self.spent_for(task.key) >= budget:
             return False, f"phase {task.key} is over budget"
+        guarded = self._guarded_diff_paths(task)
+        if guarded:
+            shown = ", ".join(guarded[:3]) + (" …" if len(guarded) > 3 else "")
+            return False, f"the diff touches guarded paths ({shown}); merge by hand"
         if require_scratch and hard_tier and not self._scratch_merge_verified(task):
             sm = st.get("scratch_merge") or {}
             if str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "") and not sm.get("ok"):
                 return False, f"the hard-tier scratch-merge check failed ({sm.get('checks') or 'checks'})"
             return False, "the hard-tier scratch-merge check has not passed for this revision"
         return True, ""
+
+    def _guarded_diff_paths(self, task: Task) -> list[str]:
+        """The PR's changed paths that are too sensitive to automerge — garden*.yaml, any
+        **/tasks/ file, .github/ or principles/. Empty (so the gate passes) when the worktree
+        is absent and the diff cannot be read."""
+        worktree = self.worktree_for(task)
+        if not worktree.exists():
+            return []
+        base = self.final_base_for(task)
+        return [p for p in gitops.diff_names(worktree, base) if _touches_guarded_path(p)]
 
     def _maybe_automerge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
         """Decide whether this PR is a merge candidate. When automerge is on and every gate is
