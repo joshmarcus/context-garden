@@ -322,6 +322,19 @@ document.querySelectorAll("[data-poll]").forEach(el => {
     try { const r = await fetch(el.dataset.poll, {cache: "no-store"}); if (r.ok) el.innerHTML = await r.text(); } catch (e) {}
   }, every);
 });
+// ---- product select drives a dependent phase select (e.g. the friction-report form) so the
+// pair can never name a phase under the wrong product.
+document.querySelectorAll("[data-phases]").forEach(productSel => {
+  const phaseSel = document.getElementById(productSel.dataset.phaseTarget);
+  if (!phaseSel) return;
+  const phasesByProduct = JSON.parse(productSel.dataset.phases || "{}");
+  function fillPhases() {
+    phaseSel.innerHTML = "";
+    (phasesByProduct[productSel.value] || []).forEach(name => phaseSel.appendChild(new Option(`${productSel.value}/${name}`, name)));
+  }
+  fillPhases();
+  productSel.addEventListener("change", fillPhases);
+});
 document.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", e => {
   e.preventDefault(); const t = document.getElementById(b.dataset.toggle); if (t) { t.hidden = !t.hidden; if (!t.hidden) { const f = t.querySelector("textarea,input"); if (f) f.focus(); } }
 }));

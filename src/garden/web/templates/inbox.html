@@ -89,12 +89,10 @@
     <div class="eyebrow">Report friction about this process</div>
     <form method="post" action="/friction-report" style="margin-top:8px">
       <input type="hidden" name="page" value="/inbox">
-      <select name="product" style="margin-bottom:6px">
-        {% for p in products %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+      <select name="product" data-phases='{{ phases_by_product|tojson }}' data-phase-target="friction-phase" style="margin-bottom:6px">
+        {% for p in products if p.phases %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
       </select>
-      <select name="phase" style="margin-bottom:6px">
-        {% for p in products %}{% for ph in p.phases %}<option value="{{ ph.name }}">{{ p.name }}/{{ ph.name }}</option>{% endfor %}{% endfor %}
-      </select>
+      <select name="phase" id="friction-phase" style="margin-bottom:6px"></select>
       <textarea name="text" placeholder="What felt slow, unclear, or missing?" required style="width:100%;box-sizing:border-box"></textarea>
       <div class="actions" style="margin-top:6px"><button class="primary">File report</button></div>
     </form>

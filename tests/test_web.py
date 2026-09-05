@@ -574,6 +574,26 @@ def test_friction_form_in_inbox_and_task(garden):
     assert "Report friction" in c.get("/tasks/DM-001").text
 
 
+def test_friction_form_phase_select_is_scoped_per_product(garden):
+    """CG-157: the inbox friction form used two independent selects, so a phase belonging to
+    one product could be submitted alongside another product and 404. The phase select is now
+    built client-side from a per-product map, so it can only ever offer phases of the chosen
+    product."""
+    import json
+    import re
+
+    from tests.conftest import write
+
+    write(garden / "acme" / "product.md", "# acme\n\nAnother product.\n")
+    write(garden / "acme" / "q1" / "goals.md", "# q1\n\nShip it.\n")
+
+    html = client(garden).get("/").text
+    assert '<select name="phase" id="friction-phase" style="margin-bottom:6px"></select>' in html
+    m = re.search(r"data-phases='([^']*)'", html)
+    assert m, "expected the product select to carry a data-phases map"
+    assert json.loads(m.group(1)) == {"demo": ["p1"], "acme": ["q1"]}
+
+
 def test_config_page_renders(garden):
     c = client(garden)
     r = c.get("/config")
