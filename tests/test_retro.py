@@ -10,6 +10,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -207,6 +208,25 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     # nothing edited the live garden's own docs
     assert not (root / "gdn" / "p1" / "docs" / "retro.md").exists()
     assert not (root / "gdn" / "p2").exists()
+
+
+def test_retro_skip_personas_refuses_to_dispatch_with_no_reports_on_disk(tmp_path, fake_github, monkeypatch):
+    """CG-160: `--skip-personas` means "reuse whatever's there", not "reconcile with nothing".
+    Requesting a persona with no report at all yet must not silently dispatch the
+    reconciliation with an empty Persona reviews section."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    # "usability-expert" has no report under docs/reviews/ (only "designer" does)
+    with pytest.raises(RuntimeError, match="usability-expert"):
+        sched.start_retro(ph, ["usability-expert"], skip_personas=True)
+    assert not sched._retro_list(), "no retro entry should have been recorded"
+    assert not fake_github.created
 
 
 def test_retro_runs_missing_personas_first_then_reconciles(tmp_path, fake_github, monkeypatch):
