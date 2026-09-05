@@ -44,13 +44,13 @@ def plate_filename(key: str, thumb: bool = False) -> str:
 
 STAGE: dict[str, str] = {
     "draft": "st-seed", "ready": "st-sprout", "running": "st-leaf", "waiting_human": "st-tag", "awaiting_triage": "st-bud",
-    "in_review": "st-flower", "changes_requested": "st-cut", "done": "st-fruit", "failed": "st-wilt", "cancelled": "st-pressed",
-    "wont_do": "st-fallow", "blocked": "st-seed",
+    "in_review": "st-flower", "merged_into_parent": "st-flower", "changes_requested": "st-cut", "done": "st-fruit",
+    "failed": "st-wilt", "cancelled": "st-pressed", "wont_do": "st-fallow", "blocked": "st-seed",
 }
 STAGE_WORD: dict[str, str] = {
     "draft": "seed", "ready": "sprout", "running": "in leaf", "waiting_human": "bud, tagged", "awaiting_triage": "in bud",
-    "in_review": "in flower", "changes_requested": "pruned", "done": "in fruit", "failed": "wilted", "cancelled": "pressed",
-    "wont_do": "set aside", "blocked": "seed, waiting",
+    "in_review": "in flower", "merged_into_parent": "in flower, merged upstream", "changes_requested": "pruned",
+    "done": "in fruit", "failed": "wilted", "cancelled": "pressed", "wont_do": "set aside", "blocked": "seed, waiting",
 }
 
 # The sprout: the "ready" growth stage, the mark beside the wordmark in the web header
