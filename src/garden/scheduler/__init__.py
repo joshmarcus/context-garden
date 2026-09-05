@@ -44,6 +44,7 @@ from .kickoff import KickoffMixin
 from .persona import PersonaMixin
 from .poll import PollMixin
 from .queue import QueueMixin
+from .quota import QuotaMixin
 from .reap import ReapMixin
 from .rebase import RebaseMixin
 from .report import TickReport
@@ -75,6 +76,7 @@ class Scheduler(
     DispatchMixin,
     HumanMixin,
     AuxMixin,
+    QuotaMixin,
     TrialsMixin,
     PersonaMixin,
     RetroMixin,
@@ -478,6 +480,8 @@ class Scheduler(
                     self.log(f"{t.id}: base re-probe failed: {e}")
         with self._step(rep, "merge_queue"):
             self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
+        with self._step(rep, "harness_probe"):
+            self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():

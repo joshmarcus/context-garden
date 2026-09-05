@@ -120,6 +120,27 @@ class LocalRunner(Runner):
         assert self.harness is not None
         return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md", model=run.model)
 
+    def probe(self, prompt: str, cwd: Path) -> dict[str, Any]:
+        assert self.harness is not None
+        cwd.mkdir(parents=True, exist_ok=True)
+        argv = self.harness.command()
+        resolved = shutil.which(self.harness.bin) or self.harness.bin
+        if argv and argv[0] == self.harness.bin and resolved != self.harness.bin:
+            argv = [resolved] + argv[1:]
+        env = scrubbed_env(self.config, dict(self.config.get("setup") or {}), worktree=cwd)
+        try:
+            stdout, stderr = self._probe_launch(argv, prompt, cwd, env)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return {"final_text": "", "usage": {}, "cost_usd": None, "session_id": "", "result": {},
+                    "error": str(e), "env_error": True, "env_kind": "probe_failed"}
+        return self.harness.parse(stdout, stderr)
+
+    def _probe_launch(self, argv: list[str], prompt: str, cwd: Path, env: dict[str, str]) -> tuple[str, str]:
+        """The actual invocation, split out so the test suite's in-process runner can call the
+        fake harness synchronously instead of spawning a real process (see tests/inprocess.py)."""
+        proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, cwd=str(cwd), env=env, timeout=90)
+        return proc.stdout, proc.stderr
+
     def doctor(self) -> list[str]:
         if os.name == "nt":
             return ["local runner: Windows is not supported; run garden in WSL (Windows Subsystem for Linux) instead"]

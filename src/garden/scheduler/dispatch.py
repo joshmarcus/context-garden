@@ -63,6 +63,8 @@ class DispatchMixin:
             runner = self.runner_for(task)
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
+            if runner.harness and self.is_harness_paused(runner.harness.name):
+                continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
@@ -207,6 +209,12 @@ class DispatchMixin:
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
         st.pop("needs_human", None)
+        # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
+        # worktree's stash (further below) can both name themselves after the run about to
+        # reuse it; every later mutation just sets attributes on this same object before its
+        # final run.save() near the bottom of this method.
+        run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
+        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
@@ -240,8 +248,7 @@ class DispatchMixin:
         # origin's head first so this run starts from the same head, instead of racing a stale
         # local copy toward a rejected push (CG-220). Any commits sitting only in the worktree —
         # a killed prior run's progress — are kept on `backup/<run-id>`, never silently dropped.
-        # The reservation and the run created below share the same id (see RunStore.next_run_id).
-        run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
+        # run_id was reserved above, alongside the run itself (see RunStore.next_run_id).
         if run_id and worktree and not runner.remote:
             backed_up = gitops.sync_to_origin_head(wt_path, branch, f"backup/{run_id}")
             if backed_up:
@@ -278,7 +285,6 @@ class DispatchMixin:
         else:
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
             text = prompt_override or brief.text
-        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")

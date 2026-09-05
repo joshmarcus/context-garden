@@ -140,6 +140,14 @@ class ReapMixin:
             self._fence_fail(task, run, violations, rep)
             return
 
+        if collected.get("env_error"):
+            # A quota/spend-limit message from the harness's own account, not the worker's
+            # doing: close the run without counting an attempt, pause dispatch for this
+            # harness (a cheap probe resumes it later, see QuotaMixin), and put the task
+            # straight back to ready instead of burning it toward failed.
+            self._handle_quota_env_error(task, run, rep, collected)
+            return
+
         if run.exit_code not in (0, None) and not result:
             run.status = "failed"
             run.save()
@@ -612,6 +620,26 @@ class ReapMixin:
         plural = "s" if n != 1 else ""
         return n, (f"; the prior attempt made real progress — {n} commit{plural} already on `{branch}`, "
                    f"kept in the worktree and listed for the next run to continue from")
+
+    def _handle_quota_env_error(self, task: Task, run: Run, rep: TickReport, collected: dict[str, Any]) -> None:
+        """A quota/spend-limit stop: the harness's account, not the task, is at fault. Undo
+        the attempt dispatch() counted when this run started (revise/rebase/resume never
+        counted one), pause dispatch for the harness, and send the task back to ready with
+        nothing burned."""
+        kind = str(collected.get("env_kind") or "quota")
+        run.status = "env_error"
+        run.save()
+        if run.mode == "work":
+            task.attempts = max(0, task.attempts - 1)
+        harness_name = run.harness or ""
+        reason = f"{kind} limit hit on {harness_name or 'the harness'}"
+        if harness_name:
+            self.pause_harness(harness_name, reason, run_id=run.run_id)
+        note = f"environment stop ({kind}): {reason}; not counted as an attempt"
+        if harness_name:
+            note += f"; dispatch paused for {harness_name} until a probe succeeds"
+        self._transition(task, Status.READY, note)
+        rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))
