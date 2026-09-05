@@ -59,7 +59,7 @@
       {% if plate_src %}<div class="plate-mount"><img class="plate" src="{{ plate_src }}" alt="{{ sheet.info.latin }}, plate from {{ PLATE_CREDIT }}" width="300" height="420"></div>
       {% else %}<div style="display:flex; justify-content:center">{{ plant(phase.plant, 240, 360) }}</div>{% endif %}
       <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
-      <div class="lbl" style="right:16px; bottom:16px"><b>{{ phase.product }} · plate {{ phase.plate }}</b><br>{{ phase.name }}<br><i>{{ sheet.info.latin }}</i> — {{ sheet.info.common }}<br>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done{% if summary.has_records %} · {{ summary.prs_merged }} merged<br>closed {{ phase.closed }} · spent ${{ '%.2f' % spent }}{% else %}<br>closed {{ phase.closed }} · <span class="muted">no run records</span>{% endif %}{% if plate_src %}<br><span class="muted">plate: {{ PLATE_CREDIT }}</span>{% endif %}</div>
+      <div class="lbl" style="right:16px; bottom:16px"><b>{{ phase.product }} · plate {{ phase.plate }}</b><br>{{ phase.name }}<br><i>{{ sheet.info.latin }}</i> — {{ sheet.info.common }}<br>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done{% if summary.has_records %} · {{ summary.prs_merged }} merged<br>closed {{ phase.closed }} · spent ${{ '%.2f' % spent }}{% else %}<br>closed {{ phase.closed }} · <span class="muted">no run records</span>{% endif %}{% if plate_src %}<br><span class="muted">plate: {{ PLATE_CREDIT }}{% if sheet.info.get('plate_note') %}, {{ sheet.info.plate_note }}{% endif %}</span>{% endif %}</div>
       <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
     </div>
     <div class="panel"><div class="eyebrow">Artifacts</div>
