@@ -34,6 +34,7 @@ from ..store import Store
 from ..trials import TrialLog
 from .aux import AuxMixin
 from .budget import BudgetMixin
+from .checkruns import CheckRunMixin
 from .discovered import DiscoveredMixin
 from .dispatch import DispatchMixin
 from .edits import EditsMixin
@@ -54,11 +55,13 @@ __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
+CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge check; also holds a slot
 
 
 class Scheduler(
     BudgetMixin,
     ReapMixin,
+    CheckRunMixin,
     RebaseMixin,
     FenceMixin,
     DiscoveredMixin,
@@ -226,8 +229,13 @@ class Scheduler(
         """Active runs that occupy a `review_parallel` slot: review, persona, comparison."""
         return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
 
+    def check_runs_active(self) -> list[Run]:
+        """Active check runs (pre-PR, base probe, pre-merge). Like a worker run, one runs a
+        product's suite, so it holds a `max_parallel` slot until it is reaped (CG-182)."""
+        return [r for r in self.active_runs() if r.mode in CHECK_MODES]
+
     def slots_free(self) -> int:
-        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
+        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active()))
 
     def review_parallel_limit(self) -> int:
         limit = self.cfg.get("review_parallel")
@@ -252,6 +260,8 @@ class Scheduler(
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()
         for t in self.store.tasks().values():
+            if self.state.get(t.id).get("check_run"):
+                continue  # its worker run is done and the check run owns the continuation (CG-182)
             run = self.latest_worker_run(t.id)
             if self._is_unreaped(t, run):
                 out.add(run.run_id)
@@ -334,8 +344,11 @@ class Scheduler(
                     if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
                         rep.reaped.append(t.id)
                         continue
-                    if self.state.get(t.id).get("check_run") and self.reap_check(t, rep):
-                        rep.reaped.append(t.id)
+                    if self.state.get(t.id).get("check_run"):
+                        # A check run in flight owns this task's continuation: reap it when it
+                        # finishes, and never let the worker reaper touch the task meanwhile.
+                        if self.reap_check(t, rep):
+                            rep.reaped.append(t.id)
                         continue
                     if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
                         if self.reap_trial(t, rep):
@@ -360,6 +373,8 @@ class Scheduler(
         tasks = self.store.tasks()
         with self._step(rep, "poll"):
             for t in list(tasks.values()):
+                if self.state.get(t.id).get("check_run"):
+                    continue  # a check run in flight owns this task; don't re-poll it (CG-182)
                 if t.pr and t.status.pr_pending:
                     try:
                         self.poll(t, rep)

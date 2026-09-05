@@ -57,14 +57,22 @@ def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     # Passes at the base (no worker-output.txt yet), so the base probe (CG-131) sees a clean
     # base and this stays a branch-owned failure: fails on the first run's "1", passes on "2".
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": f"touch {marker}; if [ -f worker-output.txt ]; then grep -qx 2 worker-output.txt; fi"}], "ci": []}
-    sched.tick()
-    rep = sched.tick()  # first worker output is "1" -> check fails -> no PR, revise queued and dispatched
+    # Checks are detached run records (CG-182): the worker's push starts a pre-PR check run,
+    # reaped a tick later; a failure probes the base (another check run) before the revise round.
+    dispatched: set[str] = set()
+    transitions: set[str] = set()
+    for _ in range(8):
+        rep = sched.tick()
+        dispatched |= set(rep.dispatched)
+        transitions |= set(rep.transitions)
+        if statuses(sched)["DM-001"] == "in_review":
+            break
     assert marker.exists()
-    assert "DM-001 -> changes_requested (checks)" in rep.transitions and "DM-001(revise)" in rep.dispatched
-    assert fake_github.created == []
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert any(d.startswith("DM-001(check:") for d in dispatched)
+    assert "DM-001 -> changes_requested (checks)" in transitions and "DM-001(revise)" in dispatched
+    revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
+    brief = (revise.path / "brief.md").read_text()
     assert "pre-PR check" in brief and "unit" in brief
-    rep = sched.tick()  # revise bumps output to "2" -> check passes -> PR opened
     assert statuses(sched)["DM-001"] == "in_review" and len(fake_github.created) == 1
 
 

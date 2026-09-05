@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
-from ..checks import failures as check_failures
 from ..checks import run_checks, to_feedback
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
@@ -296,88 +295,6 @@ class ReapMixin:
             self.events.emit("check", task.id, stage="pre_pr", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
         return results
 
-    def _probe_checks_at_base(self, task: Task, worktree: Path, branch: str, base: str,
-                              failed: list[dict[str, Any]]) -> tuple[str, bool, list[dict[str, Any]]]:
-        """Run the failed pre-PR checks at the branch's base commit (its merge base with `base`),
-        in a throwaway detached worktree. Returns (base_sha, moved, base_failures): `moved` is
-        True when the base branch's tip has advanced past that commit since the branch was cut,
-        and `base_failures` is the subset of `failed` checks that also fail at the base — empty
-        when every failure is the branch's own doing."""
-        repo = self.repo_for(task)
-        gitops.fetch(worktree)
-        ref = gitops.base_ref(worktree, base)
-        base_sha = gitops.merge_base(worktree, ref)
-        moved = bool(base_sha) and gitops.rev_parse(worktree, ref) != base_sha
-        names = {str(f.get("name")) for f in failed}
-        specs = [s for s in self._pre_pr_specs(task) if str(s.get("name")) in names]
-        probe = worktree.parent / f"{worktree.name}.base-probe"
-        gitops.remove_worktree(repo, probe)
-        try:
-            gitops.add_detached_worktree(repo, probe, base_sha)
-            results = self._run_specs_in(task, specs, probe, branch, base)
-        finally:
-            gitops.remove_worktree(repo, probe)
-        for r in results:
-            self.events.emit("check", task.id, stage="base_probe", name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
-        return base_sha, moved, check_failures(results)
-
-    def _handle_failed_checks(self, task: Task, run: Run, worktree: Path, branch: str, base: str,
-                              failed: list[dict[str, Any]], rep: TickReport, cost: str) -> str:
-        """Route a pre-PR check failure. Probe the branch's base first: if the same check fails
-        at the merge base too, the failure is not this branch's. A base that has moved is rebased
-        and the checks re-run without a worker (return "pass" if they go green); a base that has
-        not moved means the base branch itself is broken — the task parks on a card, no revise
-        round, no spend. Only a failure the branch actually owns starts a revise round. Returns
-        "pass" when the checks now pass and the caller should open the PR, else "done"."""
-        try:
-            base_sha, moved, base_failures = self._probe_checks_at_base(task, worktree, branch, base, failed)
-        except gitops.GitError as e:
-            self.log(f"{task.id}: base probe failed ({e}); treating the failure as this branch's")
-            base_failures = []
-        if base_failures:
-            names = ", ".join(str(f.get("name")) for f in base_failures)
-            self.events.emit("check_base", task.id, base=base_sha, checks=names, moved=moved)
-            self.log(f"{task.id}: pre-PR check(s) {names} fail at base {base_sha[:12]}; not this branch")
-            if moved:
-                try:
-                    ok, _ = gitops.rebase_onto(worktree, gitops.base_ref(worktree, base))
-                except gitops.GitError:
-                    ok = False
-                if ok:
-                    try:
-                        gitops.push(worktree, branch, force=True)
-                    except gitops.GitError as e:
-                        self.log(f"{task.id}: push after base rebase failed: {e}")
-                    rerun = check_failures(self._pre_pr_checks(task, worktree, branch, base))
-                    if not rerun:
-                        task.log(f"pre-PR check(s) {names} failed at the stale base {base_sha[:12]}; the base branch "
-                                 f"`{base}` had moved, so rebased onto it and the checks pass now — no revise round")
-                        self.store.save(task)
-                        self.events.emit("rebased_stale_base", task.id, base=base, base_sha=base_sha, resolved=True)
-                        rep.transitions.append(f"{task.id} rebased onto moved {base}; checks green")
-                        return "pass"
-                    self.events.emit("rebased_stale_base", task.id, base=base, base_sha=base_sha, resolved=False)
-                    self._start_check_revise(task, rerun, rep, cost, note=f" (still failing after a rebase onto `{base}`)")
-                    return "done"
-                # the rebase didn't apply cleanly; let a revise round resolve it. This is a
-                # stale-base rebase (CG-131), not a revision round: it must not count toward
-                # max_revisions.
-                self._start_check_revise(task, failed, rep, cost, is_rebase=True)
-                return "done"
-            # the base branch has not moved: it is itself broken. Park the task; no revise, no spend.
-            # Remember the base and its current tip so a later tick can tell when it has moved and
-            # continue on its own (see _reprobe_base_broken), no worker and no person needed.
-            reason = (f"base branch `{base}` is itself broken — pre-PR check(s) {names} fail at its own commit "
-                      f"{base_sha[:12]}, not because of this branch")
-            self._set_needs_human(task, "base_broken", reason, base=base, base_sha=base_sha)
-            self.events.emit("needs_human", task.id, stop_kind="base_broken", reason=reason)
-            self._transition(task, Status.CHANGES_REQUESTED, f"{reason}; waiting for the base to go green, no revise round{cost}", needs_human=True)
-            rep.transitions.append(f"{task.id} -> changes_requested (base broken)")
-            return "done"
-        # the base is clean: this branch owns the failure.
-        self._start_check_revise(task, failed, rep, cost)
-        return "done"
-
     def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "",
                             is_rebase: bool = False) -> None:
         """Queue a revise round (or hand off to a human at the cap) for a pre-PR check the branch
@@ -468,6 +385,8 @@ class ReapMixin:
             ok, files = False, [str(e)]
         run = self.runs.new_run(task.id, "local", mode="rebase")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+        specs = self._pre_pr_specs(task)
+        cont = self._pre_pr_cont(run, wt, branch, base, "")
         if not ok:
             # the rebase does not apply cleanly: hand it to the normal revise path, and only then.
             run.status = "failed"
@@ -476,8 +395,11 @@ class ReapMixin:
             run.save()
             self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
             st.pop("needs_human", None)
-            failed = check_failures(self._pre_pr_checks(task, wt, branch, base))
-            self._start_check_revise(task, failed, rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
+            if specs:
+                self._dispatch_check_run(task, worktree=wt, branch=branch, base=base, specs=specs,
+                                         stage="reprobe_conflict", rep=rep, cont=cont)
+            else:
+                self._start_check_revise(task, [], rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
             rep.transitions.append(f"{task.id} base moved but rebase conflicted; revise")
             return True
         try:
@@ -498,24 +420,21 @@ class ReapMixin:
         run.save()
         st["rebases"] = int(st.get("rebases", 0)) + 1
         self.events.emit("run_finished", task.id, run=run.run_id, mode="rebase", cost_usd=0.0, usage={}, status="done")
-        failed = check_failures(self._pre_pr_checks(task, wt, branch, base))
-        if failed:
-            # Still red after the rebase. Route through the normal probe: it re-parks the task
-            # (with the new base tip) if the moved base is broken too, or starts a revise round
-            # for a failure the branch now owns — and only then.
-            self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
-            st.pop("needs_human", None)
-            self._handle_failed_checks(task, run, wt, branch, base, failed, rep, "")
+        if specs:
+            # Re-run the pre-PR checks as a detached check run; the continuation (`_after_reprobe_check`)
+            # opens the PR on green or routes a failure through the base probe.
+            self._dispatch_check_run(task, worktree=wt, branch=branch, base=base, specs=specs,
+                                     stage="reprobe", rep=rep, cont={**cont, "base_sha": tip})
             return True
-        # Green: clear the stop and open or update the PR, all without a worker run.
+        # No checks configured: the base recovered, so clear the stop and open the PR directly.
         st.pop("needs_human", None)
         st.pop("automerge_blocked", None)
         self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
-        task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it and the pre-PR "
-                 f"checks pass now — continuing without a worker run")
+        task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it "
+                 f"and continuing without a worker run")
         self.store.save(task)
-        self.log(f"{task.id}: base `{base}` recovered; rebased and re-checked green, continuing on its own")
-        rep.transitions.append(f"{task.id} rebased onto recovered {base}; checks green")
+        self.log(f"{task.id}: base `{base}` recovered; rebased, continuing on its own")
+        rep.transitions.append(f"{task.id} rebased onto recovered {base}")
         self._open_or_update_pr(task, run, branch, base, self._last_worker_result(task), rep, "")
         return True
 
@@ -557,13 +476,16 @@ class ReapMixin:
                 body_unchanged = body_h == st.get("last_pr_body_hash", "")
                 if diff_unchanged and body_unchanged:
                     stalled = True
-        failed = check_failures(self._pre_pr_checks(task, worktree, branch, base))
-        if failed and not stalled:
-            # A failing check may be the branch's fault, or a stale/broken base. Probe the base
-            # before spending a revise round; only "pass" (rebased onto a moved base, now green)
-            # falls through to open the PR.
-            if self._handle_failed_checks(task, run, worktree, branch, base, failed, rep, cost) != "pass":
-                return
+        # Pre-PR checks run as a detached check run, started here and reaped on a later tick
+        # (CG-182): only the git scaffolding stays in the tick. The continuation (see
+        # `_after_pre_pr_check`) probes the base on a failure and opens the PR when green. A
+        # stalled revise round skips the checks and goes straight to the PR, then stalls.
+        specs = [] if stalled else self._pre_pr_specs(task)
+        if specs and worktree.exists():
+            self._dispatch_check_run(task, worktree=worktree, branch=branch, base=base, specs=specs,
+                                     stage="pre_pr", rep=rep,
+                                     cont=self._pre_pr_cont(run, worktree, branch, base, cost, diff_h, body_h, stalled))
+            return
         # Save hashes only after the round reaches the PR; failed pre-PR rounds are not recorded.
         # A rebase round is the exception: `_rebase_review_or_keep` must compare the new diff
         # against the reviewed hash before it is overwritten, so it owns `last_diff_hash`.
@@ -699,6 +621,9 @@ class ReapMixin:
                 rid = st.get(key)
                 if rid:
                     owned.add(str(rid))
+            check_rid = (st.get("check_run") or {}).get("run_id")
+            if check_rid:
+                owned.add(str(check_rid))
             for c in (st.get("trial", {}).get("contenders") or []):
                 if isinstance(c, dict) and c.get("run_id"):
                     owned.add(str(c["run_id"]))
