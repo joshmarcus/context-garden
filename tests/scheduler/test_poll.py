@@ -117,7 +117,6 @@ def test_untrusted_feedback_is_logged_once_and_never_dispatched(sched, fake_gith
     an event) but never becomes a revise brief; the same comment is not logged again on the
     next poll."""
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
