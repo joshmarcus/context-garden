@@ -32,6 +32,7 @@
   <p style="color:var(--muted);margin:0 0 10px">
     garden.yaml: <strong>{{ max_parallel_file }}</strong>
     {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
+    {% if max_parallel_source == "profile" %} · effective now: <strong>{{ max_parallel_value }}</strong> (from the operating profile <span class="mono">{{ operating_profile_active }}</span>, below){% endif %}
   </p>
   <form method="post" action="/config/max-parallel" class="actions" data-autosave>
     <label class="muted" for="max-parallel-override">live override</label>
@@ -43,12 +44,56 @@
   <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
 </div>
 
+{% set profile_source = "live override" if operating_profile_override else ("garden.yaml" if operating_profile_file else "") %}
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">CG-221</div>
+  <h3>Operating profile</h3>
+  <p style="color:var(--muted);margin:0 0 10px">
+    garden.yaml: <strong>{{ operating_profile_file or "(none)" }}</strong>
+    {% if operating_profile_override %} · live override: <strong>{{ operating_profile_override }}</strong> (in effect){% else %} · no live override{% endif %}
+    {% if profile_source %} · active stop set by {{ profile_source }}{% endif %}
+  </p>
+  <form method="post" action="/config/operating-profile" class="actions" data-autosave>
+    <label class="muted" for="operating-profile-override">live override</label>
+    <select id="operating-profile-override" name="value" onchange="this.form.requestSubmit()">
+      <option value="" {% if not operating_profile_override %}selected{% endif %}>none — plain garden.yaml values</option>
+      {% for name in operating_profile_stop_names %}
+      <option value="{{ name }}" {% if operating_profile_override == name %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit">Switch</button></noscript>
+    <span class="autosave-mark" aria-live="polite"></span>
+  </form>
+  <p class="muted" style="margin:8px 0 0">
+    Sets workers, reviews, the model tier map, the review and retro tiers and the observe
+    profile together, within one tick, no restart. A more specific live override (e.g.
+    max_parallel above) still wins for that one knob.
+  </p>
+  <table style="margin-top:10px; font-size:12.5px">
+    <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>observe</th></tr>
+    {% for row in operating_profile_rows %}
+    <tr{% if row.active %} style="font-weight:700"{% endif %}>
+      <td class="mono">{{ row.name }}{% if row.active %} (active){% endif %}</td>
+      <td>{{ row.workers if row.workers is not none else "—" }}</td>
+      <td>{{ row.reviews if row.reviews is not none else "—" }}</td>
+      <td>{{ row.review_difficulty or "—" }}</td>
+      <td>{{ row.retro_difficulty or "—" }}</td>
+      <td>{{ row.observe or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted" style="margin:8px 0 0">
+    {% for row in operating_profile_rows %}<span class="mono">{{ row.name }}</span>: {{ row.meaning }}<br>{% endfor %}
+  </p>
+</div>
+
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">garden observe</div>
   <h3>Profile</h3>
   <p style="color:var(--muted);margin:0 0 10px">
     garden.yaml: <strong>{{ observe_profile_file or "(none — base observe: fields)" }}</strong>
     {% if observe_profile_override %} · live override: <strong>{{ observe_profile_override }}</strong> (in effect){% else %} · no live override{% endif %}
+    {% if observe_profile_source == "profile" %} · effective now: <strong>{{ observe_profile_effective }}</strong> (from the operating profile <span class="mono">{{ operating_profile_active }}</span>, above){% endif %}
   </p>
   <form method="post" action="/config/observe-profile" class="actions" data-autosave>
     <label class="muted" for="observe-profile-override">live override</label>

@@ -328,6 +328,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       {% for r in running %}<div class="r"><span class="dot"></span><a href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.mode }}{% if r.model %} · {{ r.model }}{% endif %} · {{ r.minutes }} min{% if r.idle %} · <span class="idle">idle {{ r.idle }} min</span>{% endif %}</span></div>{% else %}<span class="faint">nothing running</span>{% endfor %}
     </div>
   </div>
+  <div>
+    <h4>Operating profile</h4>
+    <form method="post" action="/config/operating-profile" data-autosave style="display:flex; flex-direction:column; gap:4px">
+      <select name="value" onchange="this.form.requestSubmit()" style="width:100%; font:12.5px/1.4 var(--mono)" aria-label="Operating profile">
+        <option value="" {% if not operating_profile %}selected{% endif %}>plain garden.yaml values</option>
+        {% for name in operating_profile_names %}<option value="{{ name }}" {% if operating_profile == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+      <noscript><button type="submit" class="quiet">Switch</button></noscript>
+      <span class="autosave-mark" aria-live="polite"></span>
+    </form>
+    {% if operating_profile_meaning %}<span class="faint" style="display:block; margin-top:2px">{{ operating_profile_meaning }}</span>{% endif %}
+    {% if operating_profile_spend_rate %}<span class="faint" style="display:block">${{ '%.2f' % operating_profile_spend_rate }}/hr last hour</span>{% endif %}
+  </div>
   <div class="notify" id="notify">
     <label class="check"><input type="checkbox" id="notify-toggle"> Notify me in this browser</label>
     <span class="notify-state faint" id="notify-state"></span>

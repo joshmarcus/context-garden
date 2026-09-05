@@ -16,10 +16,11 @@ import markdown as md
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
-from ..events import EventLog, metrics
+from ..events import EventLog, metrics, parse_since
 from ..graph import blockers, effective_status, validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import Status, dispatch_sort_key, now_iso
+from ..profiles import describe as describe_stop
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
@@ -150,6 +151,8 @@ class Site:
         sched = hub.reader()
         items = build_inbox(s, sched)
         ctrl = sched.control()
+        stops = sched.operating_profile_stops()
+        active = sched.operating_profile_name()
         return {
             "request": request,
             "page": page,
@@ -172,6 +175,10 @@ class Site:
             "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
             "flash": request.query_params.get("flash", ""),
             "flash_note": request.query_params.get("flash_note", ""),
+            "operating_profile_names": list(stops),
+            "operating_profile": active,
+            "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
+            "operating_profile_spend_rate": RunStore(s.config.garden_dir).spend_since(parse_since("1h")),
             **kw,
         }
 
