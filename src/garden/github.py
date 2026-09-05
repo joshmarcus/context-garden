@@ -396,6 +396,17 @@ class GitHub:
             except GitHubError:
                 pass
 
+    def issue_comments(self, slug: str, number: int) -> list[str]:
+        """Every issue-comment body on a PR, oldest first. Best-effort: [] on error."""
+        try:
+            if self.gh:
+                data = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/comments", "--paginate") or "[]")
+            else:
+                data = self._rest("GET", f"/repos/{slug}/issues/{number}/comments", params={"per_page": 100}) or []
+        except GitHubError:
+            return []
+        return [str(c.get("body") or "") for c in data]
+
     def comment(self, slug: str, number: int, body: str) -> None:
         if GARDEN_MARKER not in body:
             body = body.rstrip() + "\n\n" + GARDEN_MARKER

@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from .store import Store
 
 
+FRICTION_COMMENT_MARKER = "<!-- garden-friction -->"
+
+
 def extract_friction(body: str) -> str:
     """Return the text under ## Friction in a markdown document, stripped."""
     if not body:
@@ -29,6 +32,40 @@ def extract_friction(body: str) -> str:
                 break
             out.append(line)
     return "\n".join(out).strip()
+
+
+def friction_items(result: dict) -> list[str]:
+    """Normalise a worker result's `friction` field to a list of non-empty strings.
+
+    Friction now travels in its own result field (a list of short items), not in the PR
+    body. A bare string is tolerated as a single item.
+    """
+    raw = result.get("friction") if isinstance(result, dict) else None
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(i).strip() for i in raw if str(i).strip()]
+
+
+def friction_comment(items: list[str]) -> str:
+    """Render friction items as the body of one marked PR comment."""
+    bullets = "\n".join(f"- {i}" for i in items)
+    return f"**Friction reported**\n\n{bullets}\n\n{FRICTION_COMMENT_MARKER}"
+
+
+def friction_from_comment(body: str) -> list[str]:
+    """Extract friction items from a marked friction comment, or [] if it isn't one."""
+    if not body or FRICTION_COMMENT_MARKER not in body:
+        return []
+    items: list[str] = []
+    for line in body.splitlines():
+        m = re.match(r"^\s*[-*]\s+(.*\S)\s*$", line)
+        if m:
+            items.append(m.group(1).strip())
+    return items
 
 
 def pr_body_for(task: Task, run_store: RunStore, github: GitHub | None = None, slug: str | None = None) -> str:
@@ -108,6 +145,45 @@ def write_friction_doc(path: Path, entries: list[tuple[Any, str, str]]) -> None:
         lines.append("\n" + reported + "\n")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(lines))
+
+
+def record_friction(path: Path, items: list[str], provenance: str, date: str) -> list[str]:
+    """Append friction `items` under ## Reported in `path`, skipping any already present.
+
+    Returns the items that were newly written. Used by the scheduler when a worker reports
+    friction, and by `garden friction` when reconciling marked PR comments into the record.
+    """
+    existing = path.read_text() if path.exists() else ""
+    fresh = [i for i in items if i and i not in existing]
+    if fresh:
+        append_friction_report(path, "\n".join(f"- {i}" for i in fresh), provenance, date)
+    return fresh
+
+
+def collect_comment_friction(phase: Phase, github: GitHub | None, slug: str | None) -> list[tuple[Any, list[str]]]:
+    """Marked friction comments on each task's PR: [(task, [items])]. Empty without GitHub."""
+    out: list[tuple[Any, list[str]]] = []
+    if github is None or not slug or not getattr(github, "available", False):
+        return out
+    fn = getattr(github, "issue_comments", None)
+    if not callable(fn):
+        return out
+    for task in phase.tasks:
+        m = re.search(r"/pull/(\d+)", getattr(task, "pr", "") or "")
+        if not m:
+            continue
+        items: list[str] = []
+        try:
+            bodies = list(fn(slug, int(m.group(1))))
+        except Exception:
+            bodies = []
+        for body in bodies:
+            for it in friction_from_comment(body):
+                if it not in items:
+                    items.append(it)
+        if items:
+            out.append((task, items))
+    return out
 
 
 def append_friction_report(path: Path, text: str, provenance: str, date: str) -> None:
