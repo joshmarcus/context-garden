@@ -127,6 +127,8 @@ def retro(call: Call) -> None:
     friction_ids = re.findall(r"^### (\S+):", fsec.group(0), flags=re.M) if fsec else []
     msec = re.search(r"## Merged pull requests.*?(?=\n## |\Z)", call.brief, flags=re.S)
     merged_ids = re.findall(r"^- (\S+) —", msec.group(0), flags=re.M) if msec else []
+    tsec = re.search(r"## Phase task list with statuses.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    task_titles = re.findall(r"^- \S+ \[\S+\] (.+)$", tsec.group(0), flags=re.M) if tsec else []
     cycle = ["fixed", "still_true", "outdated", "disputed"]
     recon = []
     for i, fid in enumerate(friction_ids):
@@ -134,9 +136,20 @@ def retro(call: Call) -> None:
         recon.append({"item": f"friction from {fid}", "logged": fid,
                       "pr": (merged_ids[0] if v == "fixed" and merged_ids else ""),
                       "verdict": v, "evidence": f"reconciled {fid} against the merged work"})
+    # two new features, plus a proposal that duplicates the phase's first task by title (so
+    # the reap can demonstrate the duplicate-skip path with no fixture wiring beyond this)
+    features = [
+        {"title": "Add a task-creation form to the web UI", "difficulty": "medium", "priority": 2,
+         "body": "Let a human file a task from the web without editing markdown.", "rationale": "asked for at this retro"},
+        {"title": "One vocabulary across CLI, web and TUI", "difficulty": "medium", "priority": 3,
+         "body": "Use the same words for the same concepts on every surface.", "rationale": "personas keep tripping over inconsistent names"},
+    ]
+    if task_titles:
+        features.append({"title": task_titles[0], "difficulty": "easy", "priority": 4,
+                         "body": "Already covered.", "rationale": "already tracked"})
     rev = {"reconciliation": recon, "summary": "The phase mostly held together.",
            "personas": "The personas liked the onboarding.", "still_open": ["live worker output"],
-           "next_goals": "# Next\n\n- Make waiting visible.\n"}
+           "features": features, "next_goals": "# Next\n\n- Make waiting visible.\n"}
     print(result_json("Reconciled.\nGARDEN_RETRO: " + json.dumps(rev), {"input_tokens": 4000, "output_tokens": 300}, 0.04))
 
 
