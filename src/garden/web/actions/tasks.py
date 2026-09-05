@@ -18,6 +18,11 @@ from . import ACTIONS, action
 
 @action("approve")
 def approve(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    target = note.strip()
+    if target:
+        product, _, phase = target.partition("/")
+        if phase and phase != t.phase:
+            sched.move(t, product, phase)
     try:
         ph = s.phase(t.product, t.phase)
     except KeyError:
@@ -61,6 +66,15 @@ def unapprove(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -
 @action("dispatch")
 def dispatch(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.dispatch(t, mode="revise" if t.status == Status.CHANGES_REQUESTED else "work")
+
+
+@action("move")
+def move(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    target = note.strip()
+    if "/" not in target:
+        raise RuntimeError("move target must be product/phase")
+    product, phase = target.split("/", 1)
+    sched.move(t, product, phase.strip("/"))
 
 
 @action("cancel")

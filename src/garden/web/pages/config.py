@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
+from ...config import RESTART_KEYS
 from ...scheduler import State
 from ..common import Site
 
@@ -37,5 +38,5 @@ def register(app: FastAPI, site: Site) -> None:
         budgets.update(overrides)
         return templates.TemplateResponse(request, "config.html", ctx(
             request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
-            budget_overrides=sorted(overrides),
+            budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS,
             max_parallel_file=cfg.get("max_parallel"), max_parallel_override=sched.overrides().get("max_parallel")))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ...github import GitHubError
@@ -56,19 +56,22 @@ def register(app: FastAPI, site: Site) -> None:
         return RedirectResponse(back, status_code=303)
 
     @app.post("/config/max-parallel")
-    def web_set_max_parallel(request: Request, value: int = Form(...)):
+    def web_set_max_parallel(request: Request, value: str = Form("")):
+        value = value.strip()
         with hub.action_lock:
             sched = hub.scheduler()
-            sched.set_override("max_parallel", value, by="web")
-        hub._log(f"max_parallel set to {value} via web")
-        return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
-
-    @app.post("/config/max-parallel/clear")
-    def web_clear_max_parallel(request: Request):
-        with hub.action_lock:
-            sched = hub.scheduler()
-            sched.clear_override("max_parallel", by="web")
-        hub._log("max_parallel override cleared via web")
+            if not value:
+                sched.clear_override("max_parallel", by="web")
+                hub._log("max_parallel override cleared via web")
+            else:
+                try:
+                    parsed = int(value)
+                except ValueError:
+                    raise HTTPException(400, "max_parallel must be a whole number") from None
+                if parsed < 1:
+                    raise HTTPException(400, "max_parallel must be at least 1")
+                sched.set_override("max_parallel", parsed, by="web")
+                hub._log(f"max_parallel set to {parsed} via web")
         return RedirectResponse(request.headers.get("referer", "/config"), status_code=303)
 
     @app.post("/upgrade")

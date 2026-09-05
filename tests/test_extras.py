@@ -172,12 +172,115 @@ def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkey
     assert len(reports) == 1 and "First run needs a config file" in reports[0].read_text()
     assert any("persona usability-expert report" in t for t in rep.transitions)
     sched.store.invalidate()
-    filed = [t for t in sched.store.tasks().values() if t.discovered_from == "persona:usability-expert"]
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:usability-expert:")]
     assert len(filed) == 1 and filed[0].status == Status.DRAFT
     # the planner sees the report via docs/
     from garden.planner import plan_prompt
 
     assert "usability-expert" in plan_prompt(sched.store, "demo", "p1")
+
+
+def test_persona_phase_review_files_every_severity_with_priority_from_severity(sched, fake_github, monkeypatch):
+    """CG-187: every finding becomes a draft, not only the high ones, priority from severity
+    (high 1, medium 2, low 3), and provenance names the persona and the run."""
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "security", file_tasks=True)
+    sched.tick()
+    sched.store.invalidate()
+    filed = {t.priority: t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")}
+    assert set(filed) == {1, 2, 3}
+    assert filed[1].title == "Secrets can leak into run logs" and filed[1].status == Status.DRAFT
+    assert filed[2].title == "garden.yaml needs a restart to take effect"
+    assert filed[3].title == "The Inbox button label is inconsistent"
+    assert filed[1].discovered_from == f"persona:security:{run.run_id}"
+    assert "Scrub env before logging" in filed[1].body
+
+
+def test_persona_phase_review_min_severity_filters_lower_findings(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    sched.dispatch_persona_phase(ph, "security", file_tasks=True, min_severity="medium")
+    sched.tick()
+    sched.store.invalidate()
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")]
+    assert {t.priority for t in filed} == {1, 2}  # the low finding was filtered out
+
+
+def test_persona_phase_review_frozen_phase_sends_findings_to_the_next_phase(sched, fake_github, monkeypatch):
+    from tests.conftest import write
+
+    write(sched.store.root / "demo" / "p1" / "goals.md", "---\nfrozen: '2026-09-01'\n---\n\n# p1\n\nShip it.\n")
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# p2\n\nNext.\n")
+    sched.store.invalidate()
+    monkeypatch.setenv("FAKE_CLAUDE_PERSONA_FINDINGS", "all")
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    assert ph.frozen
+    sched.dispatch_persona_phase(ph, "security", file_tasks=True)
+    sched.tick()
+    sched.store.invalidate()
+    filed = [t for t in sched.store.tasks().values() if t.discovered_from.startswith("persona:security:")]
+    assert len(filed) == 3
+    assert all(t.phase == "p2" for t in filed)
+
+
+def test_persona_with_declared_sections_gets_them_in_brief_and_report(sched, fake_github, monkeypatch):
+    """CG-188: a persona file may declare `sections:` in frontmatter; the brief asks for them
+    in the marker JSON and the report renders them beside the findings block."""
+    from tests.conftest import write
+
+    write(sched.store.root / "personas" / "vision-pm.md",
+          "---\nsections: [vision, features, questions]\n---\n\n# Persona: Vision PM\n\n## You are\nThe PM.\n")
+    sched.store.invalidate()
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "vision-pm")
+    brief = (run.path / "brief.md").read_text()
+    assert '"sections":' in brief and "keyed by name (vision, features, questions)" in brief
+    assert "# Persona: Vision PM" in brief and "---\nsections:" not in brief  # frontmatter stripped
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("vision-pm-*.md")).read_text()
+    assert "## Vision" in report and "## Features" in report and "## Questions" in report
+    assert "As the vision-pm, mostly fine." in report  # the overall paragraph
+    assert "A form to file a task from the web" in report  # a structured feature item
+    assert "First run needs a config file the README never mentions" in report  # findings block kept
+
+
+def test_persona_without_sections_is_unchanged(sched, fake_github, monkeypatch):
+    """A persona that declares no sections is asked for and rendered exactly as before: no
+    `sections` fragment in the brief, no extra headings in the report."""
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    run = sched.dispatch_persona_phase(ph, "security")
+    brief = (run.path / "brief.md").read_text()
+    assert '"sections":' not in brief and "keyed by name" not in brief
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("security-*.md")).read_text()
+    assert "## Medium" in report  # only the findings block (default fake severity is medium)
+    assert "## Vision" not in report and "## Features" not in report
+
+
+def test_product_manager_builtin_declares_its_sections(sched, fake_github, monkeypatch):
+    """CG-188/CG-181: the built-in product-manager persona declares vision, where-we-are,
+    features, not-now and questions, and a phase review with it produces those sections and
+    the findings block."""
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    sched.dispatch_persona_phase(ph, "product-manager")
+    sched.tick()
+    report = next((ph.path / "docs" / "reviews").glob("product-manager-*.md")).read_text()
+    for heading in ("## Vision", "## Where we are", "## Features", "## Not now", "## Questions"):
+        assert heading in report, heading
+    assert "**Score:**" in report and "First run needs a config file" in report
 
 
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
@@ -194,6 +297,21 @@ def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, 
     rep = sched.tick()
     assert "DM-001 -> changes_requested (persona security)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     assert "security persona" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+
+
+def test_persona_reviews_resolve_model_from_retro_difficulty_not_review_difficulty(sched, fake_github):
+    """CG-207: review.difficulty governs PR reviews only; persona reviews (phase and PR) and
+    the retro reconciliation resolve their model from retro.difficulty (default hard), so a
+    retro always runs on the best tier without anyone editing garden.yaml first."""
+    sched.cfg.data["review"]["difficulty"] = "easy"
+    sched.cfg.data["retro"]["difficulty"] = "hard"
+    sched.tick()
+    sched.tick()  # DM-001 has a PR
+    ph = sched.store.phase("demo", "p1")
+    phase_run = sched.dispatch_persona_phase(ph, "security")
+    assert phase_run.difficulty == "hard" and phase_run.model == "opus"
+    pr_run = sched.dispatch_persona_pr(sched.store.task("DM-001"), "security")
+    assert pr_run.difficulty == "hard" and pr_run.model == "opus"
 
 
 def test_configured_personas_run_on_every_pr(sched, fake_github):

@@ -59,16 +59,29 @@
 </div>
 {% endif %}
 
+{% if later_deps %}
+<div class="panel" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--bad)">Dependency in a later phase</div>
+  <p style="margin:6px 0 0">This task depends on {% for d in later_deps %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if not loop.last %}, {% endif %}{% endfor %}, which {{ 'sits' if later_deps|length == 1 else 'sit' }} in a later phase of this product. It can never become ready here until {{ 'that dependency moves' if later_deps|length == 1 else 'those dependencies move' }} to this phase or earlier.</p>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
-  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary">Approve</button></form>{% endif %}
+  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
+    <button class="primary">Approve into <span data-approve-label>{{ task.phase }}</span></button>
+    <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
+      {% for ph in approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == task.phase %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
+    </select>
+  </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="{{ 'primary' if task.status.value != 'draft' else '' }}" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or state.needs_human %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch"><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.submit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first"><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.submit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><span class="autosave-mark" aria-live="polite"></span></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select><span class="autosave-mark" aria-live="polite"></span></form>
+  {% if move_phases|length > 1 %}<form class="inline" method="post" action="/tasks/{{ task.id }}/move" style="display:inline-flex;gap:6px;align-items:center" title="Move to another phase (keeps the id, history and state)"><label class="muted" for="phase">phase</label><select id="phase" name="note" onchange="this.form.submit()">{% for ph in move_phases %}<option value="{{ task.product }}/{{ ph }}"{% if task.phase == ph %} selected{% endif %}>{{ ph }}</option>{% endfor %}</select></form>{% endif %}
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
   {% if has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
@@ -118,6 +131,18 @@
 <div class="grid2">
   <div class="stack">
     <div class="panel prose">{{ body_html|safe }}</div>
+    {% if criteria_rows %}<div class="panel"><div class="eyebrow">Acceptance criteria</div>
+      <table style="margin-top:6px;width:100%">
+        <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>
+        {% for c in criteria_rows %}
+        <tr>
+          <td style="vertical-align:top">{{ c.criterion }}</td>
+          <td style="vertical-align:top">{% if c.not_done %}<span class="pill s-failed">not done</span> {{ c.worker_reason or 'no reason given' }}{% elif c.evidence %}<span class="pill s-done">✓</span> {{ c.evidence }}{% elif c.has_worker %}<span class="pill s-failed">no evidence</span>{% else %}<span class="faint">—</span>{% endif %}</td>
+          <td style="vertical-align:top">{% if c.met is true %}<span class="pill s-done">met</span>{% elif c.met is false %}<span class="pill s-failed">not met</span>{% else %}<span class="faint">—</span>{% endif %}{% if c.review_reason %} <span class="muted">{{ c.review_reason }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>{% endif %}
     {% if suggestions %}<div class="panel"><div class="eyebrow">Suggestions{% if edit_running %} · integrating…{% endif %}</div>
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for sg in suggestions %}<li style="margin-bottom:4px"><span class="pill s-{{ 'done' if sg.integrated else 'ready' }}">{{ 'integrated' if sg.integrated else 'pending' }}</span> {% if sg.applies_to %}<span class="muted">{{ sg.applies_to }}</span> {% endif %}{{ sg.text }} <span class="faint mono">— {{ sg.author }}{% if sg.date %}, {{ sg.date }}{% endif %}</span></li>{% endfor %}</ul>
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}
@@ -138,7 +163,7 @@
     <div class="panel"><div class="eyebrow">Runs</div>
       <div id="runs" data-poll="/partials/tasks/{{ task.id }}/runs" data-every="5000" style="margin-top:6px">{% include "_runs.html" %}</div>
     </div>
-    {% if events %}<div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px">{% for e in events %}<li><span class="faint mono">{{ e.at[5:16] }}</span><span class="k">{{ e.kind }}</span><span>{% if e.kind == 'transition' %}{{ e['from'] }} → {{ e.to }}: {{ e.note }}{% elif e.kind == 'dispatch' %}{{ e.mode }} {{ e.model }} {% if e.resumed %}(resumed){% endif %} base {{ e.base }}{% elif e.kind == 'run_finished' %}{{ e.mode }} {{ e.status }}{% if e.cost_usd %} ${{ '%.2f' % e.cost_usd }}{% endif %}{% elif e.kind == 'review' %}{{ e.verdict }}: {{ e.summary }}{% elif e.kind == 'waiting_human' %}{{ e.question }}{% elif e.kind == 'answer' %}{{ e.answer }}{% elif e.kind == 'discovered' %}{{ e.new_task }} {{ e.title }}{% elif e.kind == 'stall' %}{{ e.reason }}{% elif e.kind == 'conflict' %}vs {{ e.base }}: {% if e.resolved %}rebased and force-pushed{% else %}conflicts in {{ e.files|join(', ') or 'unknown files' }}; revise run queued{% endif %}{% elif e.kind == 'restacked' %}onto {{ e.base }}{% if e.conflict %} (conflict){% endif %}{% elif e.kind == 'stacked' %}on {{ e.parent }} ({{ e.base }}){% elif e.kind == 'pr_opened' %}{{ e.pr }}{% if e.draft %} (draft){% endif %}{% elif e.kind == 'triaged' %}{{ e.decision or 'ready' }} by {{ e.by }}{% elif e.kind == 'check' %}{{ e.stage }} {{ e.name }}: {{ e.status }}{% elif e.kind == 'suggestion' %}{{ e.author }}{% if e.applies_to %} ({{ e.applies_to }}){% endif %}: {{ e.text }}{% elif e.kind == 'integrated' %}integrated {{ e.count }} suggestion(s){% else %}{{ e.reason or e.note or e.persona or '' }}{% endif %}</span></li>{% endfor %}</ul></div>{% endif %}
+    {% if events %}<div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px">{% for e in events %}<li><span class="faint mono">{{ e.at[5:16] }}</span><span class="k">{{ e.kind }}</span><span>{% if e.kind == 'transition' %}{{ e['from'] }} → {{ e.to }}: {{ e.note }}{% elif e.kind == 'dispatch' %}{{ e.mode }} {{ e.model }} {% if e.resumed %}(resumed){% endif %} base {{ e.base }}{% elif e.kind == 'run_finished' %}{{ e.mode }} {{ e.status }}{% if e.cost_usd %} ${{ '%.2f' % e.cost_usd }}{% endif %}{% elif e.kind == 'review' %}{{ e.verdict }}: {{ e.summary }}{% elif e.kind == 'waiting_human' %}{{ e.question }}{% elif e.kind == 'answer' %}{{ e.answer }}{% elif e.kind == 'discovered' %}{{ e.new_task }} {{ e.title }}{% elif e.kind == 'stall' %}{{ e.reason }}{% elif e.kind == 'conflict' %}vs {{ e.base }}: {% if e.resolved %}rebased and force-pushed{% else %}conflicts in {{ e.files|join(', ') or 'unknown files' }}; revise run queued{% endif %}{% elif e.kind == 'restacked' %}onto {{ e.base }}{% if e.conflict %} (conflict){% endif %}{% elif e.kind == 'stacked' %}on {{ e.parent }} ({{ e.base }}){% elif e.kind == 'pr_opened' %}{{ e.pr }}{% if e.draft %} (draft){% endif %}{% elif e.kind == 'triaged' %}{{ e.decision or 'ready' }} by {{ e.by }}{% elif e.kind == 'check' %}{{ e.stage }} {{ e.name }}: {{ e.status }}{% elif e.kind == 'suggestion' %}{{ e.author }}{% if e.applies_to %} ({{ e.applies_to }}){% endif %}: {{ e.text }}{% elif e.kind == 'integrated' %}integrated {{ e.count }} suggestion(s){% elif e.kind == 'moved' %}{{ e['from'] }} → {{ e.to }}{% else %}{{ e.reason or e.note or e.persona or '' }}{% endif %}</span></li>{% endfor %}</ul></div>{% endif %}
     {% if log_lines %}<div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">{% for l in log_lines %}{{ l }}
 {% endfor %}</div></div>{% endif %}
   </div>

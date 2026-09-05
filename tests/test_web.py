@@ -18,6 +18,18 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_header_has_seedling_mark_and_favicon(garden):
+    c = client(garden)
+    page = c.get("/").text
+    assert '<link rel="icon" type="image/svg+xml" href="/favicon.svg">' in page
+    assert '<a class="wordmark" href="/">' in page
+    assert 'class="mark"' in page and "st-sprout" in page
+    fav = c.get("/favicon.svg")
+    assert fav.status_code == 200
+    assert fav.headers["content-type"].startswith("image/svg+xml")
+    assert "<svg" in fav.text and "viewBox=\"0 0 24 24\"" in fav.text
+
+
 def test_board_columns_and_list_views(garden):
     c = client(garden)
     # Default is the columns view.
@@ -304,19 +316,114 @@ def test_budget_form_and_route(garden):
 
     c = client(garden)
     page = c.get("/phases/demo/p1").text
-    assert "/phases/demo/p1/budget" in page and "no budget" in page
+    assert "/phases/demo/p1/budget" in page and "no cap" in page
+    # it applies on blur, a single field, no Set button beside it
+    assert 'data-autosave' in page and 'onblur="this.form.requestSubmit()"' in page
+    assert "<button>Set</button>" not in page
     # Set a cap.
     r = c.post("/phases/demo/p1/budget", data={"amount": "42"}, follow_redirects=False)
     assert r.status_code == 303
     assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 42.0
     assert "of $42" in c.get("/phases/demo/p1").text
     assert "set at runtime" in c.get("/config").text
-    # Switch it off with the "no budget" checkbox.
+    # Clearing the field (an empty amount) switches it back off; `no_budget` also still
+    # works directly against the route for anything posting to it besides the page's form.
+    r = c.post("/phases/demo/p1/budget", data={"amount": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
+    r = c.post("/phases/demo/p1/budget", data={"amount": "42"}, follow_redirects=False)
+    assert r.status_code == 303
     r = c.post("/phases/demo/p1/budget", data={"no_budget": "1", "amount": "42"}, follow_redirects=False)
     assert r.status_code == 303
     assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
     # A non-numeric amount is rejected.
     assert c.post("/phases/demo/p1/budget", data={"amount": "abc"}).status_code == 400
+
+
+def test_new_task_form_renders_on_phase_page(garden):
+    c = client(garden)
+    page = c.get("/phases/demo/p1").text
+    assert 'id="new-task"' in page
+    assert 'action="/phases/demo/p1/new-task"' in page
+    for field in ("title", "goal", "context", "acceptance", "difficulty", "priority", "reading", "depends_on", "ready"):
+        assert f'name="{field}"' in page
+    assert "+ new task" in page  # the rail link (CG-132)
+
+
+def test_new_task_matches_cli_new_task_for_the_same_inputs(garden, monkeypatch):
+    """The web form must produce the same file `garden new-task` would for the same
+    title/deps/reading/priority/difficulty, when the free-text body fields are left blank."""
+    from garden.store import Store
+    from tests.test_cli import run
+
+    # Store.create_task stamps created/updated via garden.store's now_iso, but Store.save
+    # calls Task.touch(), which stamps updated via garden.model's own now_iso binding; both
+    # must be frozen or the two calls' timestamps can straddle a second on a loaded CI box.
+    monkeypatch.setattr("garden.store.now_iso", lambda: "2026-02-02T00:00:00+00:00")
+    monkeypatch.setattr("garden.model.now_iso", lambda: "2026-02-02T00:00:00+00:00")
+
+    r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
+    assert r.exit_code == 0 and "DM-003" in r.output
+    store = Store(garden)
+    expected = store.task("DM-003").path.read_text()
+    store.task("DM-003").path.unlink()
+    store.invalidate()
+
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Third: thing", "depends_on": "DM-001", "reading": "demo/p1/specs/spec.md",
+        "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/tasks/DM-003")
+
+    store.invalidate()
+    assert store.task("DM-003").path.read_text() == expected
+
+
+def test_new_task_fills_in_the_body_from_the_form(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Write the docs", "goal": "Explain the thing.", "context": "Nobody knows how it works.",
+        "acceptance": "- [ ] docs exist\n- [ ] \n- [ ] reviewed", "difficulty": "easy", "priority": "1",
+        "ready": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/tasks/DM-003")
+    task_page = c.get(r.headers["location"]).text
+    assert "Explain the thing." in task_page
+    assert "Nobody knows how it works." in task_page
+    assert "docs exist" in task_page and "reviewed" in task_page
+    assert "created DM-003" in task_page  # flash message (CG-086)
+
+    from garden.store import Store
+    t = Store(garden).task("DM-003")
+    assert t.status.value == "ready"  # approve now was ticked
+    assert t.difficulty == "easy"
+    assert t.priority == 1
+
+
+def test_new_task_validation_keeps_typed_text_and_flashes_a_message(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "", "goal": "keep me", "depends_on": "NOPE", "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert "new-task" in r.headers["location"]
+    page = c.get(r.headers["location"]).text
+    assert "a title is required" in page
+    assert "unknown task" in page and "NOPE" in page
+    assert "keep me" in page  # typed text survives the round trip
+
+
+def test_new_task_rejects_an_unresolved_reading_path(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Some task", "reading": "demo/p1/specs/nope.md", "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "does not exist" in page and "nope.md" in page
 
 
 def test_phase_page_shows_retro_waiting_for_personas(garden):
@@ -356,6 +463,19 @@ def test_trials_page_and_persona_form(garden):
     assert r.status_code == 200 and "No trials yet" in r.text
     assert "Persona review of the body of work" in c.get("/phases/demo/p1").text
     assert c.get("/trellis").status_code == 200 and c.get("/graph").status_code == 200
+
+
+def test_phase_review_panel_shows_score_and_feature_count(garden):
+    """CG-188: the phase page's review list shows a persona's score, and for a persona whose
+    report has a `features` section, the count of features."""
+    reviews = garden / "demo" / "p1" / "docs" / "reviews"
+    reviews.mkdir(parents=True)
+    (reviews / "product-manager-2026-09-05.md").write_text(
+        "# product-manager review of demo/p1\n\n**Persona:** product-manager · **Score:** 8/10 · 2026-09-05\n\n"
+        "Solid.\n\n## Features\n\n- **A form to file a task**\n  - lets a user file without markdown\n"
+        "- **Cost per phase on the phase page**\n  - a manager sees spend\n\n## Medium\n\n- **onboarding** — needs a config file\n")
+    text = client(garden).get("/phases/demo/p1").text
+    assert "persona · product-manager · 8/10 · 2 feature(s)" in text
 
 
 def test_retro_page_renders_the_artefacts(garden):
@@ -654,6 +774,14 @@ def test_friction_report_web_with_task_id(garden):
     assert "Brief is too long." in text
 
 
+def test_inbox_page_head_subtitle_is_not_capped_narrow(garden):
+    """CG-184: `.page-head p` used to cap at 62ch, wrapping the Inbox subtitle onto two
+    lines on a wide screen. The left column now grows to fill the space instead."""
+    html = client(garden).get("/").text
+    assert "62ch" not in html
+    assert "Every item here is a decision only a person can make." in html
+
+
 def test_friction_form_in_inbox_and_task(garden):
     c = client(garden)
     assert "Report friction" in c.get("/").text
@@ -690,6 +818,16 @@ def test_config_page_renders(garden):
     assert "Config" in r.text
 
 
+def test_config_page_names_live_and_restart_keys(garden):
+    """CG-192: the page says config is re-read each tick without a restart, and names the
+    keys that still need one (RESTART_KEYS)."""
+    c = client(garden)
+    text = c.get("/config").text
+    assert "within one tick" in text and "no restart" in text
+    assert "Needs a restart" in text
+    assert "work_dir" in text and "tick_interval" in text
+
+
 def test_pause_resume_web(garden):
     c = client(garden)
     # not paused by default
@@ -716,20 +854,26 @@ def test_max_parallel_override_from_config_page(garden):
     config_page = c.get("/config").text
     assert "garden.yaml: <strong>2</strong>" in config_page
     assert "no live override" in config_page
+    # the field applies on blur/Enter; no Set button beside it
+    assert 'data-autosave' in config_page and 'onblur="this.form.requestSubmit()"' in config_page
+    assert "<button class=\"primary\">Set</button>" not in config_page
     assert "0/2" in c.get("/").text  # inbox header: workers running / live limit
 
     r = c.post("/config/max-parallel", data={"value": "5"}, follow_redirects=False)
     assert r.status_code == 303
     config_page = c.get("/config").text
     assert "live override: <strong>5</strong>" in config_page
-    assert "Clear override" in config_page
     assert "0/5" in c.get("/").text
 
-    r = c.post("/config/max-parallel/clear", follow_redirects=False)
+    # an empty value clears the override — the same endpoint, no separate Clear button
+    r = c.post("/config/max-parallel", data={"value": ""}, follow_redirects=False)
     assert r.status_code == 303
     config_page = c.get("/config").text
     assert "no live override" in config_page
     assert "0/2" in c.get("/").text
+
+    assert c.post("/config/max-parallel", data={"value": "nope"}).status_code == 400
+    assert c.post("/config/max-parallel", data={"value": "0"}).status_code == 400
 
 
 def test_priority_and_difficulty_from_the_task_page(garden):
@@ -748,7 +892,7 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     page = c.get("/tasks/DM-001").text
     assert 'name="note"' in page and 'value="hard" selected' in page
     # both selects apply on change, no Set button beside either
-    assert 'onchange="this.form.submit()"' in page
+    assert 'onchange="this.form.requestSubmit()"' in page
     assert "<button class=\"quiet\">Set</button>" not in page
     # priority options are words with the number beside them, ordered first to last
     for word, n in PRIORITY_SCALE:
@@ -768,6 +912,34 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert t.priority == 9
     page = c.get("/tasks/DM-001").text
     assert 'value="9" selected' in page
+
+
+def test_no_set_apply_save_buttons_in_any_template():
+    """CG-190: editing an existing value applies on change; only forms that create
+    something new (a task, a friction report, a persona run, ...) keep a submit button."""
+    import re
+
+    from garden.web.common import TEMPLATES
+
+    button_re = re.compile(r"<button[^>]*>\s*(Set|Apply|Save)\s*<", re.IGNORECASE)
+    offenders = []
+    for path in TEMPLATES.glob("*.html"):
+        for m in button_re.finditer(path.read_text()):
+            offenders.append(f"{path.name}: {m.group(0)!r}")
+    assert not offenders, offenders
+
+
+def test_editable_values_apply_on_change_with_a_saved_mark(garden):
+    """Every data-autosave form (the walkthrough's Config and task pages among them) carries
+    an autosave-mark slot for the JS-driven saved/undo behaviour."""
+    import re
+
+    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-autosave\b")
+    for url in ("/config", "/tasks/DM-001", "/phases/demo/p1"):
+        page = client(garden).get(url).text
+        forms = autosave_form_re.findall(page)
+        assert len(forms) >= 1, url
+        assert len(forms) == page.count('class="autosave-mark"')
 
 
 # ---- trust at the edges (CG-154): sanitised HTML, an origin check on POSTs ---------------

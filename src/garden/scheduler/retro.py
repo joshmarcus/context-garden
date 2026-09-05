@@ -9,18 +9,31 @@ from typing import Any
 from .. import gitops
 from ..github import GitHubError
 from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
-from ..personas import phase_brief, valid_name
+from ..personas import (
+    SEVERITY_PRIORITY,
+    finding_body,
+    finding_title,
+    parse_persona,
+    phase_brief,
+    valid_name,
+)
 from ..retro import (
+    flatten_findings,
+    group_findings,
     next_phase_name,
     parse_retro,
+    persona_features,
     persona_reports,
     reconcile_brief,
     render_next_goals,
     render_retro_doc,
     resolve_features,
+    resolve_findings,
 )
 from ..runs import Run
 from .report import TickReport
+
+_RUN_FOOTER_RE = re.compile(r"_garden persona run (\S+)_\s*$")
 
 
 class RetroMixin:
@@ -43,6 +56,41 @@ class RetroMixin:
 
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
+
+    def _persona_revs(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+        """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
+        (`reports`, from `persona_reports`) carries only prose, so this recovers the run id from
+        its footer line and re-parses that run's `final.md` for the structured findings and the
+        persona's own sections (CG-187, CG-188). Every phase persona run is recorded under the
+        aux task id `_persona` (see `dispatch_aux`, which falls back to `f"_{kind}"` when
+        dispatched with no task), not a per-phase id, so that is where every run's `final.md`
+        lives regardless of which phase it reviewed."""
+        out: dict[str, dict[str, Any]] = {}
+        for name, path in reports.items():
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            m = _RUN_FOOTER_RE.search(text)
+            if not m:
+                continue
+            final_path = self.runs.dir / "_persona" / m.group(1) / "final.md"
+            if not final_path.exists():
+                continue
+            out[name] = parse_persona(final_path.read_text())
+        return out
+
+    def _persona_findings(self, phase: Phase, reports: dict[str, Path]) -> dict[str, list[dict[str, Any]]]:
+        """One draft task per finding needs severity/area/suggestion (CG-187); pull them from
+        the parsed verdicts."""
+        return {name: [f for f in rev.get("findings") or [] if isinstance(f, dict)]
+                for name, rev in self._persona_revs(reports).items()}
+
+    def _persona_sections(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+        """Each persona's own declared sections (CG-188); only those that reported a `sections`
+        object, so `persona_features` can lift structured features into the retro's list."""
+        return {name: rev["sections"] for name, rev in self._persona_revs(reports).items()
+                if isinstance(rev.get("sections"), dict)}
 
     def _retro_materials(self, phase: Phase, names: list[str]):
         """Harvest what the reconciliation needs: friction from PR bodies, friction already
@@ -78,6 +126,11 @@ class RetroMixin:
         base = self.cfg.product_base_branch(self_prod or phase.product)
         recon = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                 reports, task_rows, merged, nxt)
+        difficulty = str(self.cfg.get("retro.difficulty") or "hard")
+        probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
+                     product=self_prod or phase.product, phase="")
+        runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
+        model = self.model_for(probe, runner, difficulty)
         persona_toks = 0
         if to_run:
             persona_toks = estimate_tokens(phase_brief(self.store, phase, to_run[0], base, self.phase_prs(phase))) * len(to_run)
@@ -91,7 +144,8 @@ class RetroMixin:
                 "personas_run": to_run, "personas_reuse": reuse, "friction": len(friction),
                 "reported": reported_entries, "comment_friction": comment_items,
                 "merged": len(merged), "tasks": len(task_rows), "est_tokens": est_tokens,
-                "est_cost": round(est_tokens * rate, 2), "have_cost_history": bool(seen)}
+                "est_cost": round(est_tokens * rate, 2), "have_cost_history": bool(seen),
+                "difficulty": difficulty, "model": model}
 
     def start_retro(self, phase: Phase, personas: list[str] | None = None, skip_personas: bool = False,
                     next_phase: str = "") -> dict[str, Any]:
@@ -153,7 +207,7 @@ class RetroMixin:
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                reports, task_rows, merged, entry["next_phase"])
-        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("review.difficulty") or "hard"))
+        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.cfg.get("retro.difficulty") or "hard"))
         entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
@@ -229,19 +283,19 @@ class RetroMixin:
         self.events.emit("retro_failed", "", phase=phase.key, step=step, error=str(error))
 
     def _file_retro_features(self, phase: Phase, next_phase: str, rev: dict[str, Any],
-                             wt: Path, rel_product: Path) -> list[dict[str, Any]]:
-        """Turn the reconciliation's `features` into draft task files inside the retro's own
-        worktree, so they land with the same PR as the retro document and the next phase's
-        goals draft (the next phase may not exist on disk yet, so this cannot go through
-        `store.create_task`, which requires an already-discovered phase). Skips whatever
-        `resolve_features` flags as a duplicate; ids are reserved locally since the live store
-        never sees these files until the PR merges."""
+                             wt: Path, rel_product: Path, prefix: str, num: int,
+                             persona_feats: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
+        """Turn the reconciliation's `features`, plus any structured `features` a persona
+        reported (CG-188), into draft task files inside the retro's own worktree, so they land
+        with the same PR as the retro document and the next phase's goals draft (the next phase
+        may not exist on disk yet, so this cannot go through `store.create_task`, which requires
+        an already-discovered phase). Skips whatever `resolve_features` flags as a duplicate;
+        ids are reserved locally (continuing from `num`, shared with `_file_retro_findings` so
+        the two never collide) since the live store never sees these files until the PR merges."""
         existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
-        resolved = resolve_features(rev, existing_titles)
+        resolved = resolve_features(rev, existing_titles, persona_feats)
         if not resolved:
-            return []
-        prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
-        num = int(num_s)
+            return [], num
         tasks_dir = wt / rel_product / next_phase / "tasks"
         filed: list[dict[str, Any]] = []
         for f in resolved:
@@ -257,6 +311,8 @@ class RetroMixin:
                 priority = 3
             difficulty = f["difficulty"] if f["difficulty"] in ("easy", "medium", "hard") else "medium"
             body = f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\nProposed at the {phase.key} retro."
+            if f.get("source"):
+                body += f" Raised by the {f['source']} persona."
             if f["rationale"]:
                 body += f" {f['rationale']}"
             body += "\n"
@@ -267,7 +323,43 @@ class RetroMixin:
             tasks_dir.mkdir(parents=True, exist_ok=True)
             t.path.write_text(t.render())
             filed.append({**f, "task_id": tid, "status": "draft"})
-        return filed
+        return filed, num
+
+    def _file_retro_findings(self, phase: Phase, next_phase: str, persona_findings: dict[str, list[dict[str, Any]]],
+                             wt: Path, rel_product: Path, prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
+        """Turn every persona finding into a draft task in the next phase (CG-187): every
+        severity, not only high, priority from severity, and findings that say the same thing
+        across personas collapsed into one task via `group_findings`'s title match. Mirrors
+        `_file_retro_features`: writes directly into the retro's own worktree, and shares its
+        id counter."""
+        flat = flatten_findings(persona_findings)
+        if not flat:
+            return [], num
+        groups = group_findings(flat)
+        existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
+        resolved = resolve_findings(groups, existing_titles)
+        tasks_dir = wt / rel_product / next_phase / "tasks"
+        filed: list[dict[str, Any]] = []
+        for f in resolved:
+            if f["skip"]:
+                filed.append({**f, "task_id": "", "status": "skipped"})
+                self.log(f"retro {phase.key}: finding {f['summary']!r} skipped ({f['reason']})")
+                continue
+            tid = f"{prefix}-{num:03d}"
+            num += 1
+            personas = f["personas"]
+            provenance = f"persona:{personas[0]}:{phase.key}"
+            title = finding_title(f)
+            body = finding_body(f, personas, provenance)
+            priority = SEVERITY_PRIORITY.get(str(f.get("severity")), 2)
+            t = Task(path=tasks_dir / f"{tid}-{slugify(title)}.md", id=tid, title=title,
+                     status=Status.DRAFT, product=phase.product, phase=next_phase, priority=priority,
+                     difficulty="medium", discovered_from=provenance,
+                     created=now_iso(), updated=now_iso(), body=body)
+            tasks_dir.mkdir(parents=True, exist_ok=True)
+            t.path.write_text(t.render())
+            filed.append({**f, "task_id": tid, "status": "draft"})
+        return filed, num
 
     def _finish_retro(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         phase = self.store.phase(entry["product"], entry["phase_name"])
@@ -285,8 +377,15 @@ class RetroMixin:
         goals_path = wt / rel_product / next_phase / "goals.md"
         retro_path.parent.mkdir(parents=True, exist_ok=True)
         goals_path.parent.mkdir(parents=True, exist_ok=True)
-        filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product)
-        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed))
+        prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
+        num = int(num_s)
+        persona_feats = persona_features(self._persona_sections(reports))
+        filed, num = self._file_retro_features(phase, next_phase, rev, wt, rel_product, prefix, num,
+                                               persona_feats=persona_feats)
+        persona_findings = self._persona_findings(phase, reports)
+        filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product, prefix, num)
+        retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed, filed_findings=filed_findings,
+                                               difficulty=run.difficulty, model=run.model))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
@@ -309,10 +408,14 @@ class RetroMixin:
         n_items = len([f for f in rev.get("reconciliation") or [] if isinstance(f, dict)])
         n_filed = sum(1 for f in filed if f.get("task_id"))
         n_skipped = len(filed) - n_filed
+        n_findings_filed = sum(1 for f in filed_findings if f.get("task_id"))
+        n_findings_skipped = len(filed_findings) - n_findings_filed
         title = f"Retro: {phase.key} — reconcile friction and draft {next_phase} goals"
         body = (f"Retrospective for **{phase.key}**, produced by `garden retro`.\n\n"
                 f"- reconciled {n_items} friction item(s) against what merged\n"
                 f"- {len(reports)} persona report(s)\n"
+                f"- {n_findings_filed} persona finding(s) filed as draft tasks in {next_phase}"
+                + (f" ({n_findings_skipped} duplicate(s) skipped)" if n_findings_skipped else "") + "\n"
                 f"- {n_filed} feature(s) filed as draft tasks in {next_phase}"
                 + (f" ({n_skipped} duplicate(s) skipped)" if n_skipped else "") + "\n"
                 f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"

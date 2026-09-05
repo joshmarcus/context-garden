@@ -8,9 +8,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ...brief import build_brief
+from ...criteria import parse_criteria, reconcile, worker_verified
 from ...events import EventLog
-from ...graph import blockers, dependents, effective_status
-from ...inbox import attention_view
+from ...graph import blockers, dependents, deps_in_later_phase, effective_status
+from ...inbox import approve_phase_options, attention_view
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -44,12 +45,28 @@ def register(app: FastAPI, site: Site) -> None:
         friction_text = extract_friction(pr_body_for(t, rs))
         suggestions = parse_suggestions(t.body)
         edit_diff = _edit_diff(runs)
+        criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
+                                  (st.get("last_review") or {}).get("criteria"))
+
+        # Phases this task can move to (the product's own phases, current one always shown even
+        # if closed), and any dependency that now sits in a later phase and so can never merge
+        # before this task (a state a move can create).
+        phase_index: dict[str, int] = {}
+        move_phases: list[str] = []
+        for prod in s.products():
+            for i, ph in enumerate(prod.phases):
+                phase_index[ph.key] = i
+                if prod.name == t.product and (not ph.closed or ph.name == t.phase):
+                    move_phases.append(ph.name)
+        later_deps = deps_in_later_phase(t, tasks, phase_index)
+        approve_phases = approve_phase_options(s, t) if t.status.value == "draft" else []
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
+            criteria_rows=criteria_rows,
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
             edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
@@ -60,6 +77,7 @@ def register(app: FastAPI, site: Site) -> None:
             attention=attention_view(t, st, rs),
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
+            move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

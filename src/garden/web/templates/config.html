@@ -2,7 +2,7 @@
 {% block title %}Configuration{% endblock %}
 {% block body %}
 <div class="page-head">
-  <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Most values are read-only here — edit the underlying YAML files to change them — except the pause switch and max_parallel, which can be overridden live.</p></div>
+  <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change most values: the scheduler re-reads garden.yaml (and its env / local overlays) each tick when the file changes, so an edit takes effect within one tick with no restart. A few keys are read once at startup and need a restart — they are named below. The pause switch and max_parallel can also be overridden live from here.</p></div>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
@@ -33,16 +33,14 @@
     garden.yaml: <strong>{{ max_parallel_file }}</strong>
     {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
   </p>
-  <form method="post" action="/config/max-parallel" class="actions">
-    <input type="number" name="value" min="1" placeholder="new max_parallel" style="width:160px" required>
-    <button class="primary">Set</button>
+  <form method="post" action="/config/max-parallel" class="actions" data-autosave>
+    <label class="muted" for="max-parallel-override">live override</label>
+    <input type="number" id="max-parallel-override" name="value" min="1" placeholder="none — uses {{ max_parallel_file }}"
+      value="{{ max_parallel_override if max_parallel_override is not none else '' }}"
+      onblur="this.form.requestSubmit()" style="width:160px">
+    <span class="autosave-mark" aria-live="polite"></span>
   </form>
-  {% if max_parallel_override is not none %}
-  <form method="post" action="/config/max-parallel/clear" class="actions" style="margin-top:6px">
-    <button>Clear override</button>
-  </form>
-  {% endif %}
-  <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it.</p>
+  <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
@@ -58,13 +56,23 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
-  <div class="eyebrow">Effective values</div>
+  <div class="eyebrow">Effective values · live (re-read each tick)</div>
   <h3>Scheduler &amp; dispatch</h3>
+  <p class="muted" style="margin:0 0 10px">Edit these in garden.yaml; the change is picked up on the next tick, no restart.</p>
   <dl class="kv" style="margin:0">
     {% for k, v in effective.items() %}
     <dt>{{ k }}</dt><dd class="mono">{{ v }}</dd>
     {% endfor %}
   </dl>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Needs a restart</div>
+  <h3>Read once at startup</h3>
+  <p class="muted" style="margin:0 0 10px">These keys are read when the scheduler is built (or when the watch/serve loop first sets its interval), so editing them takes effect only after restarting <span class="mono">garden watch</span> / <span class="mono">garden serve</span>.</p>
+  <ul class="log" style="margin:0;padding:0 0 0 1.2em">
+    {% for k in restart_keys %}<li class="mono">{{ k }}</li>{% endfor %}
+  </ul>
 </div>
 
 {% if budgets %}

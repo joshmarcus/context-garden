@@ -327,11 +327,42 @@ class Scheduler(
         finally:
             rep.record_step(name, time.monotonic() - t0)
 
+    def _guard(self, rep: TickReport, name: str, fn: Callable[[], None]) -> None:
+        """The one guard every tick phase runs under: an exception is logged with the phase
+        name and recorded on the report instead of aborting the rest of the tick (CG-203)."""
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"{name} failed: {e}")
+            self.log(f"{name} failed: {e}")
+
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
-        self.store.invalidate()
+        self.store.invalidate()  # re-reads task files, and garden.yaml if it changed (CG-192)
+        self.cfg = self.store.config  # pick up a live garden.yaml edit without a restart
+        changed = self.store.last_config_change
+        if changed:
+            self.store.last_config_change = {}  # consumed: log it once
+            keys = ", ".join(sorted(changed))
+            self.log(f"garden.yaml reloaded; changed: {keys}")
+            self.events.emit("config_reloaded", "", keys=sorted(changed))
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
+        try:
+            self._tick_body(rep, dispatch)
+        finally:
+            # Saved here, not just at the end of the happy path, so a phase that raises past
+            # its own guard (or a bug in a guard itself) cannot lose a transition an earlier
+            # phase already made (CG-203).
+            self.state.save()
+        self.maybe_auto_upgrade(rep)
+        rep.duration_s = time.monotonic() - started
+        budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
+        if budget and rep.duration_s > budget:
+            self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")
+        return rep
+
+    def _tick_body(self, rep: TickReport, dispatch: bool | None) -> None:
         with self._step(rep, "reap"):
             try:
                 self.reap_aux(rep)
@@ -395,28 +426,14 @@ class Scheduler(
                     rep.errors.append(f"{t.id}: base re-probe failed: {e}")
                     self.log(f"{t.id}: base re-probe failed: {e}")
         with self._step(rep, "merge_queue"):
-            try:
-                self._run_merge_queue(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"merge queue failed: {e}")
-                self.log(f"merge queue failed: {e}")
+            self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():
             dispatch = False
         if dispatch:
             with self._step(rep, "dispatch"):
-                self.dispatch_edits(rep)
-                self.dispatch_ready(rep)
+                self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
+                self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
-            try:
-                self._audit_stuck(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"stuck audit failed: {e}")
-        self.state.save()
-        self.maybe_auto_upgrade(rep)
-        rep.duration_s = time.monotonic() - started
-        budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
-        if budget and rep.duration_s > budget:
-            self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")
-        return rep
+            self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))

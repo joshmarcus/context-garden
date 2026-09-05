@@ -13,15 +13,18 @@ from typing import Any
 
 import jinja2
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from ..harness import DIFFICULTIES
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
 from ..plants import (
     DEFS,
     PLATE_CREDIT,
+    favicon_svg,
+    mark_svg,
     plant_info,
     plant_svg,
     plate_filename,
@@ -92,8 +95,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates.env.globals["stage"] = lambda *a, **k: Markup(stage_svg(*a, **k))
     templates.env.globals["stage_word"] = stage_word
     templates.env.globals["plant_info"] = plant_info
+    templates.env.globals["mark"] = lambda *a, **k: Markup(mark_svg(*a, **k))
     templates.env.globals["PRIORITY_SCALE"] = PRIORITY_SCALE
     templates.env.globals["priority_label"] = priority_label
+    templates.env.globals["DIFFICULTIES"] = DIFFICULTIES
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(favicon_svg(), media_type="image/svg+xml")
 
     site = Site(hub, templates, plates)
     pages.register(app, site)

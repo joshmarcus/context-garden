@@ -14,10 +14,36 @@ from pathlib import Path
 from typing import Any
 
 from .brief import build_brief
-from .model import Phase, Task, now_iso, slugify
+from .model import Phase, Task, now_iso, slugify, split_frontmatter
 from .store import Store
 
 PERSONA_MARKER = "GARDEN_PERSONA:"
+
+# A finding's severity becomes a task's priority (1 highest); "the reviewer chooses severity
+# to rank, not to filter" (CG-187) — every severity is kept, never just "high".
+SEVERITY_PRIORITY: dict[str, int] = {"high": 1, "medium": 2, "low": 3}
+SEVERITY_RANK: dict[str, int] = {"low": 1, "medium": 2, "high": 3}
+
+
+def severity_ok(severity: str, min_severity: str) -> bool:
+    """Whether `severity` clears `min_severity` (low < medium < high); unknown severities
+    count as low so a malformed finding is not silently dropped."""
+    return SEVERITY_RANK.get(str(severity), 1) >= SEVERITY_RANK.get(str(min_severity), 1)
+
+
+def finding_title(f: dict[str, Any]) -> str:
+    return str(f.get("summary") or "").strip()[:80]
+
+
+def finding_body(f: dict[str, Any], personas: list[str], provenance: str) -> str:
+    """A draft task body for a persona finding: the goal is the suggestion (falling back to
+    the summary when a persona gave none), the context names who raised it and where."""
+    suggestion = str(f.get("suggestion") or "").strip()
+    summary = str(f.get("summary") or "").strip()
+    area = str(f.get("area") or "").strip()
+    goal = suggestion or summary
+    context = f"Raised by the {', '.join(personas)} persona review" + (f" ({area})" if area else "") + f". {provenance}."
+    return f"## Goal\n\n{goal}\n\n## Context\n\n{context}\n"
 
 DEFAULT_PERSONAS: dict[str, str] = {
     "designer": """# Persona: Product designer
@@ -103,7 +129,11 @@ An application security engineer reviewing for real-world risk, not checklist co
 ## How you report
 Each finding with: the trust boundary crossed, an attack scenario, severity, and the smallest fix.
 """,
-    "product-manager": """# Persona: Product manager
+    "product-manager": """---
+sections: [vision, where-we-are, features, not-now, questions]
+---
+
+# Persona: Product manager
 
 ## You are
 The product manager for this product. You own the vision and the roadmap: what this product is for, who it is for, what it should become over the next three phases, and what to build next. You think about the product as a whole (the loop, the CLI, the web UI, the TUI, the docs, the first-run experience), not about any one PR. You know the product overview and every phase's goals, and you read the retro material for the phase under review: the persona reports, the friction, the operator's retro, the walkthrough. You have used the real app.
@@ -143,9 +173,9 @@ file and do NOT commit.
 
 Write for the human who owns this product. End your final message with exactly one line:
 
-  {marker} {{"persona": "{name}", "score": <0-10>, "overall": "<one paragraph>", "findings": [{{"severity": "high" | "medium" | "low", "area": "<short>", "summary": "<one sentence>", "suggestion": "<what to change>"}}]}}
+  {marker} {{"persona": "{name}", "score": <0-10>, "overall": "<one paragraph>", "findings": [{{"severity": "high" | "medium" | "low", "area": "<short>", "summary": "<one sentence>", "suggestion": "<what to change>"}}]{sections}}}
 
-The JSON must be on one line.
+The JSON must be on one line.{sections_note}
 """
 
 PR_RULES = """\
@@ -157,10 +187,40 @@ otherwise run `git diff {base}...HEAD`. Do NOT modify any file.
 
 End your final message with exactly one line:
 
-  {marker} {{"persona": "{name}", "score": <0-10>, "overall": "<one paragraph>", "findings": [{{"severity": "high" | "medium" | "low", "area": "<short>", "summary": "<one sentence>", "suggestion": "<what to change>"}}]}}
+  {marker} {{"persona": "{name}", "score": <0-10>, "overall": "<one paragraph>", "findings": [{{"severity": "high" | "medium" | "low", "area": "<short>", "summary": "<one sentence>", "suggestion": "<what to change>"}}]{sections}}}
 
-The JSON must be on one line.
+The JSON must be on one line.{sections_note}
 """
+
+
+def persona_sections(text: str) -> tuple[str, list[str]]:
+    """A persona file's body (without frontmatter) and the section names it declares in
+    `sections:` frontmatter. A persona that declares none gets `[]`, and its body is the
+    whole text, so it is asked for and rendered exactly as before."""
+    try:
+        data, body = split_frontmatter(text)
+    except ValueError:
+        return text, []
+    raw = data.get("sections") or []
+    names = [str(s).strip() for s in raw if str(s).strip()] if isinstance(raw, list) else []
+    return body, names
+
+
+def _sections_fragment(sections: list[str]) -> tuple[str, str]:
+    """The marker-JSON fragment and the extra instruction paragraph for a persona that
+    declares its own sections. `("", "")` when it declares none, so the brief is unchanged."""
+    if not sections:
+        return "", ""
+    keys = ", ".join(f'"{s}": "<markdown>"' for s in sections)
+    frag = f', "sections": {{{keys}}}'
+    names = ", ".join(sections)
+    note = ("\n\nReport your own sections as well as the findings: add a `sections` object keyed by "
+            f"name ({names}), each value the section's markdown. Keep the findings block regardless "
+            "— it is what ranks and files the work. If you write a `features` section, its value may "
+            'instead be a list of objects, each {"title": "<short, could be a task title>", "body": '
+            '"<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | '
+            '"hard", "priority": <1-5, 1 highest>}, so each feature can be filed as a task.')
+    return frag, note
 
 
 def personas_dir(store: Store) -> Path:
@@ -202,8 +262,11 @@ def _read(p: Path | None) -> str:
 
 def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict[str, Any]]) -> str:
     cfg = store.config
-    parts = [f"# Persona review: {name} on {phase.key}\n", load_persona(store, name).strip() + "\n",
-             PHASE_RULES.format(phase=phase.name, product=phase.product, base=base, marker=PERSONA_MARKER, name=name)]
+    body, sections = persona_sections(load_persona(store, name))
+    frag, note = _sections_fragment(sections)
+    parts = [f"# Persona review: {name} on {phase.key}\n", body.strip() + "\n",
+             PHASE_RULES.format(phase=phase.name, product=phase.product, base=base, marker=PERSONA_MARKER, name=name,
+                                sections=frag, sections_note=note)]
     digest = store.root / str(cfg.get("principles_digest"))
     if digest.exists():
         parts.append("## Principles (digest)\n\n" + _read(digest))
@@ -229,8 +292,11 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
 def pr_brief(store: Store, task: Task, name: str, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
              max_diff_chars: int) -> str:
     tb = build_brief(store, task, include_rules=False)
-    parts = [f"# Persona review: {name} on PR for {task.id}\n", load_persona(store, name).strip() + "\n",
-             PR_RULES.format(task_id=task.id, branch=branch, base=base, marker=PERSONA_MARKER, name=name),
+    body, sections = persona_sections(load_persona(store, name))
+    frag, note = _sections_fragment(sections)
+    parts = [f"# Persona review: {name} on PR for {task.id}\n", body.strip() + "\n",
+             PR_RULES.format(task_id=task.id, branch=branch, base=base, marker=PERSONA_MARKER, name=name,
+                             sections=frag, sections_note=note),
              "## Task brief (what the author was given)\n\n" + tb.text,
              f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n"]
     if diff and len(diff) <= max_diff_chars:
@@ -255,9 +321,48 @@ def parse_persona(text: str) -> dict[str, Any]:
     return {}
 
 
+def _section_heading(name: str) -> str:
+    """`where-we-are` -> `Where we are`; a section name is free text, so only the first
+    letter is capitalised and dashes/underscores become spaces."""
+    return name.replace("-", " ").replace("_", " ").strip().capitalize()
+
+
+def _render_feature_items(items: list[Any]) -> str:
+    """A `features` section given as a list of structured items (title, body, difficulty,
+    priority) renders as one top-level bullet per feature, so the phase page can count them."""
+    lines: list[str] = []
+    for f in items:
+        if not isinstance(f, dict):
+            continue
+        ftitle = str(f.get("title") or "").strip()
+        if not ftitle:
+            continue
+        meta = []
+        if str(f.get("difficulty") or "").strip():
+            meta.append(f"size {str(f['difficulty']).strip()}")
+        if f.get("priority") not in (None, ""):
+            meta.append(f"priority {f['priority']}")
+        lines.append(f"- **{ftitle}**" + (f" ({', '.join(meta)})" if meta else ""))
+        body = str(f.get("body") or "").strip()
+        if body:
+            lines.append(f"  - {body}")
+    return "\n".join(lines) if lines else "_(no features)_"
+
+
+def _render_section(value: Any) -> str:
+    """A persona section value: markdown as-is, or a list of structured feature items."""
+    if isinstance(value, list):
+        return _render_feature_items(value)
+    return str(value).strip()
+
+
 def report_markdown(rev: dict[str, Any], title: str, run_id: str = "") -> str:
     out = [f"# {title}", "", f"**Persona:** {rev.get('persona', '?')} · **Score:** {rev.get('score', '–')}/10 · {now_iso()}", "",
            str(rev.get("overall", "")).strip(), ""]
+    sections = rev.get("sections")
+    if isinstance(sections, dict):
+        for name, value in sections.items():
+            out += [f"## {_section_heading(str(name))}", "", _render_section(value), ""]
     for sev in ("high", "medium", "low"):
         items = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == sev]
         if items:

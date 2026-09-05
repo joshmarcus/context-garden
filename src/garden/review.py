@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from .brief import build_brief
+from .criteria import parse_criteria, reconcile
 from .model import Task
 from .store import Store
 
@@ -25,8 +26,12 @@ checks if they are fast. Do NOT modify any file and do NOT commit.
 
 Check, in this order:
 
-1. **Acceptance criteria.** For each criterion in the task, say whether the diff meets it
-   and point at the evidence (file, test). Missing or untested criteria are blocking.
+1. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
+   quote the `criterion`, set `met` true or false, and give a one-line `reason` pointing at
+   the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
+   "Author's verification" below; check each claim against the diff rather than taking it on
+   trust. A criterion with no evidence, or one the author marked not done without a reason you
+   accept, is `met: false` and a blocking finding.
 2. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
 3. **Scope.** Changes outside the task, or task work that is missing.
 4. **PR description.** It must give a reader without the task file the broader context:
@@ -52,14 +57,31 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
 
 The JSON must be on one line.
 """
 
 
+def _verification_brief(task: Task, verified: Any) -> str:
+    """The author's per-criterion evidence, laid out for the reviewer to check the diff
+    against. Empty when the task has no criteria and the author claimed nothing."""
+    rows = reconcile(parse_criteria(task.body), verified)
+    if not rows:
+        return ""
+    lines = ["## Author's verification\n", "One row per acceptance criterion; check each against the diff.\n"]
+    for row in rows:
+        if row["not_done"]:
+            lines.append(f"- **{row['criterion']}** — author says NOT DONE: {row['worker_reason'] or 'no reason given'}")
+        elif row["evidence"]:
+            lines.append(f"- **{row['criterion']}** — {row['evidence']}")
+        else:
+            lines.append(f"- **{row['criterion']}** — author gave no evidence")
+    return "\n".join(lines) + "\n"
+
+
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
-                 max_diff_chars: int, pr_comment: str = "") -> str:
+                 max_diff_chars: int, pr_comment: str = "", verified: Any = None) -> str:
     task_brief = build_brief(store, task, include_rules=False)
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
@@ -67,6 +89,9 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    verification = _verification_brief(task, verified)
+    if verification:
+        parts.append(verification)
     if pr_comment.strip():
         parts.append(
             "## Author's response to the previous review (posted as a PR comment, not part of the description)\n\n"
@@ -100,6 +125,12 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
     verdict = str(rev.get("verdict", "?"))
     icon = "✅" if verdict == "approve" else "🔁"
     out = [f"{icon} **Automated review: {verdict.replace('_', ' ')}** — {rev.get('summary', '')}".rstrip(" —")]
+    criteria = [c for c in (rev.get("criteria") or []) if isinstance(c, dict)]
+    if criteria:
+        out.append("\n**Acceptance criteria**")
+        for c in criteria:
+            mark = "✅" if c.get("met") is True else "❌"
+            out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     nits = [f for f in findings if f.get("severity") != "blocking"]

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from garden.events import EventLog, digest
 from garden.inbox import build_inbox
 from garden.model import Status
+from garden.scheduler.discovered import _normalise_title, _same_finding
 from garden.store import Store
 from garden.web.app import create_app
 
@@ -158,3 +159,107 @@ def test_inbox_page_renders_a_pending_duplicate_or_cancel_decision(sched, fake_g
     assert r.status_code == 200
     assert "DM-002 restates DM-001" in r.text  # the duplicate's reason
     assert "DM-002" in r.text and "DM-003" in r.text
+
+
+# ---- CG-199: discovered work is deduplicated before it is filed -----------------------
+
+
+def test_normalise_title_ignores_case_and_punctuation():
+    assert _normalise_title("Fix the flaky widget test!") == _normalise_title("fix the flaky widget test")
+    assert _normalise_title("A, B & C") == "a b c"
+
+
+def test_same_finding_needs_both_a_shared_file_and_a_shared_symptom():
+    a = "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."
+    same_file_same_error = "Under load, `src/garden/scheduler/poll.py` throws `TimeoutError: retry exceeded`."
+    same_file_only = "`src/garden/scheduler/poll.py` is slow but does not error."
+    unrelated = "`src/garden/web/app.py` raises `ValueError: bad config`."
+    assert _same_finding(a, same_file_same_error)
+    assert not _same_finding(a, same_file_only)
+    assert not _same_finding(a, unrelated)
+
+
+def _cancel(sched, task_id: str) -> None:
+    t = sched.store.task(task_id)
+    t.status = Status.CANCELLED
+    sched.store.save(t)
+
+
+def test_same_discovery_from_three_workers_files_one_draft(sched, fake_github, monkeypatch):
+    """Three separate tasks each report the identical finding: the first files a draft, the
+    other two are noted on it ("also found by") instead of filing their own."""
+    _cancel(sched, "DM-001")  # keep the fixture's own ready tasks out of the way
+    _cancel(sched, "DM-002")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover-same")
+
+    reporters = []
+    for i in range(3):
+        r = sched.store.create_task("demo", "p1", f"Reporter {i}", "## Goal\n\nDo some work.\n", status="ready")
+        sched.tick()  # dispatches this reporter
+        sched.tick(dispatch=False)  # reaps it, filing or attaching the discovery
+        sched.store.invalidate()
+        reporters.append(r.id)
+
+    tasks = sched.store.tasks()
+    filed = [t for t in tasks.values() if t.discovered_from in reporters]
+    assert [t.title for t in filed] == ["Retry loop spins forever on a dead runner"]
+    draft = filed[0]
+    others = [r for r in reporters if r != draft.discovered_from]
+    assert len(others) == 2
+    assert all(f"also found by {r}" in draft.body for r in others)
+
+    evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(kinds=["discovered", "discovered_duplicate"])
+    assert sum(1 for e in evs if e["kind"] == "discovered") == 1
+    dups = [e for e in evs if e["kind"] == "discovered_duplicate"]
+    assert {e["found_by"] for e in dups} == set(others)
+    assert all(e["task"] == draft.id for e in dups)
+
+
+def test_dedup_matches_by_file_and_symptom_even_with_a_different_title(sched, fake_github, monkeypatch):
+    """A discovery with a different title still attaches to an open task that names the same
+    file and error, instead of filing a near-duplicate draft."""
+    existing = sched.store.create_task(
+        "demo", "p1", "Scheduler retries never give up", "## Goal\n\n"
+        "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load.\n",
+        status="ready", task_id="DM-350")
+
+    def add_variant(call, result):
+        result["discovered"] = [{
+            "title": "Runner keeps retrying a dead worker",
+            "body": "Under load, `src/garden/scheduler/poll.py` throws `TimeoutError: retry exceeded`.",
+        }]
+
+    from tests.fake_claude import WORKERS, Worker
+
+    monkeypatch.setitem(WORKERS, "discover-variant", Worker(tweak=add_variant))
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover-variant")
+    sched.tick()  # dispatches DM-001
+    sched.tick(dispatch=False)  # reaps it
+    sched.store.invalidate()
+
+    tasks = sched.store.tasks()
+    assert not any(t.discovered_from == "DM-001" for t in tasks.values())
+    matched = sched.store.task(existing.id)
+    assert "also found by DM-001" in matched.body
+
+
+def test_dedup_scope_is_this_phase_and_the_next_one(sched, fake_github, monkeypatch):
+    """An open task with a matching title two phases away is out of scope: the discovery is
+    still filed as a new draft rather than silently attached to unrelated work."""
+    from tests.conftest import write
+
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# p2\n\nNext.\n")
+    write(sched.store.root / "demo" / "p3" / "goals.md", "# p3\n\nLater.\n")
+    sched.store.invalidate()
+    sched.store.create_task("demo", "p3", "Fix the flaky widget test", "## Goal\n\nUnrelated, far phase.\n",
+                            status="ready", task_id="DM-360")
+    sched.store.invalidate()
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover")
+    sched.tick()
+    sched.tick(dispatch=False)
+    sched.store.invalidate()
+
+    filed = [t.title for t in sched.store.tasks().values() if t.discovered_from == "DM-001"]
+    assert "Fix the flaky widget test" in filed  # p3's task is out of scope, so this still files
+    assert "also found by" not in sched.store.task("DM-360").body

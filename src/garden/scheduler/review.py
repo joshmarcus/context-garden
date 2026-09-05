@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
+from ..criteria import criteria_counts
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -68,7 +69,7 @@ class ReviewMixin:
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
         if any(r.task_id == task.id for r in self.worker_runs_active()):
-            st["pending_reviews"] = list(st.get("pending_reviews") or []) + wanted
+            self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
                 self.log(f"{task.id}: review deferred while a worker run is in flight")
@@ -93,7 +94,23 @@ class ReviewMixin:
                 self.store.save(task)
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
         if deferred:
-            st["pending_reviews"] = list(st.get("pending_reviews") or []) + deferred
+            self._queue_pending_reviews(st, deferred)
+
+    @staticmethod
+    def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
+        """Merge `items` into `st["pending_reviews"]`, keyed by (kind, persona name): a round
+        already queued for this task is not queued again, so a review deferred on one tick and
+        re-offered on the next (the same worker still in flight) does not pile up duplicate
+        entries for the same round (CG-203)."""
+        pending = list(st.get("pending_reviews") or [])
+        seen = {(i.get("kind"), i.get("name", "")) for i in pending}
+        for item in items:
+            key = (item.get("kind"), item.get("name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            pending.append(item)
+        st["pending_reviews"] = pending
 
     def _drain_pending_reviews(self, tasks: dict[str, Task], rep: TickReport) -> None:
         for task in tasks.values():
@@ -148,11 +165,14 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
-        pr_title, pr_body, pr_comment = task.title, "", ""
+        pr_title, pr_body, pr_comment, verified = task.title, "", "", None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
             pr_comment = str(work_run.result.get("pr_comment") or "")
+            verified = work_run.result.get("verified")
+        if verified is None:
+            verified = self._last_worker_verified(task)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available and not pr_body:
@@ -163,7 +183,7 @@ class ReviewMixin:
                 pass
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment)
+                            pr_comment=pr_comment, verified=verified)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         review_difficulty = str(self.cfg.get("review.difficulty") or task.difficulty or "medium")
@@ -238,9 +258,11 @@ class ReviewMixin:
         st["last_review"] = review
         st["last_review_run"] = run.run_id
         verdict = str(review.get("verdict", ""))
+        criteria_met, criteria_total = criteria_counts(review.get("criteria"))
         self.events.emit("review", task.id, run=run.run_id, verdict=verdict, summary=str(review.get("summary", "")),
                          blocking=sum(1 for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"),
-                         description_ok=bool(review.get("description_ok", True)))
+                         description_ok=bool(review.get("description_ok", True)),
+                         criteria_met=criteria_met, criteria_total=criteria_total)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available:

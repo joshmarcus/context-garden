@@ -8,11 +8,23 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from .common import _phase, _scheduler, _split_target, _store, _style, app, console, err
+from .common import (
+    PANEL_PHASES,
+    PANEL_PLAN,
+    PANEL_SETUP,
+    _phase,
+    _scheduler,
+    _split_target,
+    _store,
+    _style,
+    app,
+    console,
+    err,
+)
 
 
 # --------------------------------------------------------------------------- init / scaffold
-@app.command()
+@app.command(rich_help_panel=PANEL_SETUP)
 def init(
     directory: Path = typer.Argument(Path("."), help="Directory to turn into a garden"),
     name: str = typer.Option("garden", help="Garden name"),
@@ -27,7 +39,7 @@ def init(
     console.print("Next: `garden new-product <name>` then `garden new-phase <product> <phase>`.")
 
 
-@app.command("new-product")
+@app.command("new-product", rich_help_panel=PANEL_SETUP)
 def new_product(name: str, repo: str = typer.Option(".", help="Path (relative to garden) or URL of the code repo"),
                 base_branch: str = typer.Option("main")):
     """Scaffold <name>/product.md and register it in garden.yaml."""
@@ -38,7 +50,7 @@ def new_product(name: str, repo: str = typer.Option(".", help="Path (relative to
         console.print(f"created {p}")
 
 
-@app.command("new-phase")
+@app.command("new-phase", rich_help_panel=PANEL_SETUP)
 def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Botanical emblem: pea|bramble|foxglove|fern|poppy (default: next unused)")):
     """Scaffold <product>/<phase>/{goals.md,specs/,tasks/}; assigns the phase its plant."""
     from ..scaffold import new_phase as _nph
@@ -59,7 +71,7 @@ def new_phase(product: str, phase: str, plant: str = typer.Option("", help="Bota
         pass
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_SETUP)
 def plants(
     fetch: bool = typer.Option(False, "--fetch", help="Download the scanned plates (Thomé, 1885, public domain) from Wikimedia Commons into the web UI's static plates directory"),
     height: int = typer.Option(900, help="Pixel height of the prepared plates"),
@@ -97,7 +109,7 @@ def plants(
     console.print("stages: " + " · ".join(f"{k} = {v}" for k, v in STAGE_WORD.items() if k != "blocked"))
 
 
-@app.command("new-task")
+@app.command("new-task", rich_help_panel=PANEL_PLAN)
 def new_task(
     target: str = typer.Argument(..., help="product/phase"),
     title: str = typer.Argument(...),
@@ -141,7 +153,7 @@ def _set_phase_closed(store, ph, closed: str) -> None:
         sched.reopen_phase(ph)
 
 
-@app.command("close-phase")
+@app.command("close-phase", rich_help_panel=PANEL_PHASES)
 def close_phase(
     target: str = typer.Argument(..., help="product/phase"),
     force: bool = typer.Option(False, "--force", help="Close even with open tasks"),
@@ -167,7 +179,7 @@ def close_phase(
     console.print(f"{ph.key} closed ({date}); it now appears in the herbarium")
 
 
-@app.command("reopen-phase")
+@app.command("reopen-phase", rich_help_panel=PANEL_PHASES)
 def reopen_phase(target: str = typer.Argument(..., help="product/phase")):
     """Reopen a closed phase: it returns to the rail and can take work again."""
     store = _store()
@@ -192,7 +204,7 @@ def _set_phase_frozen(store, ph, frozen: str) -> None:
         log.emit("phase_unfrozen", "", phase=ph.key)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PHASES)
 def freeze(target: str = typer.Argument(..., help="product/phase")):
     """Freeze a phase: approve and dispatch refuse its tasks until unfrozen, unless a task
     carries a freeze exception."""
@@ -212,7 +224,7 @@ def freeze(target: str = typer.Argument(..., help="product/phase")):
     console.print(f"{ph.key} frozen ({date}); approve/dispatch now refuse its tasks without a freeze exception")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PHASES)
 def unfreeze(target: str = typer.Argument(..., help="product/phase")):
     """Clear a phase's freeze."""
     store = _store()

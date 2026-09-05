@@ -69,7 +69,13 @@
       {% elif it.group == 'retrying' %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
       {% elif it.group == 'approve' %}
-        <form method="post" action="/tasks/{{ it.task }}/approve"><button class="primary">Approve</button></form>
+        <form method="post" action="/tasks/{{ it.task }}/approve" style="display:inline-flex;gap:6px;align-items:center">
+          <button class="primary">Approve into <span data-approve-label>{{ it.phase_name }}</span></button>
+          <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
+            {% for ph in it.approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == it.phase_name %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
+          </select>
+        </form>
+        {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
       {% elif it.group == 'budget' %}
         <span class="muted mono">{{ it.actions[0].command }}</span>

@@ -471,9 +471,10 @@ def _stacked_child_with_closed_base(sched, fake_github, tmp_path):
     t1.status = Status.DONE
     sched.store.save(t1)
     child = fake_github.prs[child_branch]
-    child.state = "CLOSED"
-    fake_github.base_deleted.add(child.number)  # a base_ref_deleted timeline event
-    fake_github.deleted_branches.add("garden/dm-001-first-task")
+    # Deleting the merged parent's branch closes the child PR (base_ref_deleted), the way real
+    # GitHub does (CG-173); the fake models it rather than the test setting the flags by hand.
+    fake_github.delete_branch("test/demo", "garden/dm-001-first-task")
+    assert child.state == "CLOSED" and child.number in fake_github.base_deleted
     return child
 
 

@@ -1,4 +1,4 @@
-"""`garden` runs and diagnostics: runs, log, doctor, serve, tui, version, upgrade."""
+"""`garden` runs and diagnostics: runs, log, doctor, serve, tui, version, upgrade, canary."""
 
 from __future__ import annotations
 
@@ -8,12 +8,11 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from .. import __version__
-from .common import _scheduler, _store, app, console, err
+from .common import PANEL_BOARD, PANEL_DIAG, _scheduler, _store, app, console, err
 
 
 # --------------------------------------------------------------------------- runs / diagnostics
-@app.command()
+@app.command(rich_help_panel=PANEL_BOARD)
 def runs(task_id: str | None = typer.Argument(None)):
     """List runs (all, or for one task)."""
     from ..runs import RunStore
@@ -33,7 +32,7 @@ def runs(task_id: str | None = typer.Argument(None)):
     console.print(table)
 
 
-@app.command("log")
+@app.command("log", rich_help_panel=PANEL_BOARD)
 def log_(task_id: str, lines: int = typer.Option(60, "-n")):
     """Tail the latest run's output for a task."""
     from ..runs import RunStore
@@ -56,7 +55,7 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         console.print(f"[red]error:[/red] {r.error}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def doctor():
     """Check config, tools (claude, gh/token), repos and the task graph."""
     import subprocess
@@ -66,7 +65,11 @@ def doctor():
     from ..runner import get_runner
 
     store = _store()
-    ok = True
+    failures: list[str] = []
+
+    def fail(name: str) -> None:
+        failures.append(name)
+
     console.print(f"root: {store.root}")
     self_products = [n for n in (store.config.data.get("products", {}) or {}) if store.config.product_self(n)]
     wd = store.config.work_dir
@@ -77,7 +80,7 @@ def doctor():
         console.print(f"work dir: {wd}  [red](inside the live garden; product {', '.join(self_products)} "
                       "is the garden's own repo — set work_dir to a path outside the live garden so its "
                       "clone and worktrees never sit inside the live checkout)[/red]")
-        ok = False
+        fail("work dir")
     else:
         console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
@@ -89,11 +92,11 @@ def doctor():
             gh_line += f" as {login}" if login else ""
             console.print(gh_line)
         else:
-            console.print(f"[red]{gh_line} [NOT LOGGED IN][/red]")
-            ok = False
+            console.print(f"[red]{gh_line} [NOT LOGGED IN][/red]  (fix: run `gh auth login`, or set GITHUB_TOKEN)")
+            fail("github")
     else:
         console.print(f"[red]{gh_line}[/red]")
-        ok = False
+        fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
     runner_names = {str(store.config.get("runner") or "local")} | {
@@ -105,11 +108,13 @@ def doctor():
             if h.is_authenticated():
                 console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
-                console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}")
-                ok = False
+                console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
+                              f"  (fix: run {h.bin}'s login command)")
+                fail(f"harness {hn}")
         else:
-            console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}")
-            ok = False
+            console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"
+                          f"  (fix: install {h.bin} and add it to PATH)")
+            fail(f"harness {hn}")
     git_email = ""
     git_name = ""
     try:
@@ -123,8 +128,10 @@ def doctor():
     if git_email and git_name:
         console.print(f"git identity: [green]{git_name} <{git_email}>[/green]")
     else:
-        console.print("[red]git identity: missing user.name or user.email[/red]")
-        ok = False
+        console.print("[red]git identity: missing user.name or user.email[/red]  (fix: run "
+                      "`git config --global user.name \"Your Name\"` and `git config --global "
+                      "user.email you@example.com`, or set git.user_name / git.user_email in garden.yaml)")
+        fail("git identity")
     for name in sorted(runner_names):
         try:
             cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}
@@ -133,7 +140,8 @@ def doctor():
         except Exception as e:  # noqa: BLE001
             probs = [str(e)]
         console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
-        ok = ok and not probs
+        if probs:
+            fail(f"runner {name}")
     from ..scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     mp_live = (ctrl.get("overrides") or {}).get("max_parallel")
@@ -154,8 +162,9 @@ def doctor():
             console.print(f"notify: [green]configured, test ok[/green]  command={notify_cmd!r}")
         else:
             detail = result[1] if result else "unknown error"
-            console.print(f"notify: [red]configured but the test run failed ({detail})[/red]  command={notify_cmd!r}")
-            ok = False
+            console.print(f"notify: [red]configured but the test run failed ({detail})[/red]  command={notify_cmd!r}"
+                          "  (fix: fix or replace notify.command in garden.yaml)")
+            fail("notify")
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
         by = ctrl.get("by", "")
@@ -171,13 +180,14 @@ def doctor():
         tag = "  [cyan](self: the garden's own repo; tasks land as PRs to the garden)[/cyan]" if is_self else ""
         console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}{tag}")
         if isinstance(repo, Path) and not (repo / ".git").exists():
-            console.print(f"  [red]{repo} is not a git repo[/red]")
-            ok = False
+            console.print(f"  [red]{repo} is not a git repo[/red]  (fix: run `git init` there, or point "
+                          f"products.{p.name}.repo at an existing clone)")
+            fail(f"product {p.name} repo")
         if is_self and isinstance(repo, Path) and repo == store.root:
             console.print(f"  [red]self product {p.name} points at the live garden itself; set repo to the "
                           "garden's origin (a URL, or a separate clone) so a worker edits a fresh checkout, "
                           "never the live garden[/red]")
-            ok = False
+            fail(f"product {p.name} self-repo")
     from ..gitops import identity as _clone_identity
 
     repos_dir = store.config.repos_dir
@@ -191,16 +201,17 @@ def doctor():
                               "git.user_name / git.user_email in garden.yaml, or the garden checkout's own "
                               "git config, so a commit inside it never fails with "
                               "\"Author identity unknown\"[/red]")
-                ok = False
+                fail(f"clone {clone.name} identity")
     problems = _validate(store.tasks())
     for pr_ in problems:
-        console.print(f"[red]graph: {pr_}[/red]")
-    ok = ok and not problems
-    console.print("[green]all good[/green]" if ok else "[yellow]see above[/yellow]")
-    raise typer.Exit(0 if ok else 1)
+        console.print(f"[red]graph: {pr_}[/red]  (fix: correct or remove the offending depends_on)")
+    if problems:
+        fail("graph")
+    console.print("[green]all good[/green]" if not failures else f"[yellow]failed: {', '.join(failures)}[/yellow]")
+    raise typer.Exit(0 if not failures else 1)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8765),
@@ -223,7 +234,7 @@ def serve(
     uvicorn.run(create_app(store, watch=watch_), host=host, port=port, log_config=log_config)
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def tui():
     """Terminal UI."""
     from ..tui.app import GardenTUI
@@ -231,16 +242,15 @@ def tui():
     GardenTUI(_store()).run()
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def version():
     """The tool version and, for a pinned git install, the installed commit."""
-    from ..upgrade import installed_commit
+    from .common import version_string
 
-    sha = installed_commit()
-    print(f"{__version__} ({sha[:12]})" if sha else __version__)
+    print(version_string())
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def upgrade(
     restart: bool = typer.Option(False, "--restart", help="Re-exec `garden serve` on success (usually the running loop does this)"),
     force: bool = typer.Option(False, "--force", help="Reinstall even if no upgrade is recorded, using the tool product's base sha"),
@@ -276,3 +286,52 @@ def upgrade(
         if result.get("output"):
             print(str(result["output"])[-2000:])
         raise typer.Exit(1) from None
+
+
+@app.command()
+def canary(
+    sha: str = typer.Argument("", help="git commit to install and check (default: the pending tool upgrade)"),
+    url: str = typer.Option("", "--url", help="git URL or local path to install from (default: the tool product's repo)"),
+    out: Path | None = typer.Option(None, "--out", help="Run directory (default: .garden/canary/<sha>, else a temp dir)"),
+    keep: bool = typer.Option(False, "--keep", help="Keep the throwaway venv and gardens"),
+    skip_install: bool = typer.Option(False, "--skip-install", help="Check the current build instead of installing a pin"),
+    self_check: bool = typer.Option(False, "--self-check", hidden=True, help="Run the checks in this interpreter (used inside the throwaway venv)"),
+):
+    """Check a freshly-pinned build before trusting it with real PRs: install it into a throwaway
+    venv and drive the scripted QA flows plus a stacked-PR and a merge-queue scenario against an
+    in-memory GitHub that behaves like the real one. Exits non-zero on any failure. Run it before
+    moving the pin (see the garden-operate skill)."""
+    from ..canary import run_canary
+
+    store = None
+    try:
+        from ..store import Store
+
+        store = Store()
+    except (FileNotFoundError, ValueError):
+        store = None
+    in_process = self_check or skip_install
+    if not in_process and not sha and store is not None:
+        pending = _scheduler(store).upgrade_available()
+        if pending:
+            sha = str(pending.get("sha") or "")
+            url = url or str(pending.get("url") or "")
+    if not in_process and sha and not url and store is not None:
+        product = store.config.tool_product()
+        if product:
+            url = str(store.config.product_repo(product))
+    if not in_process and not sha:
+        err.print("[red]no build to check: pass a SHA, or --skip-install to check the current build[/red]")
+        raise typer.Exit(2) from None
+    if out is None:
+        import tempfile
+
+        if store is not None and sha:
+            out = store.config.garden_dir / "canary" / sha[:12]
+        else:
+            out = Path(tempfile.mkdtemp(prefix="garden-canary-"))
+    report = run_canary(sha, url=url, out=out, keep=keep, skip_install=in_process,
+                        log=lambda m: err.print(f"[dim]{m}[/dim]"))
+    console.print(report.summary(), markup=False, highlight=False, soft_wrap=True)
+    if not report.ok:
+        raise typer.Exit(1)

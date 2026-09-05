@@ -57,23 +57,25 @@ What changes for users/the team when this phase ships.
 - ...
 """
 
-TASK_TEMPLATE = """\
-## Goal
+def render_task_body(goal: str = "", context: str = "", acceptance: list[str] | None = None) -> str:
+    """The body `garden new-task` writes. A blank field keeps the scaffold's placeholder
+    text, so a task created with nothing typed is byte-identical to `garden new-task`'s
+    file; the web form's Goal/Context/Acceptance-criteria fields fill these in."""
+    items = [a.strip() for a in (acceptance or []) if a.strip()]
+    ac_block = "\n".join(f"- [ ] {a}" for a in items) if items else "- [ ] ..."
+    return (
+        "## Goal\n\n"
+        f"{goal.strip() or 'One or two sentences.'}\n\n"
+        "## Context\n\n"
+        f"{context.strip() or 'What the agent needs to know that is not in the reading list.'}\n\n"
+        "## Acceptance criteria\n\n"
+        f"{ac_block}\n\n"
+        "## Out of scope\n\n"
+        "- ...\n"
+    )
 
-One or two sentences.
 
-## Context
-
-What the agent needs to know that is not in the reading list.
-
-## Acceptance criteria
-
-- [ ] ...
-
-## Out of scope
-
-- ...
-"""
+TASK_TEMPLATE = render_task_body()
 
 TAKE_SKILL = """\
 ---
@@ -286,8 +288,8 @@ hand edit of `state.json` (never of a task's status field). Actions you will use
 Before pressing anything on a task, confirm its PR is still open: an action landing seconds
 after automerge moves a `done` task back into the loop (seen once; CG-142).
 
-Before merging a PR by hand (hard tier does not automerge), confirm nothing merged since its
-CI last ran: `gh pr view N --json mergeStateStatus` must say `CLEAN`, not `BLOCKED` or
+Before merging a PR by hand (with `automerge_hard_tier` off, hard tier does not automerge),
+confirm nothing merged since its CI last ran: `gh pr view N --json mergeStateStatus` must say `CLEAN`, not `BLOCKED` or
 `BEHIND`. If something did, wait for the scheduler's rebase round rather than merging a
 green-but-stale branch (2026-09-05: two such merges a minute apart left main red).
 
@@ -327,6 +329,19 @@ Then confirm `curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8765/` is 20
 first tick's events look sane, and the worker count did not drop.
 
 ## Moving the pin (the garden runs a pinned install of the tool)
+
+**Run the canary before you move the pin.** It installs the candidate build into a throwaway
+venv and drives it end to end — the scripted QA flows plus a stacked-PR and a merge-queue
+scenario against an in-memory GitHub that behaves like the real one (a pushed rollup is
+PENDING for a poll or two; deleting a branch closes a child PR that still targets it). Those
+are the two ways the fake used to lie, and three green-tested builds still broke the live loop
+within the hour on 2026-09-05.
+
+```bash
+garden canary <sha>                   # non-zero exit = do NOT move the pin
+```
+
+Only once it passes:
 
 ```bash
 chmod -R u+w .venv/bin .venv/lib      # the lock is recursive
@@ -459,6 +474,12 @@ def new_product(store: Store, name: str, repo: str, base_branch: str) -> list[Pa
 def new_phase(store: Store, product: str, phase: str, plant: str = "") -> list[Path]:
     from .plants import PLANT_BY_KEY, assign_plant, plant_info, roman
 
+    configured = store.config.data.get("products", {}) or {}
+    if product not in configured:
+        raise ValueError(
+            f"{product!r} is not registered in garden.yaml's products block; run "
+            f"`garden new-product {product}` first"
+        )
     if plant and plant not in PLANT_BY_KEY:
         raise ValueError(f"unknown plant {plant!r}; choose one of {', '.join(PLANT_BY_KEY)}")
     created = []

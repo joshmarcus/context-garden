@@ -174,11 +174,13 @@ push; the runner does.
 | `garden check ID [--stage ci]` | run the token-free checks by hand |
 | `garden digest [--since 24h]` / `metrics [product/phase]` / `events [ID]` | what happened, how it's going, the timeline |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
+| `garden pause [--reason ...]` / `unpause` | pause and resume automatic dispatch |
 | `garden dispatch ID [--mode revise] [--force]` | start a worker now |
 | `garden take ID [--worktree]` / `finish ID --result '{...}'` | human-driven session path |
-| `garden pr ID URL` / `cancel ID` / `retry ID` / `set-status ID STATUS` | manual state changes |
+| `garden retry ID` / `resume ID` | continue the loop on a task; clear a task's needs-you stop |
+| `garden pr ID URL` / `cancel ID` / `set-status ID STATUS` | manual state changes |
 | `garden usage [ID or product/phase] [--by-mode]` | tokens and cost per task |
-| `garden runs [ID]` / `log ID` / `doctor` | run records, cost, diagnostics |
+| `garden runs [ID]` / `log ID` / `doctor` / `version` (or `--version`) | run records, cost, diagnostics, version |
 | `garden qa [--scripted] [--phase product/phase]` | an agent drives the loop end to end through the web app on a throwaway garden |
 
 ## The scheduler
@@ -212,8 +214,9 @@ Borrowed from graph-based agent systems; all deterministic:
 - **Stacked dependencies.** A task whose dependency has an open PR starts on top of that
   branch instead of waiting for the merge; its PR targets the parent branch and is
   retargeted and rebased when the parent merges. Conflicts become a revise run.
-- **Pause and resume.** A worker that needs a decision reports `needs_input`; the task
-  waits (holding no slot) until `garden answer ID "..."`, then the same session resumes.
+- **A question waits for an answer.** A worker that needs a decision reports `needs_input`;
+  the task waits (holding no slot) until `garden answer ID "..."`, then the same session
+  resumes. (Pausing the whole loop is separate: `garden pause` / `garden unpause`.)
 - **Discovered work.** Workers list out-of-scope work they noticed; it becomes task files
   with `discovered_from`, ready immediately when blocking. `garden ls --discovered`.
 - **Stall detection and budgets.** A revise round that changes nothing, or a review
@@ -224,8 +227,11 @@ Borrowed from graph-based agent systems; all deterministic:
   verdict is `approve`, at least `automerge_min_review_rounds` review rounds ran, no
   feedback is pending and no revise run is in flight, the PR's checks rollup is green,
   GitHub reports it `MERGEABLE`, no human review requests changes, the task's difficulty
-  is in `automerge_tiers` (so `hard` still waits for a person), and the phase is under
-  budget. It merges with `automerge_method`, deletes the branch, comments on the PR, and
+  is in `automerge_tiers`, and the phase is under budget. A `hard`-tier PR merges too
+  when `automerge_hard_tier` is on (the default), but only after two approving review
+  rounds and the garden's own scratch-merge check — the pre-PR suite run on the branch
+  rebased onto the base tip in a throwaway worktree; set it `false` to keep hard-tier
+  merges by hand. It merges with `automerge_method`, deletes the branch, comments on the PR, and
   lets the next poll move the task to `done` and restack children; the digest counts
   garden merges. Any failing gate leaves the PR in review with the reason on the task
   page. A task-level `automerge: false` in its frontmatter opts one task out; all these
@@ -243,7 +249,10 @@ Borrowed from graph-based agent systems; all deterministic:
   (`garden persona-review product/phase -p user`; the report lands in the phase's
   `docs/reviews/`, where the planner reads it) or against a PR
   (`garden persona-review ID -p security`; posted as a comment). `review.personas`
-  runs chosen personas on every new PR.
+  runs chosen personas on every new PR. Persona reviews (phase and PR) and the retro
+  reconciliation run on `retro.difficulty` (default `hard`), separate from
+  `review.difficulty`, which governs PR reviews only — a retro always gets the best
+  tier without editing config first.
 - **Walkthrough of the live web app.** A persona review reads code, PR bodies and task
   files but never sees a page. `garden walkthrough product/phase` fetches every web page —
   Inbox, Board (columns and list), Trellis, a task, a run, the phase page, the Herbarium
@@ -371,8 +380,12 @@ review:
   enabled: true
   max_rounds: 2
   max_diff_chars: 60000
-  difficulty: ""            # reviewer tier; empty = the task's
+  difficulty: ""            # reviewer tier; empty = the task's; PR reviews only
   personas: [security]      # persona reviews on every new PR round
+retro:
+  difficulty: hard           # tier for persona reviews (phase and PR) and the retro
+                             # reconciliation; separate from review.difficulty so a retro
+                             # always runs on the best tier without editing config first
 checks:
   pre_pr: [{name: tests, command: "pytest -q -x"}]
   ci: [{name: ci-log, python: "garden.checks:local_command_check", command: "scripts/ci_failures.sh"}]
@@ -415,7 +428,9 @@ github:
   automerge: false          # let the scheduler merge a PR once every loop gate is green (off by default)
   automerge_method: squash  # squash | merge | rebase
   automerge_min_review_rounds: 1   # require at least this many automated review rounds
-  automerge_tiers: [easy, medium]  # only these difficulty tiers automerge; hard waits for a person
+  automerge_tiers: [easy, medium]  # these difficulty tiers automerge under the plain policy
+  automerge_hard_tier: true        # also merge hard-tier PRs, after two approving rounds and the
+                                   # garden's own scratch-merge check; false keeps them by hand
   trusted_authors: []       # logins whose PR comments may become a worker's revise brief, besides the
                             # login the garden authenticates as, the `reviewers` above and [bot] accounts.
                             # A comment by anyone else is logged on the task and ignored: on a public

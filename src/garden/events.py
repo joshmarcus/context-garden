@@ -73,6 +73,75 @@ def parse_since(text: str) -> str:
     return text
 
 
+# The event kinds that mean a person's call is needed and so are worth a browser
+# notification (CG-208): a worker's question, a won't-do or nothing-to-change, a
+# discovered-work decision, a review/revision cap or a broken base, a stall, a retro verdict
+# or question, a phase closing. Everything else in the log is a notice — a merge, a
+# dispatch, progress — and never notifies.
+DECISION_KINDS = ("waiting_human", "decision", "needs_human", "stall", "discovered",
+                  "retro_done", "retro_question", "phase_closed")
+
+# stop_kind -> a short phrase for a needs_human notification (mirrors inbox.ATTENTION_KINDS,
+# kept local so events.py stays free of the inbox's store/graph imports).
+_STOP_TITLES = {
+    "revision_cap": "revision cap reached",
+    "review_cap": "automated review rounds used",
+    "base_broken": "the base branch is broken",
+    "parent_closed": "the stacked-on PR was closed",
+    "stall": "the loop stalled",
+}
+
+
+def _clip(text: Any, n: int = 90) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def decision_notifications(events: list[dict[str, Any]], titles: dict[str, str] | None = None) -> list[dict[str, str]]:
+    """Turn the decision-kind events (see DECISION_KINDS) into notification items for an open
+    browser tab: each is {kind, at, task, phase, title, url}. `titles` maps a task id to its
+    title for a friendlier one-line; the URL opens the task or phase the decision is about.
+    Notice-kind events are dropped, so what comes back is only what should notify."""
+    titles = titles or {}
+    out: list[dict[str, str]] = []
+    for ev in events:
+        kind = str(ev.get("kind") or "")
+        if kind not in DECISION_KINDS:
+            continue
+        phase = str(ev.get("phase") or "")
+        task = str(ev.get("target") or ev.get("task") or "")
+        who = titles.get(task) or task
+        title, url = "", ""
+        if kind == "waiting_human":
+            title, url = f"{who} asks: {_clip(ev.get('question'))}", f"/tasks/{task}"
+        elif kind == "decision":
+            if ev.get("decision_kind"):
+                verb = "duplicates another task" if ev.get("decision_kind") == "duplicate" else "is now obsolete"
+                title = f"{who}: a worker says it {verb}"
+            else:
+                word = "won't do this task" if ev.get("decision") == "wont_do" else "found nothing to change"
+                title = f"{who}: worker {word}"
+            url = f"/tasks/{task}"
+        elif kind in ("needs_human", "stall"):
+            what = _STOP_TITLES.get(str(ev.get("stop_kind") or ""))
+            if not what:
+                what = _clip(ev.get("reason")) or ("the loop stalled" if kind == "stall" else "needs a decision")
+            title, url = f"{who}: {what}", f"/tasks/{task}"
+        elif kind == "discovered":
+            nt = str(ev.get("new_task") or "")
+            task = nt or task
+            title = f"Discovered work to approve: {_clip(ev.get('title') or nt)}"
+            url = f"/tasks/{nt}" if nt else "/"
+        elif kind == "retro_done":
+            title, url = f"Retro ready to review — {phase}", f"/phases/{phase}"
+        elif kind == "retro_question":
+            title, url = f"Retro needs a decision — {phase}", f"/phases/{phase}"
+        elif kind == "phase_closed":
+            title, url = f"Phase closed — {phase}", f"/phases/{phase}"
+        out.append({"kind": kind, "at": str(ev.get("at") or ""), "task": task, "phase": phase, "title": title, "url": url})
+    return out
+
+
 HUMAN_KINDS = {"waiting_human", "needs_human", "stall", "budget", "pr_closed", "failed", "decision"}
 
 
@@ -119,6 +188,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     done_at: dict[str, str] = {}
     revisions: dict[str, int] = defaultdict(int)
     first_review: dict[str, str] = {}
+    first_review_criteria: dict[str, tuple[int, int]] = {}
     cost: dict[str, float] = defaultdict(float)
     runs: dict[str, int] = defaultdict(int)
     rebases_mechanical = 0
@@ -140,7 +210,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             done_at[t] = ev["at"]
             merges += 1
         elif k == "review":
-            first_review.setdefault(t, str(ev.get("verdict", "")))
+            if t not in first_review:
+                first_review[t] = str(ev.get("verdict", ""))
+                first_review_criteria[t] = (int(ev.get("criteria_met") or 0), int(ev.get("criteria_total") or 0))
         elif k == "run_finished":
             cost[t] += float(ev.get("cost_usd") or 0.0)
             if ev.get("mode") == "rebase":
@@ -159,14 +231,16 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         lead_h = None
         if tid in done_at:
             lead_h = (_ts(done_at[tid]) - _ts(first_dispatch[tid])).total_seconds() / 3600
+        crit_met, crit_total = first_review_criteria.get(tid, (0, 0))
         per_task.append({
             "id": tid, "difficulty": getattr(task, "difficulty", ""), "phase": getattr(task, "key", ""),
             "status": getattr(task, "status", ""), "runs": runs[tid], "revisions": revisions[tid],
             "first_review": first_review.get(tid, ""), "cost_usd": round(cost[tid], 4), "lead_hours": lead_h,
+            "criteria_met": crit_met, "criteria_total": crit_total,
         })
     by_diff: dict[str, dict[str, Any]] = {}
     for row in per_task:
-        d = by_diff.setdefault(row["difficulty"] or "medium", {"tasks": 0, "cost_usd": 0.0, "revisions": 0, "first_pass_approve": 0, "reviewed": 0, "done": 0, "lead_hours": []})
+        d = by_diff.setdefault(row["difficulty"] or "medium", {"tasks": 0, "cost_usd": 0.0, "revisions": 0, "first_pass_approve": 0, "reviewed": 0, "done": 0, "lead_hours": [], "criteria_met": 0, "criteria_total": 0})
         d["tasks"] += 1
         d["cost_usd"] += row["cost_usd"]
         d["revisions"] += row["revisions"]
@@ -174,6 +248,8 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             d["reviewed"] += 1
             if row["first_review"] == "approve":
                 d["first_pass_approve"] += 1
+            d["criteria_met"] += row["criteria_met"]
+            d["criteria_total"] += row["criteria_total"]
         if row["lead_hours"] is not None:
             d["done"] += 1
             d["lead_hours"].append(row["lead_hours"])
@@ -182,6 +258,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         d["avg_lead_hours"] = round(sum(d["lead_hours"]) / len(d["lead_hours"]), 2) if d["lead_hours"] else None
         d["first_pass_rate"] = round(d["first_pass_approve"] / d["reviewed"], 2) if d["reviewed"] else None
         d["avg_revisions"] = round(d["revisions"] / d["tasks"], 2) if d["tasks"] else 0
+        d["criteria_rate"] = round(d["criteria_met"] / d["criteria_total"], 2) if d["criteria_total"] else None
         del d["lead_hours"]
     rebases = rebases_mechanical + rebases_agent
     rebase = {
@@ -220,6 +297,11 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
         "avg_lead_hours": round(sum(leads) / len(leads), 1) if leads else None,
         "first_pass_rate": round(sum(1 for r in reviewed if r["first_review"] == "approve") / len(reviewed), 2) if reviewed else None,
         "cost_usd": round(sum(r["cost_usd"] for r in m["tasks"]), 2),
+        # No dispatch event for any task in the phase means it predates run records (the
+        # scheduler didn't exist yet, or events.jsonl was started later): PRs-merged and cost
+        # read as a real zero then, which looks like the phase did nothing rather than that
+        # the loop was never tracking it (CG-205).
+        "has_records": bool(dispatches),
     }
 
 

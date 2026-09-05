@@ -327,6 +327,13 @@ def test_init_scaffold(tmp_path):
         os.chdir(cwd)
 
 
+def test_new_phase_cli_refuses_an_unregistered_product(garden):
+    r = run(garden, "new-phase", "nope", "phase-01")
+    assert r.exit_code == 1
+    assert "not registered in garden.yaml's products block" in r.output
+    assert not (garden / "nope").exists()
+
+
 def test_doctor_success_with_valid_setup(garden, monkeypatch):
     import subprocess
     from unittest import mock
@@ -540,3 +547,42 @@ def test_priority_and_difficulty_commands(garden):
     t = Store(garden).task("DM-001")
     assert t.priority == 0 and t.difficulty == "hard"
     assert "difficulty medium -> hard" in t.body
+
+
+def test_version_flag_matches_subcommand():
+    from garden import __version__
+
+    r1 = runner.invoke(app, ["--version"])
+    assert r1.exit_code == 0
+    r2 = runner.invoke(app, ["version"])
+    assert r2.exit_code == 0
+    assert r1.output.strip() == r2.output.strip()
+    assert __version__ in r1.output
+
+
+def test_help_groups_commands_into_panels():
+    r = runner.invoke(app, ["--help"])
+    assert r.exit_code == 0
+    # commands read as named groups, not one flat list (CG-156)
+    for panel in ("Setting up", "Seeing the board", "Needs you", "Running the loop", "Diagnostics"):
+        assert panel in r.output, panel
+
+
+def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "80")
+    r = run(garden, "status")
+    assert r.exit_code == 0, r.output
+    # the wont_do column is present (via its legend) and nothing overruns 80 columns
+    assert "wont_do" in r.output
+    for line in r.output.splitlines():
+        assert len(line) <= 80, repr(line)
+
+
+def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
+    assert run(garden, "pause").exit_code == 0
+    assert "dispatch paused" in run(garden, "status").output
+    r = run(garden, "unpause")
+    assert r.exit_code == 0 and "dispatch resumed" in r.output
+    assert "dispatch paused" not in run(garden, "status").output
+    # resume is now task-only: a bare `garden resume` no longer means "resume dispatch"
+    assert run(garden, "resume").exit_code != 0

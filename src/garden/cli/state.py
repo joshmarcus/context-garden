@@ -1,16 +1,43 @@
-"""`garden` state changes: approve, priority, difficulty, set-status, accept, reject, cancel,
-retry, discuss, decide, commit, pr."""
+"""`garden` state changes: move, approve, priority, difficulty, set-status, accept, reject,
+cancel, retry, discuss, decide, commit, pr."""
 
 from __future__ import annotations
 
 import typer
 
 from ..model import STATUS_ORDER, Status, priority_label
-from .common import _scheduler, _split_target, _store, _task, app, console, err
+from .common import (
+    PANEL_DECIDE,
+    PANEL_LOOP,
+    PANEL_PLAN,
+    PANEL_REVIEW,
+    _scheduler,
+    _split_target,
+    _store,
+    _task,
+    app,
+    console,
+    err,
+)
+
+
+# --------------------------------------------------------------------------- move
+@app.command()
+def move(task_id: str, target: str = typer.Argument(..., help="product/phase")):
+    """Move a task to another phase of the same product, keeping its id, history and state."""
+    store = _store()
+    t = _task(store, task_id)
+    product, phase = _split_target(target)
+    try:
+        _scheduler(store).move(t, product, phase)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id} -> {product}/{phase}")
 
 
 # --------------------------------------------------------------------------- state changes
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def approve(
     task_ids: list[str] = typer.Argument(None),
     all_in: str | None = typer.Option(None, "--all", help="Approve every draft in product/phase"),
@@ -28,16 +55,20 @@ def approve(
         err.print("nothing to approve")
         raise typer.Exit(1) from None
     phases = {p.key: p for prod in store.products() for p in prod.phases}
+    refused = False
     for t in targets:
         try:
             sched.approve(t, by="cli", phase=phases.get(t.key))
         except RuntimeError as e:
             err.print(f"[yellow]{e}[/yellow]")
+            refused = True
             continue
         console.print(f"{t.id} -> ready")
+    if refused:
+        raise typer.Exit(1) from None
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatches first; ties by id")):
     """Set a task's priority (the queue order)."""
     store = _store()
@@ -49,7 +80,7 @@ def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatch
     console.print(f"{t.id} priority {priority_label(old)} -> {priority_label(t.priority)}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium | hard (picks the model tier at dispatch)")):
     """Set a task's difficulty tier."""
     from ..harness import DIFFICULTIES
@@ -66,7 +97,7 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
     console.print(f"{t.id} difficulty {old} -> {tier}")
 
 
-@app.command("set-status")
+@app.command("set-status", rich_help_panel=PANEL_DECIDE)
 def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note"),
                reason: str = typer.Option("", "--reason", help="Reason (for wont_do): recorded and posted when the PR is closed"),
                force: bool = typer.Option(False, "--force", help="Required to move a task out of done or cancelled")):
@@ -92,7 +123,7 @@ def set_status(task_id: str, new_status: str, note: str = typer.Option("", help=
     console.print(f"{t.id} -> {s.value}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def accept(task_id: str, note: str = typer.Option("", help="Optional note recorded with your decision")):
     """Accept a worker's wont_do / no_change call: wont_do ends the task, no_change resumes the round."""
     store = _store()
@@ -110,7 +141,7 @@ def accept(task_id: str, note: str = typer.Option("", help="Optional note record
     console.print(f"{t.id}: accepted {dec['kind']} -> {sched.store.task(task_id).status.value}")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def reject(task_id: str, note: str = typer.Argument(..., help="Why you disagree; carried into the next revise round")):
     """Reject a worker's wont_do / no_change call: its reasoning goes back with your note for a revise run."""
     store = _store()
@@ -123,7 +154,7 @@ def reject(task_id: str, note: str = typer.Argument(..., help="Why you disagree;
     console.print(f"{t.id}: rejected; revise run will follow")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
     """Cancel a task (kills a running worker)."""
     store = _store()
@@ -134,7 +165,7 @@ def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
         raise typer.Exit(1) from None
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def retry(task_id: str):
     """Continue the loop: with an open PR, queue a revise run on the branch; otherwise reset attempts and start over."""
     store = _store()
@@ -145,7 +176,7 @@ def retry(task_id: str):
         raise typer.Exit(1) from None
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def discuss(task_id: str):
     """Print a ready-made prompt about a stopped task (the task, the reason, the PR, the runs), for a chat session or `garden take`."""
     from ..inbox import attention_view
@@ -162,7 +193,7 @@ def discuss(task_id: str):
     print(view["discuss"])
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DECIDE)
 def decide(
     decision_id: str,
     accept: bool = typer.Option(False, "--accept", help="Cancel the named task"),
@@ -182,7 +213,7 @@ def decide(
     console.print(f"decision {decision_id} {verb} (target {d.get('target', '')})")
 
 
-@app.command("commit")
+@app.command("commit", rich_help_panel=PANEL_LOOP)
 def commit_tasks():
     """Commit task-file state changes (status, log lines) to the garden's git history."""
     from ..gitops import GitError, commit_task_files, is_repo
@@ -205,7 +236,7 @@ def commit_tasks():
         console.print(f"[green]committed {n} task file{'s' if n != 1 else ''}[/green]")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_REVIEW)
 def pr(task_id: str, url: str):
     """Attach a PR URL to a task (when the PR was opened, or reopened, by hand). Resets the
     scheduler's cached PR state so the next poll follows the new PR instead of the old one."""

@@ -47,8 +47,11 @@ flowchart LR
   module map below). It is called by `garden tick` (one pass), `garden watch` (a loop that
   sleeps `tick_interval` seconds between passes), `garden serve` (the same loop in a
   background thread beside the web server) and the TUI's `t` key. Every call starts by
-  re-reading the task files and `state.json` from disk, so any number of these can run
-  against one garden and the UIs can change state between passes.
+  re-reading the task files and `state.json` from disk — and `garden.yaml` (with its
+  `garden.<env>.yaml` / `garden.local.yaml` overlays) when any of them has changed since the
+  last read — so any number of these can run against one garden, the UIs can change state
+  between passes, and an edit to the config takes effect within one tick without a restart
+  (see "Configuration and environments" for the few keys that still need one).
 - **Workers** are separate operating-system processes started by a *runner*: a headless
   agent CLI (`claude -p`, `codex exec`, or any CLI described under `harnesses:` in
   `garden.yaml`) running on this machine or on a host reached over ssh. They are
@@ -77,7 +80,7 @@ of the loop touch different files.
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
-| `scheduler/discovered.py` | discovered tasks, duplicate/cancel decision cards, friction and notes a worker reports |
+| `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
@@ -89,7 +92,7 @@ of the loop touch different files.
 | `scheduler/upgrades.py` | the pinned tool install: note a merge, upgrade, auto-upgrade on an idle tick |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
-| `review.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents; friction harvesting; task suggestions |
+| `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents; friction harvesting; task suggestions |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
@@ -98,6 +101,7 @@ of the loop touch different files.
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
+| `canary.py` | `garden canary`: install a pinned build into a throwaway venv and drive it (the scripted QA flows plus a stacked-PR and a merge-queue scenario against the in-memory GitHub) before the pin is trusted with real PRs (CG-180) |
 
 ## Where state lives
 
@@ -368,6 +372,16 @@ files under `tasks/` must not be hand-edited.
     conflict, a failed check, a changed diff that needs a review, a closed PR or a human change
     request — the reason is logged and the next-oldest candidate becomes head. So each PR is
     rebased at most once, right before it merges, and a pending rollup never rotates the head.
+  - **The hard tier merges after two rounds and a scratch-merge check.** With
+    `github.automerge_hard_tier` on (the default), a `hard`-tier PR is an automerge candidate
+    too, but with two extra gates on top of the usual ones: at least **two** approving review
+    rounds, and the garden's **own scratch-merge check** — the pre-PR suite run on the branch
+    rebased onto the base tip in a throwaway worktree, not trusting the GitHub rollup alone. The
+    check is dispatched (as a detached `scratch_merge` check run) once every other gate is green,
+    and its result is recorded keyed to the reviewed diff: a clean rebase keeps the pass, a revise
+    round (a changed diff) re-runs it, and a failure holds the merge until the diff changes. With
+    no pre-PR checks configured there is nothing to run, so the check is satisfied at once. Set
+    `automerge_hard_tier: false` to keep hard-tier merges by hand.
 - **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
   check fails, the scheduler probes the branch's base commit before spending a revise round.
   If the same check fails at the base too and the base branch has **not** moved, the base is
@@ -414,10 +428,10 @@ the marker line the scheduler looks for at the end of their output.
 | `rebase` | a real (textual) rebase conflict; the mechanical rebase runs with no model and needs no worker | a minimal brief: the conflicting hunks, the task's goal, "resolve the conflict, change nothing else" | `GARDEN_RESULT` | easy | push (lease), re-run checks; the verdict is kept when the diff is unchanged, else a review runs. Own counter; never counts against `max_revisions` |
 | `review` | after a PR is opened or updated | the task brief without rules, the PR title and body, the diff | `GARDEN_REVIEW` | `review.difficulty`, or the harness's `review_model`, else the task tier | verdict posted as a PR comment; `request_changes` becomes feedback for a revise run; a repeated blocking finding stalls the loop |
 | `edit` | dispatch, when a draft/ready task has pending `## Suggestions` (or `garden integrate`) | the task body and the suggestions, planner-style | `GARDEN_EDIT` | `review.difficulty`, else the task tier | the task body is rewritten to fold in the suggestions, they are marked `- [x]`, the old body is kept for the diff |
-| `persona` | `garden persona-review`, or `review.personas` on every PR round | the persona file plus the phase's body of work, or plus one PR's description and diff | `GARDEN_PERSONA` | review settings, `hard` for a phase | a report under `<phase>/docs/reviews/`, or a PR comment; high findings can become tasks or a revise run |
+| `persona` | `garden persona-review`, or `review.personas` on every PR round | the persona file plus the phase's body of work, or plus one PR's description and diff | `GARDEN_PERSONA` | `retro.difficulty` (default `hard`) | a report under `<phase>/docs/reviews/`, or a PR comment; high findings can become tasks or a revise run |
 | `trial` | `garden trial` | as `work`, once per contender on its own branch | `GARDEN_RESULT` | the contender's model | each contender pushes and gets a PR |
 | `compare` | when every contender has finished | the task brief, every contender's PR description and diff | `GARDEN_COMPARE` | review tier | the winner's branch and PR become the task's; the others are closed with the ranking posted |
-| `retro` | `garden retro`, once the phase's persona reviews are in | the harvested PR-body friction, the phase's own `## Reported` friction log, friction still sitting in marked PR comments, the persona reports (including the built-in product-manager), the phase's task list with statuses, the merged PR titles | `GARDEN_RETRO` | review tier | the retro document, the next phase's goals draft, and a draft task per ranked feature (`discovered_from: retro:<phase>`, duplicates skipped) are rendered from the verdict list and opened as a PR to the garden's own (`self`) repo |
+| `retro` | `garden retro`, once the phase's persona reviews are in | the harvested PR-body friction, the phase's own `## Reported` friction log, friction still sitting in marked PR comments, the persona reports (including the built-in product-manager), the phase's task list with statuses, the merged PR titles | `GARDEN_RETRO` | `retro.difficulty` (default `hard`) | the retro document, the next phase's goals draft, and a draft task per ranked feature (`discovered_from: retro:<phase>`, duplicates skipped) are rendered from the verdict list and opened as a PR to the garden's own (`self`) repo |
 | planner | `garden plan` | goals, specs, docs, persona reports, existing tasks | a JSON array | `hard` | task files; the only synchronous call, made from the garden root, not a worktree |
 
 ## Interfaces
@@ -460,6 +474,15 @@ lists and scalars replace, so an overlay can swap the whole `checks.ci` list or 
 host list without touching the shared file. Per-product blocks under `products:` override
 `repo`, `base_branch`, `id_prefix`, `runner`, `harness`, `budget_usd` and `github`.
 `garden doctor` prints which files were loaded and what it found.
+
+**Live reload.** `Store.invalidate` (called at the top of every tick) re-reads these files
+when any of them has changed on disk since the last read, comparing their mtimes, so an edit
+to `garden.yaml` takes effect within one tick and the changed top-level keys are logged (a
+`config_reloaded` event). A handful of keys are consumed once at startup and so are *not*
+picked up live — `config.RESTART_KEYS`: `work_dir` (fixes the `.garden` paths), `tick_interval`
+(the watch/serve loop reads it once), and the `github.*` client and `upgrade.*` installer
+settings that are built when the scheduler is constructed. The Configuration page names both
+sets, and changing a restart key needs a restart of `garden watch` / `garden serve`.
 
 Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.

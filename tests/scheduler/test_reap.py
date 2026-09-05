@@ -522,7 +522,8 @@ def test_a_review_run_never_sends_a_running_task_back_to_ready(sched, fake_githu
 def test_review_dispatch_is_deferred_while_a_worker_run_is_in_flight(sched, fake_github, monkeypatch):
     """CG-177: while a task has a worker-mode run in flight, a review dispatch is deferred to
     `pending_reviews` (and logged once) instead of starting a review run that could be mistaken
-    for the task's own run. The deferred round drains once the worker finishes."""
+    for the task's own run. The deferred round drains once the worker finishes. CG-203: a
+    second deferral attempt for the same round is deduplicated, not appended again."""
     logs: list[str] = []
     sched.log = logs.append
     task, revise_run = _revise_in_flight(sched, monkeypatch)
@@ -534,7 +535,7 @@ def test_review_dispatch_is_deferred_while_a_worker_run_is_in_flight(sched, fake
 
     st = sched.state.get("DM-001")
     assert not any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))  # nothing dispatched
-    assert len(st.get("pending_reviews") or []) == 2  # both deferred, not lost
+    assert len(st.get("pending_reviews") or []) == 1  # deduplicated, not doubled
     assert sum(1 for m in logs if "review deferred while a worker run is in flight" in m) == 1  # logged once
     assert statuses(sched)["DM-001"] == "running"
     sched.state.save()  # a real deferral happens inside a tick, which persists state at its end

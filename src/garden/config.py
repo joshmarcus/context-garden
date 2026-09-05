@@ -10,6 +10,18 @@ import yaml
 
 CONFIG_NAME = "garden.yaml"
 
+# Config keys read once at startup — either when the Scheduler is constructed or when the
+# watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
+# garden.yaml reload (see Store.reload_config_if_changed). Changing one needs a restart;
+# everything else takes effect on the next tick. The Configuration page names both sets.
+RESTART_KEYS: list[str] = [
+    "work_dir",        # fixes the .garden state/run/worktree/repo paths at construction
+    "tick_interval",   # garden watch / serve reads it once when the loop starts
+    "github.use_gh", "github.bot_logins", "github.bot_notice_patterns",
+    "github.trusted_authors", "github.reviewers",  # baked into the GitHub client at construction
+    "upgrade.package", "upgrade.pip",  # baked into the pinned-tool installer at construction
+]
+
 NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
 
 
@@ -49,8 +61,12 @@ DEFAULTS: dict[str, Any] = {
         "max_rounds": 2,          # automated review rounds per PR
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
-        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard
+        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
+    },
+    "retro": {
+        "difficulty": "hard",     # tier for persona reviews (phase and PR) and the retro reconciliation;
+                                  # separate from review.difficulty so nobody has to edit config before a retro
     },
     "harnesses": {},
     "ssh": {"hosts": []},
@@ -68,7 +84,10 @@ DEFAULTS: dict[str, Any] = {
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
-        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge; hard waits for a person
+        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
+        "automerge_hard_tier": True,             # also merge hard-tier PRs, after two approving review
+                                                 # rounds and the garden's own scratch-merge check; off to
+                                                 # keep hard-tier merges by hand
     },
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
@@ -103,8 +122,7 @@ class Config:
         env = os.environ.get("GARDEN_ENV", "") if env is None else env
         data = dict(DEFAULTS)
         sources: list[str] = []
-        names = [CONFIG_NAME] + ([f"garden.{env}.yaml"] if env else []) + ["garden.local.yaml"]
-        for name in names:
+        for name in _source_names(env):
             p = root / name
             if p.exists():
                 raw = yaml.safe_load(p.read_text()) or {}
@@ -113,6 +131,12 @@ class Config:
                 data = _merge(data, raw)
                 sources.append(name)
         return cls(root=root, data=data, sources=sources, env=env)
+
+    def source_names(self) -> list[str]:
+        """The garden.yaml / garden.<env>.yaml / garden.local.yaml file names this config is
+        layered from, in load order (whether or not each exists). Store watches their mtimes
+        to reload on change."""
+        return _source_names(self.env)
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data
@@ -244,6 +268,10 @@ class Config:
         if new != old and old.exists() and not new.exists():
             return old
         return new
+
+
+def _source_names(env: str) -> list[str]:
+    return [CONFIG_NAME] + ([f"garden.{env}.yaml"] if env else []) + ["garden.local.yaml"]
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

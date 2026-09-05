@@ -69,7 +69,7 @@ def test_approve_and_dispatch_refuse_closed_phase(garden):
     assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
 
     r = run(garden, "approve", "DM-003")
-    assert r.exit_code == 0  # skips with a message rather than hard-failing
+    assert r.exit_code == 1  # refused, like `dispatch` on the same phase (CG-205)
     assert "closed" in r.output and "reopen-phase" in r.output
     assert Store(garden).task("DM-003").status.value == "draft"
 
@@ -213,6 +213,55 @@ def test_closed_phase_page_shows_the_closing_header(garden):
     assert "Outcomes" in html and "Artifacts" in html and "Pull requests" in html
     # no working controls
     assert "Approve all drafts" not in html and "Plan phase" not in html and "Run personas" not in html
+
+
+def test_closed_phase_with_no_run_records_omits_counts(garden):
+    """CG-205: a phase finished by hand before the scheduler tracked runs has no dispatch
+    events and no `pr:` on its tasks, so PRs-merged and cost would read as a real zero
+    (`0 PR(s) merged · spent $0.00`) rather than as data the loop never recorded. Omit those
+    counts and say so instead; `tasks done` is unaffected since it comes from task status,
+    not the event log."""
+    finish_all(garden)
+    assert run(garden, "close-phase", "demo/p1").exit_code == 0
+
+    c = TestClient(create_app(Store(garden), watch=False))
+    page = c.get("/phases/demo/p1").text
+    assert "2 of 2 tasks done" in page
+    assert "no run records for this phase" in page
+    assert "PR(s) merged" not in page
+    assert "$0.00" not in page
+
+    herb = c.get("/herbarium").text
+    assert "2 of 2" in herb
+    assert "no records" in herb
+    assert "$0.00" not in herb
+
+
+def test_closed_phase_with_run_records_shows_counts(garden):
+    """The counterpart to the no-records case: once a dispatch event, a run's cost and a PR
+    are recorded, the real figures show (not the "no run records" note)."""
+    from garden.events import EventLog
+    from garden.runs import RunStore
+
+    log = EventLog(garden / ".garden" / "events.jsonl")
+    log.emit("dispatch", "DM-001", mode="work")
+    log.emit("transition", "DM-001", to="done")
+    rs = RunStore(garden / ".garden")
+    rn = rs.new_run("DM-001", "local", mode="work")
+    rn.status = "done"
+    rn.cost_usd = 1.23
+    rn.save()
+    t = Store(garden).task("DM-001")
+    t.pr = "https://github.com/test/demo/pull/1"
+    Store(garden).save(t)
+    finish_all(garden)
+    assert run(garden, "close-phase", "demo/p1").exit_code == 0
+
+    c = TestClient(create_app(Store(garden), watch=False))
+    page = c.get("/phases/demo/p1").text
+    assert "no run records for this phase" not in page
+    assert "1 PR(s) merged" in page
+    assert "$1.23" in page
 
 
 def test_herbarium_shows_persona_scores_and_links_to_the_retro(garden):
