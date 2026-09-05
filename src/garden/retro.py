@@ -8,10 +8,12 @@ phase's goals. The result arrives as a PR to the garden's own repo (a `self: tru
 product); nothing edits the live garden directly (see docs/architecture.md).
 
 The reconciliation is the one model call the retro adds on top of `garden friction` and
-`garden persona-review`: it carries the harvested friction, the persona reports, the
-phase's task list with statuses and the merged PR titles, and returns a one-line
-`GARDEN_RETRO:` verdict list. The document and the next-goals draft are rendered from that
-verdict list deterministically here, so the verdicts are testable without a live model.
+`garden persona-review`: it carries every friction source (the PR-body friction harvested
+per task, the phase's own '## Reported' record, and friction still sitting in marked PR
+comments), the persona reports, the phase's task list with statuses and the merged PR
+titles, and returns a one-line `GARDEN_RETRO:` verdict list. The document and the
+next-goals draft are rendered from that verdict list deterministically here, so the
+verdicts are testable without a live model.
 """
 
 from __future__ import annotations
@@ -39,9 +41,10 @@ RECONCILE_RULES = """\
 ## Your job
 
 You are running the retrospective for phase **{phase}** of product **{product}**. Everything
-you need is below: the friction workers reported in their PR bodies, the persona reviews of
-the phase's body of work, the phase's task list with its final statuses, and the titles of
-the pull requests that merged.
+you need is below: the friction workers reported in their PR bodies, friction already
+recorded in the phase's '## Reported' log, friction still sitting in marked PR comments,
+the persona reviews of the phase's body of work, the phase's task list with its final
+statuses, and the titles of the pull requests that merged.
 
 Friction logged by a worker is a snapshot in time: "this worktree has no venv" may have been
 true at 21:05 and fixed by 22:06. A retro that quotes those as open findings misleads the
@@ -98,6 +101,7 @@ def persona_reports(phase: Phase, names: list[str]) -> dict[str, Path]:
 
 
 def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[Any, str, str]],
+                    reported: str, comment_friction: list[tuple[Any, list[str]]],
                     reports: dict[str, Path], task_rows: list[dict[str, Any]], merged_prs: list[dict[str, Any]],
                     next_phase: str) -> str:
     cfg = store.config
@@ -119,6 +123,19 @@ def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[
         parts.append("## Harvested friction (from PR bodies)\n\n" + "\n\n".join(lines))
     else:
         parts.append("## Harvested friction (from PR bodies)\n\n(none)")
+
+    parts.append("## Reported friction (friction.md '## Reported' log)\n\n" + (reported.strip() or "(none)"))
+
+    if comment_friction:
+        lines = []
+        for task, items in comment_friction:
+            head = f"### {task.id}"
+            if getattr(task, "pr", ""):
+                head += f"  (PR {task.pr})"
+            lines.append(head + "\n\n" + "\n".join(f"- {i}" for i in items))
+        parts.append("## Friction reported in PR comments\n\n" + "\n\n".join(lines))
+    else:
+        parts.append("## Friction reported in PR comments\n\n(none)")
 
     if reports:
         lines = []

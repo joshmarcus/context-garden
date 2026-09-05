@@ -1619,7 +1619,9 @@ def retro(
         pending = sched.retro_pending(ph.key)
         if pending:
             console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
-        console.print(f"  harvest: {plan['friction']} friction item(s) from {plan['merged']} merged PR(s), {plan['tasks']} task(s)")
+        console.print(f"  harvest: {plan['friction']} PR-body friction item(s), {plan['reported']} reported "
+                     f"in friction.md, {plan['comment_friction']} from PR comments; "
+                     f"{plan['merged']} merged PR(s), {plan['tasks']} task(s)")
         if plan["personas_run"]:
             console.print(f"  personas to run: {', '.join(plan['personas_run'])}")
         if plan["personas_reuse"]:

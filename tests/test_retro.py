@@ -89,6 +89,51 @@ def test_render_documents_carry_the_verdicts_and_the_next_goals():
     assert "do the next thing" in goals
 
 
+def test_reconcile_brief_includes_reported_and_comment_friction():
+    """CG-150: the reconciliation used to see only PR-body friction; friction already logged
+    under friction.md's '## Reported' section, and friction still sitting in a marked but
+    unreconciled PR comment, must reach the model too."""
+    import types
+
+    from garden.model import Phase
+
+    phase = Phase(product="p", name="ph1", path=Path("/x/p/ph1"), goals_path=None, specs=[], docs=[], tasks=[])
+    store = types.SimpleNamespace(
+        root=Path("/x"),
+        config=types.SimpleNamespace(get=lambda key: None),
+        rel=lambda path: str(path),
+    )
+
+    class _T:
+        def __init__(self, id, pr=""):
+            self.id, self.pr = id, pr
+
+    reported = "## Reported\n\n### 2026-01-01 · cli\n\nThe onboarding doc is stale."
+    comment_friction = [(_T("CG-1", "https://example.com/pull/1"), ["Spec had no schema link."])]
+    brief = reconcile_brief(store, phase, "main", [], reported, comment_friction, {}, [], [], "ph2")
+    assert "## Reported friction" in brief
+    assert "The onboarding doc is stale." in brief
+    assert "## Friction reported in PR comments" in brief
+    assert "Spec had no schema link." in brief
+    assert "CG-1" in brief and "https://example.com/pull/1" in brief
+
+
+def test_reconcile_brief_marks_absent_reported_and_comment_friction():
+    import types
+
+    from garden.model import Phase
+
+    phase = Phase(product="p", name="ph1", path=Path("/x/p/ph1"), goals_path=None, specs=[], docs=[], tasks=[])
+    store = types.SimpleNamespace(
+        root=Path("/x"),
+        config=types.SimpleNamespace(get=lambda key: None),
+        rel=lambda path: str(path),
+    )
+    brief = reconcile_brief(store, phase, "main", [], "", [], {}, [], [], "ph2")
+    assert "## Reported friction (friction.md '## Reported' log)\n\n(none)" in brief
+    assert "## Friction reported in PR comments\n\n(none)" in brief
+
+
 # --------------------------------------------------------------------------- end to end
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
@@ -331,8 +376,8 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
         (reviews / f"{name}-2026-01-02.md").write_text(f"# {name} review of gdn/p1\n\nfine.\n")
 
     assert sched.retro_pending(ph.key) == {"done": 6, "total": 6}
-    friction, reports, task_rows, merged = sched._retro_materials(ph, names)
-    brief = reconcile_brief(store, ph, "main", friction, reports, task_rows, merged, "p2")
+    friction, reported, comment_friction, reports, task_rows, merged = sched._retro_materials(ph, names)
+    brief = reconcile_brief(store, ph, "main", friction, reported, comment_friction, reports, task_rows, merged, "p2")
     assert "(none)" not in brief.split("## Persona reviews")[1].split("## ")[0]
     for name in names:
         assert name in brief
@@ -344,6 +389,34 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     rep = sched.tick()
     assert not rep.errors, rep.errors
     assert fake_github.created, "reconciliation never dispatched once every report landed"
+
+
+def test_retro_materials_reads_reported_section_and_pr_comment_friction(tmp_path, fake_github, monkeypatch):
+    """CG-150: the reconciliation only ever harvested PR-body friction; friction already
+    logged under friction.md's '## Reported' section, and friction still sitting in a
+    marked PR comment, must reach it too."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    from garden.friction import friction_comment
+
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    doc = ph.path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n\n"
+                    "## Reported\n\n### 2026-01-01 · cli\n\nThe changelog was stale.\n")
+    fake_github.comments.append(friction_comment(["The rebase docs never mention conflicts."]))
+
+    friction, reported, comment_friction, reports, task_rows, merged = sched._retro_materials(ph, ["designer"])
+    assert "The changelog was stale." in reported
+    items = [i for _, its in comment_friction for i in its]
+    assert "The rebase docs never mention conflicts." in items
+    # nothing was written back to the live friction.md; reading is read-only
+    assert doc.read_text().count("## Reported") == 1
 
 
 def test_retro_dry_run_prints_the_plan_and_a_cost_estimate(tmp_path, fake_github, monkeypatch):

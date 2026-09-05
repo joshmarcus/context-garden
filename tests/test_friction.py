@@ -7,6 +7,7 @@ from garden.friction import (
     append_friction_report,
     collect_comment_friction,
     extract_friction,
+    extract_section,
     friction_comment,
     friction_from_comment,
     friction_items,
@@ -232,6 +233,62 @@ def test_write_friction_doc_idempotent_with_reported(tmp_path):
     first = doc.read_text()
     write_friction_doc(doc, [])
     assert doc.read_text() == first
+
+
+def test_write_friction_doc_preserves_hand_written_section(tmp_path):
+    """A rewrite must not drop a section it didn't generate, whatever a human names it."""
+    task = _FakeTask("T-001")
+    task.title = "A task"
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n_No friction reported yet._\n\n## First live run\n\nIt actually worked end to end.\n")
+    write_friction_doc(doc, [(task, "https://example.com/pull/1", "PR friction.")])
+    text = doc.read_text()
+    assert "PR friction." in text
+    assert "## First live run" in text
+    assert "It actually worked end to end." in text
+
+
+def test_write_friction_doc_preserves_multiple_hand_written_sections(tmp_path):
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "# Friction\n\n_No friction reported yet._\n\n"
+        "## First live run\n\nWent well.\n\n"
+        "## Reported\n\n### 2026-01-01 · cli\n\nSome friction.\n"
+    )
+    write_friction_doc(doc, [])
+    text = doc.read_text()
+    assert "## First live run" in text and "Went well." in text
+    assert "## Reported" in text and "Some friction." in text
+
+
+def test_write_friction_doc_does_not_duplicate_a_regenerated_section(tmp_path):
+    """A hand-written section named exactly like a currently-generated task heading is
+    regenerated, not duplicated."""
+    task = _FakeTask("T-001")
+    task.title = "A task"
+    doc = tmp_path / "docs" / "friction.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Friction\n\n## T-001: A task\n\nOld hand-edited text.\n")
+    write_friction_doc(doc, [(task, "", "New harvested text.")])
+    text = doc.read_text()
+    assert text.count("## T-001: A task") == 1
+    assert "New harvested text." in text
+    assert "Old hand-edited text." not in text
+
+
+# --------------------------------------------------------------------------- extract_section
+
+
+def test_extract_section_returns_named_section():
+    text = "# Friction\n\n_No friction reported yet._\n\n## First live run\n\nWent well.\n\n## Reported\n\nx\n"
+    assert extract_section(text, "First live run") == "## First live run\n\nWent well."
+
+
+def test_extract_section_missing_returns_empty():
+    assert extract_section("# Friction\n\nnothing here\n", "Reported") == ""
+    assert extract_section("", "Reported") == ""
 
 
 # --------------------------------------------------------------------------- append_friction_report
