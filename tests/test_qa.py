@@ -7,11 +7,25 @@ import os
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from garden import runner as runner_registry
 from garden.cli import app
 from garden.qa import _normalise, qa_brief, run_qa
 from garden.qa.flows import FLOWS, Flow, FlowFailed
+from garden.runner.local import LocalRunner
+
+
+@pytest.fixture(autouse=True)
+def real_local_runner(monkeypatch):
+    """The one deliberate exception to the suite's in-process workers (tests/conftest.py):
+    `garden qa` exists to run the real loop end to end, so the throwaway garden it serves
+    launches its own worker (`garden/qa/worker.py`, a real process, no tokens) through the
+    real local runner. The in-process runner knows no fake for that worker and would refuse
+    every dispatch the agent makes."""
+    monkeypatch.setitem(runner_registry.REGISTRY, "local", LocalRunner)
+    monkeypatch.setitem(runner_registry.REGISTRY, "claude-local", LocalRunner)
 
 
 def run(cwd, *args):
