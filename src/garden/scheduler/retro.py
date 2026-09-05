@@ -487,12 +487,11 @@ class RetroMixin:
                 rep.errors.append(f"retro {phase.key}: branch pushed but PR failed: {e}")
         self.events.emit("retro_done", "", phase=phase.key, pr=pr_url, branch=branch, items=n_items, cost_usd=run.cost_usd)
         rep.transitions.append(f"retro {phase.key} -> {pr_url or branch}")
-        self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url, rep)
+        self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url)
 
     # ---- the verdict: close, close with follow-ups, or reopen --------------
     def _apply_retro_verdict(self, phase: Phase, rev: dict[str, Any], followups: list[dict[str, Any]],
-                             blocking: list[dict[str, Any]], next_phase: str, pr_url: str,
-                             rep: TickReport) -> None:
+                             blocking: list[dict[str, Any]], next_phase: str, pr_url: str) -> None:
         """Record the retro's phase verdict and act on it: `close`/`close_with_followups` close
         the phase at once (the owner decided closing does not wait for approval); `reopen` leaves
         the phase open and records a pending decision that approves the blocking tasks when
@@ -507,12 +506,15 @@ class RetroMixin:
             "pr": pr_url, "note": "", "accepted_by": "", "accepted_at": "", "status": "recorded",
         }
         if verdict in ("close", "close_with_followups"):
+            # Close at once (the owner decided closing does not wait for approval), but do not
+            # force past genuinely open work: if a task is still in flight, leave the phase open
+            # with the verdict recorded so `close-phase` can follow it once the work lands.
             try:
-                self.close_phase(phase, force=True)
+                self.close_phase(phase, force=False)
                 rec.update(status="accepted", accepted_by="retro", accepted_at=at)
             except RuntimeError as e:
-                self.log(f"retro {phase.key}: verdict {verdict} could not close the phase: {e}")
-                rep.errors.append(f"retro {phase.key}: {e}")
+                self.log(f"retro {phase.key}: verdict {verdict} recorded but the phase is not "
+                         f"closeable yet: {e}")
         elif verdict == "reopen":
             rec["status"] = "pending"  # a decision: accept to approve the blocking tasks
         self.state.get("_retro_verdicts")[phase.key] = rec
