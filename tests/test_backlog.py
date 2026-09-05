@@ -25,7 +25,9 @@ def run(garden, *args):
 
 
 def client(garden):
-    return TestClient(create_app(Store(garden), watch=False))
+    # base_url is a loopback host: the garden serves on localhost and POSTs require a
+    # loopback Host (the DNS-rebinding guard).
+    return TestClient(create_app(Store(garden), watch=False), base_url="http://127.0.0.1")
 
 
 def p1_order(garden, priority=None):
@@ -124,7 +126,7 @@ def test_move_into_a_closed_phase_flashes_and_leaves_the_row(garden):
     assert run(garden, "close-phase", "demo/p2", "--force").exit_code == 0
     c = client(garden)
     r = c.post("/tasks/DM-001/move", data={"note": "demo/p2"},
-               headers={"referer": "http://testserver/board?product=demo&view=backlog"},
+               headers={"referer": "http://127.0.0.1/board?product=demo&view=backlog"},
                follow_redirects=True)
     assert "closed" in r.text  # the refusal shows as a flash
     assert Store(garden).task("DM-001").phase == "p1"  # the row stays put
@@ -139,7 +141,7 @@ def test_running_task_can_reorder_but_not_move(garden):
     assert 'data-task="DM-002" data-movable="0"' in page
     # a move is refused server-side...
     r = c.post("/tasks/DM-002/move", data={"note": "demo/p2"},
-               headers={"referer": "http://testserver/board?product=demo&view=backlog"},
+               headers={"referer": "http://127.0.0.1/board?product=demo&view=backlog"},
                follow_redirects=True)
     assert "in flight" in r.text
     assert Store(garden).task("DM-002").phase == "p1"
