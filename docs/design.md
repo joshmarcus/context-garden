@@ -86,7 +86,11 @@ token-free scripts; `events` records history; `store` and `model` read and write
 8. **Merge.** The task is done, dependents unblock or restack, the worktree is removed.
 9. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each
    difficulty tier really cost; persona reviews of the phase and the friction log feed
-   the next plan.
+   the next plan. `garden retro product/phase` runs the whole retrospective as one
+   process: it harvests the PR-body friction, runs (or reuses) the persona reviews,
+   reconciles every friction item against what actually merged — still true, fixed by
+   which task, outdated or disputed — and opens a PR to the garden's own repo with the
+   retro document and a draft of the next phase's goals.
 
 ## Bounded loops, on purpose
 
