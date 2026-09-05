@@ -211,7 +211,7 @@ class DispatchMixin:
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
-            self._fence_snapshot(task)
+            self._fence_snapshot(task, run)
         run.save()
         try:
             runner.start(run, wt or self.store.root, text)
