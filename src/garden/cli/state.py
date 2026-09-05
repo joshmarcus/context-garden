@@ -43,13 +43,17 @@ def approve(
         err.print("nothing to approve")
         raise typer.Exit(1) from None
     phases = {p.key: p for prod in store.products() for p in prod.phases}
+    refused = False
     for t in targets:
         try:
             sched.approve(t, by="cli", phase=phases.get(t.key))
         except RuntimeError as e:
             err.print(f"[yellow]{e}[/yellow]")
+            refused = True
             continue
         console.print(f"{t.id} -> ready")
+    if refused:
+        raise typer.Exit(1) from None
 
 
 @app.command()

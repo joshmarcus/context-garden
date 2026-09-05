@@ -67,7 +67,7 @@ def test_approve_cli_refuses_frozen_task_without_exception(garden):
     assert run(garden, "freeze", "demo/p1").exit_code == 0
 
     r = run(garden, "approve", "DM-003")
-    assert r.exit_code == 0  # skips with a message rather than hard-failing
+    assert r.exit_code == 1  # refused, like `dispatch` on the same phase (CG-205)
     assert "frozen" in r.output
     assert Store(garden).task("DM-003").status == Status.DRAFT
 
