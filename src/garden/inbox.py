@@ -222,6 +222,19 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     order = {g[0]: i for i, g in enumerate(GROUPS)}
     titles = {g[0]: g[1] for g in GROUPS}
 
+    # A draft in a frozen phase (a feature freeze) usually belongs in the next one; offer to
+    # move it there. `next_open_phase` maps a phase key to the next open, unfrozen phase of its
+    # product, as "product/phase".
+    frozen_phases: set[str] = set()
+    next_open_phase: dict[str, str] = {}
+    for prod in store.products():
+        for i, ph in enumerate(prod.phases):
+            if ph.frozen:
+                frozen_phases.add(ph.key)
+            nxt = next((p2 for p2 in prod.phases[i + 1:] if not p2.closed and not p2.frozen), None)
+            if nxt:
+                next_open_phase[ph.key] = f"{prod.name}/{nxt.name}"
+
     def add(group: str, t: Task, why: str, actions: list[dict[str, str]], **extra: Any) -> None:
         items.append({"group": group, "group_title": titles[group], "task": t.id, "title": t.title, "phase": t.key,
                       "status": t.status.value, "pr": t.pr, "why": why, "actions": actions, "age": _age(t.updated),
@@ -280,9 +293,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 why += f" · {t.attempts} attempt{'s' if t.attempts != 1 else ''}"
             if last:
                 why += f" · {last}"
-            add("approve", t, why, [{"label": "Approve", "kind": "approve", "command": f"garden approve {t.id}"},
-                                    {"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"}],
-                attempts=t.attempts, last_log=last)
+            move_to = next_open_phase.get(t.key, "") if t.key in frozen_phases else ""
+            actions = [{"label": "Approve", "kind": "approve", "command": f"garden approve {t.id}"}]
+            if move_to:
+                actions.append({"label": f"Move to {move_to.split('/', 1)[1]}", "kind": "move",
+                                "command": f"garden move {t.id} {move_to}"})
+            actions.append({"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"})
+            add("approve", t, why, actions, attempts=t.attempts, last_log=last, move_to=move_to,
+                move_label=move_to.split("/", 1)[1] if move_to else "")
         if t.attempts > 0 and not st.get("needs_human") and not t.status.terminal and t.status in (Status.READY, Status.RUNNING) and not (t.status == Status.RUNNING and t.attempts <= 1):
             last = _last_log_line(t)
             why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
