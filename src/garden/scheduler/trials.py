@@ -185,11 +185,22 @@ class TrialsMixin:
                 continue
             changed = True
             self._finalize_contender(task, c, run, runner)
-        if any(c["status"] in ("running", "paused") for c in trial["contenders"]):
+        if any(c["status"] == "running" for c in trial["contenders"]):
             return changed
+        with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
+        paused = [c for c in trial["contenders"] if c["status"] == "paused"]
+        if paused:
+            if not with_pr:
+                return changed  # nothing to fall back on yet; keep waiting for the harness
+            # A survivor already produced a PR: giving up on the account-limited contender(s)
+            # lets the trial conclude now (inconclusively, below) instead of blocking on a
+            # retry the other contender doesn't need (CG-229's inconclusive-trial path).
+            for c in paused:
+                c["status"] = "env_failed"
+                c["note"] = str(c.get("note") or "").replace("; will retry once it resumes", "")
+            changed = True
         if not changed and not trial.get("compare_paused"):
             return False
-        with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
         base = self.base_for(task)
         if len(with_pr) >= 2:
             harness_name = str(self.cfg.get("review.harness") or "")
@@ -233,8 +244,11 @@ class TrialsMixin:
             run.save()
             self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
                              status="env_error", cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
+            kind = str(collected.get("env_kind") or "quota")
+            detail = str(collected.get("error") or "").strip() or f"{kind} limit hit"
             c["status"] = "paused"
-            c["note"] = f"{collected.get('env_kind') or 'quota'} limit hit on {run.harness or 'the harness'}; will retry once it resumes"
+            c["kind"] = kind
+            c["note"] = f"{kind} limit hit on {run.harness or 'the harness'}: {detail}; will retry once it resumes"
             return
         run.result = collected.get("result") or {}
         run.usage = collected.get("usage") or {}
