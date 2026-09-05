@@ -55,6 +55,7 @@ ATTENTION_KINDS = {
     "revision_cap": ("Revision cap reached", "The task used all its revision rounds; the garden will not spend more without your go-ahead."),
     "review_cap": ("Automated review rounds used", "The automated reviewer has had its say on this PR; it's yours to review now."),
     "parent_closed": ("Stack parent closed", "The PR this branch is stacked on was closed without merging, so this PR targets a dead branch."),
+    "base_broken": ("The base branch is broken", "A pre-PR check fails at the branch's base commit, not because of this branch. The garden is waiting for the base to go green rather than spending a revise round on a failure this branch cannot fix."),
     "worker_failed": ("A worker run failed", "The last run ended without a usable result and automatic retries are used up."),
     "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
 }

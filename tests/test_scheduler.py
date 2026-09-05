@@ -8,7 +8,7 @@ from garden.github import Feedback
 from garden.model import Status
 from garden.runner.manual import ManualRunner
 from garden.scheduler import TickReport
-from tests.conftest import FAKE_CLAUDE, git, wait_for_runs
+from tests.conftest import FAKE_CLAUDE, git, wait_for_runs, write
 
 
 def statuses(sched):
@@ -188,7 +188,9 @@ def test_audit_does_not_flag_dispatchable_changes_requested(sched, fake_github):
 def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     """A pre-PR check that fails once the revision cap is reached hands off to a human,
     exactly like the review path — it does not leave the task queued-but-skipped."""
-    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "echo boom; exit 1"}], "ci": []}
+    # A branch-owned failure (passes at the base, where worker-output.txt does not exist, so the
+    # CG-131 base probe does not divert it) that still fails once the revision cap is reached.
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt"}], "ci": []}
     sched.cfg.data["max_revisions"] = 2
     sched.tick()
     wait_for_runs(sched)
@@ -199,6 +201,66 @@ def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     st = sched.state.get("DM-001")
     assert st.get("needs_human") and "revision rounds already used" in st["needs_human"]
     assert any("cap" in tr for tr in rep.transitions)
+
+
+def _seed_base_guard(sched, content: str) -> str:
+    """Commit a sentinel file to the product's base and push it. The pre-PR `guard` check
+    passes only when the sentinel reads `ok`. Returns the new base commit sha."""
+    repo = sched.repo_for(sched.store.task("DM-001"))
+    write(repo / "sentinel.txt", content + "\n")
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", f"base: sentinel={content}", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_check_failing_at_moved_base_is_rebased_not_revised(sched, fake_github):
+    """CG-131: a pre-PR check that fails on the branch and at its (stale) base does not spend a
+    revise round. When the base branch has moved and gone green, the loop rebases onto it and
+    re-runs the checks without a worker; the branch reaches review with no revision used."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    _seed_base_guard(sched, "bad")  # red base: guard fails here and on any branch cut from it
+
+    sched.tick()  # dispatch DM-001 from the red base
+    wait_for_runs(sched)
+    _seed_base_guard(sched, "ok")  # main goes green before the branch is reaped
+
+    rep = sched.tick()  # reap: guard fails on the branch; base moved + green -> rebase, pass, PR
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert not any("revise" in d for d in rep.dispatched)
+    assert sched.state.get("DM-001").get("revisions", 0) == 0
+    # the rebased branch picked up the now-green base file
+    wt = sched.worktree_for(sched.store.task("DM-001"))
+    assert (wt / "sentinel.txt").read_text().strip() == "ok"
+
+
+def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
+    """CG-131: when the base branch itself is red (it has not moved), a pre-PR check that also
+    fails there parks the task on a card that names the check and the base commit — no revise
+    round, no worker, no spend."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    base_sha = _seed_base_guard(sched, "bad")  # red base that stays put
+
+    sched.tick()
+    wait_for_runs(sched)
+    runs_before = len(sched.runs.runs_for("DM-001"))
+    rep = sched.tick()  # reap: guard fails on the branch and at the unmoved base -> card
+
+    assert statuses(sched)["DM-001"] == "changes_requested"
+    info = sched.state.get("DM-001").get("needs_human")
+    assert isinstance(info, dict) and info["kind"] == "base_broken"
+    assert "guard" in info["reason"] and base_sha[:12] in info["reason"]
+    assert not any("revise" in d for d in rep.dispatched)
+    # no revise worker dispatched now or on the next tick: the task waits without spending
+    rep2 = sched.tick()
+    assert not any("DM-001" in d for d in rep.dispatched + rep2.dispatched)
+    assert len(sched.runs.runs_for("DM-001")) == runs_before
+    # the Inbox surfaces it as a base-broken card
+    from garden.inbox import build_inbox
+    cards = [it for it in build_inbox(sched.store, sched) if it["task"] == "DM-001"]
+    assert any(c["group"] == "attention" for c in cards)
 
 
 def test_retry_grants_one_more_round_past_cap(sched, fake_github):
