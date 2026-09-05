@@ -298,6 +298,11 @@ def status(
         console.print(f"[dim]{n} closed phase{'s' if n != 1 else ''}: {listing} — `garden status --all` for rows, /herbarium in the web UI[/dim]")
     tot = RunStore(store.config.garden_dir).totals()
     console.print(f"runs: {tot['runs']}  cost: ${tot['cost_usd']:.2f}  in: {tot['input_tokens']:,}  out: {tot['output_tokens']:,}  cache-read: {tot['cache_read_input_tokens']:,}")
+    mp_live = sched.overrides().get("max_parallel")
+    mp_line = f"max_parallel: {sched.effective_max_parallel()}"
+    if mp_live is not None:
+        mp_line += f" (live override; garden.yaml: {store.config.get('max_parallel')})"
+    console.print(mp_line)
     up = sched.upgrade_available()
     if up:
         sha = str(up.get("sha") or "")[:12]
@@ -787,6 +792,41 @@ def resume(task_id: str = typer.Argument("", help="Task id: nothing to fix, clea
         return
     sched.resume(by="cli")
     console.print("[green]dispatch resumed[/green]")
+
+
+# keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
+LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int}
+
+
+@app.command("set")
+def set_live(key: str, value: str):
+    """Set a config value live, effective next tick without a restart (currently: max_parallel).
+    Overrides the garden.yaml value until cleared with `garden clear <key>`."""
+    if key not in LIVE_OVERRIDES:
+        err.print(f"[red]{key!r} can't be set live; only {', '.join(LIVE_OVERRIDES)} can[/red]")
+        raise typer.Exit(1)
+    caster = LIVE_OVERRIDES[key]
+    try:
+        cast_value = caster(value)
+    except ValueError:
+        err.print(f"[red]{value!r} is not a valid {caster.__name__} for {key}[/red]")
+        raise typer.Exit(1) from None
+    store = _store()
+    sched = _scheduler(store)
+    sched.set_override(key, cast_value, by="cli")
+    console.print(f"[green]{key} = {cast_value}[/green] (live override; garden.yaml value unchanged, takes effect next tick)")
+
+
+@app.command()
+def clear(key: str):
+    """Clear a live override set with `garden set`, going back to the garden.yaml value."""
+    if key not in LIVE_OVERRIDES:
+        err.print(f"[red]{key!r} can't be set live; only {', '.join(LIVE_OVERRIDES)} can[/red]")
+        raise typer.Exit(1)
+    store = _store()
+    sched = _scheduler(store)
+    sched.clear_override(key, by="cli")
+    console.print(f"[green]{key} override cleared[/green] (back to the garden.yaml value)")
 
 
 @app.command()
@@ -1519,11 +1559,14 @@ def doctor():
             probs = [str(e)]
         console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
         ok = ok and not probs
-    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={store.config.get('max_parallel')}")
-    notify_cmd = store.config.get("notify.command")
-    console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
     from .scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
+    mp_live = (ctrl.get("overrides") or {}).get("max_parallel")
+    mp = mp_live if mp_live is not None else store.config.get("max_parallel")
+    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={mp}"
+                 + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else ""))
+    notify_cmd = store.config.get("notify.command")
+    console.print(f"notify: {'configured' if notify_cmd else 'not configured'}")
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
         by = ctrl.get("by", "")

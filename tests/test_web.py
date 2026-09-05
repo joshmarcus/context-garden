@@ -353,6 +353,27 @@ def test_pause_resume_web(garden):
     assert "Pause dispatch" in config_page
 
 
+def test_max_parallel_override_from_config_page(garden):
+    c = client(garden)
+    config_page = c.get("/config").text
+    assert "garden.yaml: <strong>2</strong>" in config_page
+    assert "no live override" in config_page
+    assert "0/2" in c.get("/").text  # inbox header: workers running / live limit
+
+    r = c.post("/config/max-parallel", data={"value": "5"}, follow_redirects=False)
+    assert r.status_code == 303
+    config_page = c.get("/config").text
+    assert "live override: <strong>5</strong>" in config_page
+    assert "Clear override" in config_page
+    assert "0/5" in c.get("/").text
+
+    r = c.post("/config/max-parallel/clear", follow_redirects=False)
+    assert r.status_code == 303
+    config_page = c.get("/config").text
+    assert "no live override" in config_page
+    assert "0/2" in c.get("/").text
+
+
 def test_priority_and_difficulty_from_the_task_page(garden):
     from garden.store import Store
 

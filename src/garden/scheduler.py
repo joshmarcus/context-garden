@@ -290,7 +290,7 @@ class Scheduler:
         return [r for r in self.runs.active() if r.runner != "manual"]
 
     def slots_free(self) -> int:
-        return max(0, int(self.cfg.get("max_parallel", 10)) - len(self.active_runs()))
+        return max(0, self.effective_max_parallel() - len(self.active_runs()))
 
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False) -> None:
         old = task.status.value
@@ -393,6 +393,38 @@ class Scheduler:
         self.state.save()
         self.events.emit("dispatch_resumed", "", by=by)
         self.log(f"dispatch resumed by {by}")
+
+    # ---- live config overrides ----------------------------------------------
+    def overrides(self) -> dict[str, Any]:
+        """Config values overridden live (via `garden set` or the Configuration page),
+        stored in `_control.overrides` and reloaded every tick. Takes precedence over the
+        same key in garden.yaml until cleared with `clear_override`/`garden clear`."""
+        return self.control().setdefault("overrides", {})
+
+    def set_override(self, key: str, value: Any, by: str = "cli") -> None:
+        self.overrides()[key] = value
+        self.state.save()
+        self.events.emit("config_override", "", key=key, value=value, by=by)
+        self.log(f"{key} set to {value} by {by} (live override; takes effect next tick)")
+
+    def clear_override(self, key: str, by: str = "cli") -> None:
+        ov = self.overrides()
+        if key not in ov:
+            return
+        del ov[key]
+        self.state.save()
+        self.events.emit("config_override_cleared", "", key=key, by=by)
+        self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
+
+    def effective(self, key: str, default: Any = None) -> Any:
+        """The live override for `key` if one is set, else the garden.yaml value."""
+        ov = self.overrides()
+        if key in ov:
+            return ov[key]
+        return self.cfg.get(key, default)
+
+    def effective_max_parallel(self) -> int:
+        return int(self.effective("max_parallel", 10))
 
     # ---- tick --------------------------------------------------------------
     def tick(self, dispatch: bool | None = None) -> TickReport:
