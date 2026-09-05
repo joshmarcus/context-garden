@@ -215,7 +215,9 @@ def _kickoff_panel(s: Any, sched: Any, ph: Any) -> dict[str, Any]:
         "running": sched.kickoff_pending(ph.key),
         "design_tasks": [t for t in filed if t.extra.get("spike")],
         "doc_tasks": [t for t in filed if not t.extra.get("spike")],
-        "questions": [d for d in sched.pending_decisions() if d.get("kind") == "question" and d.get("phase") == ph.key],
+        "questions": [d for d in sched.pending_decisions()
+                      if d.get("kind") == "question"
+                      and (d.get("source") == tag or d.get("discovered_from") == tag)],
     }
 
 

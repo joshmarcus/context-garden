@@ -76,6 +76,10 @@ decide a verdict and give the evidence:
 
 Then draft the next phase's goals from what is *still true* plus what the personas raised.
 
+List any decisions the owner must make under `questions`. Mark a question `blocking` only
+when the phase verdict cannot be accepted until it is answered (for example, a `reopen`
+verdict whose scope depends on the owner's call).
+
 Also rank five to eight features for the next phase, drawn from the product-manager persona's
 report (if one ran) and from what the other personas raised. Each feature needs a title short
 enough to be a task's title, a body giving the user value, why now, the size (easy, medium,
@@ -100,7 +104,7 @@ and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -240,6 +244,43 @@ def reconciliation_table(rev: dict[str, Any]) -> str:
         evidence = str(f.get("evidence", "")).replace("|", "\\|").replace("\n", " ").strip()
         out.append(f"| {item} | {logged or '–'} | {pr or '–'} | {verdict} | {evidence} |")
     return "\n".join(out)
+
+
+def questions_section(filed: list[dict[str, Any]]) -> str:
+    """Render the retro's owner questions and the decision card that carries each one."""
+    if not filed:
+        return "_No questions for the owner._"
+    out = []
+    for item in filed:
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        suffix = f" — decision card `{item['decision_id']}`" if item.get("decision_id") else ""
+        if item.get("blocking"):
+            suffix += " (blocking)"
+        out.append(f"- **{question}**{suffix}")
+        if item.get("context"):
+            out.append(f"  - {item['context']}")
+        if item.get("options"):
+            out.append("  - options: " + ", ".join(item["options"]))
+    return "\n".join(out) or "_No questions for the owner._"
+
+
+def append_retro_question_resolution(paths: list[Path], question: str, status: str, answer: str, by: str, at: str) -> None:
+    """Append a resolved retro question to its report and next-phase decisions record."""
+    line = f"- **{question}** — {status}" + (f": {answer}" if answer else "") + f" (by {by} at {at})"
+    for index, path in enumerate(paths):
+        heading = "## Answers" if index % 2 == 0 else "## Decisions"
+        if not path.exists():
+            continue
+        text = path.read_text()
+        if line in text:
+            continue
+        if heading in text:
+            text = text.rstrip() + "\n" + line + "\n"
+        else:
+            text = text.rstrip() + f"\n\n{heading}\n\n{line}\n"
+        path.write_text(text)
 
 
 def persona_features(sections_by_persona: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -482,6 +523,7 @@ def features_section(filed: list[dict[str, Any]]) -> str:
 def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
                      filed: list[dict[str, Any]] | None = None,
                      filed_findings: list[dict[str, Any]] | None = None,
+                     filed_questions: list[dict[str, Any]] | None = None,
                      followups: list[dict[str, Any]] | None = None,
                      blocking: list[dict[str, Any]] | None = None,
                      next_phase: str = "",
@@ -503,6 +545,7 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     still_open = [str(s).strip() for s in rev.get("still_open") or [] if str(s).strip()]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
+    out += ["## Questions for the owner", "", questions_section(filed_questions or []), ""]
     out += ["## Findings from persona reviews", "", findings_section(filed_findings or []), ""]
     out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:
