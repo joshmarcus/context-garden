@@ -360,6 +360,36 @@ def test_manual_take_and_finish(sched, fake_github):
     assert fake_github.created[-1]["title"] == "manual PR"
 
 
+def test_manual_finish_without_worktree_still_dispatches_review(sched, fake_github, tmp_path):
+    """CG-158: `garden take` without --worktree is the common manual path — the human works
+    in their own clone and finishes with just a PR URL. finalize() has no garden-managed
+    worktree to push from or run pre-PR checks against, but the automated reviewer builds
+    its own worktree from the pushed branch, so it must still see this PR."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    t = sched.store.task("DM-001")
+    run = sched.dispatch(t, runner=ManualRunner({}), worktree=False)
+    assert not run.worktree
+    branch = t.default_branch()
+
+    # the human's own clone, pushed straight to the product's origin
+    clone = tmp_path / "manual-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "checkout", "-q", "-b", branch], check=True)
+    with open(clone / "hello.txt", "w") as f:
+        f.write("hi\n")
+    git("add", "-A", cwd=clone)
+    git("commit", "-q", "-m", "manual work", cwd=clone)
+    git("push", "-q", "-u", "origin", branch, cwd=clone)
+
+    # the human already opened the PR on GitHub themselves
+    pr = fake_github.create_pr("test/demo", branch, "main", "manual PR", "body")
+
+    sched.finish_manual(sched.store.task("DM-001"), {"status": "done", "summary": "by hand", "pr": pr.url})
+    assert statuses(sched)["DM-001"] == "in_review"
+    st = sched.state.get("DM-001")
+    assert st.get("review_run"), "the automated reviewer must still be dispatched"
+
+
 def test_tick_does_not_race_manual_finish(sched, fake_github):
     """A tick fired between ManualRunner.finish() and finalize() must leave the task alone."""
     t = sched.store.task("DM-001")
