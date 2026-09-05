@@ -140,13 +140,30 @@ class RetroMixin:
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
 
+    def retro_pending(self, phase_key: str) -> dict[str, int] | None:
+        """The persona-wait state of the phase's active retro, if any is stuck waiting: `{"done":
+        n, "total": m}`. For `garden status` and the phase page. None once every requested
+        report is in (the reconciliation dispatches) or if no retro is running for the phase."""
+        for entry in self._retro_list():
+            if entry.get("phase") != phase_key or entry.get("stage") != "personas":
+                continue
+            phase = self.store.phase(entry["product"], entry["phase_name"])
+            have = persona_reports(phase, entry["personas"])
+            return {"done": len(have), "total": len(entry["personas"])}
+        return None
+
     def reap_retro(self, rep: TickReport) -> None:
         for entry in list(self._retro_list()):
             try:
                 if entry.get("stage") == "personas":
-                    aux_ids = {e["run_id"] for e in self._aux_list()}
-                    if any(rid in aux_ids for rid in entry.get("persona_runs", {}).values()):
-                        continue  # persona reviews still running; reap_aux will write their reports
+                    # Gated on reports actually on disk, not on whether a run is still active:
+                    # a concurrent tick reading state mid-dispatch (start_retro saves after each
+                    # persona it kicks off) must not mistake "no run recorded yet" for "done"
+                    # and reconcile before every persona has even started.
+                    phase = self.store.phase(entry["product"], entry["phase_name"])
+                    have = persona_reports(phase, entry["personas"])
+                    if len(have) < len(entry["personas"]):
+                        continue
                     self._dispatch_reconcile(entry)
                     continue
                 if entry.get("stage") != "reconciling":

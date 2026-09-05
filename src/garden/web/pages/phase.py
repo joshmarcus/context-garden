@@ -103,6 +103,7 @@ def register(app: FastAPI, site: Site) -> None:
             budget=sched.budget_for(ph.key), spent=spent, metrics=m,
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
+            retro_pending=sched.retro_pending(ph.key),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)

@@ -268,6 +268,22 @@ def test_budget_form_and_route(garden):
     assert c.post("/phases/demo/p1/budget", data={"amount": "abc"}).status_code == 400
 
 
+def test_phase_page_shows_retro_waiting_for_personas(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    ph = sched.store.phase("demo", "p1")
+    entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name,
+             "personas": ["designer", "security", "user"], "skip_personas": False,
+             "next_phase": "p2", "self_product": "demo", "stage": "personas", "persona_runs": {}}
+    sched._retro_list().append(entry)
+    sched.state.save()
+
+    c = client(garden)
+    assert "retro: waiting for personas (0 of 3)" in c.get("/phases/demo/p1").text
+
+
 def test_trials_page_and_persona_form(garden):
     c = client(garden)
     r = c.get("/trials")
