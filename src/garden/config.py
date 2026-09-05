@@ -73,6 +73,10 @@ DEFAULTS: dict[str, Any] = {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
     },
+    "worker_env": {
+        "pass": [],               # extra environment variable names or globs a worker and its setup
+                                  # command keep, on top of runner.base.PASS_ENV; everything else is dropped
+    },
     "products": {},
 }
 

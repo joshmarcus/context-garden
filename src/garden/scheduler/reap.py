@@ -12,7 +12,7 @@ from ..checks import run_checks, to_feedback
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
-from ..runner.base import Runner, RunnerError, run_setup
+from ..runner.base import Runner, RunnerError, run_setup, scrubbed_env
 from ..runs import Run
 from .report import TickReport
 
@@ -272,7 +272,8 @@ class ReapMixin:
             return []
         setup = self.cfg.product_setup(task.product)
         try:
-            run_setup(worktree, setup, log_path=worktree.parent / f".garden-setup-{worktree.name}.log")
+            run_setup(worktree, setup, log_path=worktree.parent / f".garden-setup-{worktree.name}.log",
+                      env=scrubbed_env(self.cfg.data, setup))
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
         return run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,

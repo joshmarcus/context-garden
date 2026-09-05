@@ -133,6 +133,7 @@ class Scheduler(
             cfg = {}
         cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
+        cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         return get_runner(name, cfg, harness)
 
     def model_for(self, task: Task, runner: Runner, difficulty: str = "") -> str:

@@ -379,6 +379,11 @@ checks:
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
+worker_env:
+  pass: []                  # a worker (and its setup command) keeps only PATH, HOME, locale, proxy and CA
+                            # settings and the harness's own ANTHROPIC_*/CLAUDE_*/OPENAI_*/CODEX_* variables;
+                            # no GitHub token, cloud credentials or ssh agent. Add names or globs here,
+                            # e.g. [AWS_*] for a Bedrock-backed harness; ["*"] passes everything
 harnesses:
   claude:
     bin: claude

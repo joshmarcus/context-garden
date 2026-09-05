@@ -470,4 +470,8 @@ runs it all in well under a minute; CI for this repository runs the same in
 - Only `scheduler` changes a task's status; the CLI, web and TUI call it.
 - Workers commit and never push; the scheduler pushes and never commits code of its own
   (it only commits a worker's leftover changes before pushing).
+- A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
+  scheduler's variables plus `worker_env.pass` and the product's `setup.env`, never its
+  GitHub token, cloud credentials or ssh agent. The ssh runner's remote worker gets the
+  remote login environment, which is that host's to set.
 - No model runs in the tick. Waiting is a sleeping Python process.

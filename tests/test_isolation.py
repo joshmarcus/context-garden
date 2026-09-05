@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -207,3 +208,75 @@ def test_run_check_guards_custom_python_checks_too(sched, tmp_path, monkeypatch)
     assert not (Path(result["summary"]) / "garden.yaml").exists()
     # the guard is scoped to the call: the caller's own env is restored afterwards
     assert os.environ["GARDEN_ROOT"] == str(sched.store.root)
+
+
+# ---- the scrubbed worker environment (CG-154) --------------------------------
+
+
+def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
+    from garden.runner.base import scrubbed_env
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("GH_TOKEN", "gho_secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws_secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    monkeypatch.setenv("GARDEN_ENV", "work")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    env = scrubbed_env({}, {"env": {"WIDGET_HOME": "/opt/widget"}})
+    for name in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "GARDEN_ENV", "CLAUDECODE"):
+        assert name not in env, name
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant" and env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["LC_ALL"] == "C.UTF-8" and env["PATH"] == os.environ["PATH"] and env["HOME"] == os.environ["HOME"]
+    assert env["WIDGET_HOME"] == "/opt/widget"  # setup.env rides on top
+    # worker_env.pass adds names and globs; "*" restores full inheritance
+    env = scrubbed_env({"worker_env": {"pass": ["AWS_*", "SSH_AUTH_SOCK"]}})
+    assert env["AWS_SECRET_ACCESS_KEY"] == "aws_secret" and env["SSH_AUTH_SOCK"] == "/tmp/agent.sock"
+    assert "GITHUB_TOKEN" not in env
+    env = scrubbed_env({"worker_env": {"pass": ["*"]}})
+    assert env["GITHUB_TOKEN"] == "ghp_secret" and "CLAUDECODE" not in env
+
+
+def test_run_setup_runs_in_the_scrubbed_env(tmp_path, monkeypatch):
+    from garden.runner.base import run_setup
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    wt = tmp_path / "worktrees" / "T-1"
+    wt.mkdir(parents=True)
+    out = tmp_path / "env.txt"
+    run_setup(wt, {"command": f"env > {out}", "env": {"WIDGET_HOME": "/opt/widget"}})
+    seen = out.read_text()
+    assert "GITHUB_TOKEN" not in seen
+    assert "ANTHROPIC_API_KEY=sk-ant" in seen and "WIDGET_HOME=/opt/widget" in seen
+
+
+def test_local_worker_does_not_inherit_the_schedulers_credentials(sched, monkeypatch):
+    """The worker process gets the scrubbed environment: the harness's own key and the
+    product's setup env, but not the scheduler's GitHub token, cloud credentials or ssh
+    agent; the run still works end to end. The environment is captured at the launch step,
+    the one the in-process runner shares with the real local runner."""
+    from tests.inprocess import InProcessRunner
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws_secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    captured: list[dict] = []
+    orig_launch = InProcessRunner.launch
+
+    def spy_launch(self, run, worktree, brief_path, env):
+        captured.append(dict(env))
+        return orig_launch(self, run, worktree, brief_path, env)
+
+    monkeypatch.setattr(InProcessRunner, "launch", spy_launch)
+    rep = sched.tick()
+    assert rep.dispatched == ["DM-001(work)"]
+    env = next(e for e in captured if "GARDEN_TASK_ID" in e)
+    for name in ("GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "CLAUDECODE"):
+        assert name not in env, name
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant" and env["GARDEN_RUN_ID"]
+    assert "GARDEN_ROOT" in env and not (Path(env["GARDEN_ROOT"]) / "garden.yaml").exists()
+    assert (sched.runs.latest("DM-001").path / "exit_code").read_text().strip() == "0"
