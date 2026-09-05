@@ -468,13 +468,16 @@ def trial(
     contenders: list[str] = typer.Option(..., "--contender", "-c", help="harness:model, e.g. claude:opus, codex:gpt-5.6-terra (repeat)"),
     wait: bool = typer.Option(False, "--wait", help="Block, ticking the scheduler, until the trial reaches a terminal state (done or inconclusive)"),
     interval: int | None = typer.Option(None, help="Seconds between polls with --wait (default: garden.yaml tick_interval)"),
+    again: bool = typer.Option(False, "--again", help="Re-run a concluded trial: closes the previous contenders' PRs, "
+                                "drops their worktrees and branches, and starts fresh contenders from the task's own branch"),
+    keep_prs: bool = typer.Option(False, "--keep-prs", help="With --again, leave the previous contenders' PRs open instead of closing them"),
 ):
     """Run a task with several models; a comparison run scores the PRs and keeps the best one."""
     store = _store()
     t = _task(store, task_id)
     sc = _scheduler(store)
     try:
-        runs = sc.start_trial(t, contenders)
+        runs = sc.start_trial(t, contenders, again=again, keep_prs=keep_prs)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
