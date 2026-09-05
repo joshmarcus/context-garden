@@ -27,6 +27,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
        | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
+       | qa (the `garden qa` agent: every flow ok, or FAKE_CLAUDE_QA_FAIL's flow failed, plus one finding)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
 """
 
@@ -186,8 +187,20 @@ def review(call: Call) -> None:
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
 
 
+def qa(call: Call) -> None:
+    # The QA agent: reports every flow the brief lists as completed (or the one named in
+    # FAKE_CLAUDE_QA_FAIL as failed) and one finding on the Inbox, without driving anything.
+    names = re.findall(r"^\d+\. \*\*(.+?)\*\*", call.brief, flags=re.M)
+    fail = call.env.get("FAKE_CLAUDE_QA_FAIL", "")
+    flows = [{"name": n, "ok": n != fail, "page": "/inbox" if n == fail else "/",
+              "note": "the button was missing" if n == fail else "fine"} for n in names]
+    res = {"flows": flows, "findings": [{"page": "/inbox", "text": "The Inbox has no link back to the phase a card belongs to."}],
+           "summary": "drove the flows"}
+    print(result_json("Drove the flows.\nGARDEN_QA: " + json.dumps(res), {"input_tokens": 5000, "output_tokens": 400}, 0.10))
+
+
 SPECIAL: dict[str, Callable[[Call], int | None]] = {
-    "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro, "edit": edit,
+    "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro, "edit": edit, "qa": qa,
 }
 
 
@@ -393,6 +406,8 @@ def handle(call: Call) -> int:
         mode = "retro"
     if "GARDEN_EDIT:" in call.brief:
         mode = "edit"
+    if "GARDEN_QA:" in call.brief:
+        mode = "qa"
     call.mode = mode
     try:
         (call.cwd / "model.txt").write_text(call.model + "\n")
