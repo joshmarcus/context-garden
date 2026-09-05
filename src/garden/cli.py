@@ -1652,7 +1652,7 @@ def usage(
     by_mode: bool = typer.Option(False, help="Split each task's usage by run mode (work/revise/review/…)"),
 ):
     """Tokens and cost per task, rolled up from every run."""
-    from .brief import estimate_brief_tokens
+    from .brief import estimate_brief_tokens, phase_fixed_tokens
     from .runs import RunStore
 
     store = _store()
@@ -1682,7 +1682,7 @@ def usage(
             raise typer.Exit(1) from None
         rows = [(t.id, t) for t in ph.tasks]
         if rows:
-            phase_fixed, _ = estimate_brief_tokens(store, rows[0][1])
+            phase_fixed = phase_fixed_tokens(store, ph.tasks)
             console.print(f"[bold]{product}/{phase}[/bold] fixed brief cost: ~{phase_fixed:,} tokens (head + rules + digest + product + goals)")
     else:
         rows = [(tid, tasks.get(tid)) for tid in sorted(per)]

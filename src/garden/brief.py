@@ -388,6 +388,16 @@ def estimate_brief_tokens(store: Store, task: Task) -> tuple[int, int]:
     return (brief.fixed_tokens, brief.reading_tokens)
 
 
+def phase_fixed_tokens(store: Store, tasks: list[Task]) -> int:
+    """The fixed brief cost (head + rules + principles digest + product + goals), measured once
+    for a phase. It is the same for every task in the phase apart from the per-task head and
+    turn-cap lines, so a representative task stands in for all of them; only the reading list
+    varies per task. Returns 0 for an empty phase."""
+    if not tasks:
+        return 0
+    return build_brief(store, tasks[0], include_rules=True).fixed_tokens
+
+
 def parse_result(output_text: str, marker: str = RESULT_MARKER) -> dict:
     """Find the trailing GARDEN_RESULT line (or another `marker` line, e.g. `GARDEN_QA:`)
     in a worker's final message."""
