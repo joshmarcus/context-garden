@@ -191,6 +191,7 @@ class RetroMixin:
 
     def _dispatch_retro_run(self, probe: Task, brief_text: str, worktree: Path, difficulty: str = "hard") -> Run:
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         run = self.runs.new_run(probe.id, runner.name, mode="retro")
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty)
@@ -244,6 +245,18 @@ class RetroMixin:
                     have = persona_reports(phase, entry["personas"])
                     if len(have) < len(entry["personas"]):
                         continue
+                    probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
+                                product=entry["self_product"], phase="")
+                    harness_name = self.resolved_harness_name(probe, str(self.cfg.get("review.harness") or ""))
+                    if self.is_harness_paused(harness_name):
+                        # Every persona is in but the reconcile's own harness is down: wait for
+                        # the probe to resume it rather than dispatching into the same account
+                        # limit (mirrors the ready-queue's own pause skip in dispatch_ready).
+                        if not entry.get("reconcile_paused"):
+                            entry["reconcile_paused"] = True
+                            rep.transitions.append(f"retro {entry['phase']} reconcile deferred ({harness_name} paused)")
+                        continue
+                    entry.pop("reconcile_paused", None)
                     self._dispatch_reconcile(entry)
                     continue
                 if entry.get("stage") != "reconciling":
@@ -258,6 +271,7 @@ class RetroMixin:
                 if not self._finished_or_timed_out(run, runner):
                     continue
                 final = ""
+                collected: dict[str, Any] = {}
                 if run.status != "timeout":
                     run.exit_code = run.read_exit_code()
                     run.finished_at = now_iso()
@@ -269,10 +283,20 @@ class RetroMixin:
                     final = collected.get("final_text") or ""
                     if final and not (run.path / "final.md").exists():
                         (run.path / "final.md").write_text(final)
-                    run.status = "done"
+                    run.status = "env_error" if collected.get("env_error") else "done"
                     run.save()
                 self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
                                  cost_usd=run.cost_usd, usage=run.usage, status=run.status)
+                if collected.get("env_error"):
+                    # The reconcile's own harness hit its account limit, not the retro itself:
+                    # pause the harness and put the entry back to wait for reconcile-time
+                    # gating above to redispatch once a probe resumes it, instead of treating
+                    # an unparsed final.md as a failed retro and dropping the entry for good.
+                    self._pause_for_env_error(run, collected)
+                    entry["stage"] = "personas"
+                    entry["reconcile_paused"] = True
+                    rep.transitions.append(f"retro {entry['phase']} reconcile paused (env_error)")
+                    continue
                 self._finish_retro(entry, run, final, rep)
                 self._retro_remove(entry)
             except Exception as e:  # noqa: BLE001 - one bad retro must not sink the tick

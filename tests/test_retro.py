@@ -718,3 +718,114 @@ def test_retro_dry_run_shows_waiting_for_personas_when_a_retro_is_already_in_fli
         os.chdir(cwd)
     assert r.exit_code == 0, r.output
     assert "retro: waiting for personas (1 of 2)" in r.output
+
+
+def _retro_entry(sched: Scheduler, phase_key: str) -> dict:
+    """tick() replaces `sched.state` with a fresh read from disk, so a dict handed back by
+    `start_retro` before a tick is a stale copy afterwards; re-fetch it from the live list."""
+    return next(e for e in sched._retro_list() if e["phase"] == phase_key)
+
+
+# ---- quota/pause handling in the retro flow (CG-227) --------------------------------------
+# The retro's own reconcile dispatch (`_dispatch_retro_run`, used by `_dispatch_reconcile`) sat
+# outside the paused-harness gate every other aux dispatch (review, persona, compare) already
+# has (CG-212): a paused harness could still be sent a fresh reconcile run, and a quota
+# env_error mid-reconcile was read as a retro with no verdict and the whole entry dropped.
+
+def test_reconcile_dispatch_refuses_a_paused_harness(tmp_path, fake_github, monkeypatch):
+    """A direct call that would dispatch the reconcile run (here, `skip_personas=True` with the
+    designer report already on disk, so `start_retro` goes straight to `_dispatch_reconcile`)
+    gets the same refusal a fresh work/review/persona dispatch would, instead of starting a run
+    that can only hit the same account limit again."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+
+    sched.pause_harness("claude", "quota limit hit on claude")
+    ph = store.phase("gdn", "p1")
+    with pytest.raises(RuntimeError, match="paused"):
+        sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert not fake_github.created
+
+
+def test_reap_retro_defers_the_reconcile_while_the_harness_is_paused_then_dispatches_on_resume(
+        tmp_path, fake_github, monkeypatch):
+    """Every persona report is in, but the harness the reconcile would use is paused: reap_retro
+    must wait for it to resume rather than raising into a caught-and-dropped retro entry."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+
+    ph = store.phase("gdn", "p1")
+    # "security" has no report on disk (only "designer" does), so it actually dispatches.
+    entry = sched.start_retro(ph, ["security"], skip_personas=False)
+    assert entry["stage"] == "personas"
+
+    sched.pause_harness("claude", "quota limit hit on claude")
+    rep = sched.tick()  # reap_aux collects the (already-dispatched) persona run; reap_retro
+    # finds every report present but defers the reconcile instead of dispatching into a paused harness
+    entry = _retro_entry(sched, ph.key)
+    assert entry["stage"] == "personas"
+    assert entry.get("reconcile_paused") is True
+    assert any("reconcile deferred" in t for t in rep.transitions)
+    assert not fake_github.created
+
+    sched.resume_harness("claude", by="test")
+    rep2 = sched.tick()  # reconcile dispatches now that the harness is up
+    entry = _retro_entry(sched, ph.key)
+    assert entry["stage"] == "reconciling"
+    assert not entry.get("reconcile_paused")
+    assert "reconcile deferred" not in " ".join(rep2.transitions)
+
+    rep3 = sched.tick()  # reap the reconcile run -> PR
+    assert not rep3.errors, rep3.errors
+    assert fake_github.created
+
+
+def test_reap_retro_reconcile_env_error_pauses_the_harness_instead_of_failing_the_retro(
+        tmp_path, fake_github, monkeypatch):
+    """A quota/spend-limit hit mid-reconcile is the harness's own account trouble, not a failed
+    retro: the harness pauses, the entry goes back to wait for it to resume, and the retro is
+    retried (not dropped, not logged as "no verdict") once the harness recovers."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+
+    ph = store.phase("gdn", "p1")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    entry = sched.start_retro(ph, ["designer"], skip_personas=True)  # dispatches the reconcile run
+    assert entry["stage"] == "reconciling"
+    rep = sched.tick()  # reap_retro collects the quota output
+
+    assert sched.is_harness_paused("claude")
+    entry = _retro_entry(sched, ph.key)
+    assert entry["stage"] == "personas"
+    assert entry.get("reconcile_paused") is True
+    assert any("reconcile paused (env_error)" in t for t in rep.transitions)
+    assert not any("no verdict" in e for e in rep.errors), rep.errors
+    assert not fake_github.created
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")  # protects the probe (its cwd isn't a
+    # git repo); the reconcile is picked out by its own `GARDEN_RETRO:` brief marker regardless
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    sched.tick()  # probe resumes claude; too late for this tick's reap_retro pass
+    assert not sched.is_harness_paused("claude")
+
+    sched.tick()  # reap_retro redispatches the reconcile now that claude is up
+    entry = _retro_entry(sched, ph.key)
+    assert entry["stage"] == "reconciling"
+    rep4 = sched.tick()  # reap the reconcile run -> PR
+    assert not rep4.errors, rep4.errors
+    assert fake_github.created
