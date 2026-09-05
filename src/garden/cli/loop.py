@@ -440,12 +440,15 @@ def walkthrough(
     out: Path | None = typer.Option(None, "--out", help="Output directory (default: <phase>/docs/walkthrough/<date>)"),
     url: str = typer.Option("", "--url", help="Base URL of a running app to capture (default: an in-process test app)"),
     screenshots: bool = typer.Option(True, "--screenshots/--no-screenshots", help="Capture PNGs with Playwright's Chromium when it is available"),
+    include_stderr: bool = typer.Option(False, "--include-stderr", help="Include the run page's raw stderr (omitted by default: it can carry secrets or local paths, and this capture is committed to the garden repo)"),
 ):
     """Render the live web app's pages to screenshots, HTML and text, with an index.md that
     says what each page is for and what to look at — a persona review can then judge the real
     UI and a person can follow it as a QA script. Needs Playwright's Chromium for screenshots
     (pip install 'context-garden[walkthrough]' && playwright install chromium); with no
-    browser it captures HTML and text only and notes it in the index."""
+    browser it captures HTML and text only and notes it in the index. Absolute home-directory
+    paths are redacted and the run page's stderr is omitted unless --include-stderr is given,
+    since this capture is committed to the garden repo."""
     from datetime import date
 
     from ..walkthrough import capture
@@ -456,7 +459,7 @@ def walkthrough(
     out_dir = out or (ph.path / "docs" / "walkthrough" / date.today().isoformat())
     console.print(f"capturing {ph.key} -> {out_dir}")
     result = capture(store, ph, out_dir, screenshots=screenshots, base_url=url,
-                     log=lambda m: console.print(f"[dim]{m}[/dim]"))
+                     log=lambda m: console.print(f"[dim]{m}[/dim]"), include_stderr=include_stderr)
     n = len(result.pages)
     kind = "screenshots + HTML + text" if result.screenshots else "HTML + text (no screenshots)"
     console.print(f"[green]wrote {n} page(s) and index.md[/green] ({kind}) to {out_dir}")

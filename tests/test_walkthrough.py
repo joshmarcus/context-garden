@@ -5,8 +5,16 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.personas import phase_brief
+from garden.runs import RunStore
 from garden.store import Store
-from garden.walkthrough import capture, html_to_text, newest_walkthrough, pages_for
+from garden.walkthrough import (
+    _redact_home,
+    _scrub_stderr,
+    capture,
+    html_to_text,
+    newest_walkthrough,
+    pages_for,
+)
 
 
 def _run(garden, *args):
@@ -101,3 +109,71 @@ def test_walkthrough_cli_writes_default_dir(garden):
     assert len(dirs) == 1
     assert (dirs[0] / "index.md").exists()
     assert (dirs[0] / "board.html").exists()
+
+
+# --------------------------------------------------------------------------- hygiene: stderr + paths
+def test_scrub_stderr_replaces_only_the_stderr_tab():
+    page = ('<div class="tab-panel" data-tab="final"><pre class="log">ok</pre></div>'
+            '<div class="tab-panel" data-tab="stderr"><pre class="log">'
+            'Traceback: /home/josh/secret\nAPI_KEY=abc123</pre></div>')
+    out = _scrub_stderr(page)
+    assert "API_KEY" not in out and "Traceback" not in out
+    assert "include-stderr" in out
+    assert '<div class="tab-panel" data-tab="final"><pre class="log">ok</pre></div>' in out
+
+
+def test_redact_home_replaces_every_occurrence():
+    text = "brief at /home/josh/work/checkout/task.md, log at /home/josh/work/checkout/run.log"
+    out = _redact_home(text, "/home/josh")
+    assert "/home/josh" not in out
+    assert out.count("~") == 2
+    # no home configured (e.g. root user, HOME="/"): left alone rather than mangled
+    assert _redact_home(text, "") == text
+    assert _redact_home(text, "/") == text
+
+
+def test_capture_omits_run_stderr_by_default_and_includes_it_on_request(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from tests.conftest import FakeGitHub
+
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    sched.tick()
+
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    run = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    (run.path / "stderr.log").write_text("Traceback (most recent call last):\nAPI_KEY=super-secret\n")
+
+    default = capture(store, ph, Path(garden) / "cap-default", screenshots=False)
+    run_html = (default.out_dir / "run.html").read_text()
+    run_txt = (default.out_dir / "run.txt").read_text()
+    assert "API_KEY" not in run_html and "API_KEY" not in run_txt
+    assert "include-stderr" in run_html
+    assert "stderr is omitted" in (default.out_dir / "index.md").read_text()
+
+    included = capture(store, ph, Path(garden) / "cap-included", screenshots=False, include_stderr=True)
+    assert "API_KEY" in (included.out_dir / "run.html").read_text()
+
+
+def test_capture_redacts_the_home_directory(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from tests.conftest import FakeGitHub
+
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    sched.tick()
+
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    run = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    fake_home = "/home/fakeuser"
+    (run.path / "final.md").write_text(f"wrote {fake_home}/work/checkout/src/thing.py")
+    monkeypatch.setattr("garden.walkthrough.Path.home", staticmethod(lambda: Path(fake_home)))
+
+    out = Path(garden) / "cap-redact"
+    capture(store, ph, out, screenshots=False)
+    run_html = (out / "run.html").read_text()
+    assert fake_home not in run_html
+    assert "~/work/checkout/src/thing.py" in run_html
+    assert "paths are redacted" in (out / "index.md").read_text()
