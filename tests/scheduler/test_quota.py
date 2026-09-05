@@ -130,6 +130,64 @@ def test_claude_quota_during_rebase_round_returns_to_changes_requested_with_reba
     assert task.pr == "https://example.com/demo/pull/1"
 
 
+def test_claude_quota_during_resume_round_restores_the_question_and_pr(sched, fake_github, monkeypatch):
+    """A quota hit mid-resume (the continuation `human.answer()` dispatches once a person
+    answers a worker's question) must not discard the pending question/session or send the
+    task back to ready, which would lose whatever PR the round that asked the question had
+    already opened: it goes back to waiting_human with the question and session restored."""
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.com/demo/pull/1"
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    st = sched.state.get("DM-001")
+    st["question"] = "Postgres or SQLite?"
+    st["session_id"] = "sess-42"
+    st["session_harness"] = "claude"
+    sched.state.save()
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    run = sched.answer(task, "SQLite, single file.")
+    assert run.mode == "resume" and run.session_id == "sess-42"
+    rep = sched.tick()  # reap: the resume run hits the spend limit instead of finishing
+    assert "DM-001 -> waiting_human (env_error: quota)" in rep.transitions
+    assert statuses(sched)["DM-001"] == "waiting_human"
+    st = sched.state.get("DM-001")
+    assert st["question"] == "Postgres or SQLite?"  # restored, not lost
+    assert st["session_id"] == "sess-42"
+    task = sched.store.task("DM-001")
+    assert task.pr == "https://example.com/demo/pull/1"  # unaffected by the harness's own trouble
+    assert sched.is_harness_paused("claude")
+
+
+def test_needs_input_quota_during_resume_still_resumes_cleanly_once_the_harness_recovers(sched, fake_github, monkeypatch):
+    """The full loop: work asks a question, the person answers, the answer's resume hits the
+    spend limit and is restored to waiting_human, then answering again after the harness
+    recovers finishes the task normally."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched.tick()  # dispatch work
+    rep = sched.tick()  # reap: the worker asks a question
+    assert "DM-001 -> waiting_human" in rep.transitions
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.answer(sched.store.task("DM-001"), "SQLite, single file.")
+    rep = sched.tick()  # reap: the resume run hits the spend limit
+    assert "DM-001 -> waiting_human (env_error: quota)" in rep.transitions
+    assert statuses(sched)["DM-001"] == "waiting_human"
+    assert sched.state.get("DM-001")["question"] == "Postgres or SQLite?"
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")  # the account recovered; nocommit protects the probe
+    # itself (its throwaway cwd is not a git repo, so a mode that tries to commit would fail)
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    sched.tick()  # probe resumes claude
+    assert not sched.is_harness_paused("claude")
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")  # the resumed round finishes normally this time
+    run = sched.answer(sched.store.task("DM-001"), "SQLite, single file.")
+    assert run.mode == "resume" and run.session_id == "sess-42"
+    sched.tick()
+    assert statuses(sched)["DM-001"] == "in_review"
+
+
 def test_codex_usage_limit_is_also_a_quota_env_error(sched, fake_github, monkeypatch):
     sched.cfg.data["worker_env"]["pass"].append("FAKE_CODEX_*")
     task = sched.store.task("DM-001")
