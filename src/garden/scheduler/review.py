@@ -257,7 +257,29 @@ class ReviewMixin:
             run.save()
         return self._apply_review(task, run, review, rep, emitted=False)
 
+    def _review_comment_posted(self, slug: str, number: int, run_id: str) -> bool:
+        """True if a comment carrying this run's marker (see `mark_garden_comment`) is already
+        on the PR — the backstop for the narrow window `_apply_review` still leaves open (a kill
+        between posting the comment and saving state.json): a genuinely-interrupted apply that
+        gets replayed on restart still must not post the same review twice."""
+        marker = f"run `{run_id}`"
+        return any(marker in c for c in self.github.issue_comments(slug, number))
+
     def _apply_review(self, task: Task, run: Run, review: dict[str, Any], rep: TickReport, emitted: bool) -> bool:
+        """Route a finished review run's verdict, then save state.json immediately — not just at
+        the tick's end-of-pass save. Without this, a crash any time between a normal apply
+        finishing (comment posted, task transitioned) and the tick's own save left `last_review_run`
+        stale on disk; a restart then read that staleness as "never applied" and replayed the whole
+        thing, posting a second GitHub comment and re-logging, re-transitioning and re-notifying for
+        a verdict already fully handled. Saving here shrinks that window to the few lines below,
+        the same residual risk already accepted elsewhere (e.g. finalize's own save-then-postprocess
+        gap) — narrow enough that `_review_comment_posted` below is left as the backstop."""
+        try:
+            return self._apply_review_once(task, run, review, rep, emitted)
+        finally:
+            self.state.save()
+
+    def _apply_review_once(self, task: Task, run: Run, review: dict[str, Any], rep: TickReport, emitted: bool) -> bool:
         """Route a finished review run's verdict: post the comment, apply a description rewrite,
         queue a revise round, or record the verdict. Split out of `reap_review` so a restart can
         re-apply a verdict the previous process reaped but never persisted (`emitted=True` then
@@ -289,8 +311,9 @@ class ReviewMixin:
         number = self._pr_number(task)
         if slug and number and self.github.available:
             try:
-                comment_body = mark_garden_comment(review_to_markdown(review), run.run_id)
-                self.github.comment(slug, number, comment_body)
+                if not self._review_comment_posted(slug, number, run.run_id):
+                    comment_body = mark_garden_comment(review_to_markdown(review), run.run_id)
+                    self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
         # repeated blocking findings across rounds = the loop isn't converging

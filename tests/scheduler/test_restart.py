@@ -2,7 +2,10 @@
 dispatch onto a dirty worktree stashes and continues, and run_finished is emitted once per run."""
 
 from garden import gitops
+from garden.github import mark_garden_comment
+from garden.review import review_to_markdown
 from garden.scheduler import Scheduler
+from garden.scheduler.report import TickReport
 from garden.store import Store
 from tests.scheduler.conftest import statuses
 
@@ -73,6 +76,66 @@ def test_reap_on_start_reapplies_a_verdict_lost_before_state_was_saved(sched, fa
     assert fresh.state.get("DM-001").get("last_review_run") == run_id
     finished = [e for e in fresh.events.read(task_id="DM-001", kinds=["run_finished"]) if e.get("run") == run_id]
     assert len(finished) == 1  # not re-emitted: cost is counted once
+
+
+def test_restart_after_a_normal_reap_does_not_repost_the_review_comment(sched, fake_github, monkeypatch):
+    """A review is reaped normally (the comment is posted, the task transitions) and only then
+    is the process killed, before the tick's own end-of-pass save. Because `_apply_review` now
+    saves state.json itself right after applying the verdict, the restart finds `last_review_run`
+    already on disk and does nothing — it must not post a second copy of the same comment
+    (the bug a reviewer found in an earlier version of this recovery path)."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> PR opened -> review dispatched (finishes in-process)
+
+    assert sched.state.get("DM-001")["review_run"]
+    rep = TickReport()
+    assert sched.reap_review(sched.store.task("DM-001"), rep)  # applies the verdict directly
+    assert len(fake_github.comments) == 1
+    assert statuses(sched)["DM-001"] == "changes_requested"
+
+    fresh = _restart(sched, fake_github)
+    fresh.reap_on_start()
+
+    assert len(fake_github.comments) == 1  # no second copy posted
+    assert statuses(fresh)["DM-001"] == "changes_requested"
+    assert not fresh.state.get("DM-001").get("review_run")
+
+
+def test_reapplying_a_verdict_never_reposts_a_comment_already_on_the_pr(sched, fake_github, monkeypatch):
+    """The narrower window `_apply_review`'s own save does not close: a kill lands after the
+    comment is posted but before `_apply_review` returns (so state.json is stale, exactly like
+    the harder-case test above). The recovery replay must still see the comment already on the
+    PR and skip posting it again, even though it redoes the rest of the bookkeeping."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # DM-001 in_review, PR opened, review dispatched
+
+    st = sched.state.get("DM-001")
+    run_id = st["review_run"]
+    run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run_id)
+    review = {"verdict": "request_changes", "summary": "criteria not met",
+              "description_ok": True, "findings": [
+                  {"severity": "blocking", "file": "a.py", "line": 1, "summary": "bug"}]}
+    run.status = "done"
+    run.result = review
+    run.cost_usd = 0.02
+    run.save()
+    sched.events.emit("run_finished", "DM-001", run=run_id, mode="review", cost_usd=0.02, usage={}, status="request_changes")
+    # The comment made it to GitHub before the crash; state.json (last_review_run) did not.
+    fake_github.comments.append(mark_garden_comment(review_to_markdown(review), run_id))
+    sched.state.save()
+    assert statuses(sched)["DM-001"] == "in_review"
+
+    fresh = _restart(sched, fake_github)
+    fresh.reap_on_start()
+
+    assert statuses(fresh)["DM-001"] == "changes_requested"  # bookkeeping still recovered
+    assert fresh.state.get("DM-001").get("pending_feedback")
+    assert len(fake_github.comments) == 1  # not reposted
 
 
 def test_dirty_worktree_is_stashed_on_dispatch(sched, fake_github):
