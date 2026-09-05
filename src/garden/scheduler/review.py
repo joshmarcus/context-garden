@@ -22,6 +22,16 @@ from .report import TickReport
 
 class ReviewMixin:
     # ---- automated review --------------------------------------------------
+    def _review_round_pending(self, st: dict[str, Any]) -> bool:
+        """True when `_maybe_review` will still dispatch (or queue) an automated review round
+        for this push. A fresh draft PR's triage ping waits for that verdict instead of firing
+        on PR-open, per the phase-02 retro (triage pings fired before the review verdict was
+        known); when review is off or its rounds are already spent, there is no verdict coming
+        and the ping fires right away."""
+        if not bool(self.cfg.get("review.enabled", True)):
+            return False
+        return int(st.get("review_rounds", 0)) < int(self.cfg.get("review.max_rounds", 2))
+
     def _maybe_review(self, task: Task, work_run: Run, rep: TickReport) -> None:
         if not task.pr:
             return
@@ -183,6 +193,7 @@ class ReviewMixin:
         if not self._finished_or_timed_out(run, runner):
             return False
         st["review_run"] = ""
+        pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         review: dict[str, Any] = {}
         if run.status != "timeout":
             run.exit_code = run.read_exit_code()
@@ -204,6 +215,9 @@ class ReviewMixin:
         if not review:
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
             self.store.save(task)
+            if pending_triage:
+                notify(self.cfg.data, task.id, "awaiting_triage",
+                      f"automated review produced no verdict ({run.error[:120] or run.status}){cost}", task.pr or "")
             rep.transitions.append(f"{task.id} review failed")
             return True
         st["last_review"] = review
@@ -233,6 +247,9 @@ class ReviewMixin:
             description_only = review_is_description_only(review)
             if description_only and rewrite:
                 self._apply_description_rewrite(task, run, rewrite, rep, cost)
+                if pending_triage:
+                    notify(self.cfg.data, task.id, "awaiting_triage",
+                          f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
                 if repeated and bool(self.cfg.get("stall.enabled", True)):
@@ -259,6 +276,9 @@ class ReviewMixin:
                     return True
         task.log(f"automated review: {verdict} — {review.get('summary', '')}{cost}")
         self.store.save(task)
+        if pending_triage:
+            notify(self.cfg.data, task.id, "awaiting_triage",
+                  f"automated review: {verdict} — {review.get('summary', '')}{cost}", task.pr or "")
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
 

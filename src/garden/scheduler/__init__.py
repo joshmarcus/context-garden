@@ -242,14 +242,14 @@ class Scheduler(
                 out.add(run.run_id)
         return out
 
-    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
         self.store.save(task)
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
-        if should_notify(status.value, needs_human=needs_human):
+        if notify_now and should_notify(status.value, needs_human=needs_human):
             notify(self.cfg.data, task.id, status.value, note, task.pr or "")
 
     def _pr_status(self, task: Task) -> Status:
