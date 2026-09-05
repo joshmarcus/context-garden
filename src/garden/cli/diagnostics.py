@@ -112,15 +112,18 @@ def doctor():
             # a custom harness with no such subcommand is checked the same way.
             ok, detail = h.check_login(scrubbed_env(store.config.data))
             if ok:
-                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
+                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}", soft_wrap=True)
             else:
                 fix = detail or f"run {h.bin}'s login command"
+                # soft_wrap: a long worktree path or login-failure detail must never be broken
+                # mid-word by the console width, or the fix hint on the wrapped line is unreadable
+                # (and no longer a reliable contiguous substring for anything scraping this output).
                 console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
-                              f"  (fix: {fix})")
+                              f"  (fix: {fix})", soft_wrap=True)
                 fail(f"harness {hn}")
         else:
             console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"
-                          f"  (fix: install {h.bin} and add it to PATH)")
+                          f"  (fix: install {h.bin} and add it to PATH)", soft_wrap=True)
             fail(f"harness {hn}")
     git_email = ""
     git_name = ""
