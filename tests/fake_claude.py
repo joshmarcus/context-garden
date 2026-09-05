@@ -15,7 +15,9 @@ verdict);
 whether it commits, and how its final message differs from a plain "done". Add a mode by
 adding a row, not a branch.
 
-Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no output, no exit) | noresult | plan | review-ok | review-bad | review-desc
+Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no output, no exit)
+       | quota (an is_error result carrying the monthly spend-limit message, no commit)
+       | noresult | plan | review-ok | review-bad | review-desc
        | review-rewrite (description-only review that returns description_rewrite)
        | review-approve-rewrite (approve verdict, description_ok false, with description_rewrite)
        | review-approve-desc (approve verdict, description_ok false, no rewrite: dispatches a description round)
@@ -98,6 +100,14 @@ def crash(call: Call) -> int:
 def stall(call: Call) -> None:
     # A worker that goes silent: the scheduler must notice it is idle and stop it.
     raise Stall
+
+
+def quota(call: Call) -> int:
+    # The account, not the worker: claude -p returns an error result carrying the monthly
+    # spend-limit message, no commit, no GARDEN_RESULT.
+    print(result_json("You've hit your monthly spend limit. Upgrade your plan or wait for it to reset.",
+                      {"input_tokens": 20, "output_tokens": 0}, 0.0, is_error=True, subtype="error_during_execution"))
+    return 0
 
 
 def plan(call: Call) -> None:
@@ -321,7 +331,7 @@ def qa(call: Call) -> None:
 
 
 SPECIAL: dict[str, Callable[[Call], int | None]] = {
-    "crash": crash, "stall": stall, "plan": plan, "compare": compare, "persona": persona, "retro": retro,
+    "crash": crash, "stall": stall, "quota": quota, "plan": plan, "compare": compare, "persona": persona, "retro": retro,
     "kickoff": kickoff, "edit": edit, "qa": qa,
 }
 
