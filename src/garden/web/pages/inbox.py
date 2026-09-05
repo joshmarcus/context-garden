@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, digest, parse_since
-from ...inbox import build_inbox
+from ...inbox import build_inbox, merge_queue_view
 from ..common import Site, tier_rows
 
 
@@ -30,7 +30,8 @@ def register(app: FastAPI, site: Site) -> None:
         from ...suggestions import has_pending
 
         suggestions_pending = sum(1 for t in open_tasks if has_pending(t.body))
+        merge_queue = merge_queue_view(s, sched.state, evs.read(kinds=["merge_head"]))
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
-            spent_24h=spent_24h, suggestions_pending=suggestions_pending,
+            spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
             burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))

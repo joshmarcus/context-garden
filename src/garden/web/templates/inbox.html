@@ -13,6 +13,23 @@
   {% if suggestions_pending %}<div class="kpi"><div class="v">{{ suggestions_pending }}</div><div class="l">suggestions to integrate</div></div>{% endif %}
   <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
 </div>
+{% if merge_queue %}
+<div class="panel" style="margin-bottom:12px">
+  <div class="eyebrow">Merge queue</div>
+  {% if merge_queue.head %}
+    <p>Head: <a class="id" href="/tasks/{{ merge_queue.head.task }}">{{ merge_queue.head.task }}</a> {{ merge_queue.head.title }} — {% if merge_queue.head.waits_on_ci %}rebased, waiting on CI{% if merge_queue.head.checks %} ({{ merge_queue.head.checks }}){% endif %}{% else %}rebased, checks {{ merge_queue.head.checks or 'green' }}, ready to merge{% endif %}.{% if merge_queue.head.pr %} <a href="{{ merge_queue.head.pr }}" target="_blank">PR ↗</a>{% endif %}</p>
+  {% else %}
+    <p class="faint">No PR is in flight right now.</p>
+  {% endif %}
+  {% if merge_queue.candidates %}
+    <div class="why">Waiting behind the head:</div>
+    <ul class="tl" style="margin-top:4px">{% for c in merge_queue.candidates %}<li><span class="k"><a href="/tasks/{{ c.task }}">{{ c.task }}</a></span><span>{{ c.title }}{% if c.blocked %} — held: {{ c.blocked }}{% endif %}</span></li>{% endfor %}</ul>
+  {% endif %}
+  {% if merge_queue.last_drop %}
+    <div class="why" style="margin-top:6px">Last drop: <a class="id" href="/tasks/{{ merge_queue.last_drop.task }}">{{ merge_queue.last_drop.task }}</a> left the queue — {{ merge_queue.last_drop.reason }}</div>
+  {% endif %}
+</div>
+{% endif %}
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">

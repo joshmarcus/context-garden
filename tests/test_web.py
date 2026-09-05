@@ -753,6 +753,90 @@ def test_run_page_running_tails_the_same_view(garden):
     assert c.get("/runs/DM-001/nope").status_code == 404
 
 
+def test_timeline_formats_the_new_event_kinds(garden):
+    """The Timeline gives a phrase to the states phase-03 added: mechanical and agent rebases,
+    the merge-queue head and its drops, ignored feedback, a failed retro step, a stale-base
+    recovery and a phase freeze. Task-less events (a retro, a freeze) link the phase."""
+    from garden.events import EventLog
+    from garden.store import Store
+
+    log = EventLog(Store(garden).config.garden_dir / "events.jsonl")
+    log.emit("rebase", "DM-001", base="main", files=[], resolved=True, how="mechanical", run="r1")
+    log.emit("rebase", "DM-001", base="main", files=["a.py"], resolved=False, how="agent")
+    log.emit("merge_head", "DM-001", waiting=True, reason="rebased; awaiting rollup")
+    log.emit("merge_head", "DM-002", left=True, reason="checks failed")
+    log.emit("feedback_ignored", "DM-001", author="stranger", reason="untrusted")
+    log.emit("retro_failed", "", phase="demo/p1", step="persona", error="the reviewer crashed")
+    log.emit("rebased_stale_base", "DM-001", base="main", base_sha="abc123def456", resolved=True)
+    log.emit("phase_frozen", "", phase="demo/p1", frozen=True)
+
+    text = client(garden).get("/events").text
+    assert "rebased onto main mechanically" in text
+    assert "conflict on main in a.py" in text
+    assert "merge queue head" in text
+    assert "left the merge queue: checks failed" in text
+    assert "ignored feedback from stranger (untrusted)" in text
+    assert "demo/p1 retro: persona failed" in text
+    assert "moved and recovered" in text
+    assert "demo/p1 frozen" in text
+    assert '/phases/demo/p1' in text  # the task-less events link the phase, not an empty task
+
+    # The per-task page timeline labels the same task-carrying kinds (not blank fallbacks).
+    task_page = client(garden).get("/tasks/DM-001").text
+    assert "rebased onto main mechanically" in task_page
+    assert "merge queue head" in task_page
+    assert "ignored feedback from stranger" in task_page
+
+
+def test_run_page_mechanical_rebase(garden):
+    """A mechanical rebase run has no harness and no transcript: its page says what it is,
+    shows what git did, and shows the pre-PR check run that followed it."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    rs = RunStore(Store(garden).config.garden_dir)
+    rebase = rs.new_run("DM-001", "local", "rebase")
+    rebase.status, rebase.base, rebase.cost_usd = "done", "main", 0.0
+    rebase.diff_stat = " src/app.py | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)"
+    rebase.save()
+    check = rs.new_run("DM-001", "local", "check")
+    check.status = "done"
+    check.result = {"checks": [{"name": "unit", "status": "ok", "summary": "3 passed"}]}
+    check.save()
+
+    body = client(garden).get(f"/runs/DM-001/{rebase.run_id}").text
+    assert "Mechanical rebase onto" in body and "main" in body
+    assert "no model, no cost" in body
+    assert "1 file changed" in body            # what git did
+    assert "unit" in body and "3 passed" in body  # the follow-on check result
+    assert f"/runs/DM-001/{check.run_id}" in body  # links to the check run
+    assert 'data-tab="transcript"' not in body     # no transcript tabs for a git-only run
+
+
+def test_inbox_shows_the_merge_queue(garden):
+    from garden.events import EventLog
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub
+
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    sched.tick()
+    assert sched.store.task("DM-001").status.value == "in_review"
+    st = sched.state.get("DM-001")
+    st["merge_head"] = True
+    st["automerge_candidate"] = True
+    st["checks"] = "PENDING"
+    sched.state.save()
+    EventLog(Store(garden).config.garden_dir / "events.jsonl").emit(
+        "merge_head", "DM-002", left=True, reason="a human requested changes")
+
+    page = client(garden).get("/").text
+    assert "Merge queue" in page
+    assert "DM-001" in page and "waiting on CI" in page
+    assert "Last drop" in page and "a human requested changes" in page
+
+
 def test_drawings_render_unescaped(garden, tmp_path):
     """Plant and stage drawings are inline SVG, not escaped text (a Jinja autoescape regression)."""
     c = TestClient(create_app(Store(garden), watch=False, plates_dir=tmp_path / "plates"))
