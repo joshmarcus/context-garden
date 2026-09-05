@@ -100,7 +100,10 @@ def ranking_markdown(trial: dict[str, Any]) -> str:
             note = f"env_failed ({c.get('kind') or '?'}): {c.get('note') or ''}"
         else:
             note = c.get("summary") or c.get("note") or c.get("status") or ""
-        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {toks} | {per_point} | {c.get('pr') or '–'} | {note} |")
+        pr = c.get("pr") or "–"
+        if c.get("pr") and c.get("closed"):
+            pr += " (closed)"
+        out.append(f"| {c['label']} | {score if score is not None else '–'} | {cost} | {toks} | {per_point} | {pr} | {note} |")
     if trial.get("compare_cost") is not None:
         out.append(f"| _comparison run_ | | ${trial['compare_cost']:.2f} | | | | |")
     if trial.get("rationale"):
