@@ -10,13 +10,18 @@ JSON blob safe to inline in an attribute or a script.
 Every state-changing route is a plain form POST with no token, and the server listens on
 localhost, so a page on any site could post a form at it from the person's browser.
 `OriginCheck` refuses a POST whose `Origin` (or, failing that, `Referer`) is not this
-server, unless `web.trusted_origins` lists it. A request with neither header is not a
-browser's and is let through: there is no ambient credential to forge with.
+server, unless `web.trusted_origins` lists it. A same-origin POST must also be addressed to
+a loopback `Host`: the garden serves on localhost, so a POST from a domain that resolves to
+127.0.0.1 (a DNS-rebinding attack, where `Origin` and `Host` match an attacker domain) is
+refused even though its origin matches its host — `web.trusted_origins` is the escape hatch
+for a reverse proxy or a LAN address. A request with neither `Origin` nor `Referer` is not
+a browser's and is let through: there is no ambient credential to forge with.
 """
 
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import re
 from collections.abc import Iterable
@@ -154,13 +159,37 @@ def _origin_of(url: str) -> str:
     return f"{parts.scheme.lower()}://{parts.netloc.lower()}" if parts.scheme and parts.netloc else ""
 
 
+def _is_loopback(host: str) -> bool:
+    """True when `host` (a `Host` header value, maybe with a port) names the loopback
+    interface — `localhost`, `127.0.0.0/8` or `::1`. The garden serves on loopback, so a
+    same-origin POST addressed to a non-loopback host is a DNS-rebinding attempt (an attacker
+    domain that resolves to 127.0.0.1: its `Origin` and `Host` match, but the host is not
+    loopback), which the caller refuses unless the origin is in `web.trusted_origins`."""
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    if h.startswith("["):  # [::1] or [::1]:port
+        h = h[1:].split("]", 1)[0]
+    elif h.count(":") == 1:  # host:port (a bare IPv6 has several colons and no port here)
+        h = h.split(":", 1)[0]
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
 def origin_problem(headers: Headers, trusted: Iterable[str] = ()) -> str:
     """Why a state-changing request must be refused, or '' when its source is this server.
 
     `Origin` is checked first (browsers send it on every cross-site POST); an older browser
     without it sends `Referer`. A request with neither is not a browser's form and is
-    accepted. The source must be the host the request was addressed to (`Host`), or one of
-    `trusted` (`web.trusted_origins`, for a reverse proxy that rewrites `Host`)."""
+    accepted. A trusted origin (`web.trusted_origins`, for a reverse proxy) is always
+    accepted. Otherwise the source must be the host the request was addressed to (`Host`) and
+    that host must be the loopback interface — the garden serves on localhost, so a
+    same-origin POST to a non-loopback host is a DNS-rebinding attempt and is refused (add the
+    origin to `web.trusted_origins` for a proxy or LAN address that must be allowed)."""
     host = (headers.get("host") or "").strip().lower()
     trusted_set = {t.strip().rstrip("/").lower() for t in trusted if t and t.strip()}
     origin = (headers.get("origin") or "").strip()
@@ -171,10 +200,13 @@ def origin_problem(headers: Headers, trusted: Iterable[str] = ()) -> str:
         return "request refused: it comes from an opaque origin (Origin: null), not from this server"
     src = _origin_of(source)
     netloc = urlsplit(source).netloc.lower()
-    if src and netloc == host:
-        return ""
     if src in trusted_set:
         return ""
+    if src and netloc == host:
+        if _is_loopback(host):
+            return ""
+        return (f"request refused: Host {host!r} is not a loopback address; the garden serves on "
+                "localhost. Add its origin to web.trusted_origins to allow it (DNS-rebinding guard)")
     return f"request refused: {via} {source!r} is not this server ({host or 'unknown host'}); see web.trusted_origins"
 
 
