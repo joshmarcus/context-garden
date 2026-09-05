@@ -187,6 +187,11 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
         parts.append("## Phase goals\n\n" + _read(phase.goals_path))
     for spec in phase.specs:
         parts.append(f"## Spec: {store.rel(spec)}\n\n" + _read(spec))
+    from .walkthrough import walkthrough_section
+
+    section = walkthrough_section(phase)
+    if section:
+        parts.append(section)
     lines = []
     for pr in prs:
         lines.append(f"### {pr['id']} — {pr['title']} [{pr['status']}]\n\nPR: {pr.get('pr') or '(none)'}\n\n{pr.get('body') or '(no description)'}\n")

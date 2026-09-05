@@ -170,6 +170,7 @@ push; the runner does.
 | `garden answer ID "..."` | answer a `waiting_human` task; the worker resumes |
 | `garden trial ID -c h:m -c h:m` / `trials` | run a task with several models; leaderboard |
 | `garden persona-review TARGET -p name` / `personas` | persona review of a PR or a phase |
+| `garden walkthrough product/phase [--no-screenshots] [--url URL]` | render the live web app's pages for a review or QA (see below) |
 | `garden check ID [--stage ci]` | run the token-free checks by hand |
 | `garden digest [--since 24h]` / `metrics [product/phase]` / `events [ID]` | what happened, how it's going, the timeline |
 | `garden tick [--no-dispatch]` / `watch` / `serve [--no-watch]` / `tui` | run the loop, UIs |
@@ -243,6 +244,18 @@ Borrowed from graph-based agent systems; all deterministic:
   `docs/reviews/`, where the planner reads it) or against a PR
   (`garden persona-review ID -p security`; posted as a comment). `review.personas`
   runs chosen personas on every new PR.
+- **Walkthrough of the live web app.** A persona review reads code, PR bodies and task
+  files but never sees a page. `garden walkthrough product/phase` fetches every web page —
+  Inbox, Board (columns and list), Trellis, a task, a run, the phase page, the Herbarium
+  and a closed phase, Config, Trials, Events — and writes them to
+  `<phase>/docs/walkthrough/<date>/` as screenshots, served HTML and a plain-text
+  rendering, with an `index.md` that says what each page is for and what to look at. A
+  phase persona review adds the newest walkthrough to its brief automatically, and a
+  person can follow the index as a QA script. Screenshots need Playwright's Chromium:
+  `pip install 'context-garden[walkthrough]'` then `playwright install chromium` (already
+  cached on some machines); with no browser it captures HTML and text only and says so in
+  the index. Pass `--url http://127.0.0.1:8765` to capture an already-running server
+  instead of the in-process test app.
 - **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
   per contender on separate branches, has one comparison run score the PRs, keeps the
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.

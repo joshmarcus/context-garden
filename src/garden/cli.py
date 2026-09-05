@@ -1186,6 +1186,36 @@ def trials(task_id: str | None = typer.Argument(None, help="Show one task's tria
     console.print(table)
 
 
+@app.command()
+def walkthrough(
+    target: str = typer.Argument(..., help="product/phase"),
+    out: Path | None = typer.Option(None, "--out", help="Output directory (default: <phase>/docs/walkthrough/<date>)"),
+    url: str = typer.Option("", "--url", help="Base URL of a running app to capture (default: an in-process test app)"),
+    screenshots: bool = typer.Option(True, "--screenshots/--no-screenshots", help="Capture PNGs with Playwright's Chromium when it is available"),
+):
+    """Render the live web app's pages to screenshots, HTML and text, with an index.md that
+    says what each page is for and what to look at — a persona review can then judge the real
+    UI and a person can follow it as a QA script. Needs Playwright's Chromium for screenshots
+    (pip install 'context-garden[walkthrough]' && playwright install chromium); with no
+    browser it captures HTML and text only and notes it in the index."""
+    from datetime import date
+
+    from .walkthrough import capture
+
+    store = _store()
+    product, phase = _split_target(target)
+    ph = _phase(store, product, phase)
+    out_dir = out or (ph.path / "docs" / "walkthrough" / date.today().isoformat())
+    console.print(f"capturing {ph.key} -> {out_dir}")
+    result = capture(store, ph, out_dir, screenshots=screenshots, base_url=url,
+                     log=lambda m: console.print(f"[dim]{m}[/dim]"))
+    n = len(result.pages)
+    kind = "screenshots + HTML + text" if result.screenshots else "HTML + text (no screenshots)"
+    console.print(f"[green]wrote {n} page(s) and index.md[/green] ({kind}) to {out_dir}")
+    if result.browser_note:
+        console.print(f"[yellow]{result.browser_note}[/yellow]")
+
+
 @app.command("persona-review")
 def persona_review(
     target: str = typer.Argument(..., help="A task id (reviews its PR) or product/phase (reviews the body of work)"),
