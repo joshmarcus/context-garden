@@ -1,27 +1,35 @@
 {% extends "base.html" %}
 {% block title %}Board{% endblock %}
 {% block body %}
+{% set viewq = ('&view=' ~ view) if view != 'columns' else '' %}
 {% set base = '/board?product=' ~ (product or '') ~ '&phase=' ~ (phase or '') ~ ('&closed=1' if closed else '') %}
 <div class="page-head">
-  <div><h1>Board</h1><p>Every task by state. Blocked and stacked tasks show what they wait on; running ones show elapsed time.</p></div>
+  <div><h1>Board</h1><p>Every task by state. The backlog stacks a product's open phases as sections you can reorder and drag between.</p></div>
   <div class="tools viewswitch">
-    <a href="{{ base }}&view=columns" class="{{ 'on' if view != 'list' else '' }}">columns</a>
+    <a href="{{ base }}&view=columns" class="{{ 'on' if view == 'columns' else '' }}">columns</a>
     <a href="{{ base }}&view=list" class="{{ 'on' if view == 'list' else '' }}">list</a>
+    <a href="{{ base }}&view=backlog" class="{{ 'on' if view == 'backlog' else '' }}">backlog</a>
   </div>
 </div>
 <div class="filters">
-  <a href="/board{{ '?closed=1' if closed else '' }}{{ ('&' if closed else '?') ~ 'view=list' if view == 'list' else '' }}" class="{{ 'on' if not product else '' }}">all</a>
-  {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
-    <a href="/board?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}{{ '&view=list' if view == 'list' else '' }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
-  {% endfor %}{% endfor %}
-  {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase }}&{% endif %}{{ '' if closed else 'closed=1' }}{{ '&view=list' if view == 'list' else '' }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
+  <a href="/board?{{ 'closed=1&' if closed else '' }}view={{ view }}" class="{{ 'on' if not product else '' }}">all</a>
+  {% if view == 'backlog' %}
+    {% for p in products %}
+    <a href="/board?product={{ p.name }}{{ '&closed=1' if closed else '' }}&view=backlog" class="{{ 'on' if product == p.name else '' }}">{{ p.name }}</a>
+    {% endfor %}
+  {% else %}
+    {% for p in products %}{% for ph in p.phases if closed or not ph.closed %}
+    <a href="/board?product={{ p.name }}&phase={{ ph.name }}{{ '&closed=1' if closed else '' }}{{ viewq }}" class="{{ 'on' if product == p.name and phase == ph.name else '' }}">{{ p.name }}/{{ ph.name }}</a>
+    {% endfor %}{% endfor %}
+  {% endif %}
+  {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase or '' }}&{% endif %}{{ '' if closed else 'closed=1' }}{{ viewq }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
 </div>
 {% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
 <div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}&view={{ view }}" data-every="5000">
   {% include "_board.html" %}
 </div>
 <script>
-// Remember the columns/list choice across navigation. A view in the query string is
+// Remember the columns/list/backlog choice across navigation. A view in the query string is
 // authoritative (and gets saved); otherwise a stored preference redirects once to apply it.
 (function () {
   var params = new URLSearchParams(location.search);
@@ -30,11 +38,65 @@
   } else {
     var stored;
     try { stored = localStorage.getItem("board-view"); } catch (e) {}
-    if (stored === "list") {
-      params.set("view", "list");
+    if (stored === "list" || stored === "backlog") {
+      params.set("view", stored);
       location.replace(location.pathname + "?" + params.toString());
     }
   }
+})();
+// ---- backlog drag and drop (CG-163): native HTML5 DnD, no library. A drop is one POST to the
+// same order/move endpoints the ↑/↓ buttons and the phase pulldown use, so the JS path and the
+// no-JS path are identical; the server refusal (a run in flight, a closed/frozen phase) comes
+// back as a flash and the reload snaps the row back to where it was.
+(function () {
+  var board = document.getElementById("board");
+  if (!board) return;
+  var dragId = null, dragFrom = null, dragMovable = false;
+  function submit(path, note) {
+    var f = document.createElement("form");
+    f.method = "POST"; f.action = path;
+    var i = document.createElement("input"); i.type = "hidden"; i.name = "note"; i.value = note;
+    f.appendChild(i); document.body.appendChild(f); f.submit();
+  }
+  board.addEventListener("dragstart", function (e) {
+    var row = e.target.closest("[data-task]"); if (!row) return;
+    dragId = row.dataset.task;
+    dragFrom = row.closest("[data-phase]").dataset.phase;
+    dragMovable = row.dataset.movable === "1";
+    e.dataTransfer.effectAllowed = "move";
+    row.classList.add("dragging");
+  });
+  board.addEventListener("dragend", function (e) {
+    var row = e.target.closest("[data-task]"); if (row) row.classList.remove("dragging");
+  });
+  board.addEventListener("dragover", function (e) { if (dragId) e.preventDefault(); });
+  board.addEventListener("drop", function (e) {
+    if (!dragId) return;
+    e.preventDefault();
+    var section = e.target.closest("[data-phase]"); if (!section) { dragId = null; return; }
+    var toPhase = section.dataset.phase;
+    if (toPhase !== dragFrom) {
+      if (dragMovable) submit("/tasks/" + dragId + "/move", toPhase);  // else: not movable, snap back
+      dragId = null; return;
+    }
+    var rows = Array.prototype.slice.call(section.querySelectorAll("[data-task]"));
+    var over = e.target.closest("[data-task]");
+    var afterId = "";
+    if (over && over.dataset.task !== dragId) {
+      var rect = over.getBoundingClientRect();
+      if ((e.clientY - rect.top) > rect.height / 2) {
+        afterId = over.dataset.task;  // dropped on the lower half: place after it
+      } else {
+        var idx = rows.indexOf(over) - 1;  // upper half: place after the row above it
+        while (idx >= 0 && rows[idx].dataset.task === dragId) idx--;
+        afterId = idx >= 0 ? rows[idx].dataset.task : "";
+      }
+    } else if (!over) {
+      var last = rows.filter(function (r) { return r.dataset.task !== dragId; }).pop();
+      afterId = last ? last.dataset.task : "";  // dropped in empty space: append to the end
+    } else { dragId = null; return; }  // dropped on itself
+    submit("/tasks/" + dragId + "/order", afterId);
+  });
 })();
 </script>
 {% endblock %}

@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from ..events import EventLog, metrics
 from ..graph import blockers, effective_status, validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
-from ..model import now_iso
+from ..model import Status, dispatch_sort_key, now_iso
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
 from ..store import Store
@@ -126,7 +126,7 @@ def closed_phase_keys(s: Store) -> set[str]:
 
 
 def board_view(view: str | None) -> str:
-    return "list" if view == "list" else "columns"
+    return view if view in ("list", "backlog") else "columns"
 
 
 class Site:
@@ -203,3 +203,50 @@ class Site:
         active = {r.task_id: r for r in runs.active()}
         return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
                 "closed": include_closed, "problems": validate(tasks)}
+
+    def backlog_data(self, product: str | None, include_closed: bool = False) -> dict[str, Any]:
+        """The backlog view: each open phase of a product (all products when none is picked) as a
+        section of its non-terminal tasks in dispatch order, plus what each row's controls need
+        (the phases it can move to, whether a cross-phase move is allowed). Closed phases stay in
+        the Herbarium unless `include_closed`."""
+        s = self.hub.fresh()
+        tasks = s.tasks()
+        stack = bool(s.config.get("stack", True))
+        state = State(s.config.garden_dir / "state.json")
+        runs = RunStore(s.config.garden_dir)
+        active = {r.task_id: r for r in runs.active()}
+        # Phases a row can move to: its product's phases, closed ones dropped (the row's own is
+        # always kept so the pulldown shows where it is).
+        move_phases: dict[str, list[str]] = {}
+        sections: list[dict[str, Any]] = []
+        for p in s.products():
+            if product and p.name != product:
+                continue
+            move_phases[p.name] = [ph.name for ph in p.phases if include_closed or not ph.closed]
+            for ph in p.phases:
+                if ph.closed and not include_closed:
+                    continue
+                rows = []
+                for t in sorted(ph.tasks, key=dispatch_sort_key):
+                    eff = effective_status(t, tasks, stack)
+                    if eff in ("done", "cancelled", "wont_do"):
+                        continue
+                    st = state.get(t.id)
+                    # A running or in-review task can be reordered but not moved to another phase.
+                    movable = not (t.status == Status.RUNNING or t.status.pr_open or t.id in active)
+                    rows.append({"task": t, "eff": eff,
+                                 "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+                                 "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
+                                 "movable": movable,
+                                 "move_reason": "" if movable else f"{eff.replace('_', ' ')}: reorder it here, but finish or cancel the run before moving it"})
+                sections.append({"phase": ph, "rows": rows})
+        return {"sections": sections, "move_phases": move_phases, "active": active,
+                "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
+
+
+def _split_log(body: str) -> tuple[str, list[str]]:
+    if "\n## Log" in body:
+        head, _, tail = body.partition("\n## Log")
+        lines = [ln[2:] for ln in tail.strip().splitlines() if ln.startswith("- ")]
+        return head, lines
+    return body, []

@@ -1,4 +1,6 @@
-{% if view == 'list' %}
+{% if view == 'backlog' %}
+{% include "_backlog.html" %}
+{% elif view == 'list' %}
 <div class="board-list">
 {% for c in list_order %}
   <section class="lgroup s-{{ c }}{{ ' lgroup-empty' if not cols[c] else '' }}">
