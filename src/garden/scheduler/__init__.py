@@ -42,6 +42,7 @@ from .fence import FenceMixin
 from .human import HumanMixin
 from .persona import PersonaMixin
 from .poll import PollMixin
+from .queue import QueueMixin
 from .reap import ReapMixin
 from .rebase import RebaseMixin
 from .report import TickReport
@@ -62,6 +63,7 @@ class Scheduler(
     BudgetMixin,
     ReapMixin,
     CheckRunMixin,
+    QueueMixin,
     RebaseMixin,
     FenceMixin,
     DiscoveredMixin,
@@ -278,11 +280,12 @@ class Scheduler(
             # A task that reached done or cancelled is finished; any stop recorded while it
             # was still active (a review-cap card, feedback waiting for a revise run, an
             # automerge hold) must not linger and be counted as a decision on the Inbox.
-            for k in ("needs_human", "pending_feedback", "automerge_blocked"):
+            for k in ("needs_human", "pending_feedback"):
                 changed = st.pop(k, None) is not None or changed
-        if status != Status.IN_REVIEW and st.pop("merge_head", None) is not None:
+            changed = self._queue_leave(task) or changed
+        elif status != Status.IN_REVIEW:
             # A task that left in_review is no longer the merge queue's head.
-            changed = True
+            changed = self._queue_drop_head(task) or changed
         if changed:
             self.state.save()
         self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})

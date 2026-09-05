@@ -159,9 +159,7 @@ class RebaseMixin:
         st["rebase_base"] = base
         st["rebase_files"] = list(files)
         st["rebase_hunks"] = hunks
-        st.pop("automerge_candidate", None)
-        st.pop("automerge_ready_at", None)
-        st.pop("merge_head", None)  # a conflict takes the task off the merge queue
+        self._queue_leave(task)  # a conflict takes the task off the merge queue
         st["force_push"] = True
         if task.status.pr_open:
             self._transition(task, Status.CHANGES_REQUESTED,
@@ -245,7 +243,7 @@ class RebaseMixin:
             if head is None and t.status == Status.IN_REVIEW and self._automerge_enabled(t):
                 head = t
             else:
-                st.pop("merge_head", None)
+                self._queue_drop_head(t)
         return head
 
     def _merge_candidate(self, task: Task, rep: TickReport) -> None:
@@ -263,7 +261,7 @@ class RebaseMixin:
             return
         ok, reason = self._automerge_gate(task, pr)
         if not ok:
-            self._hold_automerge(task, reason)
+            self._queue_hold(task, reason)
             return
         # Rebase once, right before the merge. A clean rebase whose diff is unchanged keeps the
         # verdict (no re-review); a conflict or a failed check takes the task off the queue. The
@@ -275,7 +273,7 @@ class RebaseMixin:
         if outcome == "current":
             # Already on the base's tip: no push, so the reported rollup is trustworthy — decide
             # now, on this poll, whether to merge or (a still-running rollup) keep waiting.
-            st["merge_head"] = True
+            self._queue_head(task)
             self._advance_merge_head(task, rep)
             return
         if outcome != "clean":
@@ -283,9 +281,7 @@ class RebaseMixin:
         # No checks configured: the rebase moved the branch and force-pushed it synchronously.
         if st.get("review_run") or st.get("needs_human"):
             return  # the rebase changed the diff: a new review round (or a human) now owns it
-        st["merge_head"] = True
-        self.events.emit("merge_head", task.id, waiting=True, reason="rebased; awaiting rollup")
-        self.log(f"{task.id}: rebased before merge; in flight until its rollup is green")
+        self._queue_head(task, announce=True)
 
     def _advance_merge_head(self, task: Task, rep: TickReport) -> None:
         """Act on the in-flight head, which is already on the base's tip. Merge it (no rebase, no
@@ -308,7 +304,7 @@ class RebaseMixin:
             return  # rollup still running (or mergeability still being computed): stay the head
         self.events.emit("merge_head", task.id, left=True, reason=reason)
         self.log(f"{task.id}: merge head left the queue: {reason}")
-        self._hold_automerge(task, reason)
+        self._queue_hold(task, reason)
 
     def _head_in_flight(self, task: Task, pr: PRInfo) -> bool:
         """Whether the head should keep waiting rather than leave the queue. It waits only while
@@ -331,15 +327,6 @@ class RebaseMixin:
         # computing after the push: keep waiting.
         return pr.checks == "PENDING" or pr.mergeable != "MERGEABLE"
 
-    def _hold_automerge(self, task: Task, reason: str) -> None:
-        st = self.state.get(task.id)
-        st.pop("merge_head", None)
-        st.pop("automerge_candidate", None)
-        st.pop("automerge_ready_at", None)
-        if st.get("automerge_blocked") != reason:
-            st["automerge_blocked"] = reason
-            self.log(f"{task.id}: automerge held: {reason}")
-
     def _do_merge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
         """Merge the PR the garden opened. The next poll sees it MERGED and moves the task to
         `done`, restacking children."""
@@ -359,15 +346,11 @@ class RebaseMixin:
         try:
             self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch)
         except GitHubError as e:
-            st["automerge_blocked"] = f"merge call failed: {e}"
-            self.log(f"{task.id}: automerge call failed: {e}")
+            self._queue_hold(task, f"merge call failed: {e}", keep=True)
             rep.errors.append(f"{task.id}: automerge failed: {e}")
             return
         rounds = int(st.get("review_rounds", 0))
-        st.pop("automerge_blocked", None)
-        st.pop("automerge_candidate", None)
-        st.pop("automerge_ready_at", None)
-        st.pop("merge_head", None)
+        self._queue_leave(task)
         st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
                             "verdict": "approve", "review_rounds": rounds}
         self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,

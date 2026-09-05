@@ -238,10 +238,7 @@ class PollMixin:
             return  # drafts, changes_requested, etc. are not the garden's to merge
         st = self.state.get(task.id)
         if not self._automerge_enabled(task):
-            st.pop("automerge_blocked", None)
-            st.pop("automerge_candidate", None)
-            st.pop("automerge_ready_at", None)
-            st.pop("merge_head", None)
+            self._queue_leave(task)
             return
         ok, reason = self._automerge_gate(task, pr)
         if not ok:
@@ -250,15 +247,9 @@ class PollMixin:
                 # rebase must not drop it here (that would rotate the head). _advance_merge_head
                 # decides when the head leaves the queue, and keeps its ready_at until then.
                 return
-            st.pop("automerge_candidate", None)
-            st.pop("automerge_ready_at", None)
-            if st.get("automerge_blocked") != reason:
-                st["automerge_blocked"] = reason
-                self.log(f"{task.id}: automerge held: {reason}")
+            self._queue_hold(task, reason)
             return
-        st.pop("automerge_blocked", None)
-        st["automerge_candidate"] = True
-        st.setdefault("automerge_ready_at", now_iso())
+        self._queue_join(task)
 
     def _cleanup(self, task: Task) -> None:
         try:

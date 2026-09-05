@@ -188,8 +188,9 @@ class HumanMixin:
         m = re.search(r"/pull/(\d+)", url)
         new_number = int(m.group(1)) if m else None
         task.pr = url
-        for key in ("pr_number", "pr_state", "head_sha", "review_run", "automerge_blocked"):
+        for key in ("pr_number", "pr_state", "head_sha", "review_run"):
             st.pop(key, None)
+        self._queue_leave(task)
         if new_number:
             st["pr_number"] = new_number
         if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
