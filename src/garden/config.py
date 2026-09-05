@@ -95,11 +95,15 @@ DEFAULTS: dict[str, Any] = {
     },
     "worker_env": {
         "pass": [],               # extra environment variable names or globs a worker and its setup
-                                  # command keep, on top of runner.base.PASS_ENV; everything else is dropped
+                                  # command keep, on top of runner.base.PASS_ENV; everything else is
+                                  # dropped. HOME is not inherited (a worker runs under an isolated
+                                  # scratch home); add "HOME" here to restore the operator's, or "*"
+                                  # for full inheritance.
     },
     "web": {
-        "trusted_origins": [],    # origins besides the server's own host whose POSTs `garden serve`
-                                  # accepts, e.g. [https://garden.internal] behind a reverse proxy
+        "trusted_origins": [],    # origins besides the server's own loopback host whose POSTs
+                                  # `garden serve` accepts, e.g. [https://garden.internal] behind a
+                                  # reverse proxy, or a LAN address the browser reaches it by
     },
     "products": {},
 }

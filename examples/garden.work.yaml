@@ -27,7 +27,16 @@ checks:
       python: "garden.checks:local_command_check"
       command: "scripts/jenkins_failures.sh"   # prints the failing job log; exit 1 on failure
       flaky_patterns: ["ETIMEDOUT", "ECONNRESET", "Slave went offline"]
+      # Run instead of a revise round when the log looks flaky. It comes only from here (never
+      # from a check's own output) and runs scrubbed — no GitHub token or the operator's HOME
+      # unless worker_env.pass names them below. If the rebuild needs a token, add it there.
       retry_command: "scripts/jenkins_rebuild.sh"
+
+# Extra environment names/globs a worker, its setup command and the checks keep, on top of
+# the built-in allowlist. HOME is dropped by default (a worker runs under an isolated scratch
+# home); list it here to restore the operator's home for a tool that needs it.
+worker_env:
+  pass: []                          # e.g. ["JENKINS_TOKEN"] if retry_command needs it, or ["HOME"]
 
 harnesses:
   claude:

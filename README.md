@@ -414,13 +414,16 @@ brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
 worker_env:
-  pass: []                  # a worker (and its setup command) keeps only PATH, HOME, locale, proxy and CA
+  pass: []                  # a worker (and its setup command and checks) keeps only PATH, locale, proxy and CA
                             # settings and the harness's own ANTHROPIC_*/CLAUDE_*/OPENAI_*/CODEX_* variables;
-                            # no GitHub token, cloud credentials or ssh agent. Add names or globs here,
-                            # e.g. [AWS_*] for a Bedrock-backed harness; ["*"] passes everything
+                            # no GitHub token, cloud credentials, ssh agent or the operator's HOME (it runs
+                            # under an isolated scratch home, so it can't read ~/.config/gh, ~/.ssh, etc.).
+                            # Add names or globs here, e.g. [AWS_*] for a Bedrock harness or [HOME] to restore
+                            # the operator's home; ["*"] passes everything
 web:
-  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is another site; list
-                            # extra origins here, e.g. [https://garden.internal], behind a proxy that rewrites Host
+  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is another site, or that
+                            # is addressed to a non-loopback Host (a DNS-rebinding guard); list extra origins
+                            # here, e.g. [https://garden.internal], behind a proxy or for a LAN address
 harnesses:
   claude:
     bin: claude
