@@ -1,6 +1,6 @@
 # context-garden
 
-context-garden is a repository of context files that drives detached agent workers through a token-free scheduler. You write principles, a product overview, phase goals and specs as markdown. A planner turns a phase into task files; the scheduler runs one worker per task in its own git worktree, pushes the branch, opens the pull request, has it reviewed, rebases and merges it, and unblocks the next task. A local web UI, a terminal UI and the `garden` CLI show the same loop and offer the same actions. The garden that drives this tool's own development lives at [joshmarcus/garden](https://github.com/joshmarcus/garden).
+context-garden is a repository of context files that drives detached agent workers through a token-free scheduler. You write principles, a product overview, phase goals and specs as markdown. A planner turns a phase into task files; the scheduler runs one worker per task in its own git worktree, pushes the branch, opens the pull request, has it reviewed, and unblocks the next task once the PR merges: by you on GitHub, or by its own merge queue when you turn that on. A local web UI, a terminal UI and the `garden` CLI show the same loop and offer the same actions. The garden that drives this tool's own development lives at [joshmarcus/garden](https://github.com/joshmarcus/garden).
 
 It is not a chat bot and it is not a CI runner. The scheduler never calls a model: waiting, polling, ordering, retrying, rebasing and bookkeeping are plain Python, and tokens are spent only on bounded planning, worker, review, persona, trial and retrospective runs.
 
@@ -12,7 +12,7 @@ It is not a chat bot and it is not a CI runner. The scheduler never calls a mode
 4. **Workers** run detached, one per task, in a worktree of the product repo, with the brief on stdin and a scrubbed environment. They commit and never push.
 5. **Checks** (tests, lint) run token-free in the worktree before any PR exists; a failure becomes a revise round.
 6. **The PR** opens as a draft. The **automated review** posts a verdict against the acceptance criteria; a change request becomes a bounded revise run, and the Inbox asks you to triage the draft.
-7. **The merge queue** rebases each approved PR once, mechanically, right before it merges; an agent is used only on a real conflict, and an unchanged diff keeps its verdict. Hard-tier PRs need two approving rounds and a scratch-merge check.
+7. **The merge** is yours by default: once the review approves, the Inbox shows the PR with its verdict and CI, you merge it on GitHub, and the next poll marks the task done. A PR that falls into conflict with its base is rebased mechanically either way; an agent is used only on a real conflict, and an unchanged diff keeps its verdict. With `github.automerge: true` the **merge queue** does the merging: it rebases each approved easy or medium PR once, right before it merges, and a hard-tier PR needs two approving rounds and a scratch-merge check.
 8. **The retro** closes the phase: it reconciles the friction, runs the personas, records a verdict and drafts the next phase's goals and features.
 
 [docs/design.md](docs/design.md) is the idea and the vocabulary, [docs/architecture.md](docs/architecture.md) is how the pieces fit, [docs/worker-protocol.md](docs/worker-protocol.md) is the scheduler-to-worker contract and [docs/roadmap.md](docs/roadmap.md) is what is next.
@@ -60,7 +60,7 @@ budgets:
   widget/phase-01: 50.0            # USD cap; dispatch pauses when it is reached
 github:
   draft_pr: true                   # your triage marks a PR ready for review
-  automerge: false                 # let the merge queue merge green PRs
+  automerge: false                 # false: you merge each approved PR on GitHub; true: the merge queue merges it
 harnesses:
   claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
   codex:  {models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}}
@@ -86,7 +86,7 @@ garden approve --all widget/phase-01    # draft -> ready; nothing dispatches bef
 garden serve                            # web UI at http://127.0.0.1:8765 plus the scheduler loop
 ```
 
-Within a tick the first ready task is running in `.garden/worktrees/WID-001`. When the worker finishes, the scheduler commits leftovers, runs the pre-PR checks, pushes, opens a draft PR and starts the automated review. The Inbox then shows your first card: triage the PR ready for review or send it back with a note. From another terminal, `garden status` is the overview, `garden inbox` the same cards as text, and `garden observe` the operator's feed. `garden tick` runs one pass and `garden watch` loops without the web server.
+Within a tick the first ready task is running in `.garden/worktrees/WID-001`. When the worker finishes, the scheduler commits leftovers, runs the pre-PR checks, pushes, opens a draft PR and starts the automated review. The Inbox then shows your first card: triage the PR ready for review or send it back with a note. Once the review approves, the card shows the verdict and CI with a link to the PR; merge it on GitHub (`gh pr merge`), and the next poll marks the task done and dispatches whatever it unblocked. Set `github.automerge: true` to let the garden merge approved PRs itself. From another terminal, `garden status` is the overview, `garden inbox` the same cards as text, and `garden observe` the operator's feed. `garden tick` runs one pass and `garden watch` loops without the web server.
 
 ## Operating a garden
 
@@ -98,6 +98,7 @@ Every card has one action, and every action is also a CLI command. Act through t
 - A worker's question: answer it and the same session resumes (`garden answer`).
 - A worker's `wont_do` or `no_change` call: accept or reject it with a note (`garden accept`, `garden reject`).
 - A draft PR: triage it ready for review, or send it back with feedback (`garden triage --ready`, `--changes`).
+- A PR in review: merge it on GitHub once the verdict and CI are green; with `automerge` on, the same card says why the queue holds it, and the Inbox's merge-queue panel shows the head in flight.
 - A stopped task (review cap, revision cap, failed): retry it or start one more review (`garden retry`, `garden review`).
 - A decision card, from a worker's duplicate or cancel finding or from a kickoff question: accept, reject, answer or dismiss (`garden decide`).
 
