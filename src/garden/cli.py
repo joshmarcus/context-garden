@@ -1354,6 +1354,9 @@ def plan(
     if ph.closed and not reopen and not dry_run:
         err.print(f"[red]{ph.key} is closed ({ph.closed}); pass --reopen or run `garden reopen-phase {ph.key}` first[/red]")
         raise typer.Exit(1) from None
+    if ph.frozen and not dry_run:
+        err.print(f"[red]{ph.key} is frozen ({ph.frozen}); planning is blocked while frozen -- run `garden unfreeze {ph.key}` first[/red]")
+        raise typer.Exit(1) from None
     if import_file:
         items = parse_plan(import_file.read_text())
     else:

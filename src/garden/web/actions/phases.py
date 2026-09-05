@@ -97,6 +97,9 @@ def register(app: FastAPI, site: Site) -> None:
         if ph.closed:
             hub.planning[key] = f"failed {now_iso()}: {ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)"
             return RedirectResponse(back, status_code=303)
+        if ph.frozen:
+            hub.planning[key] = f"failed {now_iso()}: {ph.key} is frozen ({ph.frozen}); planning is blocked while frozen -- unfreeze it first (`garden unfreeze {ph.key}`)"
+            return RedirectResponse(back, status_code=303)
         hub.planning[key] = f"running since {now_iso()}"
 
         def job() -> None:
