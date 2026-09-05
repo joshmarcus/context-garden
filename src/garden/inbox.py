@@ -101,6 +101,21 @@ def _resume_target(t: Task, st: Any, info: dict[str, str]) -> str:
     return t.status.value
 
 
+def _diff_summary(diff_stat: str) -> str:
+    """The 'N files changed, +X/-Y' summary line from a `git diff --stat` block, or ''."""
+    lines = [ln for ln in diff_stat.strip().splitlines() if ln.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+def _latest_diff_summary(t: Task, runs: RunStore) -> str:
+    """The diff summary from the most recent run that has one. A review run has no diff
+    of its own, so this looks back to the work/revise run that actually pushed the PR."""
+    for r in reversed(runs.runs_for(t.id)):
+        if r.diff_stat:
+            return _diff_summary(r.diff_stat)
+    return ""
+
+
 def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
     """The evidence behind an attention card, as plain lines: recent runs, the last
     automated review, the PR state and the revision count."""
@@ -110,6 +125,9 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         detail = (r.error or "").strip() or str((r.result or {}).get("summary") or "").strip()
         if detail:
             line += f" — {detail[:140]}"
+        diff_summary = _diff_summary(r.diff_stat)
+        if diff_summary:
+            line += f" · {diff_summary}"
         out.append(line)
     rev = st.get("last_review") or {}
     if rev:
@@ -224,11 +242,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 why += f" · automated review: {str(rev.get('verdict', '')).replace('_', ' ')}"
             if st.get("review_run"):
                 why += " · review running"
+            diff_summary = _latest_diff_summary(t, runs)
+            if diff_summary:
+                why += f" · {diff_summary}"
             add("triage", t, why, [
                 {"label": "Ready for review", "kind": "triage-ready", "command": f"garden triage {t.id} --ready"},
                 {"label": "Send back", "kind": "triage-changes", "command": f'garden triage {t.id} --changes "..."'},
                 {"label": "Open PR", "kind": "link", "href": t.pr},
-            ], review=rev)
+            ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
             why = (st.get("review_decision") or "no review yet").lower().replace("_", " ")
             if st.get("checks"):

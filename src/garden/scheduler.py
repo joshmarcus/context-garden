@@ -680,6 +680,9 @@ class Scheduler:
         stalled = False
         diff_h: str | None = None
         body_h: str | None = None
+        if worktree.exists():
+            run.diff_stat = gitops.diff_stat(worktree, base)
+            run.save()
         if check_stall and bool(self.cfg.get("stall.enabled", True)) and worktree.exists():
             diff_h = gitops.diff_hash(worktree, base)
             body_h = hashlib.sha1(str(result.get("pr_body") or "").encode("utf-8", "replace")).hexdigest()[:16]

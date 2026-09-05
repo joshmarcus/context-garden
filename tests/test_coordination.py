@@ -101,6 +101,17 @@ def test_discovered_work_files_tasks(sched, fake_github, monkeypatch):
     assert {e["new_task"] for e in evs} == set(new)
 
 
+# ---- diff summary on run records (CG-115) -------------------------------------
+def test_run_records_diff_stat_on_finish(sched, fake_github):
+    sched.tick()
+    wait_for_runs(sched)
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "work" and run.status == "done"
+    assert "worker-output.txt" in run.diff_stat
+    assert "files changed" in run.diff_stat
+
+
 # ---- 4. stall detection and budgets -----------------------------------------
 def test_stall_when_revise_changes_nothing(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")

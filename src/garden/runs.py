@@ -39,6 +39,7 @@ class Run:
     branch: str = ""
     base: str = ""
     exit_code: int | None = None
+    diff_stat: str = ""  # `git diff --stat base...branch` at finalize, for attention/triage evidence
     result: dict[str, Any] = field(default_factory=dict)
     usage: dict[str, Any] = field(default_factory=dict)
     cost_usd: float | None = None
