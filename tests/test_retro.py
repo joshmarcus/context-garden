@@ -692,6 +692,29 @@ def test_retro_reconciliation_uses_retro_difficulty_not_review_difficulty(tmp_pa
     assert run.difficulty == "hard" and run.model == "opus"
 
 
+def test_retro_reconciliation_uses_retro_model_when_set(tmp_path, fake_github, monkeypatch):
+    """CG-235: retro.model names the judge outright, ahead of retro.difficulty's tier map, so a
+    garden pricing hard work cheaply can still hand the retro to its best model."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    cfg = yaml.safe_load((root / "garden.yaml").read_text())
+    cfg["harnesses"]["claude"]["models"] = {"easy": "haiku", "medium": "sonnet", "hard": "opus"}
+    cfg["retro"] = {"model": "fable"}
+    (root / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+
+    ph = store.phase("gdn", "p1")
+    plan = sched.retro_plan(ph, ["designer"], skip_personas=True)
+    assert plan["difficulty"] == "hard" and plan["model"] == "fable"
+    entry = sched.start_retro(ph, ["designer"], skip_personas=True)
+    run = sched.runs.latest(entry["recon_task"])
+    assert run.difficulty == "hard" and run.model == "fable"
+
+
 def test_retro_dry_run_shows_waiting_for_personas_when_a_retro_is_already_in_flight(tmp_path, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     repo = _garden_repo(tmp_path)
