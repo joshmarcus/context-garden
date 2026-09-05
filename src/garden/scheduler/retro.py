@@ -93,10 +93,14 @@ class RetroMixin:
         for n in names:
             valid_name(n)
         nxt = next_phase or next_phase_name(phase.name)
+        have = persona_reports(phase, names)
+        if skip_personas and names and not have:
+            raise RuntimeError("garden retro --skip-personas found no persona reports on disk for "
+                               f"{', '.join(names)}; run without --skip-personas, or reuse only "
+                               "personas that already have a report under docs/reviews/")
         entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                                  "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
                                  "self_product": self_prod, "stage": "personas", "persona_runs": {}}
-        have = persona_reports(phase, names)
         missing = [] if skip_personas else [n for n in names if n not in have]
         self._retro_list().append(entry)
         if not missing:
