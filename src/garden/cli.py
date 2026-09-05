@@ -657,14 +657,19 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
 
 @app.command("set-status")
 def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note"),
-               reason: str = typer.Option("", "--reason", help="Reason (for wont_do): recorded and posted when the PR is closed")):
-    """Escape hatch: force a task's status. `wont_do` closes any open PR with the reason and records it."""
+               reason: str = typer.Option("", "--reason", help="Reason (for wont_do): recorded and posted when the PR is closed"),
+               force: bool = typer.Option(False, "--force", help="Required to move a task out of done or cancelled")):
+    """Escape hatch: force a task's status. `wont_do` closes any open PR with the reason and records it.
+    Moving a task out of done or cancelled needs --force: those are the loop's terminal states."""
     store = _store()
     t = _task(store, task_id)
     try:
         s = Status(new_status)
     except ValueError:
         err.print(f"[red]unknown status; one of {', '.join(STATUS_ORDER)}[/red]")
+        raise typer.Exit(1) from None
+    if t.status in (Status.DONE, Status.CANCELLED) and s != t.status and not force:
+        err.print(f"[red]{t.id} is {t.status.value}; use --force to move it to {s.value}[/red]")
         raise typer.Exit(1) from None
     if s == Status.WONT_DO:
         _scheduler(store).mark_wont_do(t, reason=reason or note)
@@ -711,14 +716,22 @@ def reject(task_id: str, note: str = typer.Argument(..., help="Why you disagree;
 def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
     """Cancel a task (kills a running worker)."""
     store = _store()
-    _scheduler(store).cancel(_task(store, task_id), note)
+    try:
+        _scheduler(store).cancel(_task(store, task_id), note)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
 
 
 @app.command()
 def retry(task_id: str):
     """Continue the loop: with an open PR, queue a revise run on the branch; otherwise reset attempts and start over."""
     store = _store()
-    _scheduler(store).retry(_task(store, task_id))
+    try:
+        _scheduler(store).retry(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -848,7 +861,11 @@ def resume(task_id: str = typer.Argument("", help="Task id: nothing to fix, clea
     sched = _scheduler(store)
     if task_id:
         t = _task(store, task_id)
-        sched.resume_task(t)
+        try:
+            sched.resume_task(t)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
         console.print(f"{t.id}: nothing to fix; resumed as {t.status.value}")
         return
     sched.resume(by="cli")
@@ -1239,7 +1256,11 @@ def persona_review(
         return
     t = _task(store, target)
     for name in personas:
-        run = sched.dispatch_persona_pr(t, name, request_changes=request_changes)
+        try:
+            run = sched.dispatch_persona_pr(t, name, request_changes=request_changes)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
         console.print(f"{t.id}: persona {name} -> run {run.run_id} (comment on {t.pr or 'the PR'})")
 
 
@@ -1699,7 +1720,11 @@ def review(task_id: str):
     if not t.pr:
         err.print(f"[red]{t.id} has no PR[/red]")
         raise typer.Exit(1)
-    run = _scheduler(store).review_again(t)
+    try:
+        run = _scheduler(store).review_again(t)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(f"{t.id}: review run {run.run_id} started (model {run.model or 'default'})")
 
 
