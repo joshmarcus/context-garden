@@ -200,7 +200,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "detail": "raises this task's review cap by one round and dispatches an automated review now"})
         actions.append({"label": "Send back with a note", "kind": "triage-changes", "command": f'garden triage {t.id} --changes "..."',
                         "detail": "queues a revise run against your note instead of an automated review"})
-    actions.append({"label": "Continue the loop" if can_resume else "Retry", "kind": "retry", "command": f"garden retry {t.id}",
+    actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
                     "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
                     "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
