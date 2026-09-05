@@ -99,3 +99,47 @@ def test_cancel_refuses_an_already_cancelled_task(sched):
     with pytest.raises(RuntimeError, match=r"DM-001 is cancelled: cancelled by hand"):
         sched.retry(sched.store.task("DM-001"))
     assert statuses(sched)["DM-001"] == "cancelled"  # still cancelled, not reopened
+
+
+# ---- approve refuses an incomplete brief (CG-193) ----
+
+
+def _draft(sched, body, reading=None):
+    t = sched.store.create_task("demo", "p1", "Needs a real brief", body,
+                                reading=reading or [], status="draft")
+    return sched.store.task(t.id)
+
+
+def test_approve_refuses_placeholder_criteria(sched, fake_github):
+    t = _draft(sched, "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] ...\n")
+    ph = sched.store.phase("demo", "p1")
+    with pytest.raises(RuntimeError, match="incomplete brief"):
+        sched.approve(t, by="cli", phase=ph)
+    assert sched.store.task(t.id).status == Status.DRAFT
+
+
+def test_approve_refuses_unresolved_reading_path(sched, fake_github):
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works and is tested.\n"
+    t = _draft(sched, body, reading=["demo/p1/specs/nope.md"])
+    ph = sched.store.phase("demo", "p1")
+    with pytest.raises(RuntimeError, match="reading-list path not found"):
+        sched.approve(t, by="cli", phase=ph)
+    assert sched.store.task(t.id).status == Status.DRAFT
+
+
+def test_approve_accepts_a_complete_brief(sched, fake_github):
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works and is tested.\n"
+    t = _draft(sched, body, reading=["demo/p1/specs/spec.md"])
+    ph = sched.store.phase("demo", "p1")
+    sched.approve(t, by="cli", phase=ph)
+    assert sched.store.task(t.id).status == Status.READY
+
+
+def test_inbox_approve_card_shows_the_gap(sched, fake_github):
+    from garden.inbox import build_inbox
+
+    _draft(sched, "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] ...\n")
+    items = build_inbox(sched.store, sched)
+    card = next(i for i in items if i["group"] == "approve" and i["title"] == "Needs a real brief")
+    assert card["gaps"]
+    assert "brief incomplete" in card["why"]
