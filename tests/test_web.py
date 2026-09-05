@@ -1050,6 +1050,71 @@ def test_observe_profile_override_from_config_page(garden):
     assert "no live override" in c.get("/config").text
 
 
+def test_operating_profile_switch_from_the_rail_and_config_page(garden):
+    """CG-221: the rail slider and the Config page both post to the same live override, no
+    Set button, a plain select and form post — and the switch is visible everywhere within
+    a tick: dispatch's worker count, the review tier and the observe feed."""
+    from garden.observe import resolve
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    c = client(garden)
+    home = c.get("/").text
+    assert "Operating profile" in home
+    assert "plain garden.yaml values" in home
+    for name in ("economy", "balanced", "fast"):
+        assert f'value="{name}"' in home and f'>{name}</option>' in home
+    assert "<button>Set</button>" not in home and ">Set<" not in home
+
+    config_page = c.get("/config").text
+    assert "no live override" in config_page
+    assert "economy" in config_page and "balanced" in config_page and "fast" in config_page
+
+    r = c.post("/config/operating-profile", data={"value": "fast"}, follow_redirects=False)
+    assert r.status_code == 303
+    config_page = c.get("/config").text
+    assert "live override: <strong>fast</strong>" in config_page
+    home = c.get("/").text
+    assert 'value="fast" selected' in home or 'selected>fast<' in home
+
+    # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
+    # max_parallel and observe.profile now — the "which values come from the stop" criterion
+    assert "no live override" in config_page  # neither knob has its own direct override
+    assert "from the operating profile <span class=\"mono\">fast</span>" in config_page
+
+    sched = Scheduler(Store(garden), log=print)
+    from garden.profiles import BUILTIN_PROFILES
+
+    assert sched.effective_max_parallel() == BUILTIN_PROFILES["fast"]["workers"]
+    assert sched.effective("review.difficulty") == BUILTIN_PROFILES["fast"]["review_difficulty"]
+    assert resolve(sched.cfg, sched).profile == BUILTIN_PROFILES["fast"]["observe"]
+
+    r = c.post("/config/operating-profile", data={"value": "nonexistent"}, follow_redirects=False)
+    assert r.status_code == 303  # flashed error, not a 500
+    assert sched.operating_profile_name() == "fast"  # unchanged
+
+    r = c.post("/config/operating-profile", data={"value": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "no live override" in c.get("/config").text
+
+
+def test_operating_profile_spend_rate_shown_on_the_rail(garden):
+    """The rail's money line only appears once there is something to show — an idle garden
+    stays quiet (CG-205's "no fake zero" rule for cost display applies here too)."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    c = client(garden)
+    assert "/hr last hour" not in c.get("/").text
+
+    rs = RunStore(Store(garden).config.garden_dir)
+    run = rs.new_run("DM-001", "local", mode="work")
+    run.finished_at = run.started_at
+    run.cost_usd = 1.23
+    run.save()
+    assert "$1.23/hr last hour" in c.get("/").text
+
+
 def test_priority_and_difficulty_from_the_task_page(garden):
     from garden.model import PRIORITY_SCALE
     from garden.store import Store
