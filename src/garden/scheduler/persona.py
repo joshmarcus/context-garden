@@ -6,7 +6,7 @@ from typing import Any
 
 from .. import gitops
 from ..github import GitHubError, mark_garden_comment
-from ..model import Phase, Status, Task
+from ..model import Phase, Status, Task, ensure_open
 from ..personas import (
     parse_persona,
     phase_brief,
@@ -61,6 +61,7 @@ class PersonaMixin:
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or "hard"))
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False) -> Run:
+        ensure_open(task)
         valid_name(name)
         if not task.pr and not task.branch:
             raise RuntimeError(f"{task.id} has no branch to review")

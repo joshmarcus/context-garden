@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, ensure_open, now_iso
 from ..runs import Run
 from .report import TickReport
 
@@ -55,6 +55,7 @@ class EditsMixin:
         """Force an edit run for a task with pending suggestions (page button / `garden integrate`)."""
         from ..suggestions import has_pending
 
+        ensure_open(task)
         if task.status == Status.RUNNING:
             raise RuntimeError(f"{task.id} is running; its suggestions will ride the next revise brief")
         if self.state.get(task.id).get("edit_run"):

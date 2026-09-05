@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from ...github import GitHubError
 from ...gitops import GitError
-from ...model import Status, Task, phase_refusal
+from ...model import Status, Task, ensure_open, phase_refusal
 from ...scheduler import Scheduler
 from ...store import Store
 from ...trials import parse_contender
@@ -192,6 +192,7 @@ def register(app: FastAPI, site: Site) -> None:
             with hub.lock:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
+                ensure_open(t)
                 run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise

@@ -8,7 +8,7 @@ from typing import Any
 from .. import gitops
 from ..brief import resume_prompt
 from ..github import GitHubError, mark_garden_comment
-from ..model import Phase, Status, Task, now_iso
+from ..model import Phase, Status, Task, ensure_open, now_iso
 from ..runs import Run
 from .report import TickReport
 from .state import _TaskState
@@ -17,6 +17,7 @@ from .state import _TaskState
 class HumanMixin:
     # ---- human answers -----------------------------------------------------
     def answer(self, task: Task, text: str) -> Run:
+        ensure_open(task)
         if task.status != Status.WAITING_HUMAN:
             raise RuntimeError(f"{task.id} is {task.status.value}, not waiting_human")
         st = self.state.get(task.id)
@@ -40,6 +41,7 @@ class HumanMixin:
 
     def accept_decision(self, task: Task, note: str = "") -> None:
         """The person agrees with the worker's call. `wont_do` ends the task; `no_change` resumes the round."""
+        ensure_open(task)
         dec = self.pending_decision(task)
         if not dec:
             raise RuntimeError(f"{task.id} has no pending worker decision to accept")
@@ -51,6 +53,7 @@ class HumanMixin:
 
     def reject_decision(self, task: Task, note: str) -> None:
         """The person disagrees: the worker's reasoning goes back into a revise round with the note."""
+        ensure_open(task)
         dec = self.pending_decision(task)
         if not dec:
             raise RuntimeError(f"{task.id} has no pending worker decision to reject")
@@ -123,6 +126,7 @@ class HumanMixin:
     def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "") -> None:
         """Record the human's initial review of a draft PR: mark it ready for review, or send
         it back with feedback (a revise run follows)."""
+        ensure_open(task)
         if not task.pr:
             raise RuntimeError(f"{task.id} has no PR to triage")
         st = self.state.get(task.id)
@@ -164,6 +168,7 @@ class HumanMixin:
             run.save()
 
     def cancel(self, task: Task, note: str = "cancelled") -> None:
+        ensure_open(task)
         self._cancel_active_run(task)
         self._transition(task, Status.CANCELLED, note)
 
@@ -187,6 +192,7 @@ class HumanMixin:
         return False
 
     def retry(self, task: Task) -> None:
+        ensure_open(task)
         st = self.state.get(task.id)
         st.pop("needs_human", None)
         if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):
@@ -225,6 +231,7 @@ class HumanMixin:
         """'Nothing to fix': clear the needs-human stop and return the task to the state it
         held before the stop, without starting a run. Pending feedback is dropped too — the
         human judged there is nothing to act on."""
+        ensure_open(task)
         st = self.state.get(task.id)
         raw = st.get("needs_human")
         if not raw:

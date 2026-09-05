@@ -92,6 +92,25 @@ def test_trellis_open_filter(garden):
     assert "DM_001" not in r.output and "DM_002" in r.output
 
 
+def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
+    """CG-142: done/cancelled are terminal on the CLI too. `garden set-status` is the only
+    escape hatch, and it needs --force to move a task back out of one of them."""
+    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    assert run(garden, "set-status", "DM-001", "done").exit_code == 0
+
+    for args in (("retry", "DM-001"), ("cancel", "DM-001"), ("review", "DM-001"), ("dispatch", "DM-001"),
+                 ("resume", "DM-001")):
+        r = run(garden, *args)
+        assert r.exit_code == 1, args
+        assert "DM-001 is done" in r.output, args
+
+    r = run(garden, "set-status", "DM-001", "ready")
+    assert r.exit_code == 1 and "use --force" in r.output
+
+    r = run(garden, "set-status", "DM-001", "ready", "--force")
+    assert r.exit_code == 0 and "DM-001 -> ready" in r.output
+
+
 def test_new_task_and_approve(garden):
     r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
     assert r.exit_code == 0 and "DM-003" in r.output
