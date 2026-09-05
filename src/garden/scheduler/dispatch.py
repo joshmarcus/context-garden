@@ -145,6 +145,34 @@ class DispatchMixin:
             if cleared:
                 rep.transitions.append(f"{t.id}: swept stale {', '.join(cleared)} (terminal)")
 
+    def _stash_dirty_worktree(self, task: Task, wt_path: Path) -> None:
+        """A killed worker can leave uncommitted edits in its worktree; a fresh dispatch that
+        reused it would then fail to reconcile the branch onto its base (`git merge --ff-only`
+        refuses to overwrite local changes). Stash the edits under a named stash so the branch
+        is clean for the new run, record the stash on the task (id + sha, listed on its page so
+        a person can recover it), and continue."""
+        if not wt_path.exists() or not gitops.is_repo(wt_path):
+            return
+        try:
+            if not gitops.has_uncommitted_changes(wt_path):
+                return
+            name = f"garden:{task.id}:{now_iso()}"
+            sha = gitops.stash_all(wt_path, name)
+        except gitops.GitError as e:
+            self.log(f"{task.id}: could not stash the worktree's leftover changes: {e}")
+            return
+        if not sha:
+            return
+        st = self.state.get(task.id)
+        stashes = list(st.get("stashes") or [])
+        stashes.append({"name": name, "sha": sha, "at": now_iso()})
+        st["stashes"] = stashes
+        self.events.emit("stashed", task.id, sha=sha, name=name)
+        task.log(f"stashed leftover changes from a prior run before redispatch: `git stash apply {sha}` "
+                 f"in {wt_path} to recover them ({name})")
+        self.store.save(task)
+        self.log(f"{task.id}: stashed a dirty worktree before dispatch ({sha[:12]})")
+
     def _stack_for(self, task: Task) -> dict[str, Any] | None:
         """Decide the base for a fresh run: a stack parent's branch, or the product base."""
         st = self.state.get(task.id)
@@ -214,6 +242,7 @@ class DispatchMixin:
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
         if worktree and not runner.remote:
+            self._stash_dirty_worktree(task, wt_path)
             wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
         if mode == "rebase":
             from ..brief import rebase_brief

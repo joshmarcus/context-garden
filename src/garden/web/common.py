@@ -98,6 +98,11 @@ class Hub:
 
     def _loop(self) -> None:
         interval = int(self.store.config.get("tick_interval", 60))
+        try:
+            with self.lock:
+                self.scheduler().reap_on_start()  # reap runs the last process finished but never reaped
+        except Exception as e:  # noqa: BLE001
+            self._log(f"start-up reap error: {e}")
         while not self._stop.is_set():
             try:
                 self.tick()

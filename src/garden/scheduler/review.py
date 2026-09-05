@@ -221,14 +221,25 @@ class ReviewMixin:
         if not run_id:
             return False
         run = next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
-        if run is None or run.status != "running":
+        if run is None:
             st["review_run"] = ""
             return False
+        if run.status != "running":
+            # The run record is already terminal. Usually a prior reap applied its verdict and
+            # only the tick that would clear this pointer was lost — but if the process was
+            # killed after the run's terminal save and before state.json recorded the verdict's
+            # effect (`last_review_run` still points elsewhere), the verdict was never applied.
+            # Re-apply it once from the stored result, without re-collecting or re-emitting
+            # run_finished (both already happened before the crash); otherwise drop the pointer.
+            # This is what lets a restart recover a review the old process reaped but never
+            # persisted, instead of needing a fresh review (CG-198).
+            if st.get("last_review_run") == run_id or not run.result:
+                st["review_run"] = ""
+                return False
+            return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
             return False
-        st["review_run"] = ""
-        pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         review: dict[str, Any] = {}
         if run.status != "timeout":
             run.exit_code = run.read_exit_code()
@@ -244,9 +255,42 @@ class ReviewMixin:
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
+        return self._apply_review(task, run, review, rep, emitted=False)
+
+    def _review_comment_posted(self, slug: str, number: int, run_id: str) -> bool:
+        """True if a comment carrying this run's marker (see `mark_garden_comment`) is already
+        on the PR — the backstop for the narrow window `_apply_review` still leaves open (a kill
+        between posting the comment and saving state.json): a genuinely-interrupted apply that
+        gets replayed on restart still must not post the same review twice."""
+        marker = f"run `{run_id}`"
+        return any(marker in c for c in self.github.issue_comments(slug, number))
+
+    def _apply_review(self, task: Task, run: Run, review: dict[str, Any], rep: TickReport, emitted: bool) -> bool:
+        """Route a finished review run's verdict, then save state.json immediately — not just at
+        the tick's end-of-pass save. Without this, a crash any time between a normal apply
+        finishing (comment posted, task transitioned) and the tick's own save left `last_review_run`
+        stale on disk; a restart then read that staleness as "never applied" and replayed the whole
+        thing, posting a second GitHub comment and re-logging, re-transitioning and re-notifying for
+        a verdict already fully handled. Saving here shrinks that window to the few lines below,
+        the same residual risk already accepted elsewhere (e.g. finalize's own save-then-postprocess
+        gap) — narrow enough that `_review_comment_posted` below is left as the backstop."""
+        try:
+            return self._apply_review_once(task, run, review, rep, emitted)
+        finally:
+            self.state.save()
+
+    def _apply_review_once(self, task: Task, run: Run, review: dict[str, Any], rep: TickReport, emitted: bool) -> bool:
+        """Route a finished review run's verdict: post the comment, apply a description rewrite,
+        queue a revise round, or record the verdict. Split out of `reap_review` so a restart can
+        re-apply a verdict the previous process reaped but never persisted (`emitted=True` then
+        skips the run_finished emit, which the first pass already made)."""
+        st = self.state.get(task.id)
+        st["review_run"] = ""
+        pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
-                         status=str(review.get("verdict") or run.status))
+        if not emitted:
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
+                             status=str(review.get("verdict") or run.status))
         if not review:
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
             self.store.save(task)
@@ -267,8 +311,9 @@ class ReviewMixin:
         number = self._pr_number(task)
         if slug and number and self.github.available:
             try:
-                comment_body = mark_garden_comment(review_to_markdown(review), run.run_id)
-                self.github.comment(slug, number, comment_body)
+                if not self._review_comment_posted(slug, number, run.run_id):
+                    comment_body = mark_garden_comment(review_to_markdown(review), run.run_id)
+                    self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
         # repeated blocking findings across rounds = the loop isn't converging

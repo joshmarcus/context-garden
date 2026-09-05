@@ -207,6 +207,20 @@ def commit_all(worktree: Path, message: str) -> bool:
     return True
 
 
+def stash_all(worktree: Path, message: str) -> str:
+    """Stash every uncommitted change in `worktree` (including untracked files) under a named
+    stash and return the commit sha of the stash entry, or "" if there was nothing to stash.
+
+    Used when a fresh dispatch lands on a worktree a killed worker left dirty: reconciling the
+    branch onto its base (`_ensure_base`) would fail with "Your local changes would be
+    overwritten". Stashing sets the abandoned edits aside — recorded by sha so a person can
+    recover them with `git stash apply <sha>` — and lets the new run start from a clean tree."""
+    if not has_uncommitted_changes(worktree):
+        return ""
+    git("stash", "push", "--include-untracked", "-m", message, cwd=worktree)
+    return git("rev-parse", "refs/stash", cwd=worktree).strip()
+
+
 def _is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
     """Return True if ref_a is an ancestor of ref_b (or equal)."""
     proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True)

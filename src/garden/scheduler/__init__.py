@@ -249,16 +249,15 @@ class Scheduler(
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:
-        """A run whose record reached a terminal status while its task is still RUNNING:
-        an earlier tick wrote the run's final status but was killed before the task
-        transition / push / PR step ran. `reap()` resumes these instead of treating them
-        as abandoned; `garden runs` labels them "finished, not yet reaped" until then.
-        `finished_at` is only ever set by our own finalize()/timeout code, so its presence
-        distinguishes a genuinely interrupted reap from a run whose status was flipped out
-        from under us by something else (e.g. a stale record with no real completion)."""
+        """A run whose finalize started (`finished_at` set) but did not complete before its task
+        left RUNNING: an earlier tick collected the run's outcome but was killed during the fence
+        check, push, PR or task transition that follows. `reap()` resumes these instead of
+        treating them as abandoned; `garden runs` labels them "finished, not yet reaped" until
+        then. `finished_at` is only ever set by our own finalize()/timeout code, so its presence
+        — whatever the record's status — distinguishes a genuinely interrupted reap from a live
+        run (finished_at still empty) or one whose status was flipped out from under us."""
         return (run is not None and run.runner != "manual" and run.mode != "review"
-                and run.status != "running" and bool(run.finished_at)
-                and task.status == Status.RUNNING)
+                and bool(run.finished_at) and task.status == Status.RUNNING)
 
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()
@@ -338,6 +337,71 @@ class Scheduler(
             rep.errors.append(f"{name} failed: {e}")
             self.log(f"{name} failed: {e}")
 
+    def _reap_all(self, rep: TickReport) -> None:
+        """Walk the run records of every mode and reap each finished run through its own path:
+        a worker's push/PR (or retry/fail/waiting_human), a finished review or persona verdict,
+        an edit, a check, a trial, and finally the orphan and dead-run sweeps. Shared by `tick`
+        and `reap_on_start` so a restart reaps exactly as a tick would."""
+        try:
+            self.reap_aux(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"aux reap failed: {e}")
+        try:
+            self.reap_retro(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"retro reap failed: {e}")
+        tasks = self.store.tasks()
+        for t in list(tasks.values()):
+            try:
+                if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
+                    rep.reaped.append(t.id)
+                    continue
+                if self.state.get(t.id).get("check_run"):
+                    # A check run in flight owns this task's continuation: reap it when it
+                    # finishes, and never let the worker reaper touch the task meanwhile.
+                    if self.reap_check(t, rep):
+                        rep.reaped.append(t.id)
+                    continue
+                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
+                    if self.reap_trial(t, rep):
+                        rep.reaped.append(t.id)
+                    continue
+                if t.status == Status.RUNNING and self.reap(t, rep):
+                    rep.reaped.append(t.id)
+                elif t.status.pr_open and self.reap_review(t, rep):
+                    rep.reaped.append(t.id)
+            except Exception as e:  # noqa: BLE001 - keep the loop alive
+                rep.errors.append(f"{t.id}: reap failed: {e}")
+                self.log(f"{t.id}: reap failed: {e}")
+        try:
+            self.reap_orphaned(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"orphan reap failed: {e}")
+        try:
+            self.reap_dead_runs(rep)
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"dead-run reap failed: {e}")
+
+    def reap_on_start(self) -> TickReport:
+        """Before a freshly started process ticks, walk the run records of every mode and reap
+        those whose worker finished but whose reap the previous process never completed: a
+        verdict a review produced, a worker's push and PR, a persona, trial, edit or check
+        result. Each is applied exactly as a normal reap would, so a restart never loses finished
+        work (a review the old process reaped in its last tick but died before persisting) nor
+        re-runs it, and only then does the caller tick. Safe to call more than once: an
+        already-reaped run is skipped (CG-198)."""
+        rep = TickReport()
+        started = time.monotonic()
+        self.store.invalidate()
+        self.state = State(self.state.path)
+        with self._step(rep, "reap"):
+            self._reap_all(rep)
+        self.state.save()
+        rep.duration_s = time.monotonic() - started
+        if rep.reaped or rep.transitions:
+            self.log(f"start-up reap {rep.summary()}")
+        return rep
+
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
@@ -366,45 +430,7 @@ class Scheduler(
 
     def _tick_body(self, rep: TickReport, dispatch: bool | None) -> None:
         with self._step(rep, "reap"):
-            try:
-                self.reap_aux(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"aux reap failed: {e}")
-            try:
-                self.reap_retro(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"retro reap failed: {e}")
-            tasks = self.store.tasks()
-            for t in list(tasks.values()):
-                try:
-                    if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
-                        rep.reaped.append(t.id)
-                        continue
-                    if self.state.get(t.id).get("check_run"):
-                        # A check run in flight owns this task's continuation: reap it when it
-                        # finishes, and never let the worker reaper touch the task meanwhile.
-                        if self.reap_check(t, rep):
-                            rep.reaped.append(t.id)
-                        continue
-                    if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
-                        if self.reap_trial(t, rep):
-                            rep.reaped.append(t.id)
-                        continue
-                    if t.status == Status.RUNNING and self.reap(t, rep):
-                        rep.reaped.append(t.id)
-                    elif t.status.pr_open and self.reap_review(t, rep):
-                        rep.reaped.append(t.id)
-                except Exception as e:  # noqa: BLE001 - keep the loop alive
-                    rep.errors.append(f"{t.id}: reap failed: {e}")
-                    self.log(f"{t.id}: reap failed: {e}")
-            try:
-                self.reap_orphaned(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"orphan reap failed: {e}")
-            try:
-                self.reap_dead_runs(rep)
-            except Exception as e:  # noqa: BLE001
-                rep.errors.append(f"dead-run reap failed: {e}")
+            self._reap_all(rep)
         self.store.invalidate()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):
