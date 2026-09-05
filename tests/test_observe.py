@@ -8,6 +8,8 @@ import textwrap
 import time
 from pathlib import Path
 
+import yaml
+
 from garden import observe as observe_mod
 from garden.events import EventLog
 from garden.observe import BUILTIN_PROFILES, event_matches, resolve
@@ -94,6 +96,21 @@ def test_observe_omits_empty_sections(garden: Path):
     assert "stuck runs" not in r.output
     assert "tracebacks" not in r.output
     assert "digest" not in r.output
+
+
+def test_line_width_clips_every_rendered_line(garden: Path):
+    """CG-219: observe.line_width bounds every printed line, so a card or the status line
+    can't soft-wrap into two lines regardless of the terminal it happens to print to."""
+    cfg_path = garden / "garden.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data.setdefault("observe", {})["line_width"] = 40
+    cfg_path.write_text(yaml.safe_dump(data))
+    _add_draft_task(garden)
+    r = _cli(garden, "observe")
+    assert r.exit_code == 0, r.output
+    lines = [ln for ln in r.output.splitlines() if ln]
+    assert lines  # something printed
+    assert all(len(ln) <= 40 for ln in lines), lines
 
 
 # --------------------------------------------------------------------------- --follow event streaming

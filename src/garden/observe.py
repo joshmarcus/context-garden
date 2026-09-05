@@ -280,6 +280,16 @@ def digest_lines(d: dict[str, Any]) -> list[str]:
     return out
 
 
+def _clip(text: str, width: int) -> str:
+    """Clip `text` to `width` characters (an ellipsis marks the cut), so a line stays one
+    line regardless of the terminal's actual width — the point of `observe.line_width`: an
+    operator agent parsing the text output gets a predictable format, not a soft wrap that
+    turns one card into two lines."""
+    if width <= 0 or len(text) <= width:
+        return text
+    return text[: max(0, width - 1)].rstrip() + "…"
+
+
 # ---- one pass, and the text/json it renders as --------------------------------------------
 @dataclass
 class ObservePass:
@@ -291,6 +301,7 @@ class ObservePass:
     tracebacks: list[dict[str, Any]] = field(default_factory=list)
     digest: dict[str, Any] = field(default_factory=dict)
     digest_lines: list[str] = field(default_factory=list)
+    line_width: int = 160
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -300,23 +311,24 @@ class ObservePass:
         }
 
     def render_lines(self) -> list[str]:
-        out = [self.status_line]
+        w = self.line_width
+        out = [_clip(self.status_line, w)]
         if self.cards:
             out.append("")
             out.append(f"needs you ({len(self.cards)})")
-            out += [f"  {card_line(c)}" for c in self.cards]
+            out += [_clip(f"  {card_line(c)}", w) for c in self.cards]
         if self.stuck:
             out.append("")
             out.append(f"stuck runs ({len(self.stuck)})")
-            out += [f"  {stuck_line(s)}" for s in self.stuck]
+            out += [_clip(f"  {stuck_line(s)}", w) for s in self.stuck]
         if self.tracebacks:
             out.append("")
             out.append(f"tracebacks ({len(self.tracebacks)})")
-            out += [f"  {traceback_line(t)}" for t in self.tracebacks]
+            out += [_clip(f"  {traceback_line(t)}", w) for t in self.tracebacks]
         if self.digest_lines:
             out.append("")
             out.append("digest")
-            out += [f"  {line}" for line in self.digest_lines]
+            out += [_clip(f"  {line}", w) for line in self.digest_lines]
         return out
 
 
@@ -333,6 +345,7 @@ def make_pass(store: Any, sched: Any, settings: ObserveSettings) -> ObservePass:
         at=now_iso(), profile=settings.profile, status_line=status_line(store, sched, settings),
         cards=cards(store, sched), stuck=stuck_runs(store, settings.stuck_after_s),
         tracebacks=tracebacks(store, since_iso), digest=d, digest_lines=digest_lines(d),
+        line_width=settings.line_width,
     )
 
 
