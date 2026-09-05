@@ -1,0 +1,192 @@
+"""Dispatch: the queue, slots, stacking and the run a worker gets; plus the stuck-task audit."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .. import gitops
+from ..brief import build_brief
+from ..graph import blockers, ready, stack_parents
+from ..model import Status, Task, now_iso
+from ..notify import notify
+from ..runner.base import Runner
+from ..runs import Run
+from .report import TickReport
+
+
+class DispatchMixin:
+    # ---- dispatch ----------------------------------------------------------
+    def dispatch_ready(self, rep: TickReport) -> None:
+        tasks = self.store.tasks()
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        queue: list[tuple[Task, str]] = [
+            (t, "revise") for t in tasks.values()
+            if t.status == Status.CHANGES_REQUESTED
+            and self.state.get(t.id).get("pending_feedback")
+            and not self.state.get(t.id).get("needs_human")
+            and int(self.state.get(t.id).get("revisions", 0)) < max_rev
+        ]
+        queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
+        closed = {ph.key for p in self.store.products() for ph in p.phases if ph.closed}
+        for task, mode in queue:
+            if task.key in closed:
+                continue  # the phase is closed; nothing dispatches into it (garden reopen-phase to resume)
+            if self.slots_free() <= 0:
+                break
+            if self.budget_exceeded(task):
+                continue
+            runner = self.runner_for(task)
+            if not runner.detached:
+                continue  # manual tasks are taken by a human, not auto-dispatched
+            try:
+                self.dispatch(task, mode=mode, runner=runner)
+                rep.dispatched.append(f"{task.id}({mode})")
+            except Exception as e:  # noqa: BLE001
+                rep.errors.append(f"{task.id}: dispatch failed: {e}")
+                self._transition(task, Status.FAILED, f"dispatch failed: {e}")
+        self._drain_pending_reviews(tasks, rep)
+
+    def _audit_stuck(self, rep: TickReport) -> None:
+        """Backstop: any non-terminal task with no active run and no dispatchable next
+        round is stuck — a hand edit, a killed check, or a future bug left it with nothing
+        scheduled and nothing on the Inbox. Flag it `needs_human` so it surfaces as a card
+        (resume with one more round, or send it back) instead of sitting silent."""
+        tasks = self.store.tasks()
+        active = {r.task_id for r in self.runs.active()}
+        ready_ids = {t.id for t in ready(tasks, stack=self.stack_enabled)}
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        for t in tasks.values():
+            if t.status.terminal or t.status == Status.RUNNING:
+                continue  # running/terminal tasks are accounted for (reap handles a lost run)
+            st = self.state.get(t.id)
+            if st.get("needs_human"):
+                continue  # already a card
+            if (t.id in active or st.get("review_run") or st.get("edit_run")
+                    or st.get("trial", {}).get("status") in ("running", "comparing")):
+                continue  # a run is on it
+            # A stored pending_feedback always comes with the changes_requested transition
+            # (CG-140): nothing dispatches from in_review, so feedback parked there while the
+            # task stays in_review would sit forever and hold automerge silently.
+            if t.status == Status.IN_REVIEW and str(st.get("pending_feedback") or "").strip():
+                reason = "pending feedback recorded but the task is in_review, not changes_requested"
+            # These statuses wait on a human or GitHub and have their own Inbox handling.
+            elif t.status in (Status.WAITING_HUMAN, Status.AWAITING_TRIAGE, Status.IN_REVIEW, Status.FAILED, Status.DRAFT, Status.READY):
+                continue  # (a ready task not in the ready set is blocked by deps, i.e. waiting)
+            elif t.id in ready_ids:
+                continue  # a work run is dispatchable (slots/pause aside)
+            elif t.status == Status.CHANGES_REQUESTED:
+                has_fb = bool(str(st.get("pending_feedback") or "").strip())
+                under_cap = int(st.get("revisions", 0)) < max_rev
+                if has_fb and under_cap:
+                    continue  # a revise run is dispatchable
+                reason = ("no feedback recorded to revise against" if not has_fb
+                          else f"{max_rev} revision rounds already used")
+            else:
+                reason = f"nothing to dispatch from status {t.status.value}"
+            note = f"stuck: {reason}"
+            st["needs_human"] = note
+            self.events.emit("needs_human", t.id, reason=note, stuck=True)
+            notify(self.cfg.data, t.id, "needs_human", note, t.pr or "")
+            t.log(f"{note}; resume with one more round (`garden retry {t.id}`) "
+                  f'or send it back (`garden triage {t.id} --changes "..."`)')
+            self.store.save(t)
+            rep.transitions.append(f"{t.id} stuck ({reason})")
+
+    def _stack_for(self, task: Task) -> dict[str, Any] | None:
+        """Decide the base for a fresh run: a stack parent's branch, or the product base."""
+        st = self.state.get(task.id)
+        if st.get("stack_parent"):
+            parent = self.store.tasks().get(st["stack_parent"])
+            if parent and not parent.status.terminal:
+                return {"parent_id": parent.id, "parent_title": parent.title, "parent_pr": parent.pr, "parent_branch": parent.branch,
+                        "final_base": self.final_base_for(task)}
+            st.pop("stack_parent", None)
+            st["pr_base"] = self.final_base_for(task)
+            return None
+        if not self.stack_enabled or blockers(task, self.store.tasks(), stack=False) == []:
+            return None
+        parents = stack_parents(task, self.store.tasks())
+        if len(parents) != 1:
+            return None
+        p = parents[0]
+        st["stack_parent"] = p.id
+        st["pr_base"] = p.branch
+        self.events.emit("stacked", task.id, parent=p.id, base=p.branch)
+        return {"parent_id": p.id, "parent_title": p.title, "parent_pr": p.pr, "parent_branch": p.branch,
+                "final_base": self.final_base_for(task)}
+
+    def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
+                 session_id: str = "", prompt_override: str = "", branch_override: str = "",
+                 worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+        runner = runner or self.runner_for(task)
+        branch = branch_override or task.branch or task.default_branch()
+        st = self.state.get(task.id)
+        stack = self._stack_for(task) if mode in ("work", "trial") else None
+        base = self.base_for(task)
+        feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
+        revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
+        if mode == "revise":
+            from ..suggestions import pending_suggestions
+
+            pend = pending_suggestions(task.body)
+            if pend:
+                sug_fb = ("### Suggestions on this task (the spec moved)\n\nThe task's spec has these pending "
+                          "suggestions; take them into account in this round:\n"
+                          + "\n".join(f"- {s.text}" for s in pend))
+                feedback = f"{feedback}\n\n{sug_fb}".strip() if feedback else sug_fb
+        qa = list(st.get("qa") or [])
+        commits_ahead = None
+        wt_path = worktree_override or self.worktree_for(task)
+        if wt_path.exists() and (feedback or session_id):
+            try:
+                commits_log = gitops.log_summary(wt_path, base, n=20)
+                if commits_log.strip():
+                    commits_ahead = commits_log.strip().split("\n")
+            except gitops.GitError:
+                pass
+        brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+        text = prompt_override or brief.text
+        run = self.runs.new_run(task.id, runner.name, mode=mode)
+        run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
+        run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if revise_easy else "")
+        run.difficulty = "easy" if revise_easy else task.difficulty
+        run.harness = runner.harness.name if runner.harness else ""
+        run.session_id = session_id
+        if session_id and st.get("session_host"):
+            run.host = str(st["session_host"])
+        runner.assign(run, self.active_runs())
+        wt: Path | None = None
+        if worktree and not runner.remote:
+            wt = gitops.prepare_worktree(self.repo_for(task), worktree_override or self.worktree_for(task), branch, base)
+            run.worktree = str(wt)
+        if mode in ("work", "revise", "resume"):
+            fence = self._fence_repos(task)
+            run.fence_paths = [str(p) for _, p in fence]
+            self._fence_snapshot(task)
+        run.save()
+        try:
+            runner.start(run, wt or self.store.root, text)
+        except Exception as e:  # setup/start failed: mark this run failed so it stops
+            run.status = "failed"    # counting against active() (a leaked slot) and re-raise
+            run.error = str(e)
+            run.save()
+            raise
+        if not branch_override:
+            task.branch = branch
+        task.attempts += 1 if mode == "work" else 0
+        task.last_dispatched_at = now_iso()
+        if mode == "revise":
+            st["revisions"] = int(st.get("revisions", 0)) + 1
+            st["pending_feedback"] = ""
+            st.pop("pending_feedback_easy", None)
+        where = f" on {run.host}" if run.host else ""
+        model = f" model={run.model}" if run.model else ""
+        how = "resumed session" if session_id else "fresh session"
+        stacked = f" stacked on {stack['parent_id']}" if stack else ""
+        tier_note = ", description only; easy tier" if revise_easy else ""
+        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
+                         host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
+        self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}, ~{run.brief_tokens} tokens)")
+        self.state.save()
+        return run
