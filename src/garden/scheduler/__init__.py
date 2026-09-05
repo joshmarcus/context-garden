@@ -174,6 +174,21 @@ class Scheduler(
             return str(models[d])
         return runner.harness.model_for(d)
 
+    def retro_model_for(self, runner: Runner) -> str:
+        """The model that names the judge for a retro reconciliation, a persona review or a
+        trial comparison, independent of the tier map that prices work: this harness's
+        `harnesses.<h>.retro_model`, or — when this harness is the garden's own default
+        (`harness:`) — the top-level `retro.model`. Empty means neither is set, so the
+        caller falls back to `model_for`'s tier resolution (retro.difficulty)."""
+        if runner.harness is None:
+            return ""
+        override = str(runner.harness.cfg.get("retro_model") or "")
+        if override:
+            return override
+        if runner.harness.name == str(self.cfg.get("harness") or "claude"):
+            return str(self.cfg.get("retro.model") or "")
+        return ""
+
     def git_identity(self) -> tuple[str, str]:
         """The identity written into a fresh product clone (see CG-147): `git.user_name` /
         `git.user_email` in garden.yaml, else the garden checkout's own git config, else the

@@ -138,7 +138,7 @@ class RetroMixin:
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                      product=self_prod or phase.product, phase="")
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
-        model = self.model_for(probe, runner, difficulty)
+        model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
         persona_toks = 0
         if to_run:
             persona_toks = estimate_tokens(phase_brief(self.store, phase, to_run[0], base, self.phase_prs(phase))) * len(to_run)
@@ -193,7 +193,7 @@ class RetroMixin:
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
         run = self.runs.new_run(probe.id, runner.name, mode="retro")
         run.worktree = str(worktree)
-        run.model = self.model_for(probe, runner, difficulty)
+        run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
         run.difficulty = difficulty
         run.brief_tokens = max(1, len(brief_text) // 4)
         run.save()

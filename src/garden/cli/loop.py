@@ -483,6 +483,10 @@ def trial(
         raise typer.Exit(1) from None
     for r in runs:
         console.print(f"{t.id}: {r.harness}:{r.model or 'default'} -> run {r.run_id} on {r.branch}")
+    judge_runner = sc.runner_for(t, "local", str(store.config.get("review.harness") or ""))
+    judge_tier = str(sc.effective("retro.difficulty") or "hard")
+    judge_model = sc.retro_model_for(judge_runner) or sc.model_for(t, judge_runner, judge_tier)
+    console.print(f"{t.id}: judged by {judge_model or 'harness default'} ({judge_tier} tier) once every contender has a PR")
     if wait:
         interval = interval if interval is not None else int(store.config.get("tick_interval", 60))
         console.print("waiting for the trial to conclude (ctrl-c to stop waiting)...")

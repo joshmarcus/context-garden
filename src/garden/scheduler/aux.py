@@ -23,6 +23,13 @@ class AuxMixin:
         run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
+        if kind in ("persona", "compare"):
+            # The judge, not the work: named by retro_model independent of the tier map
+            # above, so a garden can price work cheaply and still hand the verdict to its
+            # best model (CG-235). kickoff runs also land here but are not a judge call.
+            override = self.retro_model_for(runner)
+            if override:
+                run.model = override
         run.difficulty = difficulty or "hard"
         run.brief_tokens = max(1, len(brief_text) // 4)
         run.save()

@@ -212,7 +212,7 @@ class TrialsMixin:
             text = compare_brief(self.store, task, with_pr, diffs, base, int(self.cfg.get("review.max_diff_chars", 60000)))
             trial["status"] = "comparing"
             self.dispatch_aux("compare", task, text, Path(with_pr[0]["worktree"]), {"trial_id": trial["id"]},
-                              harness_name=harness_name, difficulty=str(self.effective("review.difficulty") or "hard"))
+                              harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"))
             rep.dispatched.append(f"{task.id}(compare)")
             task.log("all contenders finished; comparison run started")
             self.store.save(task)
