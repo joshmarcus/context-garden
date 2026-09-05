@@ -42,7 +42,9 @@ def register(app: FastAPI, site: Site) -> None:
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
         m = metrics(all_events, phase_tasks)
         reviews = sorted((ph.path / "docs" / "reviews").glob("*.md"), reverse=True) if (ph.path / "docs" / "reviews").exists() else []
-        usage = RunStore(s.config.garden_dir).usage_by_task()
+        rs = RunStore(s.config.garden_dir)
+        usage = rs.usage_by_task()
+        no_usage = rs.empty_usage()
         in_scope = [t for t in ph.tasks if t.status.value != "cancelled"]
         merged = sum(1 for t in in_scope if t.status.value == "done")
         prs_open = sum(1 for t in in_scope if t.pr and t.status.value != "done")
@@ -81,7 +83,7 @@ def register(app: FastAPI, site: Site) -> None:
                 summary=summary, metrics=m, spent=spent, review_heads=review_heads, artifacts=artifacts,
                 trials_n=trials_n, merged_rows=merged_rows, unmerged_rows=unmerged_rows,
                 has_retro=bool(_retro_doc(ph)),
-                rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}))
+                rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id) or no_usage)
                       for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             ))
 
@@ -92,7 +94,7 @@ def register(app: FastAPI, site: Site) -> None:
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"
-        all_rows = [(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}), fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
+        all_rows = [(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
         hidden_count = sum(1 for row in all_rows if row[1] in ("done", "cancelled"))
         rows = [row for row in all_rows if not hide_done or row[1] not in ("done", "cancelled")]
         return templates.TemplateResponse(request, "phase.html", ctx(

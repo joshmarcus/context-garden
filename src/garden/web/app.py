@@ -11,8 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import Response
+import jinja2
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -33,10 +34,22 @@ from ..plants import (
 )
 from ..store import Store
 from . import actions, pages
-from .common import COLUMNS, LIST_ORDER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
+from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
 from .trust import OriginCheck, safe_json
 
 __all__ = ["Hub", "Site", "create_app", "render_md"]
+
+
+def _tojson(value: Any) -> Markup:
+    """The `tojson` filter: an Undefined value (a page that forgot to pass the context key a
+    `data-*` attribute serialises) becomes `null` instead of crashing `json.dumps` with
+    "Object of type Undefined is not JSON serializable" — the incident CG-185 fixes. Every
+    known call site also passes an explicit `|default(...)`, and the strict template
+    environment below should already have raised before a bare Undefined reaches here; this
+    is the last line of defense for a site neither of those catches."""
+    if isinstance(value, jinja2.Undefined):
+        value = None
+    return Markup(safe_json(value))
 
 
 def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None) -> FastAPI:
@@ -48,8 +61,15 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))
+    # A missing context key reads as an error, not a silent falsy: the one incident this
+    # caught (CG-185) was a `tojson` site fed an Undefined because its page forgot to pass
+    # the value. Every legitimate "not set on this task/event/item" case already reads a
+    # real value (see `_TaskState.__missing__`, `events.Event.__missing__`, the tojson
+    # sites' `|default(...)`); an exception that does escape is caught by
+    # `unhandled_error_page` below and shown as a flash, not a traceback.
+    templates.env.undefined = jinja2.StrictUndefined
     templates.env.filters["md"] = render_md
-    templates.env.filters["tojson"] = lambda v: Markup(safe_json(v))
+    templates.env.filters["tojson"] = _tojson
     templates.env.globals["columns"] = COLUMNS
     templates.env.globals["list_order"] = LIST_ORDER
     templates.env.globals["statuses"] = STATUS_ORDER
@@ -87,4 +107,19 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     site = Site(hub, templates, plates)
     pages.register(app, site)
     actions.register(app, site)
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_page(request: Request, exc: Exception) -> Any:
+        """A page that raises while rendering (a template error, or anything else an action's
+        own try/except in `actions/tasks.py` does not already catch) shows the person the same
+        flash the action routes use, with the header and navigation still up, instead of a bare
+        Internal Server Error. The traceback and the request path go to the log either way."""
+        LOGGER.exception("unhandled error rendering %s %s", request.method, request.url.path)
+        try:
+            context = site.ctx(request, page="", flash="Something went wrong rendering this page; the error is in the log.")
+            return templates.TemplateResponse(request, "error.html", context, status_code=500)
+        except Exception:
+            LOGGER.exception("also failed to render the error page for %s", request.url.path)
+            return PlainTextResponse("Internal Server Error", status_code=500)
+
     return app

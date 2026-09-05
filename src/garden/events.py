@@ -19,6 +19,15 @@ from typing import Any
 from .model import now_iso
 
 
+class Event(dict):
+    """A parsed event JSONL line: only the fields relevant to its `kind` were ever recorded,
+    so a template branching on `e.kind` must see a real falsy value for a field another kind
+    would have set, not raise, under a strict Jinja environment."""
+
+    def __missing__(self, key: str) -> Any:
+        return ""
+
+
 class EventLog:
     def __init__(self, path: Path):
         self.path = path
@@ -40,7 +49,7 @@ class EventLog:
             if not line:
                 continue
             try:
-                ev = json.loads(line)
+                ev = Event(json.loads(line))
             except json.JSONDecodeError:
                 continue
             if since and ev.get("at", "") < since:

@@ -7,10 +7,14 @@ no card). Driven through the fake harness end to end.
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
 from garden.events import EventLog, digest
 from garden.inbox import build_inbox
 from garden.model import Status
 from garden.scheduler.discovered import _normalise_title, _same_finding
+from garden.store import Store
+from garden.web.app import create_app
 
 
 def _reap_with_decisions(sched, monkeypatch):
@@ -142,6 +146,19 @@ def test_no_kind_discovery_is_still_a_task(sched, fake_github, monkeypatch):
 
 def c_labels(card: dict) -> list[str]:
     return [a["label"] for a in card["actions"]]
+
+
+def test_inbox_page_renders_a_pending_duplicate_or_cancel_decision(sched, fake_github, monkeypatch, garden):
+    """CG-185: a pending duplicate/cancel decision (inbox.py's `pending_decisions` loop) is an
+    'attention' item with no kind_blurb/evidence/discuss, unlike a stalled-task attention card.
+    Under the strict template environment the Inbox must still render it instead of 500ing."""
+    _reap_with_decisions(sched, monkeypatch)
+
+    c = TestClient(create_app(Store(garden), watch=False))
+    r = c.get("/")
+    assert r.status_code == 200
+    assert "DM-002 restates DM-001" in r.text  # the duplicate's reason
+    assert "DM-002" in r.text and "DM-003" in r.text
 
 
 # ---- CG-199: discovered work is deduplicated before it is filed -----------------------

@@ -241,6 +241,12 @@ class RunStore:
         """Tokens and cost across every run of one task, split by run mode."""
         return _rollup(self.runs_for(task_id))
 
+    def empty_usage(self) -> dict[str, Any]:
+        """The zero-valued shape `usage_for`/`usage_by_task` use for a task with no runs,
+        so a page indexing `usage_by_task()` by task id never falls back to a bare `{}`
+        (a template's `u.runs` must see a real 0, not raise, under a strict Jinja environment)."""
+        return _rollup([])
+
     def usage_by_task(self) -> dict[str, dict[str, Any]]:
         out: dict[str, list[Run]] = {}
         for r in self.all_runs():

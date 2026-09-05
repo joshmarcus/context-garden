@@ -57,6 +57,11 @@ class _TaskState(dict):
                 changed.add(key)
         return changed
 
+    def __missing__(self, key: str) -> Any:
+        """An unset key reads as None (a template's `state.foo` must see a real falsy
+        value, not raise, under a strict Jinja environment)."""
+        return None
+
     def __getitem__(self, key: str) -> Any:
         val = super().__getitem__(key)
         # Snapshot mutable values so save() can tell whether the caller mutated the

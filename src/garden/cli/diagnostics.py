@@ -218,12 +218,20 @@ def serve(
     watch_: bool = typer.Option(True, "--watch/--no-watch", help="Run the scheduler loop inside the server"),
 ):
     """Local web UI (and, by default, the scheduler loop)."""
+    import copy
+
     import uvicorn
 
     from ..web.app import create_app
 
     store = _store()
-    uvicorn.run(create_app(store, watch=watch_), host=host, port=port, log_level="warning")
+    # `log_level="warning"` used to also silence uvicorn.access (it logs at INFO), so a 500
+    # never showed which request caused it. Quiet uvicorn's own chatter but keep every
+    # request line — method, path, status — reaching the journal (or the serve log).
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    log_config["loggers"]["uvicorn"]["level"] = "WARNING"
+    log_config["loggers"]["uvicorn.error"]["level"] = "WARNING"
+    uvicorn.run(create_app(store, watch=watch_), host=host, port=port, log_config=log_config)
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
