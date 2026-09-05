@@ -413,6 +413,7 @@ def test_max_parallel_override_from_config_page(garden):
 
 
 def test_priority_and_difficulty_from_the_task_page(garden):
+    from garden.model import PRIORITY_SCALE
     from garden.store import Store
 
     c = client(garden)
@@ -426,3 +427,24 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert c.post("/tasks/DM-001/difficulty", data={"note": "extreme"}, follow_redirects=False).status_code == 400
     page = c.get("/tasks/DM-001").text
     assert 'name="note"' in page and 'value="hard" selected' in page
+    # both selects apply on change, no Set button beside either
+    assert 'onchange="this.form.submit()"' in page
+    assert "<button class=\"quiet\">Set</button>" not in page
+    # priority options are words with the number beside them, ordered first to last
+    for word, n in PRIORITY_SCALE:
+        assert f">{word} · {n}<" in page
+    assert page.index("first · 0") < page.index("next · 1") < page.index("normal · 2") < page.index("later · 3") < page.index("someday · 4")
+    # posting each scale value stores the number and renders it selected
+    for _word, n in PRIORITY_SCALE:
+        r = c.post("/tasks/DM-001/priority", data={"note": str(n)}, follow_redirects=False)
+        assert r.status_code == 303
+        t = Store(garden).task("DM-001")
+        assert t.priority == n
+        page = c.get("/tasks/DM-001").text
+        assert f'value="{n}" selected' in page
+    # a priority outside the scale shows as its number and stays selectable
+    c.post("/tasks/DM-001/priority", data={"note": "9"}, follow_redirects=False)
+    t = Store(garden).task("DM-001")
+    assert t.priority == 9
+    page = c.get("/tasks/DM-001").text
+    assert 'value="9" selected' in page

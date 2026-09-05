@@ -68,6 +68,31 @@ class Status(str, Enum):
 
 STATUS_ORDER = [s.value for s in Status]
 
+# The priority scale, first to last. Lower numbers dispatch first; the numbers are what is
+# stored on disk and what `garden priority` takes, so they never change — only the words
+# shown next to them do. One place so the CLI and the web UI show the same words.
+PRIORITY_SCALE: list[tuple[str, int]] = [
+    ("first", 0),
+    ("next", 1),
+    ("normal", 2),
+    ("later", 3),
+    ("someday", 4),
+]
+
+
+def priority_word(priority: int) -> str | None:
+    """The scale's word for a priority, or None when it falls outside the scale."""
+    for word, n in PRIORITY_SCALE:
+        if n == priority:
+            return word
+    return None
+
+
+def priority_label(priority: int) -> str:
+    """'word · n' for a priority on the scale, else just the number."""
+    word = priority_word(priority)
+    return f"{word} · {priority}" if word else str(priority)
+
 
 def now_iso() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()

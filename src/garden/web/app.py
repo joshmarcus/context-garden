@@ -32,7 +32,7 @@ from ..graph import (
     validate,
 )
 from ..inbox import attention_view, build_inbox, needs_human_info, running_now
-from ..model import STATUS_ORDER, Status, now_iso
+from ..model import PRIORITY_SCALE, STATUS_ORDER, Status, now_iso, priority_label
 from ..plants import (
     DEFS,
     PLATE_CREDIT,
@@ -135,6 +135,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates.env.globals["stage"] = lambda *a, **k: Markup(stage_svg(*a, **k))
     templates.env.globals["stage_word"] = stage_word
     templates.env.globals["plant_info"] = plant_info
+    templates.env.globals["PRIORITY_SCALE"] = PRIORITY_SCALE
+    templates.env.globals["priority_label"] = priority_label
 
     def ctx(request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
         s = hub.fresh()
