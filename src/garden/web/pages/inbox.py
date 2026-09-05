@@ -8,7 +8,6 @@ from fastapi.responses import HTMLResponse
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, digest, parse_since
 from ...inbox import build_inbox
-from ...scheduler import Scheduler
 from ..common import Site, tier_rows
 
 
@@ -21,7 +20,7 @@ def register(app: FastAPI, site: Site) -> None:
         from ...inbox import GROUPS
 
         s = hub.fresh()
-        sched = Scheduler(s, log=lambda m: None)
+        sched = hub.reader()
         items = build_inbox(s, sched)
         tasks = s.tasks()
         evs = EventLog(s.config.garden_dir / "events.jsonl")

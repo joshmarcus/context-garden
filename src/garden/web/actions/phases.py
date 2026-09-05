@@ -1,4 +1,4 @@
-"""Phase actions: approve every draft, set the budget, run persona reviews, plan."""
+"""Phase actions: approve every draft, close the phase, set the budget, run persona reviews, plan."""
 
 from __future__ import annotations
 
@@ -31,6 +31,29 @@ def register(app: FastAPI, site: Site) -> None:
         except Exception:
             LOGGER.exception("approve-all %s/%s failed", product, phase)
             hub._log(f"approve-all {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
+
+    @app.post("/phases/{product}/{phase}/close")
+    def close_phase(product: str, phase: str):
+        back = f"/phases/{product}/{phase}"
+        try:
+            with hub.lock:
+                sched = hub.scheduler()
+                try:
+                    ph = sched.store.phase(product, phase)
+                except KeyError:
+                    raise HTTPException(404) from None
+                sched.close_phase(ph)
+        except HTTPException:
+            raise
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"close {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("close %s/%s failed", product, phase)
+            hub._log(f"close {product}/{phase} failed: unexpected error, see the log")
             return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 

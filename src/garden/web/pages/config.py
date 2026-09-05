@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from ...scheduler import Scheduler, State
+from ...scheduler import State
 from ..common import Site
 
 
@@ -16,7 +16,7 @@ def register(app: FastAPI, site: Site) -> None:
     def config_page(request: Request):
         s = hub.fresh()
         cfg = s.config
-        sched = Scheduler(s, log=lambda m: None)
+        sched = hub.reader()
         effective = {
             "review_parallel": sched.review_parallel_limit(),
             "auto_dispatch": cfg.get("auto_dispatch"),

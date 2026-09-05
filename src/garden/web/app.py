@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -34,9 +35,12 @@ from .common import COLUMNS, LIST_ORDER, PLATES_DIR, TEMPLATES, Hub, Site, rende
 __all__ = ["Hub", "Site", "create_app", "render_md"]
 
 
-def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None) -> FastAPI:
+def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None) -> FastAPI:
+    """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
+    scheduler the app builds will use (`garden qa` passes its pretend GitHub)."""
     app = FastAPI(title="context-garden")
-    hub = Hub(store, watch)
+    hub = Hub(store, watch, github=github)
+    app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["md"] = render_md
     templates.env.filters["tojson"] = lambda v: Markup(json.dumps(v))
