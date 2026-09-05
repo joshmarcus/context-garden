@@ -116,9 +116,21 @@ def compare(call: Call) -> None:
 def persona(call: Call) -> None:
     m = re.search(r"^# Persona review: ([a-z0-9-]+)", call.brief, flags=re.M)
     name = m.group(1) if m else "persona"
-    sev = call.env.get("FAKE_CLAUDE_PERSONA_SEVERITY", "medium")
-    rev = {"persona": name, "score": 7, "overall": f"As the {name}, mostly fine.",
-           "findings": [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions", "suggestion": "Add it to Quick start"}]}
+    if call.env.get("FAKE_CLAUDE_PERSONA_FINDINGS") == "all":
+        # one finding at each severity, for CG-187: every severity must survive filing
+        findings = [
+            {"severity": "high", "area": "security", "summary": "Secrets can leak into run logs",
+             "suggestion": "Scrub env before logging"},
+            {"severity": "medium", "area": "config", "summary": "garden.yaml needs a restart to take effect",
+             "suggestion": "Reload config each tick"},
+            {"severity": "low", "area": "copy", "summary": "The Inbox button label is inconsistent",
+             "suggestion": "Match the wording used on the Board"},
+        ]
+    else:
+        sev = call.env.get("FAKE_CLAUDE_PERSONA_SEVERITY", "medium")
+        findings = [{"severity": sev, "area": "onboarding", "summary": "First run needs a config file the README never mentions",
+                    "suggestion": "Add it to Quick start"}]
+    rev = {"persona": name, "score": 7, "overall": f"As the {name}, mostly fine.", "findings": findings}
     print(result_json("Reviewed as persona.\nGARDEN_PERSONA: " + json.dumps(rev), {"input_tokens": 1500, "output_tokens": 120}, 0.02))
 
 

@@ -235,6 +235,91 @@ def resolve_features(rev: dict[str, Any], existing_titles: dict[str, str]) -> li
     return out
 
 
+_SEVERITY_WEIGHT: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
+
+
+def _normalize_finding_title(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def flatten_findings(persona_findings: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Every persona's findings, one entry each, stamped with who raised it. Pure: no id
+    assignment, no file I/O, so a fixed dict of parsed persona reviews is enough to test it."""
+    out: list[dict[str, Any]] = []
+    for persona, findings in persona_findings.items():
+        for f in findings or []:
+            if not isinstance(f, dict) or not str(f.get("summary") or "").strip():
+                continue
+            out.append({"personas": [persona], "severity": str(f.get("severity") or "low"),
+                        "area": str(f.get("area") or "").strip(), "summary": str(f["summary"]).strip(),
+                        "suggestion": str(f.get("suggestion") or "").strip()})
+    return out
+
+
+def group_findings(flat: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Findings that say the same thing across personas collapse into one group (CG-187): a
+    normalised-title match ("the reconciliation's duplicate_of, or a title match"). The worst
+    severity in a group wins, and every persona that raised it is kept for the task body."""
+    groups: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for f in flat:
+        title = _normalize_finding_title(f.get("summary"))
+        if not title:
+            continue
+        if title not in groups:
+            groups[title] = {"personas": [], "severity": f["severity"], "area": f["area"],
+                             "summary": f["summary"], "suggestion": f["suggestion"]}
+            order.append(title)
+        g = groups[title]
+        for p in f["personas"]:
+            if p not in g["personas"]:
+                g["personas"].append(p)
+        if _SEVERITY_WEIGHT.get(f["severity"], 1) > _SEVERITY_WEIGHT.get(g["severity"], 1):
+            g["severity"] = f["severity"]
+        if not g["suggestion"] and f["suggestion"]:
+            g["suggestion"] = f["suggestion"]
+    return [groups[t] for t in order]
+
+
+def resolve_findings(groups: list[dict[str, Any]], existing_titles: dict[str, str]) -> list[dict[str, Any]]:
+    """Which grouped findings get filed as new draft tasks, and which are skipped because a
+    task with the same title already exists. Mirrors `resolve_features`: pure, so it is
+    testable without a live model or a worktree."""
+    out: list[dict[str, Any]] = []
+    for g in groups:
+        title = str(g.get("summary") or "").strip()
+        if not title:
+            continue
+        dup = existing_titles.get(title.lower())
+        reason = f"same title as {dup}" if dup else ""
+        out.append({**g, "skip": bool(reason), "reason": reason})
+    return out
+
+
+def findings_section(filed: list[dict[str, Any]]) -> str:
+    """Render '## Findings from persona reviews': every finding, grouped by severity, with the
+    task id it became (or why it was skipped) — CG-187's "the retro document lists every
+    finding with the task id it became, grouped by severity"."""
+    if not filed:
+        return "_No findings from this phase's persona reviews._"
+    out: list[str] = []
+    for sev in ("high", "medium", "low"):
+        items = [f for f in filed if str(f.get("severity")) == sev]
+        if not items:
+            continue
+        out.append(f"### {sev.capitalize()}")
+        out.append("")
+        for f in items:
+            personas = ", ".join(f.get("personas") or [])
+            summary = str(f.get("summary", "")).strip()
+            if f.get("task_id"):
+                out.append(f"- **{personas}** — {summary} → {f['task_id']} [{f.get('status', 'draft')}]")
+            else:
+                out.append(f"- **{personas}** — {summary} — _skipped: {f.get('reason') or 'duplicate'}_")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 def features_section(filed: list[dict[str, Any]]) -> str:
     """Render the ranked '## Features for the next phase' body: rank order is the order the
     reconciliation returned them in. Each filed feature shows its new task id; each skipped
@@ -262,7 +347,8 @@ def features_section(filed: list[dict[str, Any]]) -> str:
 
 
 def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path], store: Store,
-                     filed: list[dict[str, Any]] | None = None) -> str:
+                     filed: list[dict[str, Any]] | None = None,
+                     filed_findings: list[dict[str, Any]] | None = None) -> str:
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}_", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
@@ -274,6 +360,7 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
     still_open = [str(s).strip() for s in rev.get("still_open") or [] if str(s).strip()]
     if still_open:
         out += ["## Still open", ""] + [f"- {s}" for s in still_open] + [""]
+    out += ["## Findings from persona reviews", "", findings_section(filed_findings or []), ""]
     out += ["## Features for the next phase", "", features_section(filed or []), ""]
     if reports:
         out += ["## Persona reports", ""] + [f"- [{name}]({store.rel(path)})" for name, path in reports.items()] + [""]

@@ -8,11 +8,15 @@ from .. import gitops
 from ..github import GitHubError, mark_garden_comment
 from ..model import Phase, Status, Task, ensure_open
 from ..personas import (
+    SEVERITY_PRIORITY,
+    finding_body,
+    finding_title,
     parse_persona,
     phase_brief,
     pr_brief,
     report_markdown,
     report_path,
+    severity_ok,
     valid_name,
 )
 from ..runs import Run
@@ -42,7 +46,7 @@ class PersonaMixin:
             rows.append({"id": t.id, "title": title, "status": t.status.value, "pr": t.pr, "body": body})
         return rows
 
-    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False) -> Run:
+    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False, min_severity: str = "low") -> Run:
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
@@ -57,7 +61,8 @@ class PersonaMixin:
             gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
         text = phase_brief(self.store, phase, name, base, self.phase_prs(phase))
         return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
-                                                             "persona": name, "target": "phase", "file_tasks": file_tasks},
+                                                             "persona": name, "target": "phase", "file_tasks": file_tasks,
+                                                             "min_severity": min_severity},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or "hard"))
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False) -> Run:
@@ -78,6 +83,44 @@ class PersonaMixin:
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.cfg.get("review.difficulty") or ""))
 
+    def _finding_target_phase(self, phase: Phase) -> Phase:
+        """Where a persona finding is filed: the reviewed phase, unless it is frozen or closed
+        (its own tasks would just sit deferred or refused), in which case the next phase in the
+        product, if it already exists on disk. Falls back to the reviewed phase itself when
+        there is no next phase yet, so a finding is never lost to a missing directory."""
+        if not phase.frozen and not phase.closed:
+            return phase
+        product = self.store.product(phase.product)
+        names = [p.name for p in product.phases]
+        if phase.name in names:
+            idx = names.index(phase.name)
+            if idx + 1 < len(product.phases):
+                return product.phases[idx + 1]
+        return phase
+
+    def _file_finding_task(self, phase: Phase, f: dict[str, Any], name: str, run_id: str, report_rel: str) -> Task | None:
+        """File one persona finding as a draft task, or fold it into an existing finding-task
+        with a matching title (a mechanical stand-in for cross-persona dedup on a single, live
+        dispatch, where no reconciliation step ever sees every persona's findings at once)."""
+        title = finding_title(f)
+        if not title:
+            return None
+        for t in self.store.tasks().values():
+            if t.title.strip().lower() == title.lower() and t.discovered_from.startswith("persona:"):
+                if name not in t.body:
+                    t.body = t.body.rstrip() + f"\n\nAlso raised by the {name} persona review ({report_rel}).\n"
+                    self.store.save(t)
+                return None
+        target = self._finding_target_phase(phase)
+        provenance = f"persona:{name}:{run_id}"
+        priority = SEVERITY_PRIORITY.get(str(f.get("severity")), 2)
+        t = self.store.create_task(target.product, target.name, title, finding_body(f, [name], provenance),
+                                   priority=priority, status="draft")
+        t.discovered_from = provenance
+        self.store.save(t)
+        self.store.invalidate()
+        return t
+
     def _finish_persona(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
         rev = parse_persona(final)
         name = str(entry.get("persona"))
@@ -94,14 +137,17 @@ class PersonaMixin:
             self.log(f"persona {name}: report written to {self.store.rel(path)}")
             rep.transitions.append(f"persona {name} report -> {self.store.rel(path)}")
             if entry.get("file_tasks"):
+                min_severity = str(entry.get("min_severity") or "low")
+                report_rel = self.store.rel(path)
                 for f in rev.get("findings") or []:
-                    if isinstance(f, dict) and f.get("severity") == "high" and f.get("summary"):
-                        t = self.store.create_task(phase.product, phase.name, str(f["summary"])[:80],
-                                                   f"## Goal\n\n{f.get('suggestion') or f['summary']}\n\n## Context\n\nRaised by the {name} persona review ({self.store.rel(path)}), area: {f.get('area', '')}.\n",
-                                                   priority=2, status="draft")
-                        t.discovered_from = f"persona:{name}"
-                        self.store.save(t)
-                        self.events.emit("discovered", entry["task"], new_task=t.id, title=t.title, blocking=False, status="draft", persona=name)
+                    if not isinstance(f, dict) or not f.get("summary"):
+                        continue
+                    if not severity_ok(str(f.get("severity") or ""), min_severity):
+                        continue
+                    t = self._file_finding_task(phase, f, name, run.run_id, report_rel)
+                    if t is not None:
+                        self.events.emit("discovered", entry["task"], new_task=t.id, title=t.title, blocking=False,
+                                         status="draft", persona=name, severity=f.get("severity"))
                 self.store.invalidate()
             return
         task = self.store.task(entry["task"])
