@@ -52,6 +52,12 @@ def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched,
     assert len(all_runs) == 1 and all_runs[0].run_id == run.run_id  # still the same single run
     assert not sched.unreaped_run_ids()
 
+    # CG-153: the resumed reap must not emit run_finished a second time (which would
+    # double-count the run's cost). Exactly one run_finished for this single run.
+    finished = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
+                if e.get("run") == run.run_id]
+    assert len(finished) == 1
+
 
 def _run_fake_claude(cwd, task_id, run_id, when):
     env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
