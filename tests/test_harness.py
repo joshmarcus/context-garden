@@ -290,6 +290,31 @@ def test_parse_classifies_not_logged_in_as_an_auth_env_error():
     assert ordinary["env_error"] is False and ordinary["env_kind"] == ""
 
 
+def test_auth_marker_inside_a_long_report_is_not_an_env_error():
+    """A persona or work report that talks about a 'not logged in' outage is a finished run,
+    not a login failure: the marker only counts on stderr, in the error text, or in a short
+    output with no result block (the shape of the CLI's own message)."""
+    h = Harness("claude", {"output_format": "stream-json"})
+    prose = ("Phase review. Workers were briefly not logged in after CG-194's private HOME; "
+             "the fix landed the same day. " * 40)
+    payload = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                          "result": prose + '\nGARDEN_PERSONA: {"persona": "user", "score": 7, "findings": []}',
+                          "usage": {"input_tokens": 1}, "total_cost_usd": 0.5})
+    out = h.parse(payload)
+    assert out["env_error"] is False and out["env_kind"] == ""
+    assert out["cost_usd"] == 0.5
+
+    # a short output carrying the CLI's message is still an auth failure
+    short = json.dumps({"type": "result", "subtype": "error", "is_error": True,
+                        "result": "Not logged in · Please run /login", "usage": {}})
+    assert h.parse(short)["env_kind"] == "auth"
+
+    # a GARDEN_RESULT block in a short text also means the worker finished
+    done = h.parse('{"type":"result","subtype":"success","result":"the login step said not logged in once; '
+                   'fixed.\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{},"total_cost_usd":0.1}')
+    assert done["env_error"] is False
+
+
 def test_login_probe_and_check_login():
     h = Harness("claude", {"bin": "/x/claude"})
     cmd, stdin_text = h.login_probe()

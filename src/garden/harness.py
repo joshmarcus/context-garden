@@ -328,13 +328,27 @@ class Harness:
             out["env_error"] = True
             out["env_kind"] = kind
         out["result"] = parse_result(out["final_text"]) or parse_result(stdout)
-        blob = f"{out['final_text']} {stdout} {stderr}".lower()
-        if any(marker in blob for marker in AUTH_FAILURE_MARKERS):
+        if self._auth_failure(out, stdout, stderr):
             out["env_error"] = True
             out["env_kind"] = "auth"
             if not out["error"]:
                 out["error"] = "not logged in"
         return out
+
+    @staticmethod
+    def _auth_failure(out: dict[str, Any], stdout: str, stderr: str) -> bool:
+        """Whether the run stopped because the harness was not logged in. The CLI's own
+        message is short and arrives on stderr or as the error text; a worker whose long
+        report merely discusses a login outage is not a login failure (four persona reviews
+        of phase 04 were discarded that way)."""
+        err_text = f"{stderr} {out.get('error') or ''}".lower()
+        if any(marker in err_text for marker in AUTH_FAILURE_MARKERS):
+            return True
+        final = str(out.get("final_text") or "")
+        if len(final.strip()) >= 2000 or out.get("result"):
+            return False
+        blob = f"{final} {stdout}".lower()
+        return any(marker in blob for marker in AUTH_FAILURE_MARKERS)
 
 
 def _last_json_object(text: str) -> Any:
