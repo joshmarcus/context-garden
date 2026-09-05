@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from ..harness import DIFFICULTIES
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
 from ..plants import (
     DEFS,
@@ -73,6 +74,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates.env.globals["plant_info"] = plant_info
     templates.env.globals["PRIORITY_SCALE"] = PRIORITY_SCALE
     templates.env.globals["priority_label"] = priority_label
+    templates.env.globals["DIFFICULTIES"] = DIFFICULTIES
 
     site = Site(hub, templates, plates)
     pages.register(app, site)

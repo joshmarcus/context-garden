@@ -293,6 +293,88 @@ def test_budget_form_and_route(garden):
     assert c.post("/phases/demo/p1/budget", data={"amount": "abc"}).status_code == 400
 
 
+def test_new_task_form_renders_on_phase_page(garden):
+    c = client(garden)
+    page = c.get("/phases/demo/p1").text
+    assert 'id="new-task"' in page
+    assert 'action="/phases/demo/p1/new-task"' in page
+    for field in ("title", "goal", "context", "acceptance", "difficulty", "priority", "reading", "depends_on", "ready"):
+        assert f'name="{field}"' in page
+    assert "+ new task" in page  # the rail link (CG-132)
+
+
+def test_new_task_matches_cli_new_task_for_the_same_inputs(garden, monkeypatch):
+    """The web form must produce the same file `garden new-task` would for the same
+    title/deps/reading/priority/difficulty, when the free-text body fields are left blank."""
+    from garden.store import Store
+    from tests.test_cli import run
+
+    monkeypatch.setattr("garden.store.now_iso", lambda: "2026-02-02T00:00:00+00:00")
+
+    r = run(garden, "new-task", "demo/p1", "Third: thing", "--dep", "DM-001", "--read", "demo/p1/specs/spec.md")
+    assert r.exit_code == 0 and "DM-003" in r.output
+    store = Store(garden)
+    expected = store.task("DM-003").path.read_text()
+    store.task("DM-003").path.unlink()
+    store.invalidate()
+
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Third: thing", "depends_on": "DM-001", "reading": "demo/p1/specs/spec.md",
+        "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/tasks/DM-003")
+
+    store.invalidate()
+    assert store.task("DM-003").path.read_text() == expected
+
+
+def test_new_task_fills_in_the_body_from_the_form(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Write the docs", "goal": "Explain the thing.", "context": "Nobody knows how it works.",
+        "acceptance": "- [ ] docs exist\n- [ ] \n- [ ] reviewed", "difficulty": "easy", "priority": "1",
+        "ready": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/tasks/DM-003")
+    task_page = c.get(r.headers["location"]).text
+    assert "Explain the thing." in task_page
+    assert "Nobody knows how it works." in task_page
+    assert "docs exist" in task_page and "reviewed" in task_page
+    assert "created DM-003" in task_page  # flash message (CG-086)
+
+    from garden.store import Store
+    t = Store(garden).task("DM-003")
+    assert t.status.value == "ready"  # approve now was ticked
+    assert t.difficulty == "easy"
+    assert t.priority == 1
+
+
+def test_new_task_validation_keeps_typed_text_and_flashes_a_message(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "", "goal": "keep me", "depends_on": "NOPE", "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert "new-task" in r.headers["location"]
+    page = c.get(r.headers["location"]).text
+    assert "a title is required" in page
+    assert "unknown task" in page and "NOPE" in page
+    assert "keep me" in page  # typed text survives the round trip
+
+
+def test_new_task_rejects_an_unresolved_reading_path(garden):
+    c = client(garden)
+    r = c.post("/phases/demo/p1/new-task", data={
+        "title": "Some task", "reading": "demo/p1/specs/nope.md", "difficulty": "medium", "priority": "3",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    page = c.get(r.headers["location"]).text
+    assert "does not exist" in page and "nope.md" in page
+
+
 def test_phase_page_shows_retro_waiting_for_personas(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store

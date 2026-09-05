@@ -57,23 +57,25 @@ What changes for users/the team when this phase ships.
 - ...
 """
 
-TASK_TEMPLATE = """\
-## Goal
+def render_task_body(goal: str = "", context: str = "", acceptance: list[str] | None = None) -> str:
+    """The body `garden new-task` writes. A blank field keeps the scaffold's placeholder
+    text, so a task created with nothing typed is byte-identical to `garden new-task`'s
+    file; the web form's Goal/Context/Acceptance-criteria fields fill these in."""
+    items = [a.strip() for a in (acceptance or []) if a.strip()]
+    ac_block = "\n".join(f"- [ ] {a}" for a in items) if items else "- [ ] ..."
+    return (
+        "## Goal\n\n"
+        f"{goal.strip() or 'One or two sentences.'}\n\n"
+        "## Context\n\n"
+        f"{context.strip() or 'What the agent needs to know that is not in the reading list.'}\n\n"
+        "## Acceptance criteria\n\n"
+        f"{ac_block}\n\n"
+        "## Out of scope\n\n"
+        "- ...\n"
+    )
 
-One or two sentences.
 
-## Context
-
-What the agent needs to know that is not in the reading list.
-
-## Acceptance criteria
-
-- [ ] ...
-
-## Out of scope
-
-- ...
-"""
+TASK_TEMPLATE = render_task_body()
 
 TAKE_SKILL = """\
 ---

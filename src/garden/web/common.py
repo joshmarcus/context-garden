@@ -36,13 +36,18 @@ LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed",
 LOGGER = logging.getLogger("garden.web")
 
 
-def _flash_url(url: str, message: str, note: str = "") -> str:
-    """Append a flash message (and, for the answer form, the typed note) to a redirect target."""
+def _flash_url(url: str, message: str, note: str = "", extra: dict[str, str] | None = None) -> str:
+    """Append a flash message (and, for the answer form, the typed note) to a redirect target.
+    `extra` carries a form's other typed fields back (the new-task form) so they survive a
+    validation-failure redirect."""
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query))
     query["flash"] = message
     if note:
         query["flash_note"] = note
+    for k, v in (extra or {}).items():
+        if v:
+            query[k] = v
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 

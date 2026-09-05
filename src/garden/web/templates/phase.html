@@ -58,6 +58,33 @@
         <button>Run personas</button>
       </form>
     </div>
+    <details class="panel" id="new-task"{% if new_task.title or new_task.goal or new_task.context %} open{% endif %}>
+      <summary>New task</summary>
+      <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/new-task" style="margin-top:10px; display:flex; flex-direction:column; gap:10px">
+        <label style="display:block">Title<br><input type="text" name="title" value="{{ new_task.title }}" placeholder="one line" required style="width:100%; box-sizing:border-box"></label>
+        <label style="display:block">Goal<br><textarea name="goal" rows="2" placeholder="One or two sentences.">{{ new_task.goal }}</textarea></label>
+        <label style="display:block">Context<br><textarea name="context" rows="3" placeholder="What the agent needs to know that is not in the reading list.">{{ new_task.context }}</textarea></label>
+        <label style="display:block">Acceptance criteria<br><textarea name="acceptance" rows="4">{{ new_task.acceptance }}</textarea></label>
+        <div class="actions">
+          <label>Difficulty
+            <select name="difficulty">
+              {% for tier in DIFFICULTIES %}<option value="{{ tier }}" {% if new_task.difficulty == tier %}selected{% endif %}>{{ tier }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Priority
+            <select name="priority">
+              {% for word, n in PRIORITY_SCALE %}<option value="{{ n }}" {% if new_task.priority == n|string %}selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}
+            </select>
+          </label>
+        </div>
+        <label style="display:block">Reading list<br><textarea name="reading" rows="2" placeholder="one path per line, e.g. {{ phase.product }}/{{ phase.name }}/specs/spec.md">{{ new_task.reading }}</textarea></label>
+        <label style="display:block">Dependencies<br><input type="text" name="depends_on" value="{{ new_task.depends_on }}" placeholder="task ids, comma separated" style="width:100%; box-sizing:border-box"></label>
+        <div class="actions">
+          <label class="check"><input type="checkbox" name="ready" value="1" {% if new_task.ready %}checked{% endif %}> approve now</label>
+          <button class="primary">Create task</button>
+        </div>
+      </form>
+    </details>
     <div class="panel prose"><div class="eyebrow">Goals</div>{{ goals_html|safe }}</div>
   </div>
   <div class="stack">
