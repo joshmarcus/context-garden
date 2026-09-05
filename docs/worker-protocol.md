@@ -311,7 +311,12 @@ in a heredoc and pipes it to `ssh <host> sh -s`. On the host, the script refresh
 host's clone of the product repo, creates or reuses a worktree under
 `<repo>/.garden-worktrees/<id>` on the task branch, runs the harness with the brief on
 stdin, commits leftovers and pushes the branch itself (the host has push access; the
-scheduler's machine may not). The harness's stdout comes back over the ssh connection into
+scheduler's machine may not). The harness and the setup command run under the same
+allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
+`setup.env`), applied in shell: every other variable of the remote login environment is
+unset before they run, so a host's ambient tokens do not reach the worker either — only
+the git fetch and push keep the login environment, since the host does its own pushing.
+The harness's stdout comes back over the ssh connection into
 the same `stdout.json`, and the same `exit_code` file is written locally. On reap the
 scheduler fetches the branch, requires commits ahead of the base, and materialises a
 local worktree from `origin/<branch>` so reviews and revise runs have one. The

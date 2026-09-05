@@ -29,7 +29,9 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
        | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
        | qa (the `garden qa` agent: every flow ok, or FAKE_CLAUDE_QA_FAIL's flow failed, plus one finding)
-Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY.
+Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY;
+with FAKE_CLAUDE_ENV_DUMP set it also writes its own environment there (used to assert on the
+ssh runner's remote scrub).
 """
 
 from __future__ import annotations
@@ -436,6 +438,9 @@ def handle(call: Call) -> int:
     except OSError:
         pass
     Path(call.env.get("FAKE_CLAUDE_BRIEF_COPY", "/dev/null")).write_text(call.brief)
+    dump = call.env.get("FAKE_CLAUDE_ENV_DUMP")
+    if dump:  # record the environment the harness ran in, so a test can assert on the scrub
+        Path(dump).write_text("\n".join(f"{k}={v}" for k, v in sorted(call.env.items())))
     special = SPECIAL.get(mode) or (review if mode.startswith("review") else None)
     if special is not None:
         return int(special(call) or 0)

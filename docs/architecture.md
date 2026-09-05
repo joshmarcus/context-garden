@@ -513,7 +513,10 @@ spending tokens; a failed flow exits non-zero and fails the job.
 - Workers commit and never push; the scheduler pushes and never commits code of its own
   (it only commits a worker's leftover changes before pushing).
 - A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
-  scheduler's variables plus `worker_env.pass` and the product's `setup.env`, never its
-  GitHub token, cloud credentials or ssh agent. The ssh runner's remote worker gets the
-  remote login environment, which is that host's to set.
+  scheduler's variables (`runner.base.PASS_ENV`, widened by `worker_env.pass`) plus the
+  product's `setup.env`, never its GitHub token, cloud credentials or ssh agent. The ssh
+  runner's remote worker gets the same allowlist applied to the remote login environment: its
+  remote script runs the harness and the setup command with every other variable unset, so a
+  host's ambient tokens do not reach the worker either. Only git's own fetch and push on the
+  remote keep the login environment, since the remote host does its own pushing.
 - No model runs in the tick. Waiting is a sleeping Python process.
