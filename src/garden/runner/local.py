@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
-from .base import Runner, RunnerError, run_setup
+from .base import Runner, RunnerError, run_setup, scrubbed_env
 
 
 class LocalRunner(Runner):
@@ -40,16 +40,13 @@ class LocalRunner(Runner):
         return " ".join(shlex.quote(c) for c in self.harness_argv(run, worktree, final_path))
 
     def worker_env(self, run: Run, setup: dict[str, Any]) -> dict[str, str]:
-        """The environment a worker runs in: this process's, minus CLAUDECODE (so a worker
-        can be launched from inside another Claude Code session), plus the product's
-        `setup.env`, the run's identity and a GARDEN_ROOT that keeps `garden` commands off
-        the live garden: any `garden` command run inside the worktree hits find_root(),
-        which checks this variable and fails loudly because the path below does not
-        contain a garden.yaml."""
-        env = dict(os.environ)
-        env.pop("CLAUDECODE", None)
-        for k, v in (setup.get("env") or {}).items():  # the prepared environment the worker runs in
-            env[str(k)] = str(v)
+        """The environment a worker runs in: the scrubbed one (`runner.base.scrubbed_env`:
+        an allowlist of this process's variables plus `worker_env.pass` and the product's
+        `setup.env`, never the scheduler's GitHub token or cloud credentials), plus the
+        run's identity and a GARDEN_ROOT that keeps `garden` commands off the live garden:
+        any `garden` command run inside the worktree hits find_root(), which checks this
+        variable and fails loudly because the path below does not contain a garden.yaml."""
+        env = scrubbed_env(self.config, setup)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
         env["GARDEN_ROOT"] = no_live_garden_root(run.path)
@@ -60,10 +57,13 @@ class LocalRunner(Runner):
             raise RunnerError("local runner needs a harness")
         d = run.path
         setup = dict(self.config.get("setup") or {})
-        run_setup(worktree, setup, log_path=d / "setup.log")  # prepare the env before the worker starts
+        # The scrubbed environment (see worker_env): what the setup command and the worker
+        # get, and nothing else of the scheduler's.
+        env = self.worker_env(run, setup)
+        run_setup(worktree, setup, log_path=d / "setup.log", env=env)  # prepare the env before the worker starts
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
-        self.launch(run, worktree, brief_path, self.worker_env(run, setup))
+        self.launch(run, worktree, brief_path, env)
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
         """Start the harness detached: a shell runs it in the worktree with the brief on

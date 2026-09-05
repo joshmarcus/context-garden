@@ -379,6 +379,14 @@ checks:
 brief:
   inline_max_chars: 24000   # bigger reading files are referenced, not inlined
   total_max_chars: 120000
+worker_env:
+  pass: []                  # a worker (and its setup command) keeps only PATH, HOME, locale, proxy and CA
+                            # settings and the harness's own ANTHROPIC_*/CLAUDE_*/OPENAI_*/CODEX_* variables;
+                            # no GitHub token, cloud credentials or ssh agent. Add names or globs here,
+                            # e.g. [AWS_*] for a Bedrock-backed harness; ["*"] passes everything
+web:
+  trusted_origins: []       # `garden serve` refuses a POST whose Origin (or Referer) is another site; list
+                            # extra origins here, e.g. [https://garden.internal], behind a proxy that rewrites Host
 harnesses:
   claude:
     bin: claude
@@ -401,6 +409,10 @@ github:
   automerge_method: squash  # squash | merge | rebase
   automerge_min_review_rounds: 1   # require at least this many automated review rounds
   automerge_tiers: [easy, medium]  # only these difficulty tiers automerge; hard waits for a person
+  trusted_authors: []       # logins whose PR comments may become a worker's revise brief, besides the
+                            # login the garden authenticates as, the `reviewers` above and [bot] accounts.
+                            # A comment by anyone else is logged on the task and ignored: on a public
+                            # repo anyone can comment, and a comment is text a worker would carry out
   bot_logins: []            # accounts whose PR comments are ignored, e.g. [dependabot]; every other
                             # bot counts as a reviewer (a Codex or Copilot review app is one you installed)
   bot_notice_patterns:      # a bot comment matching one of these (case-insensitive substring) is a

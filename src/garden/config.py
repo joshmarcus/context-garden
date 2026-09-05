@@ -62,6 +62,8 @@ DEFAULTS: dict[str, Any] = {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
         "reviewers": [],
+        "trusted_authors": [],    # logins whose PR comments may become a worker prompt, besides the
+                                  # garden's own login, `reviewers` and [bot] accounts; others are logged and ignored
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
@@ -70,6 +72,14 @@ DEFAULTS: dict[str, Any] = {
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
+    },
+    "worker_env": {
+        "pass": [],               # extra environment variable names or globs a worker and its setup
+                                  # command keep, on top of runner.base.PASS_ENV; everything else is dropped
+    },
+    "web": {
+        "trusted_origins": [],    # origins besides the server's own host whose POSTs `garden serve`
+                                  # accepts, e.g. [https://garden.internal] behind a reverse proxy
     },
     "products": {},
 }

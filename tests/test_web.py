@@ -325,7 +325,7 @@ def test_inbox_triage_flow(garden, monkeypatch):
     c = TestClient(create_app(store, watch=False))
     home = c.get("/").text
     assert "Triage a draft PR" in home and "DM-001" in home and "Ready for review" in home
-    r = c.post("/tasks/DM-001/triage-changes", data={"note": "tighten the tests"}, headers={"referer": "http://t/"}, follow_redirects=False)
+    r = c.post("/tasks/DM-001/triage-changes", data={"note": "tighten the tests"}, headers={"referer": "http://testserver/"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].endswith("/")
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "changes_requested"
     sched.tick()
@@ -631,3 +631,78 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert t.priority == 9
     page = c.get("/tasks/DM-001").text
     assert 'value="9" selected' in page
+
+
+# ---- trust at the edges (CG-154): sanitised HTML, an origin check on POSTs ---------------
+
+
+def test_rendered_markdown_is_sanitised():
+    from garden.web.common import render_md
+    from garden.web.trust import safe_json, sanitize_html
+
+    html = render_md(
+        "# Title\n\nSome **bold** and a [link](https://example.com/a?b=1&c=2).\n\n"
+        "<script>alert(1)</script>\n\n<a href=\"javascript:alert(1)\" onclick=\"x()\">click</a>\n\n"
+        "<img src=x onerror=alert(1)>\n\n```py\nif a < b: pass\n```\n\n| a | b |\n|---|---|\n| 1 | <i>2</i> |\n"
+    )
+    assert "<script" not in html and "alert(1)" not in html
+    assert "onclick" not in html and "onerror" not in html and "javascript:" not in html
+    assert "<h1>Title</h1>" in html and "<strong>bold</strong>" in html
+    assert '<a href="https://example.com/a?b=1&amp;c=2">link</a>' in html
+    assert '<code class="language-py">if a &lt; b: pass' in html
+    assert "<table>" in html and "<i>2</i>" in html
+    assert sanitize_html("<style>x</style><iframe src=//e></iframe>after <b>b</b><u>u</u>") == "after <b>b</b><u>u</u>"
+    assert sanitize_html("<a href='data:text/html,x'>d</a><a href='/tasks/X'>r</a>") == '<a>d</a><a href="/tasks/X">r</a>'
+    assert safe_json({"k": "</script><'&"}) == '{"k": "\\u003c/script\\u003e\\u003c\\u0027\\u0026"}'
+
+
+def test_pages_neutralise_agent_written_html(garden):
+    """A task body (planner or worker output), pending PR feedback (a commenter) and a spec
+    render as prose, never as script or event handlers."""
+    from garden.scheduler import State
+    from garden.store import Store
+
+    s = Store(garden)
+    t = s.task("DM-001")
+    t.body += "\n\n<script>alert('body')</script>\n\n<p onmouseover=\"steal()\">hover</p> **fine**\n"
+    s.save(t)
+    st = State(garden / ".garden" / "state.json")
+    st.get("DM-001")["pending_feedback"] = "- **mallory**: <img src=x onerror=\"alert('fb')\"> please <em>rename</em>"
+    st.save()
+    (garden / "demo" / "p1" / "specs" / "spec.md").write_text("# spec\n\n<iframe src=\"//evil.example\"></iframe>\n\nDetails.\n")
+    c = client(garden)
+    for url in ("/tasks/DM-001", "/phases/demo/p1"):
+        page = c.get(url).text
+        assert "alert(" not in page and "onmouseover" not in page and "onerror" not in page and "<iframe" not in page, url
+    page = c.get("/tasks/DM-001").text
+    assert "<strong>fine</strong>" in page and "hover" in page and "<em>rename</em>" in page
+
+
+def test_posts_from_another_origin_are_refused(garden):
+    c = client(garden)
+    # A form posted by a page on another site carries its Origin: refused, nothing changes.
+    r = c.post("/tasks/DM-002/cancel", headers={"Origin": "http://evil.example"}, follow_redirects=False)
+    assert r.status_code == 403 and "not this server" in r.text
+    assert "cancelled" not in c.get("/api/tasks").json()[1]["status"]
+    r = c.post("/tick", headers={"Origin": "null"}, follow_redirects=False)
+    assert r.status_code == 403
+    r = c.post("/pause", headers={"Referer": "http://evil.example/page"}, follow_redirects=False)
+    assert r.status_code == 403
+    # GETs are never blocked, whatever their Origin.
+    assert c.get("/board", headers={"Origin": "http://evil.example"}).status_code == 200
+    # The server's own pages post with its Origin (or Referer); a script with neither is not a browser.
+    assert c.post("/tasks/DM-001/unapprove", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    assert c.post("/tasks/DM-001/approve", headers={"Referer": "http://testserver/tasks/DM-001"}, follow_redirects=False).status_code == 303
+    assert c.post("/tasks/DM-002/cancel", follow_redirects=False).status_code == 303
+    assert c.get("/api/tasks").json()[1]["status"] == "cancelled"
+
+
+def test_trusted_origins_from_config_are_accepted(garden):
+    import yaml
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["web"] = {"trusted_origins": ["https://garden.internal/"]}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    c = client(garden)
+    assert c.post("/tick", headers={"Origin": "https://garden.internal"}, follow_redirects=False).status_code == 303
+    assert c.post("/tick", headers={"Origin": "https://other.internal"}, follow_redirects=False).status_code == 403

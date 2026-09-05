@@ -61,7 +61,8 @@ class Feedback:
     """Review feedback newer than a given timestamp, flattened to markdown."""
 
     items: list[dict[str, Any]] = field(default_factory=list)
-    # Bot comments that matched a notice pattern and carried no finding: not feedback,
+    # Comments that were skipped: a bot notice with no finding (`reason: notice`), or a
+    # comment by an author the garden does not trust (`reason: untrusted`). Not feedback,
     # but worth a line in the task log so a human can see what was skipped and why.
     ignored: list[dict[str, Any]] = field(default_factory=list)
 
@@ -113,6 +114,7 @@ class GitHub:
         token: str | None = None,
         bot_logins: list[str] | None = None,
         bot_notice_patterns: list[str] | None = None,
+        trusted_authors: list[str] | None = None,
     ):
         self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         self.gh = shutil.which("gh") if use_gh else None
@@ -120,6 +122,7 @@ class GitHub:
         self.bot_notice_patterns = [
             str(p).lower() for p in (bot_notice_patterns if bot_notice_patterns is not None else DEFAULT_BOT_NOTICE_PATTERNS)
         ]
+        self.trusted_authors = {str(a).strip() for a in (trusted_authors or []) if str(a).strip()}
         self._me: str | None = None
 
     @property
@@ -164,6 +167,21 @@ class GitHub:
             except GitHubError:
                 self._me = ""
         return self._me
+
+    def is_trusted(self, author: str) -> bool:
+        """Whether a PR comment by `author` may become a worker prompt.
+
+        Trusted: the login the garden authenticates as (the person driving it), a login in
+        `github.trusted_authors` (the scheduler adds `github.reviewers`), and `[bot]`
+        accounts (a review app the repo owner installed; `github.bot_logins` drops the
+        unwanted ones). Anyone else who can comment on a PR is not: on a public repo that is
+        everyone, and a comment is text a worker would carry out."""
+        author = (author or "").strip()
+        if not author:
+            return False
+        if author in self.trusted_authors or author.endswith("[bot]"):
+            return True
+        return author == self.me()
 
     def is_authenticated(self) -> bool:
         if self.gh:
@@ -273,7 +291,8 @@ class GitHub:
         return self._pr_from_rest(p)
 
     def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
-        """Reviews, review (line) comments and issue comments newer than `since_iso`."""
+        """Reviews, review (line) comments and issue comments newer than `since_iso`, from
+        trusted authors only (see `is_trusted`); the rest is returned as `ignored`."""
         # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
         # driving the garden usually is the login `gh` uses, and their comments must count.
         # Bots count too (a review app is a reviewer the person installed); `bot_logins` from
@@ -282,12 +301,22 @@ class GitHub:
         items: list[dict[str, Any]] = []
         ignored: list[dict[str, Any]] = []
 
+        def newer(created: str) -> bool:
+            return created > since_iso if since_iso else True
+
         def keep(author: str, created: str, body: str) -> bool:
             if not body.strip() or GARDEN_MARKER in body:
                 return False
             if author in exclude:
                 return False
-            return created > since_iso if since_iso else True
+            return newer(created)
+
+        def untrusted(author: str, created: str, body: str) -> bool:
+            """Record a comment whose author may not prompt a worker; True when it was."""
+            if self.is_trusted(author):
+                return False
+            ignored.append({"author": author, "body": body, "created": created, "reason": "untrusted"})
+            return True
 
         def is_notice(author: str, body: str) -> bool:
             """A bot comment with no finding: a notice pattern match, unless it points at code."""
@@ -309,24 +338,25 @@ class GitHub:
             created = r.get("submitted_at", "") or ""
             body = r.get("body", "") or ""
             state = r.get("state", "")
-            if state == "CHANGES_REQUESTED" and (created > since_iso if since_iso else True) and author not in exclude:
-                items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
-            elif keep(author, created, body):
+            if state == "CHANGES_REQUESTED" and newer(created) and author not in exclude:
+                if not untrusted(author, created, body or "(changes requested)"):
+                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
+            elif keep(author, created, body) and not untrusted(author, created, body):
                 if is_notice(author, body):
-                    ignored.append({"author": author, "body": body, "created": created})
+                    ignored.append({"author": author, "body": body, "created": created, "reason": "notice"})
                 else:
                     items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
         for c in comments:
             author = c.get("user", {}).get("login", "")
-            if keep(author, c.get("created_at", ""), c.get("body", "")):
+            if keep(author, c.get("created_at", ""), c.get("body", "")) and not untrusted(author, c["created_at"], c["body"]):
                 # a comment on a diff line always points at code, notice or not
                 items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
             body = c.get("body", "")
-            if keep(author, c.get("created_at", ""), body):
+            if keep(author, c.get("created_at", ""), body) and not untrusted(author, c["created_at"], body):
                 if is_notice(author, body):
-                    ignored.append({"author": author, "body": body, "created": c["created_at"]})
+                    ignored.append({"author": author, "body": body, "created": c["created_at"], "reason": "notice"})
                 else:
                     items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))

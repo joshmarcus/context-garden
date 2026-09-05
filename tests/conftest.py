@@ -88,6 +88,9 @@ def garden(tmp_path: Path) -> Path:
         "timeout_minutes": 1,
         "review": {"enabled": False},
         "github": {"draft_pr": False},  # most tests exercise the non-draft flow; test_triage covers drafts
+        # Workers run in a scrubbed environment (runner.base.scrubbed_env); the fake harness picks
+        # its scenario from FAKE_CLAUDE_* and needs the interpreter's PYTHONPATH/coverage hooks.
+        "worker_env": {"pass": ["FAKE_CLAUDE_*", "PYTHONPATH", "COVERAGE_*"]},
         "harnesses": {
             "claude": {"bin": str(FAKE_CLAUDE), "max_turns": {"easy": 40, "medium": 5, "hard": 80}},
             "codex": {"bin": str(FAKE_CODEX), "models": {"easy": "gpt-mini", "medium": "gpt-std", "hard": "gpt-max"}},

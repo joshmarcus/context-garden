@@ -92,10 +92,16 @@ cd /garden/.garden/worktrees/WID-003 && timeout 5400 \
 echo $? > /garden/.garden/runs/WID-003/20260904T120000Z-work/exit_code
 ```
 
-The exact command is saved as `command.txt` next to the brief. The environment is the
-scheduler's, minus `CLAUDECODE` (so a garden can be driven from inside another Claude Code
-session), plus `GARDEN_TASK_ID` and `GARDEN_RUN_ID`. The shell's pid is stored in
-`run.json`. For Codex the inner command is `codex exec --json --skip-git-repo-check
+The exact command is saved as `command.txt` next to the brief. The environment is
+**scrubbed**, not inherited: of the scheduler's variables the worker (and the product's
+`setup.command`, which runs in the worktree first) keeps only an allowlist
+(`runner.base.PASS_ENV`: `PATH`, `HOME`, the locale, proxy and CA settings, and the
+harness's own `ANTHROPIC_*`/`CLAUDE_*`/`OPENAI_*`/`CODEX_*`), plus whatever
+`worker_env.pass` in `garden.yaml` names, plus the product's `setup.env`; then
+`GARDEN_TASK_ID`, `GARDEN_RUN_ID` and the `GARDEN_ROOT` sentinel are set. No GitHub
+token, cloud credential or ssh agent reaches the worker: it commits in its worktree and
+the scheduler pushes. (`CLAUDECODE` is dropped so a garden can be driven from inside
+another Claude Code session.) The shell's pid is stored in `run.json`. For Codex the inner command is `codex exec --json --skip-git-repo-check
 --full-auto -m <model> --output-last-message final.md -`, with the same wrapper; a custom
 harness is whatever `command:` template the config gives, with `{model}` and `{final}`
 filled in.

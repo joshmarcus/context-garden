@@ -91,7 +91,7 @@ of the loop touch different files.
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
-| `web/app.py`, `web/common.py` | `create_app` and the template environment; the `Hub`, the `Site` (base template context, board data) and shared helpers |
+| `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub`, the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
 | `web/pages/` | one module per page family (`inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
@@ -363,9 +363,18 @@ files under `tasks/` must not be hand-edited.
   (and only then); a base that moved but is still red simply re-parks against the new tip. The
   event is `rebased_stale_base`.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
-  `last_dispatched_at` count, minus the garden's own login (the `gh` user or the token's
-  user) and `[bot]` accounts, so the scheduler's own review comments never trigger a
-  revise run. The revise brief carries only those new items, not the whole thread.
+  `last_dispatched_at` count, minus the garden's own comments (recognised by a hidden
+  marker) and the accounts in `github.bot_logins`, so the scheduler's own review comments
+  never trigger a revise run. The revise brief carries only those new items, not the whole
+  thread.
+- **Only trusted authors prompt a worker.** A comment is text a worker would carry out, and
+  on a public repo anyone can leave one. `GitHub.is_trusted` admits the login the garden
+  authenticates as, `github.trusted_authors`, the `github.reviewers` it requests, and
+  `[bot]` accounts (review apps the owner installed). Everything else, a `CHANGES_REQUESTED`
+  review included, is returned as `ignored` with the reason `untrusted`, logged once on the
+  task with a `feedback_ignored` event, and never reaches a brief. The GitHub review
+  decision still gates automerge, so an untrusted request for changes blocks a merge
+  without steering a worker.
 - **CI.** The scheduler reads the checks rollup on the PR head, whichever system posts
   it. Log analysis is whatever `checks.ci` names; nothing assumes GitHub Actions.
 
@@ -404,6 +413,12 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
   and `POST /tasks/{id}/{action}` is a table lookup). No build step and no CDN: charts
   and the trellis are server-rendered SVG, live regions poll a partial every few seconds.
   `garden serve` runs the scheduler loop in a background thread unless `--no-watch`.
+  Two checks sit at its edges (`web/trust.py`): every piece of markdown a page renders
+  (task bodies, PR feedback, review verdicts, persona reports, specs) is reduced to an
+  allowlist of tags and attributes with safe link targets, since much of it was written by
+  an agent or a commenter; and a POST whose `Origin` (or `Referer`) is another site is
+  refused with 403, so a page open elsewhere in the same browser cannot press the buttons
+  (`web.trusted_origins` lists any extra origin a reverse proxy presents).
 - **TUI** (`tui/app.py`, Textual): an Inbox tab and a Tasks tab with the same actions,
   refreshing every few seconds so it can sit beside a `garden watch`.
 - **Skills** (`.claude/skills/`, written by `garden init`): `garden-take`, `garden-plan`
@@ -473,4 +488,8 @@ runs it all in well under a minute; CI for this repository runs the same in
 - Only `scheduler` changes a task's status; the CLI, web and TUI call it.
 - Workers commit and never push; the scheduler pushes and never commits code of its own
   (it only commits a worker's leftover changes before pushing).
+- A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
+  scheduler's variables plus `worker_env.pass` and the product's `setup.env`, never its
+  GitHub token, cloud credentials or ssh agent. The ssh runner's remote worker gets the
+  remote login environment, which is that host's to set.
 - No model runs in the tick. Waiting is a sleeping Python process.

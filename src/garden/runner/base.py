@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import subprocess
@@ -15,6 +16,35 @@ class RunnerError(Exception):
     pass
 
 
+# The scheduler's environment variables a worker keeps, and the setup command that prepares
+# its worktree with it. Everything else is dropped: a worker inherits no GitHub token, no
+# cloud credentials, no ssh agent and no `GARDEN_*` of the live garden, because it only
+# commits in its worktree and the scheduler does the pushing. A trailing `*` matches a
+# prefix. `worker_env.pass` in garden.yaml adds names (`AWS_*` for a Bedrock-backed
+# harness, a private registry token for `setup.command`); `"*"` restores full inheritance.
+PASS_ENV: tuple[str, ...] = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "COLUMNS", "LINES",
+    "LANG", "LANGUAGE", "LC_*", "TZ", "TMPDIR", "TMP", "TEMP", "XDG_*",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+    "ANTHROPIC_*", "CLAUDE_*",   # the claude harness's own credentials and settings
+    "OPENAI_*", "CODEX_*",       # the codex harness's
+)
+
+
+def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None) -> dict[str, str]:
+    """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
+    the names or globs under `config['worker_env']['pass']`, then `setup['env']` on top.
+    `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session."""
+    extra = [str(p) for p in (((config or {}).get("worker_env") or {}).get("pass") or []) if str(p)]
+    patterns = [*PASS_ENV, *extra]
+    env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
+    env.pop("CLAUDECODE", None)
+    for k, v in ((setup or {}).get("env") or {}).items():
+        env[str(k)] = str(v)
+    return env
+
+
 def setup_stamp(command: str) -> str:
     """A fingerprint of the setup command; the marker holds this so a changed command re-runs."""
     return hashlib.sha256(command.encode("utf-8", "replace")).hexdigest()
@@ -26,11 +56,13 @@ def setup_marker(worktree: Path) -> Path:
     return worktree.parent / f".garden-setup-{worktree.name}"
 
 
-def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | None = None) -> None:
+def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | None = None,
+              env: dict[str, str] | None = None) -> None:
     """Prepare a fresh worktree's environment: run `setup['command']` once (again only when the
-    command changes, tracked by a marker file) with `setup['env']` added to the environment.
-    A non-zero exit raises RunnerError with the log tail — a run failure, not a worker fault.
-    An empty or missing command is a no-op, so products that need no setup pay nothing."""
+    command changes, tracked by a marker file) in `env` (default: `scrubbed_env`)
+    with `setup['env']` added. A non-zero exit raises RunnerError with the log tail — a run
+    failure, not a worker fault. An empty or missing command is a no-op, so products that
+    need no setup pay nothing."""
     command = str((setup or {}).get("command") or "").strip()
     if not command:
         return
@@ -38,7 +70,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     stamp = setup_stamp(command)
     if marker.exists() and marker.read_text().strip() == stamp:
         return
-    env = dict(os.environ)
+    env = dict(env) if env is not None else scrubbed_env({}, setup)
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     timeout = int((setup or {}).get("timeout_seconds") or 600)
