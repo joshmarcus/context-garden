@@ -132,7 +132,7 @@ def _ensure_base(repo: Path, worktree: Path, base: str) -> bool:
         ref = base_ref(repo, base)
     except GitError:
         return False
-    if _is_ancestor(worktree, ref, "HEAD"):
+    if is_ancestor(worktree, ref, "HEAD"):
         return False  # branch already contains `base`; nothing to do
     ahead = git("rev-list", "--count", f"{ref}..HEAD", cwd=worktree).strip()
     if ahead != "0":
@@ -236,7 +236,7 @@ def stash_all(worktree: Path, message: str) -> str:
     return git("rev-parse", "refs/stash", cwd=worktree).strip()
 
 
-def _is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
+def is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
     """Return True if ref_a is an ancestor of ref_b (or equal)."""
     proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True)
     return proc.returncode == 0
@@ -268,8 +268,8 @@ def push(worktree: Path, branch: str, force: bool = False, base: str = "", lease
     elif base:
         try:
             origin_sha = git("rev-parse", f"origin/{branch}", cwd=worktree).strip()
-            if not _is_ancestor(worktree, f"origin/{branch}", "HEAD"):
-                if _is_ancestor(worktree, f"origin/{base}", "HEAD"):
+            if not is_ancestor(worktree, f"origin/{branch}", "HEAD"):
+                if is_ancestor(worktree, f"origin/{base}", "HEAD"):
                     args.append(f"--force-with-lease={branch}:{origin_sha}")
                     note = "rebased branch force-pushed"
         except GitError:
@@ -322,7 +322,7 @@ def sync_to_origin_head(worktree: Path, branch: str, backup_ref: str) -> list[st
     if local_head == origin_head:
         return []
     subjects: list[str] = []
-    if not _is_ancestor(worktree, local_head, origin_head):
+    if not is_ancestor(worktree, local_head, origin_head):
         subjects = commits_between(worktree, origin_head, local_head)
         if subjects:
             git("branch", backup_ref, local_head, cwd=worktree)
@@ -346,7 +346,7 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
         git("rev-parse", "--verify", f"origin/{branch}", cwd=worktree)
     except GitError:
         return True, []  # no remote branch yet: nothing to fold in
-    if _is_ancestor(worktree, f"origin/{branch}", "HEAD"):
+    if is_ancestor(worktree, f"origin/{branch}", "HEAD"):
         return True, []  # the remote holds nothing the worktree lacks
     try:
         git("rebase", f"origin/{branch}", cwd=worktree)
