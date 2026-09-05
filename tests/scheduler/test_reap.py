@@ -546,3 +546,20 @@ def test_review_dispatch_is_deferred_while_a_worker_run_is_in_flight(sched, fake
     assert next(r for r in sched.runs.runs_for("DM-001") if r.run_id == revise_run.run_id).status == "done"
     assert any(r.mode == "review" for r in sched.runs.runs_for("DM-001"))
     assert not sched.state.get("DM-001").get("pending_reviews")
+
+
+def test_tick_report_carries_duration_and_slowest_step(garden, fake_github):
+    """CG-182: every pass records its own duration and the slowest step, and warns when it
+    runs over the tick.warn_seconds budget, naming the slow step."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    logs: list[str] = []
+    sched = Scheduler(Store(garden), github=fake_github, log=logs.append)
+    sched.cfg.data["tick"] = {"warn_seconds": 0.001}  # any real pass exceeds this tiny budget
+    rep = sched.tick()
+    assert rep.duration_s > 0
+    assert rep.slowest_step in {"reap", "poll", "base_reprobe", "merge_queue", "dispatch", "audit"}
+    assert "took" in rep.timing() and "slowest" in rep.timing()
+    assert rep.timing() in rep.summary()
+    assert any("exceeded" in m and "budget" in m for m in logs)
