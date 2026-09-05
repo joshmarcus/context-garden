@@ -394,9 +394,10 @@ All three are thin. They read `Store`, `State`, `RunStore` and `EventLog`, call 
   `garden serve` runs the scheduler loop in a background thread unless `--no-watch`.
 - **TUI** (`tui/app.py`, Textual): an Inbox tab and a Tasks tab with the same actions,
   refreshing every few seconds so it can sit beside a `garden watch`.
-- **Skills** (`.claude/skills/`): `garden-take`, `garden-plan` and `garden-review` let an
-  interactive Claude Code session act as a worker, planner or reviewer through the manual
-  runner, so a person can pair on a task without leaving the loop.
+- **Skills** (`.claude/skills/`, written by `garden init`): `garden-take`, `garden-plan`
+  and `garden-review` let an interactive Claude Code session act as a worker, planner or
+  reviewer through the manual runner; `garden-operate` is the operator's playbook for a
+  running loop. A person can pair on a task, or run the loop, without leaving it.
 
 ## Configuration and environments
 

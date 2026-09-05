@@ -311,6 +311,15 @@ the description. Bounded by `review.max_rounds`.
 Adding a runner: subclass `garden.runner.base.Runner` (`start`, `collect`) and register
 it in `garden/runner/__init__.py`.
 
+## Skills
+
+`garden init` writes four skills to `.claude/skills/`: `garden-take` (pick up a task,
+do the work, hand it back through `finish`), `garden-plan` (turn goals and specs into
+task files from an interactive session), `garden-review` (review a task's PR against its
+brief), and `garden-operate` (watch a live loop, read where its state lives, and clear
+the stall patterns operators actually hit). They let a person pair with an interactive
+Claude Code session anywhere in the loop instead of leaving it for a headless run.
+
 ## Web UI and TUI
 
 `garden serve` (default port 8765, localhost only). The home page is the **Inbox**: the
