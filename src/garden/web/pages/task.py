@@ -15,6 +15,7 @@ from ...inbox import approve_phase_options, attention_view, split_log
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
+from ...trials import TrialLog, ranking_markdown
 from ..common import Site, render_md
 
 
@@ -60,6 +61,8 @@ def register(app: FastAPI, site: Site) -> None:
                     move_phases.append(ph.name)
         later_deps = deps_in_later_phase(t, tasks, phase_index)
         approve_phases = approve_phase_options(s, t) if t.status.value == "draft" else []
+        trial_log = TrialLog(s.config.garden_dir / "trials.jsonl")
+        prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
@@ -78,6 +81,7 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
+            prior_trials=prior_trials,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

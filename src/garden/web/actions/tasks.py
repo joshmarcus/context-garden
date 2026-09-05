@@ -165,7 +165,10 @@ def trial(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> No
     dupe = next((label for label in labels if labels.count(label) > 1), "")
     if dupe:
         raise RuntimeError(f"contenders must be distinct; {dupe} was picked more than once")
-    sched.start_trial(t, contenders)
+    # A task with an open PR only reaches this action through the "Model trial again…" button
+    # (task.html shows it only once a trial has concluded), so `again` here mirrors the person
+    # clicking that button — the same confirmation `--again` gives the CLI.
+    sched.start_trial(t, contenders, again=True, keep_prs=applies_to.strip() == "keep_prs")
 
 
 @action("suggest")
