@@ -91,6 +91,34 @@ def register(app: FastAPI, site: Site) -> None:
             return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 
+    @app.post("/phases/{product}/{phase}/retro-answer")
+    def retro_answer(product: str, phase: str, key: str = Form(""), answer: str = Form(""), choice: str = Form("")):
+        back = f"/phases/{product}/{phase}/retro"
+        text = answer.strip() or choice.strip()
+        if not text:
+            return RedirectResponse(_flash_url(back, "an answer cannot be empty"), status_code=303)
+        try:
+            with hub.action_lock:
+                sched = hub.scheduler()
+                try:
+                    ph = sched.store.phase(product, phase)
+                except KeyError:
+                    raise HTTPException(404) from None
+                sched.retro_answer(ph, key, text, by="web")
+        except HTTPException:
+            raise
+        except KeyError:
+            raise HTTPException(404, "no such retro question") from None
+        except (RuntimeError, GitError, GitHubError) as e:
+            message = str(e)
+            hub._log(f"retro-answer {product}/{phase} failed: {message}")
+            return RedirectResponse(_flash_url(back, message), status_code=303)
+        except Exception:
+            LOGGER.exception("retro-answer %s/%s failed", product, phase)
+            hub._log(f"retro-answer {product}/{phase} failed: unexpected error, see the log")
+            return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
+        return RedirectResponse(back, status_code=303)
+
     @app.post("/phases/{product}/{phase}/budget")
     def set_budget(product: str, phase: str, amount: str = Form(""), no_budget: str = Form("")):
         key = f"{product}/{phase}"

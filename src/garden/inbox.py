@@ -18,6 +18,7 @@ from .store import Store
 GROUPS = [
     ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
     ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer.", "decision"),
+    ("retro_question", "Answer the retro's question", "A retrospective put a decision to you. Your answer lands in the retro document and the next phase's goals, where the planner reads it as settled.", "decision"),
     ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
@@ -342,6 +343,19 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             "age": _age(tgt.updated if tgt else str(d.get("at") or "")),
             "difficulty": tgt.difficulty if tgt else "",
             "decision": str(d.get("id") or ""), "decision_kind": str(d.get("kind") or ""),
+        })
+
+    for q in getattr(sched, "pending_retro_questions", list)():
+        why = q.get("context") or "a decision the retro left to you"
+        if q.get("blocking"):
+            why += " · blocks closing until answered"
+        items.append({
+            "group": "retro_question", "group_title": titles["retro_question"], "task": "",
+            "title": q.get("question", ""), "phase": q.get("phase_key", ""), "status": "", "pr": "",
+            "why": why, "actions": [], "age": "", "difficulty": "",
+            "retro_key": str(q.get("key") or ""), "product": str(q.get("product") or ""),
+            "phase_name": str(q.get("phase_name") or ""), "options": list(q.get("options") or []),
+            "default": str(q.get("default") or ""), "blocking": bool(q.get("blocking")),
         })
 
     for key in sorted({t.key for t in tasks.values()}):

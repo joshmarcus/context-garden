@@ -19,6 +19,19 @@
     </div>{% endif %}
   </div>
   <div class="stack">
+    {% if questions %}
+    <div class="panel"><div class="eyebrow">Questions for the human</div>
+      {% for q in questions %}
+      <div style="padding:10px 0; border-bottom:1px dashed var(--line)">
+        <div><b>{{ q.question }}</b>{% if q.blocking %} <span class="badge">blocks closing</span>{% endif %}</div>
+        {% if q.context %}<div class="muted" style="font-size:13px; margin-top:4px">{{ q.context }}</div>{% endif %}
+        {% if q.options %}<div class="muted mono" style="font-size:12px; margin-top:4px">options: {{ q.options|join(', ') }}</div>{% endif %}
+        {% if q.answer %}<div style="margin-top:6px">→ <b>{{ q.answer }}</b> <span class="muted mono" style="font-size:11.5px">{{ q.answered_by }}{% if q.answered_at %} · {{ q.answered_at[:10] }}{% endif %}</span></div>
+        {% else %}<div class="muted" style="margin-top:6px; font-size:13px">unanswered — answer it on the <a href="/inbox">Inbox</a></div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="panel"><div class="eyebrow">Persona reports</div>
       {% for r in persona_heads %}
       <div style="padding:10px 0; border-bottom:1px dashed var(--line)">

@@ -306,6 +306,30 @@ def retro_decide(
         console.print(f"  blocking task(s): {', '.join(rec['blocking_ids'])}")
 
 
+@app.command("retro-answer")
+def retro_answer(
+    target: str = typer.Argument(..., help="product/phase"),
+    key: str = typer.Argument(..., help="the question key (see the retro page or `garden inbox`)"),
+    answer: str = typer.Argument(..., help="the answer to record"),
+):
+    """Answer a retro's question to the owner. The answer lands under `## Answers` in the
+    phase's retro document and under `## Decisions` in the next phase's goals (both left
+    uncommitted for `garden commit`), so the planner reads it as settled."""
+    store = _store()
+    product, phase_name = _split_target(target)
+    ph = _phase(store, product, phase_name)
+    sched = _scheduler(store)
+    try:
+        q = sched.retro_answer(ph, key, answer, by="cli")
+    except KeyError:
+        err.print(f"[red]{ph.key} has no unanswered retro question {key!r}; see `garden inbox`[/red]")
+        raise typer.Exit(1) from None
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{ph.key}: recorded the answer to {key!r}: {q['answer']}")
+
+
 @app.command()
 def usage(
     target: str | None = typer.Argument(None, help="task id, product/phase, or nothing for everything"),

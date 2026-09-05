@@ -169,13 +169,15 @@ def register(app: FastAPI, site: Site) -> None:
         summary = phase_summary(all_events, phase_tasks)
         runs = sum(r["runs"] for r in summary["metrics"]["tasks"])
         cancelled = sum(1 for t in ph.tasks if t.status.value == "cancelled")
-        spent = hub.reader().spent_for(ph.key)
+        sched = hub.reader()
+        spent = sched.spent_for(ph.key)
+        questions = sched.retro_questions_for(ph.key)
         return templates.TemplateResponse(request, "phase_retro.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, summary=summary,
             runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
-            persona_heads=persona_heads, retro_tasks=retro_tasks))
+            persona_heads=persona_heads, retro_tasks=retro_tasks, questions=questions))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
     def phase_doc(request: Request, product: str, phase: str, name: str):

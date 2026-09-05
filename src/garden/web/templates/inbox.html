@@ -25,6 +25,7 @@
       <div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>
       <div class="why">{{ it.why }}</div>
       {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
+      {% if it.group == 'retro_question' and it.default %}<div class="why">retro suggests: {{ it.default }}</div>{% endif %}
       {% if it.group == 'decision' and it.final %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
       {% if it.review %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
       {% if it.group == 'attention' %}
@@ -41,6 +42,13 @@
         <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
       {% elif it.group == 'question' %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
+      {% elif it.group == 'retro_question' %}
+        <form method="post" action="/phases/{{ it.product }}/{{ it.phase_name }}/retro-answer" style="flex-direction:column;align-items:stretch">
+          <input type="hidden" name="key" value="{{ it.retro_key }}">
+          {% for opt in it.options %}<label style="display:block"><input type="radio" name="choice" value="{{ opt }}"{% if opt == it.default %} checked{% endif %}> {{ opt }}</label>{% endfor %}
+          <textarea name="answer" placeholder="Your answer (overrides a selected option). Leave it for later to keep the question open."></textarea>
+          <button class="primary">Answer</button>
+        </form>
       {% elif it.group == 'decision' %}
         <form method="post" action="/tasks/{{ it.task }}/accept"><button class="primary">Accept{% if it.decision_kind == 'wont_do' %} (won't do){% else %} (resume){% endif %}</button></form>
         <form method="post" action="/tasks/{{ it.task }}/reject" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Why you disagree. It goes back to the worker in a revise round." required></textarea><button>Reject and send back</button></form>
