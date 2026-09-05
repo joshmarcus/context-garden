@@ -108,9 +108,11 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .rail .foot { margin-top:auto; font:11.5px/1.5 var(--mono); color:var(--faint); display:flex; flex-direction:column; gap:8px; }
 main { padding:26px 32px 60px; max-width:1320px; min-width:0; }  /* min-width:0 so wide content (the board, tables) scrolls inside its container instead of widening the page */
 .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:18px; }
+.page-head > div:first-child { flex:1; min-width:0; }
 .page-head h1 { margin:0; font:500 30px/1.1 var(--display); letter-spacing:-.01em; text-wrap:balance; }
-.page-head p { margin:4px 0 0; color:var(--muted); max-width:62ch; }
+.page-head p { margin:4px 0 0; color:var(--muted); max-width:90ch; text-wrap:pretty; }
 .page-head .tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+@media (max-width: 1000px) { .page-head { flex-direction:column; align-items:flex-start; } .page-head .tools { width:100%; } }
 .eyebrow { font:400 11px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
 
 /* ---- controls -------------------------------------------------------------------- */
