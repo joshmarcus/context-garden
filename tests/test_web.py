@@ -278,8 +278,8 @@ def test_budget_form_and_route(garden):
 
     c = client(garden)
     page = c.get("/phases/demo/p1").text
-    assert "/phases/demo/p1/budget" in page and "no budget" in page
-    # it applies on blur/change, no Set button beside it
+    assert "/phases/demo/p1/budget" in page and "no cap" in page
+    # it applies on blur, a single field, no Set button beside it
     assert 'data-autosave' in page and 'onblur="this.form.requestSubmit()"' in page
     assert "<button>Set</button>" not in page
     # Set a cap.
@@ -288,7 +288,13 @@ def test_budget_form_and_route(garden):
     assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 42.0
     assert "of $42" in c.get("/phases/demo/p1").text
     assert "set at runtime" in c.get("/config").text
-    # Switch it off with the "no budget" checkbox.
+    # Clearing the field (an empty amount) switches it back off; `no_budget` also still
+    # works directly against the route for anything posting to it besides the page's form.
+    r = c.post("/phases/demo/p1/budget", data={"amount": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
+    r = c.post("/phases/demo/p1/budget", data={"amount": "42"}, follow_redirects=False)
+    assert r.status_code == 303
     r = c.post("/phases/demo/p1/budget", data={"no_budget": "1", "amount": "42"}, follow_redirects=False)
     assert r.status_code == 303
     assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0

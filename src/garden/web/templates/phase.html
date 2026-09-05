@@ -8,7 +8,6 @@
     <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
       <span class="muted">Budget $</span>
       <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px" onblur="this.form.requestSubmit()">
-      <label class="check"><input type="checkbox" name="no_budget" value="1" onchange="this.form.requestSubmit()"> no budget</label>
       <span class="autosave-mark" aria-live="polite"></span>
     </form></div>
   <div class="tools">{% if has_retro %}<a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}/retro">Retro</a>{% endif %}<a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
