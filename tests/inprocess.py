@@ -91,12 +91,12 @@ class InProcessRunner(LocalRunner):
         (d / "checks.json").write_text(json.dumps(results))
         (d / "exit_code").write_text("0\n")
 
-    def _probe_launch(self, argv: list[str], prompt: str, cwd: Path, env: dict[str, str]) -> tuple[str, str]:
+    def _probe_launch(self, argv: list[str], stdin_text: str, cwd: Path, env: dict[str, str]) -> tuple[str, str]:
         fake = FAKES.get(Path(argv[0]).name)
         if fake is None:
             raise RunnerError(f"in-process runner has no fake for harness binary {argv[0]!r}; "
                               f"known: {', '.join(sorted(FAKES))}")
-        stdout, stderr, _code = fake(argv[1:], prompt, cwd, env)
+        stdout, stderr, _code = fake(argv[1:], stdin_text, cwd, env)
         return stdout, stderr
 
     def wake(self, run: Run) -> None:

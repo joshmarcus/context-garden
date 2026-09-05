@@ -91,7 +91,7 @@ class QuotaMixin:
             try:
                 runner = self.runner_for(probe_task, "local", name)
                 cwd = self.store.config.garden_dir / "probe" / name
-                result = runner.probe("Reply with OK; this is a health check, not a task.", cwd)
+                result = runner.probe(cwd)
             except Exception as e:  # noqa: BLE001 - keep the tick alive on a probe failure
                 rep.errors.append(f"harness {name} probe failed: {e}")
                 continue
