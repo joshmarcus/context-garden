@@ -79,25 +79,58 @@ def branch_exists(repo: Path, branch: str) -> bool:
         return False
 
 
+def _ensure_base(repo: Path, worktree: Path, base: str) -> bool:
+    """Reconcile `worktree`'s branch with `base`; return True if it was fast-forwarded.
+
+    A stacked task's `base` is its parent's branch, not the product base. But a branch that
+    already exists (reused worktree, or a branch left over on disk or origin from an earlier
+    dispatch when the parent had no PR yet) can be sitting on a stale base — this is how a
+    task whose brief says "based on <parent-branch>" ended up checked out at `main`. When the
+    branch has no commits of its own (its HEAD is already contained in `base`) it is safe to
+    fast-forward it onto `base`, which is the git surgery a worker otherwise had to do by hand.
+    When the branch carries its own commits on a different base we leave it: a reset would
+    throw that work away, and rebasing is the caller's job (see rebase_onto / _restack)."""
+    if not base:
+        return False
+    try:
+        ref = base_ref(repo, base)
+    except GitError:
+        return False
+    if _is_ancestor(worktree, ref, "HEAD"):
+        return False  # branch already contains `base`; nothing to do
+    ahead = git("rev-list", "--count", f"{ref}..HEAD", cwd=worktree).strip()
+    if ahead != "0":
+        return False  # branch has its own commits on a different base; leave it for a rebase
+    git("merge", "--ff-only", "-q", ref, cwd=worktree)
+    return True
+
+
 def prepare_worktree(repo: Path, path: Path, branch: str, base: str) -> Path:
-    """Create (or reuse) a worktree on `branch`, creating the branch from `base` if needed."""
+    """Create (or reuse) a worktree on `branch`, creating the branch from `base` if needed.
+
+    However the worktree is established, the branch is reconciled with `base` (see
+    _ensure_base): a branch with no commits of its own is fast-forwarded onto `base`, so a
+    stacked task actually sits on its parent's branch instead of a stale base."""
     fetch(repo)
     if path.exists() and (path / ".git").exists():
         # reuse; make sure we're on the right branch
         cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=path).strip()
         if cur != branch:
             git("checkout", branch, cwd=path)
+        _ensure_base(repo, path, base)
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     git("worktree", "prune", cwd=repo)
     if branch_exists(repo, branch):
         git("worktree", "add", str(path), branch, cwd=repo)
+        _ensure_base(repo, path, base)
     else:
         remote_branch = f"origin/{branch}" if remote_url(repo) else ""
         if remote_branch:
             try:
                 git("rev-parse", "--verify", remote_branch, cwd=repo)
                 git("worktree", "add", "--track", "-b", branch, str(path), remote_branch, cwd=repo)
+                _ensure_base(repo, path, base)
                 return path
             except GitError:
                 pass
