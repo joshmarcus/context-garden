@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ...brief import build_brief
 from ...events import EventLog
-from ...graph import blockers, dependents, effective_status
+from ...graph import blockers, dependents, deps_in_later_phase, effective_status
 from ...inbox import attention_view
 from ...review import review_to_markdown
 from ...runs import RunStore
@@ -45,6 +45,18 @@ def register(app: FastAPI, site: Site) -> None:
         suggestions = parse_suggestions(t.body)
         edit_diff = _edit_diff(runs)
 
+        # Phases this task can move to (the product's own phases, current one always shown even
+        # if closed), and any dependency that now sits in a later phase and so can never merge
+        # before this task (a state a move can create).
+        phase_index: dict[str, int] = {}
+        move_phases: list[str] = []
+        for prod in s.products():
+            for i, ph in enumerate(prod.phases):
+                phase_index[ph.key] = i
+                if prod.name == t.product and (not ph.closed or ph.name == t.phase):
+                    move_phases.append(ph.name)
+        later_deps = deps_in_later_phase(t, tasks, phase_index)
+
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
@@ -60,6 +72,7 @@ def register(app: FastAPI, site: Site) -> None:
             attention=attention_view(t, st, rs),
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
+            move_phases=move_phases, later_deps=later_deps,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

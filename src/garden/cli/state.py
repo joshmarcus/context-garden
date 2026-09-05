@@ -1,5 +1,5 @@
-"""`garden` state changes: approve, priority, difficulty, set-status, accept, reject, cancel,
-retry, discuss, decide, commit, pr."""
+"""`garden` state changes: move, approve, priority, difficulty, set-status, accept, reject,
+cancel, retry, discuss, decide, commit, pr."""
 
 from __future__ import annotations
 
@@ -7,6 +7,21 @@ import typer
 
 from ..model import STATUS_ORDER, Status, priority_label
 from .common import _scheduler, _split_target, _store, _task, app, console, err
+
+
+# --------------------------------------------------------------------------- move
+@app.command()
+def move(task_id: str, target: str = typer.Argument(..., help="product/phase")):
+    """Move a task to another phase of the same product, keeping its id, history and state."""
+    store = _store()
+    t = _task(store, task_id)
+    product, phase = _split_target(target)
+    try:
+        _scheduler(store).move(t, product, phase)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id} -> {product}/{phase}")
 
 
 # --------------------------------------------------------------------------- state changes

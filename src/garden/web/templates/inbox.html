@@ -70,6 +70,7 @@
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
       {% elif it.group == 'approve' %}
         <form method="post" action="/tasks/{{ it.task }}/approve"><button class="primary">Approve</button></form>
+        {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
       {% elif it.group == 'budget' %}
         <span class="muted mono">{{ it.actions[0].command }}</span>
