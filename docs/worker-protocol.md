@@ -189,6 +189,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "summary": "1-3 sentences", "question": "only for needs_input",
                 "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
+                "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
                 "friction": ["short item"], "notes": "...",
                 "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
 ```
@@ -199,6 +200,13 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
   description itself must change (the current one then stays). Process narration goes in
   `pr_comment`, posted as a PR comment.
+- `verified` speaks to each acceptance criterion by name: one entry per criterion, in order,
+  with `evidence` (the test that proves it, the command and its output, or the page and what
+  it shows), or `not_done` with a `reason`. The scheduler builds the PR body's `## Verification`
+  section from this list (`garden.criteria`), so the worker does not write one itself; the
+  automated review is shown the same list to check each claim against the diff, and
+  `garden metrics` reports criteria met on the first review per tier. A criterion with no
+  evidence is a finding, not a pass.
 - `friction` is a list of short items (missing context, a confusing spec, tooling pain). The
   scheduler posts them as one marked PR comment and appends them to the phase's friction
   record; `garden friction` harvests them for the next planning round. Friction never goes in
@@ -263,10 +271,14 @@ commits and the harness's usage numbers are all it uses.
 ### 6. The review run answers the same way
 
 A review is a worker with a different brief: the task brief without the operating rules,
-the PR title and body, and the diff against the base (inlined under
-`review.max_diff_chars`, otherwise read from git in the worktree). It ends with
-`GARDEN_REVIEW: {"verdict", "summary", "description_ok", "description_feedback",
-"findings": [...]}`. Reaping it posts the verdict as a PR comment; `request_changes`
+the PR title and body, the diff against the base (inlined under `review.max_diff_chars`,
+otherwise read from git in the worktree), and the author's per-criterion `verified` claims
+under "Author's verification". It ends with `GARDEN_REVIEW: {"verdict", "summary",
+"criteria": [{"criterion", "met", "reason"}], "description_ok", "description_feedback",
+"findings": [...]}`. `criteria` speaks to each acceptance criterion by name, checking the
+author's evidence against the diff; a criterion with no evidence, or one the author marked
+not done without a reason the reviewer accepts, is `met: false` and a blocking finding.
+Reaping it posts the verdict as a PR comment; `request_changes`
 turns the blocking findings and the description feedback into the next revise brief.
 Persona reviews (`GARDEN_PERSONA:`) and trial comparisons (`GARDEN_COMPARE:`) use the same
 transport and their own marker.
