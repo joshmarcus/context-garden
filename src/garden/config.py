@@ -27,6 +27,7 @@ DEFAULTS: dict[str, Any] = {
     "runner": "local",
     "harness": "claude",
     "max_parallel": 10,
+    "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "max_attempts": 2,
     "max_revisions": 3,
     "timeout_minutes": 90,

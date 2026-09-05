@@ -173,11 +173,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             "inbox_count": len(decisions(items)),
             "env": s.config.env,
             "running": running_now(s),
+            "workers_running": len(sched.worker_runs_active()),
+            "reviews_running": len(sched.review_runs_active()),
+            "max_parallel": sched.effective_max_parallel(),
+            "review_parallel": sched.review_parallel_limit(),
             "totals": RunStore(s.config.garden_dir).totals(),
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,
             "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
-            "max_parallel": sched.effective_max_parallel(),
             "flash": request.query_params.get("flash", ""),
             "flash_note": request.query_params.get("flash_note", ""),
             **kw,
@@ -567,6 +570,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         cfg = s.config
         sched = Scheduler(s, log=lambda m: None)
         effective = {
+            "review_parallel": sched.review_parallel_limit(),
             "auto_dispatch": cfg.get("auto_dispatch"),
             "auto_revise": cfg.get("auto_revise"),
             "tick_interval": cfg.get("tick_interval"),
