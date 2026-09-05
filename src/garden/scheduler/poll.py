@@ -184,7 +184,24 @@ class PollMixin:
             return False  # a task-level opt-out
         return bool(self._github_cfg("automerge", task.product, False))
 
-    def _automerge_gate(self, task: Task, pr: PRInfo) -> tuple[bool, str]:
+    def _hard_tier_automerge(self, task: Task) -> bool:
+        """Whether this hard-tier PR may merge under the two-round + scratch-merge policy
+        (config `github.automerge_hard_tier`, default on). Only the hard tier is affected;
+        easy and medium keep following `automerge_tiers`. When on, a hard-tier PR merges after
+        two approving review rounds and the garden's own scratch-merge check (CG-191)."""
+        if task.difficulty != "hard":
+            return False
+        return bool(self._github_cfg("automerge_hard_tier", task.product, True))
+
+    def _scratch_merge_verified(self, task: Task) -> bool:
+        """Whether the hard-tier scratch-merge check has passed for the current reviewed diff.
+        The recorded result is keyed to `last_diff_hash`, so a revise round (a changed diff)
+        invalidates it while a clean rebase (unchanged diff) keeps it."""
+        st = self.state.get(task.id)
+        sm = st.get("scratch_merge") or {}
+        return bool(sm.get("ok")) and str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "")
+
+    def _automerge_gate(self, task: Task, pr: PRInfo, require_scratch: bool = True) -> tuple[bool, str]:
         """Whether every gate the loop already has is green, and the first reason it is not.
         The task must be `in_review` before this is called (a draft, a stall or a pending
         revise round have already taken it elsewhere)."""
@@ -198,13 +215,16 @@ class PollMixin:
         if pr.base and pr.base != final_base:
             parent = st.get("stack_parent") or pr.base
             return False, f"stacked on {parent}; waits for the restack"
+        hard_tier = self._hard_tier_automerge(task)
         tiers = [str(x) for x in (self._github_cfg("automerge_tiers", task.product, ["easy", "medium"]) or [])]
-        if task.difficulty not in tiers:
+        if task.difficulty not in tiers and not hard_tier:
             return False, f"tier `{task.difficulty}` is not in automerge_tiers ({', '.join(tiers) or 'none'})"
         rev = st.get("last_review") or {}
         if str(rev.get("verdict") or "") != "approve":
             return False, f"the automated review verdict is {rev.get('verdict') or 'not in yet'}, not approve"
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
+        if hard_tier:
+            min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
         if str(st.get("pending_feedback") or "").strip():
@@ -228,6 +248,11 @@ class PollMixin:
         budget = self.budget_for(task)
         if budget and self.spent_for(task.key) >= budget:
             return False, f"phase {task.key} is over budget"
+        if require_scratch and hard_tier and not self._scratch_merge_verified(task):
+            sm = st.get("scratch_merge") or {}
+            if str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "") and not sm.get("ok"):
+                return False, f"the hard-tier scratch-merge check failed ({sm.get('checks') or 'checks'})"
+            return False, "the hard-tier scratch-merge check has not passed for this revision"
         return True, ""
 
     def _maybe_automerge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
@@ -247,9 +272,32 @@ class PollMixin:
                 # rebase must not drop it here (that would rotate the head). _advance_merge_head
                 # decides when the head leaves the queue, and keeps its ready_at until then.
                 return
+            # A hard-tier PR that clears every other gate gets the garden's own scratch-merge
+            # check dispatched here; the recorded pass then clears the gate on a later tick.
+            self._maybe_dispatch_scratch_merge(task, pr, rep)
             self._queue_hold(task, reason)
             return
         self._queue_join(task)
+
+    def _maybe_dispatch_scratch_merge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
+        """Hard-tier automerge (CG-191): before a hard-tier PR may merge, the garden runs its own
+        scratch-merge check — the pre-PR suite on the branch rebased onto the base tip in a
+        throwaway worktree. Dispatch it once every other gate is green and this revision has not
+        already been verified, and not while another check for the task is in flight."""
+        if not self._hard_tier_automerge(task):
+            return
+        st = self.state.get(task.id)
+        if self._scratch_merge_verified(task):
+            return  # this revision is already verified
+        sm = st.get("scratch_merge") or {}
+        if sm and str(sm.get("diff") or "") == str(st.get("last_diff_hash") or ""):
+            return  # a result (a recorded failure) for this revision already stands
+        if st.get("check_run"):
+            return  # a check run is already in flight for this task
+        ok, _ = self._automerge_gate(task, pr, require_scratch=False)
+        if not ok:
+            return  # something else holds the merge; don't spend a scratch run yet
+        self._dispatch_scratch_merge(task, rep)
 
     def _cleanup(self, task: Task) -> None:
         try:

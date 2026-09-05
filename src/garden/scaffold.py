@@ -288,8 +288,8 @@ hand edit of `state.json` (never of a task's status field). Actions you will use
 Before pressing anything on a task, confirm its PR is still open: an action landing seconds
 after automerge moves a `done` task back into the loop (seen once; CG-142).
 
-Before merging a PR by hand (hard tier does not automerge), confirm nothing merged since its
-CI last ran: `gh pr view N --json mergeStateStatus` must say `CLEAN`, not `BLOCKED` or
+Before merging a PR by hand (with `automerge_hard_tier` off, hard tier does not automerge),
+confirm nothing merged since its CI last ran: `gh pr view N --json mergeStateStatus` must say `CLEAN`, not `BLOCKED` or
 `BEHIND`. If something did, wait for the scheduler's rebase round rather than merging a
 green-but-stale branch (2026-09-05: two such merges a minute apart left main red).
 
