@@ -83,6 +83,33 @@ class Run:
         end = dt.datetime.fromisoformat(self.finished_at) if self.finished_at else dt.datetime.now(dt.UTC)
         return max(0.0, (end - start).total_seconds() / 60)
 
+    def last_activity_at(self) -> dt.datetime | None:
+        """The most recent sign of life from the worker: its captured output growing or
+        any file in its worktree changing. A worker's edits and commits touch the
+        worktree, and streamed output grows stdout.json, so the newest of these mtimes
+        stands in for "is it doing anything". Returns None when nothing is measurable
+        yet (e.g. a remote run with no local worktree and no output)."""
+        times: list[float] = []
+        for name in ("stdout.json", "stderr.log"):
+            try:
+                times.append((self.path / name).stat().st_mtime)
+            except OSError:
+                pass
+        if self.worktree:
+            m = _newest_mtime(Path(self.worktree))
+            if m:
+                times.append(m)
+        if not times:
+            return None
+        return dt.datetime.fromtimestamp(max(times), dt.UTC)
+
+    def idle_minutes(self) -> float:
+        """Minutes since the last sign of life (see last_activity_at). 0 when unknown."""
+        last = self.last_activity_at()
+        if last is None:
+            return 0.0
+        return max(0.0, (dt.datetime.now(dt.UTC) - last).total_seconds() / 60)
+
     def kill(self) -> None:
         if self.pid and _pid_alive(self.pid):
             try:
@@ -115,6 +142,25 @@ class Run:
     def stderr_text(self) -> str:
         p = self.path / "stderr.log"
         return p.read_text() if p.exists() else ""
+
+
+def _newest_mtime(root: Path) -> float:
+    """Newest mtime of any file under root, skipping the .git bookkeeping dir. 0.0 for an
+    empty, missing or unreadable tree. Used to tell whether a worker is still touching its
+    worktree (a linked worktree's .git is a gitlink file, not a dir, so it costs nothing to
+    skip; a plain checkout's .git dir is skipped so git's own churn is not read as work)."""
+    newest = 0.0
+    for dirpath, dirnames, filenames in os.walk(root):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for name in filenames:
+            try:
+                m = os.stat(os.path.join(dirpath, name)).st_mtime
+            except OSError:
+                continue
+            if m > newest:
+                newest = m
+    return newest
 
 
 def _pid_alive(pid: int) -> bool:

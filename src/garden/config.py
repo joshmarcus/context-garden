@@ -30,6 +30,8 @@ DEFAULTS: dict[str, Any] = {
     "max_attempts": 2,
     "max_revisions": 3,
     "timeout_minutes": 90,
+    "idle_minutes": 10,           # warn: show "idle N min" once a running worker has gone this long with no output or file change
+    "idle_kill_minutes": 20,      # stop: past this a silent worker is killed and handled like a timeout (retry or fail); 0 disables
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,

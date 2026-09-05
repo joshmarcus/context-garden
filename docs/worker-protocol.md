@@ -117,6 +117,12 @@ exits, `garden serve` may be restarted, the laptop may sleep. The run's existenc
 - a run older than `timeout_minutes` + 5 is killed by process group and marked
   `timeout`; the `timeout` in the command line is the first line of defence at exactly
   `timeout_minutes`.
+- a run that has produced no output and touched no file in its worktree for
+  `idle_minutes` is shown as "idle N min" on the running card; past `idle_kill_minutes`
+  it is killed by process group and marked `timeout`, so a worker gone silent is stopped
+  well before `timeout_minutes`. "Activity" is the newest mtime under the worktree (its
+  `.git` aside) and the growth of the run's `stdout.json`/`stderr.log`; `idle_kill_minutes: 0`
+  disables the stop.
 
 The web UI's "Running now" list and `garden runs` read the same `run.json` files. The
 worker, meanwhile, sees a normal repository checkout on a branch and a prompt that ends
@@ -284,6 +290,7 @@ the JSON array it prints as task files.
 | the worker forgets the result line | exit 0, no `GARDEN_RESULT` | same as a crash; the final message is kept in `final.md` |
 | the worker did nothing | `done` with zero commits ahead of the base | run failed; retry or fail |
 | the worker runs too long | elapsed time past `timeout_minutes` + 5 | kills the process group, marks the run `timeout`, retries or fails |
+| the worker goes silent | no output or worktree change for `idle_kill_minutes` | kills the process group, marks the run `timeout`, retries or fails (shown as "idle N min" from `idle_minutes`) |
 | the machine rebooted mid-run | pid gone, no `exit_code` | treated as a finished run with no output: retry or fail |
 | the push is rejected | git error after the commits were counted | `failed` with the error in the log; the commits stay in the worktree |
 | GitHub is unreachable | `gh` and the token both unavailable, or the API errors | the task moves to `in_review` with a note to open the PR by hand and register it with `garden pr ID URL` |

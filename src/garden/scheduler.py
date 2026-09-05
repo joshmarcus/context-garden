@@ -523,7 +523,7 @@ class Scheduler:
             return False
         if run.status == "timeout":
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="timeout", cost_usd=None)
-            self._retry_or_fail(task, run, rep, "worker timed out")
+            self._retry_or_fail(task, run, rep, f"worker {run.error}" if run.error else "worker timed out")
             return True
         self.finalize(task, run, runner, rep)
         return True
@@ -531,12 +531,23 @@ class Scheduler:
     def _finished_or_timed_out(self, run: Run, runner: Runner) -> bool:
         if run.process_finished():
             return True
+        if not runner.detached:
+            return False
         timeout_min = float(self.cfg.get("timeout_minutes", 90) or 0)
-        if runner.detached and timeout_min and run.elapsed_minutes() > timeout_min + 5:
+        if timeout_min and run.elapsed_minutes() > timeout_min + 5:
             run.kill()
             run.status = "timeout"
             run.finished_at = now_iso()
             run.error = "timed out"
+            run.save()
+            return True
+        idle_kill_min = float(self.cfg.get("idle_kill_minutes", 0) or 0)
+        idle_min = run.idle_minutes() if idle_kill_min else 0.0
+        if idle_kill_min and idle_min >= idle_kill_min:
+            run.kill()
+            run.status = "timeout"
+            run.finished_at = now_iso()
+            run.error = f"idle {round(idle_min)} min (no output or file change)"
             run.save()
             return True
         return False

@@ -172,6 +172,7 @@ output. Details of the transport are in `docs/worker-protocol.md`; the decisions
 | `status: done` but no commits ahead of the base | marks the run failed | `ready` or `failed`, as above |
 | `status: done` with commits | files discovered work as tasks, commits leftovers, pushes, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
 | still running after `timeout_minutes` + 5 | kills the process group | `ready` or `failed` |
+| no output or worktree change for `idle_kill_minutes` | shown as "idle N min" past `idle_minutes`, then kills the process group like a timeout | `ready` or `failed` |
 
 A failed *revise* run goes straight to `failed` (there is a PR to look at, and retrying the
 same feedback rarely helps). Remote (ssh) runs are the same except that the worker pushed
@@ -343,8 +344,8 @@ host list without touching the shared file. Per-product blocks under `products:`
 `garden doctor` prints which files were loaded and what it found.
 
 Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
-`review.max_rounds`, `timeout_minutes`, `budgets`, `stall.enabled`. Hitting a cap
-flags the task for a human instead of retrying.
+`review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+Hitting a cap flags the task for a human instead of retrying.
 
 ## Extension points
 

@@ -4,7 +4,7 @@
 Reads the brief from stdin, does something to the cwd (a git worktree) depending on
 FAKE_CLAUDE_MODE, and prints a `claude -p --output-format json`-shaped result.
 
-Modes: done (default) | nocommit | blocked | crash | noresult | plan | review-ok | review-bad | review-desc
+Modes: done (default) | nocommit | blocked | crash | stall (sleeps, no output) | noresult | plan | review-ok | review-bad | review-desc
        | review-rewrite (description-only review that returns description_rewrite)
        | needs_input (asks once; a --resume run finishes) | discover (done + discovered work)
        | discover-kinds (done + a task, a duplicate + cancel decision, and a note)
@@ -44,6 +44,17 @@ Path(os.environ.get("FAKE_CLAUDE_BRIEF_COPY", "/dev/null")).write_text(brief)
 if mode == "crash":
     print("boom", file=sys.stderr)
     sys.exit(1)
+
+if mode == "stall":
+    # A worker that goes silent: no commit, no file change, no output. It just sleeps,
+    # so the scheduler must notice it is idle and stop it. If it is never killed it wakes
+    # and finishes cleanly, so a test that forgets to kill it still terminates.
+    import time as _time
+    _time.sleep(float(os.environ.get("FAKE_CLAUDE_STALL_SECONDS", "30")))
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                      "result": 'Awake.\nGARDEN_RESULT: {"status": "done", "summary": "napped", "pr_title": "t", "pr_body": "b"}',
+                      "usage": {}, "total_cost_usd": 0.0}))
+    sys.exit(0)
 
 if mode == "plan":
     items = [
