@@ -4,7 +4,7 @@
 <div class="page-head"><div><h1>Model trials</h1><p>The same task, several models, one comparison. Scores accumulate here so the tier-to-model map is a decision, not a guess.</p></div></div>
 <div class="panel">
   <div class="eyebrow">Filter by contender</div>
-  <form method="get" action="/trials" class="trial-filter" data-trial-filter data-harnesses='{{ harness_choices|tojson }}' data-harness="{{ filter_harness }}" data-model="{{ filter_model }}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+  <form method="get" action="/trials" class="trial-filter" data-trial-filter data-harnesses='{{ harness_choices|default({})|tojson }}' data-harness="{{ filter_harness }}" data-model="{{ filter_model }}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
     <input type="hidden" name="harness"><input type="hidden" name="model">
     <div class="trial-filter-row"></div>
     <button class="quiet">Filter</button>

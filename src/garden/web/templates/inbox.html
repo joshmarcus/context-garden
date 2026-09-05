@@ -26,7 +26,7 @@
       <div class="why">{{ it.why }}</div>
       {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
       {% if it.group == 'decision' and it.final %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
-      {% if it.review %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
+      {% if it.get('review') %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
       {% if it.group == 'attention' %}
         {% if it.kind_blurb %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
         {% if it.evidence %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
@@ -50,7 +50,7 @@
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
-      {% elif it.group == 'attention' and it.decision %}
+      {% elif it.group == 'attention' and it.get('decision') %}
         <form method="post" action="/decisions/{{ it.decision }}/accept"><button class="primary">Accept</button></form>
         <form method="post" action="/decisions/{{ it.decision }}/reject"><button class="quiet danger">Reject</button></form>
       {% elif it.group == 'attention' %}
@@ -89,7 +89,7 @@
     <div class="eyebrow">Report friction about this process</div>
     <form method="post" action="/friction-report" style="margin-top:8px">
       <input type="hidden" name="page" value="/inbox">
-      <select name="product" data-phases='{{ phases_by_product|tojson }}' data-phase-target="friction-phase" style="margin-bottom:6px">
+      <select name="product" data-phases='{{ phases_by_product|default({})|tojson }}' data-phase-target="friction-phase" style="margin-bottom:6px">
         {% for p in products if p.phases %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
       </select>
       <select name="phase" id="friction-phase" style="margin-bottom:6px"></select>
