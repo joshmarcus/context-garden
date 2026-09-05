@@ -436,11 +436,18 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
   const toggle = document.getElementById("notify-toggle");
   const state = document.getElementById("notify-state");
   if (!box || !toggle) return;
-  const ON = "garden.notify.on", SEEN = "garden.notify.seen";
+  const ON = "garden.notify.on", SEEN = "garden.notify.seen", SEEN_KEYS = "garden.notify.seenKeys";
   const supported = "Notification" in window;
 
   function nowIso() { return new Date().toISOString(); }
   function wanted() { return supported && localStorage.getItem(ON) === "1" && Notification.permission === "granted"; }
+  // /api/decisions is inclusive of `since`, and timestamps are only second-resolution, so
+  // the boundary-second events come back on every poll. A high-water `at` alone would either
+  // re-notify them forever (advance to max, re-query, get them again) or, if we queried
+  // strictly after, silently drop a genuinely new decision that landed in the same second.
+  // So we also remember the identity of the events at that exact second and skip only those.
+  function keyOf(i) { return [i.at, i.kind, i.task, i.phase, i.title].join("\u001f"); }
+  function seenKeys() { try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEYS) || "[]")); } catch (e) { return new Set(); } }
 
   function paint() {
     if (!supported) { toggle.checked = false; toggle.disabled = true; state.textContent = "not supported in this browser"; return; }
@@ -454,7 +461,7 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
     if (!toggle.checked) { localStorage.setItem(ON, "0"); paint(); return; }
     let perm = Notification.permission;
     if (perm === "default") { try { perm = await Notification.requestPermission(); } catch (e) { perm = "denied"; } }
-    if (perm === "granted") { localStorage.setItem(ON, "1"); localStorage.setItem(SEEN, nowIso()); }
+    if (perm === "granted") { localStorage.setItem(ON, "1"); localStorage.setItem(SEEN, nowIso()); localStorage.removeItem(SEEN_KEYS); }
     else { localStorage.setItem(ON, "0"); }
     paint();
     poll();
@@ -482,8 +489,16 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
       if (!r.ok) return;
       const items = await r.json();
       if (!items.length) return;
-      localStorage.setItem(SEEN, items.reduce((m, i) => (i.at > m ? i.at : m), since));
-      fire(items);
+      // Everything the endpoint returns is at or after `since`; the events at exactly the
+      // previous boundary second are the only ones we might have already shown, so skip just
+      // those and fire the rest. Then advance the high-water mark and rebuild the boundary set
+      // from every event now at that newest second (old repeats and new same-second alike).
+      const known = seenKeys();
+      const fresh = items.filter(i => !known.has(keyOf(i)));
+      const maxAt = items.reduce((m, i) => (i.at > m ? i.at : m), since);
+      localStorage.setItem(SEEN, maxAt);
+      localStorage.setItem(SEEN_KEYS, JSON.stringify(items.filter(i => i.at === maxAt).map(keyOf)));
+      if (fresh.length) fire(fresh);
     } catch (e) {}
   }
 

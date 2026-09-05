@@ -85,6 +85,19 @@ def test_endpoint_since_excludes_older_and_page_load_sees_nothing(garden):
     assert "nothing to change" in got[0]["title"]
 
 
+def test_endpoint_repeats_the_boundary_event_so_the_client_must_dedupe(garden):
+    # The client advances its last-seen mark to the newest event's own `at`, then re-polls
+    # with since=that timestamp. Because read() is inclusive of `since`, that boundary event
+    # comes back on the very next poll — the client must filter it out itself, or it would
+    # re-notify the most-recent decision every interval until a newer one arrives.
+    log = _log(garden)
+    ev = log.emit("waiting_human", "DM-001", question="Postgres or SQLite?")
+    c = client(garden)
+    again = c.get("/api/decisions", params={"since": ev["at"]}).json()
+    assert [i["kind"] for i in again] == ["waiting_human"]  # same event, returned again
+    assert again[0]["at"] == ev["at"]
+
+
 # --------------------------------------------------------------------------- the rail + script
 def test_rail_shows_the_toggle_and_the_page_carries_the_script(garden):
     c = client(garden)
@@ -96,3 +109,13 @@ def test_rail_shows_the_toggle_and_the_page_carries_the_script(garden):
     assert "/api/decisions?since=" in html
     assert "Notification.requestPermission" in html
     assert 'tag: "garden-decisions"' in html
+
+
+def test_script_dedupes_the_inclusive_boundary_across_polls(garden):
+    # Guard against a regression to "advance to max `at`, fire every returned item": because
+    # /api/decisions is inclusive of `since`, that re-notifies the newest decision every poll.
+    # The script must remember the events seen at the boundary second and fire only the rest.
+    html = client(garden).get("/").text
+    assert "garden.notify.seenKeys" in html          # the tie-breaker set is persisted
+    assert "const fresh = items.filter" in html       # new items are filtered from the batch
+    assert "if (fresh.length) fire(fresh)" in html    # only the fresh ones notify, not all items
