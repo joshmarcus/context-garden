@@ -1,4 +1,10 @@
-from garden.brief import RESULT_MARKER, build_brief, estimate_brief_tokens, parse_result
+from garden.brief import (
+    RESULT_MARKER,
+    build_brief,
+    estimate_brief_tokens,
+    parse_result,
+    phase_fixed_tokens,
+)
 from garden.store import Store
 
 
@@ -28,6 +34,17 @@ def test_estimate_brief_tokens(garden):
     assert fixed > 0
     assert reading >= 0
     assert fixed + reading > 0
+
+
+def test_phase_fixed_tokens_measured_once_per_phase(garden):
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    fixed = phase_fixed_tokens(store, ph.tasks)
+    # It is the fixed part of a full brief for a task in the phase, not the reading list.
+    b = build_brief(store, ph.tasks[0], include_rules=True)
+    assert fixed == b.fixed_tokens > 0
+    assert fixed < b.tokens  # the reading list is not counted in the fixed cost
+    assert phase_fixed_tokens(store, []) == 0
 
 
 def test_brief_oversized_reading_is_referenced(garden):

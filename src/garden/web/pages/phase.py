@@ -9,7 +9,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from ...brief import build_brief
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...graph import effective_status
@@ -85,10 +84,10 @@ def register(app: FastAPI, site: Site) -> None:
                       for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             ))
 
-        fixed = build_brief(s, ph.tasks[0], include_rules=True) if ph.tasks else None
-        fixed_tokens = fixed.fixed_tokens if fixed else 0
-        from ...brief import estimate_brief_tokens
+        from ...brief import estimate_brief_tokens, phase_fixed_tokens
         from ...personas import DEFAULT_PERSONAS, list_personas
+
+        fixed_tokens = phase_fixed_tokens(s, ph.tasks)
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"

@@ -72,6 +72,10 @@ have had to make:
   product overview, the phase goals, the task body and the reading list (inlined when
   small, listed when large), plus the "Revision round" feedback for revise runs, the
   "Stacked branch" note for stacked runs, and every earlier question and answer.
+  Reading-list snippets are read from the *target checkout* — the worktree above, which is
+  prepared before the brief is built — so a file a dependency created or a stacked parent
+  changed is inlined as the worker will see it, not from a stale base, and a path that
+  truly does not exist there is listed as "not found when the brief was built".
 - **The run record**: `RunStore.new_run()` creates `.garden/runs/<id>/<timestamp>-<mode>/`
   with `run.json` holding the choices above.
 
