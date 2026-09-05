@@ -1444,9 +1444,18 @@ def doctor():
     store = _store()
     ok = True
     console.print(f"root: {store.root}")
+    self_products = [n for n in (store.config.data.get("products", {}) or {}) if store.config.product_self(n)]
     wd = store.config.work_dir
     inside = wd == store.config.garden_dir or store.root in wd.parents
-    console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
+    if inside and self_products:
+        # A self product's clone and per-task worktrees are checkouts of the garden's own
+        # repo; they must not sit inside the live garden. Refuse rather than warn.
+        console.print(f"work dir: {wd}  [red](inside the live garden; product {', '.join(self_products)} "
+                      "is the garden's own repo — set work_dir to a path outside the live garden so its "
+                      "clone and worktrees never sit inside the live checkout)[/red]")
+        ok = False
+    else:
+        console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"
@@ -1517,9 +1526,16 @@ def doctor():
         console.print(f"[yellow]{msg}[/yellow]")
     for p in store.products():
         repo = store.config.product_repo(p.name)
-        console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}")
+        is_self = store.config.product_self(p.name)
+        tag = "  [cyan](self: the garden's own repo; tasks land as PRs to the garden)[/cyan]" if is_self else ""
+        console.print(f"product {p.name}: repo={repo} phases={len(p.phases)} tasks={sum(len(ph.tasks) for ph in p.phases)}{tag}")
         if isinstance(repo, Path) and not (repo / ".git").exists():
             console.print(f"  [red]{repo} is not a git repo[/red]")
+            ok = False
+        if is_self and isinstance(repo, Path) and repo == store.root:
+            console.print(f"  [red]self product {p.name} points at the live garden itself; set repo to the "
+                          "garden's origin (a URL, or a separate clone) so a worker edits a fresh checkout, "
+                          "never the live garden[/red]")
             ok = False
     problems = _validate(store.tasks())
     for pr_ in problems:

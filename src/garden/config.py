@@ -118,6 +118,16 @@ class Config:
             return str(repo)
         return (self.root / str(repo)).resolve()
 
+    def product_self(self, name: str) -> bool:
+        """True when this product's repo is the garden's own repo (config `self: true`).
+        Such a product's tasks change the garden's own files (a friction document, a phase's
+        goals, `garden.yaml`) and land as PRs to the garden repo like any other product. The
+        `self` flag only tightens `garden doctor`: it refuses a `work_dir` inside the live
+        garden, so the garden's clone and per-task worktrees never sit inside the live
+        checkout, and it refuses a repo that resolves to the live garden root itself, so a
+        worker edits a fresh clone, never the live garden (see docs/architecture.md)."""
+        return bool(self.product(name).get("self"))
+
     def product_base_branch(self, name: str) -> str:
         return str(self.product(name).get("base_branch") or "main")
 
