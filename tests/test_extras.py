@@ -83,18 +83,24 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     sched.tick()
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
-    # 1) flaky -> rerun, no revise round
+    # 1) flaky -> the CI analyser runs as a detached check run (CG-182); its continuation reruns
+    #    CI instead of dispatching a revise round
     monkeypatch.setenv("FAKE_CI_MODE", "flaky")
     pr.updated_at, pr.checks, pr.failed_checks = "t2", "FAILURE", ["build"]
-    rep = sched.tick()
-    assert rerun_file.read_text().strip() == "rerun" and rep.dispatched == []
+    dispatched = set(sched.tick().dispatched)  # poll starts the CI check run
+    rep = sched.tick()  # reap it: flaky -> rerun
+    dispatched |= set(rep.dispatched)
+    assert rerun_file.read_text().strip() == "rerun"
+    assert not any("revise" in d for d in dispatched)
     assert statuses(sched)["DM-001"] == "in_review"
     # 2) real failure -> revise brief carries the analyser's details
     monkeypatch.setenv("FAKE_CI_MODE", "fail")
     pr.updated_at = "t3"
-    rep = sched.tick()
+    sched.tick()  # poll starts the CI check run
+    rep = sched.tick()  # reap it: real failure -> revise
     assert "DM-001(revise)" in rep.dispatched
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
+    brief = (revise.path / "brief.md").read_text()
     assert "failed checks: build" in brief and "test_x.py::test_y" in brief
 
 

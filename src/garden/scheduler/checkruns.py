@@ -23,10 +23,10 @@ from ..model import Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
 
-# Which stages report their results under which `check` event stage: the base probe keeps its
-# own label; every pre-PR-style re-check (a fresh push, a stale-base rebase, a pre-merge
-# rebase) reports as "pre_pr", matching the historic synchronous events.
-_EVENT_STAGE = {"base_probe": "base_probe"}
+# Which stages report their results under which `check` event stage: the base probe and the CI
+# analyser keep their own labels; every pre-PR-style re-check (a fresh push, a stale-base rebase,
+# a pre-merge rebase) reports as "pre_pr", matching the historic synchronous events.
+_EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 
 class CheckRunMixin:
@@ -43,17 +43,22 @@ class CheckRunMixin:
                 "stalled": stalled}
 
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
-                            specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport) -> Run:
+                            specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
+                            extra: dict[str, Any] | None = None) -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
-        reap resumes. The slot accounting counts it; the task shows it on its page."""
+        reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
+        keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
         runner = self.runner_for(task, "local")
         run = self.runs.new_run(task.id, "local", mode="check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
-                   "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data}
-        runner.start_checks(run, worktree, payload)
+                   "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
+                   **(extra or {})}
+        # A CI analyser may have no worktree; launch the process somewhere that exists.
+        launch_cwd = worktree if worktree.exists() else run.path
+        runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
         st["check_run"] = {"run_id": run.run_id, "stage": stage, "cont": cont}
         self.events.emit("dispatch", task.id, run=run.run_id, mode="check", stage=stage)
@@ -95,6 +100,7 @@ class CheckRunMixin:
             "reprobe": self._after_reprobe_check,
             "reprobe_conflict": self._after_reprobe_conflict_check,
             "merge_rebase": self._after_merge_rebase_check,
+            "ci": self._after_ci_check,
         }.get(stage)
         if handler is None:
             self.log(f"{task.id}: unknown check stage {stage!r}; results dropped")

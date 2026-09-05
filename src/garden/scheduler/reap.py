@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
-from ..checks import run_checks, to_feedback
+from ..checks import to_feedback
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
-from ..runner.base import Runner, RunnerError, run_setup, scrubbed_env
+from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
 
@@ -273,21 +273,17 @@ class ReapMixin:
         return specs
 
     def _run_specs_in(self, task: Task, specs: list[dict[str, Any]], worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
-        """Prepare `worktree`'s environment, then run `specs` there. For a local run setup
-        already ran in the branch worktree (the marker short-circuits it); for a remote run
-        the branch was just materialised into a fresh local worktree, and a base probe checks
-        out a throwaway worktree, so its setup artifacts (e.g. node_modules) are absent — run
-        setup now so the default test/lint checks find the same prepared env."""
+        """Prepare `worktree`'s environment, then run `specs` there, synchronously. Off the tick
+        path now (a check runs as a detached run record; see CheckRunMixin) — kept for `garden
+        check` and the setup tests — but the same `run_check_job` the detached job uses, so there
+        is one check-running implementation."""
+        from ..checkrun import run_check_job
+
         if not specs or not worktree.exists():
             return []
-        setup = self.cfg.product_setup(task.product)
-        try:
-            run_setup(worktree, setup, log_path=worktree.parent / f".garden-setup-{worktree.name}.log",
-                      env=scrubbed_env(self.cfg.data, setup))
-        except RunnerError as e:
-            return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
-        return run_checks(specs, self.check_ctx(task, branch, base, worktree), cwd=worktree,
-                          timeout=int(self.cfg.get("checks.timeout_seconds", 600)), config=self.cfg.data)
+        return run_check_job({"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
+                              "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
+                              "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data})
 
     def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
         results = self._run_specs_in(task, self._pre_pr_specs(task), worktree, branch, base)
