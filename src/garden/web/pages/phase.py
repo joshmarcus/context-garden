@@ -168,20 +168,23 @@ def register(app: FastAPI, site: Site) -> None:
             head = _review_head(p)
             head["url"] = doc_url(p)
             persona_heads.append(head)
-        retro_tasks = sorted((t for t in s.tasks().values() if t.discovered_from == f"retro:{ph.key}"),
+        tasks = s.tasks()
+        retro_tasks = sorted((t for t in tasks.values() if t.discovered_from == f"retro:{ph.key}"),
                              key=lambda t: (t.phase, t.priority, t.id))
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
         phase_tasks = {t.id: t for t in ph.tasks}
         summary = phase_summary(all_events, phase_tasks)
         runs = sum(r["runs"] for r in summary["metrics"]["tasks"])
         cancelled = sum(1 for t in ph.tasks if t.status.value == "cancelled")
-        spent = hub.reader().spent_for(ph.key)
+        sched = hub.reader()
+        spent = sched.spent_for(ph.key)
         return templates.TemplateResponse(request, "phase_retro.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, summary=summary,
             runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
-            persona_heads=persona_heads, retro_tasks=retro_tasks))
+            persona_heads=persona_heads, retro_tasks=retro_tasks,
+            retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks)))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
     def phase_doc(request: Request, product: str, phase: str, name: str):

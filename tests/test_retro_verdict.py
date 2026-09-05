@@ -236,3 +236,26 @@ def test_phase_page_shows_the_reopen_verdict_and_its_task(tmp_path, fake_github,
     r = c.post("/phases/gdn/p1/retro-decide", data={"choice": "reopen"}, follow_redirects=False)
     assert r.status_code == 303 and "flash" not in r.headers["location"]
     assert Store(root).task(bid).status.value == "ready"
+
+
+def test_retro_page_also_shows_the_reopen_verdict_and_its_task(tmp_path, fake_github, monkeypatch):
+    """The retro page (not just the phase page) shows the verdict and offers the same
+    accept-reopen / change-to-close actions."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_VERDICT", "reopen")
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = _run_retro(root, store, fake_github)
+    bid = sched.retro_verdict("gdn/p1")["blocking_ids"][0]
+
+    c = TestClient(create_app(Store(root), watch=False))
+    html = c.get("/phases/gdn/p1/retro").text
+    assert "Retro verdict" in html and "Reopen" in html and bid in html
+    assert "needs a decision" in html
+    assert 'action="/phases/gdn/p1/retro-decide"' in html
+
+    # accepting the reopen through the retro page approves the blocking task
+    r = c.post("/phases/gdn/p1/retro-decide", data={"choice": "reopen"}, follow_redirects=False)
+    assert r.status_code == 303 and "flash" not in r.headers["location"]
+    assert Store(root).task(bid).status.value == "ready"
