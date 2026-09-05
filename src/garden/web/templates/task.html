@@ -67,7 +67,12 @@
 {% endif %}
 
 <div class="actions" style="margin-bottom:14px">
-  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary">Approve</button></form>{% endif %}
+  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
+    <button class="primary">Approve into <span data-approve-label>{{ task.phase }}</span></button>
+    <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
+      {% for ph in approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == task.phase %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
+    </select>
+  </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if task.status.value in ('ready','draft','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="{{ 'primary' if task.status.value != 'draft' else '' }}" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or state.needs_human %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
