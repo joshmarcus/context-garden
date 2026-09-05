@@ -279,6 +279,9 @@ def test_budget_form_and_route(garden):
     c = client(garden)
     page = c.get("/phases/demo/p1").text
     assert "/phases/demo/p1/budget" in page and "no budget" in page
+    # it applies on blur/change, no Set button beside it
+    assert 'data-autosave' in page and 'onblur="this.form.requestSubmit()"' in page
+    assert "<button>Set</button>" not in page
     # Set a cap.
     r = c.post("/phases/demo/p1/budget", data={"amount": "42"}, follow_redirects=False)
     assert r.status_code == 303
@@ -675,20 +678,26 @@ def test_max_parallel_override_from_config_page(garden):
     config_page = c.get("/config").text
     assert "garden.yaml: <strong>2</strong>" in config_page
     assert "no live override" in config_page
+    # the field applies on blur/Enter; no Set button beside it
+    assert 'data-autosave' in config_page and 'onblur="this.form.requestSubmit()"' in config_page
+    assert "<button class=\"primary\">Set</button>" not in config_page
     assert "0/2" in c.get("/").text  # inbox header: workers running / live limit
 
     r = c.post("/config/max-parallel", data={"value": "5"}, follow_redirects=False)
     assert r.status_code == 303
     config_page = c.get("/config").text
     assert "live override: <strong>5</strong>" in config_page
-    assert "Clear override" in config_page
     assert "0/5" in c.get("/").text
 
-    r = c.post("/config/max-parallel/clear", follow_redirects=False)
+    # an empty value clears the override — the same endpoint, no separate Clear button
+    r = c.post("/config/max-parallel", data={"value": ""}, follow_redirects=False)
     assert r.status_code == 303
     config_page = c.get("/config").text
     assert "no live override" in config_page
     assert "0/2" in c.get("/").text
+
+    assert c.post("/config/max-parallel", data={"value": "nope"}).status_code == 400
+    assert c.post("/config/max-parallel", data={"value": "0"}).status_code == 400
 
 
 def test_priority_and_difficulty_from_the_task_page(garden):
@@ -707,7 +716,7 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     page = c.get("/tasks/DM-001").text
     assert 'name="note"' in page and 'value="hard" selected' in page
     # both selects apply on change, no Set button beside either
-    assert 'onchange="this.form.submit()"' in page
+    assert 'onchange="this.form.requestSubmit()"' in page
     assert "<button class=\"quiet\">Set</button>" not in page
     # priority options are words with the number beside them, ordered first to last
     for word, n in PRIORITY_SCALE:
@@ -727,6 +736,34 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert t.priority == 9
     page = c.get("/tasks/DM-001").text
     assert 'value="9" selected' in page
+
+
+def test_no_set_apply_save_buttons_in_any_template():
+    """CG-190: editing an existing value applies on change; only forms that create
+    something new (a task, a friction report, a persona run, ...) keep a submit button."""
+    import re
+
+    from garden.web.common import TEMPLATES
+
+    button_re = re.compile(r"<button[^>]*>\s*(Set|Apply|Save)\s*<", re.IGNORECASE)
+    offenders = []
+    for path in TEMPLATES.glob("*.html"):
+        for m in button_re.finditer(path.read_text()):
+            offenders.append(f"{path.name}: {m.group(0)!r}")
+    assert not offenders, offenders
+
+
+def test_editable_values_apply_on_change_with_a_saved_mark(garden):
+    """Every data-autosave form (the walkthrough's Config and task pages among them) carries
+    an autosave-mark slot for the JS-driven saved/undo behaviour."""
+    import re
+
+    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-autosave\b")
+    for url in ("/config", "/tasks/DM-001", "/phases/demo/p1"):
+        page = client(garden).get(url).text
+        forms = autosave_form_re.findall(page)
+        assert len(forms) >= 1, url
+        assert len(forms) == page.count('class="autosave-mark"')
 
 
 # ---- trust at the edges (CG-154): sanitised HTML, an origin check on POSTs ---------------

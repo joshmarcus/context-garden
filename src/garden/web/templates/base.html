@@ -125,6 +125,13 @@ input[type=text], input:not([type]), textarea { font:13px/1.4 var(--mono); paddi
 textarea { width:100%; min-height:72px; resize:vertical; }
 label.check { display:inline-flex; gap:6px; align-items:center; color:var(--muted); font-size:13px; }
 
+/* ---- inline edits (CG-190): a value applies itself; this is only ever the "saved"/error mark beside it */
+.autosave-mark { display:inline-flex; align-items:center; gap:6px; font:12px/1 var(--mono); }
+.autosave-mark:empty { display:none; }
+.autosave-mark.ok { color:var(--good); }
+.autosave-mark.err { color:var(--bad); }
+.autosave-mark .undo { min-height:auto; padding:1px 8px; font-size:11px; }
+
 /* ---- surfaces -------------------------------------------------------------------- */
 .panel { background:var(--label); border:1px solid var(--line); padding:14px 16px; }
 .panel + .panel, .stack > * + * { margin-top:14px; }
@@ -340,6 +347,62 @@ document.querySelectorAll("[data-phases]").forEach(productSel => {
   }
   fillPhases();
   productSel.addEventListener("change", fillPhases);
+});
+// ---- inline edits (CG-190): a form with data-autosave applies as soon as its value
+// changes — a select or checkbox on "change", a text/number field on blur (wired per
+// field below) or Enter (native: a lone text field submits its form on Enter with no JS
+// at all, so the control still works with JS off, just without the "saved" mark/undo).
+document.querySelectorAll("form[data-autosave]").forEach(form => {
+  const mark = form.querySelector(".autosave-mark");
+  const serialize = () => new URLSearchParams(new FormData(form)).toString();
+  let hideTimer = null;
+  form.dataset.saved = serialize();
+
+  function applyParams(raw) {
+    const present = new Set();
+    for (const [name, value] of new URLSearchParams(raw)) {
+      present.add(name);
+      const field = form.elements.namedItem(name);
+      if (!field) continue;
+      if (field.type === "checkbox") field.checked = true; else field.value = value;
+    }
+    form.querySelectorAll("input[type=checkbox]").forEach(cb => { if (!present.has(cb.name)) cb.checked = false; });
+  }
+
+  async function post(body, restoreTo) {
+    let res;
+    try { res = await fetch(form.action, {method: "POST", body}); }
+    catch (e) {
+      if (mark) { mark.className = "autosave-mark err"; mark.textContent = "save failed (offline?)"; }
+      return;
+    }
+    if (!res.ok) {
+      let detail = "save failed";
+      try { const data = await res.clone().json(); if (data && data.detail) detail = data.detail; } catch (e) {}
+      if (mark) { mark.className = "autosave-mark err"; mark.textContent = detail; }
+      return;
+    }
+    form.dataset.saved = body.toString();
+    clearTimeout(hideTimer);
+    if (!mark) return;
+    mark.className = "autosave-mark ok";
+    mark.textContent = "saved ✓";
+    if (restoreTo !== null) {
+      mark.append(" · ");
+      const undo = document.createElement("button");
+      undo.type = "button"; undo.className = "quiet undo"; undo.textContent = "undo";
+      undo.addEventListener("click", () => { applyParams(restoreTo); post(new URLSearchParams(restoreTo), null); });
+      mark.append(undo);
+    }
+    hideTimer = setTimeout(() => { mark.className = "autosave-mark"; mark.textContent = ""; }, 6000);
+  }
+
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    const current = serialize();
+    if (current === form.dataset.saved) return;
+    post(new URLSearchParams(current), form.dataset.saved);
+  });
 });
 document.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", e => {
   e.preventDefault(); const t = document.getElementById(b.dataset.toggle); if (t) { t.hidden = !t.hidden; if (!t.hidden) { const f = t.querySelector("textarea,input"); if (f) f.focus(); } }

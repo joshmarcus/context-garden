@@ -5,11 +5,11 @@
 <div class="page-head">
   <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}{% if phase.frozen %} <span class="badge hot">frozen</span>{% endif %}</h1>
     <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
-    <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center">
+    <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
       <span class="muted">Budget $</span>
-      <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px">
-      <label class="check"><input type="checkbox" name="no_budget" value="1"> no budget</label>
-      <button>Set</button>
+      <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px" onblur="this.form.requestSubmit()">
+      <label class="check"><input type="checkbox" name="no_budget" value="1" onchange="this.form.requestSubmit()"> no budget</label>
+      <span class="autosave-mark" aria-live="polite"></span>
     </form></div>
   <div class="tools">{% if has_retro %}<a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}/retro">Retro</a>{% endif %}<a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
 </div>
