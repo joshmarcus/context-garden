@@ -41,6 +41,7 @@ def status(
     stack = bool(store.config.get("stack", True))
     closed_phases = []
     retro_waiting = []
+    kickoff_missing = []
     for prod in store.products():
         if product and prod.name != product:
             continue
@@ -64,11 +65,15 @@ def status(
             pending = sched.retro_pending(ph.key)
             if pending:
                 retro_waiting.append((ph.key, pending))
+            if any(t.status != Status.DRAFT for t in ph.tasks) and not sched.has_kickoff(ph):
+                kickoff_missing.append(ph.key)
     console.print(table)
     legend = "  ".join(f"{short[s]} {s}" for s in cols) + "  ! needs you"
     console.print(f"[dim]{legend}[/dim]")
     for key, pending in retro_waiting:
         console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+    for key in kickoff_missing:
+        console.print(f"[yellow]{key}: tasks approved with no kickoff report — run `garden kickoff {key}`[/yellow]")
     if closed_phases:
         n = len(closed_phases)
         listing = ", ".join(f"{ph.key} (closed {ph.closed})" for ph in closed_phases)

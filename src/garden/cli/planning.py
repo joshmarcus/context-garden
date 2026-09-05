@@ -36,6 +36,7 @@ def plan(
     approve_all: bool = typer.Option(False, "--approve", help="Create tasks as ready"),
     replan: bool = typer.Option(False, "--replan", help="Include failed/blocked task logs so the planner can propose fixes or replacements"),
     reopen: bool = typer.Option(False, "--reopen", help="Reopen a closed phase to take these tasks"),
+    no_kickoff: bool = typer.Option(False, "--no-kickoff", help="Skip the kickoff review even when the phase has none yet"),
 ):
     """Turn goals + specs into task files (one model call, or --import). Ready by default."""
     from ..planner import import_plan, parse_plan, plan_prompt, prompt_tokens, run_planner
@@ -53,6 +54,17 @@ def plan(
     if ph.frozen and not dry_run:
         err.print(f"[red]{ph.key} is frozen ({ph.frozen}); planning is blocked while frozen -- run `garden unfreeze {ph.key}` first[/red]")
         raise typer.Exit(1) from None
+    if not dry_run and not no_kickoff and not import_file:
+        sched = _scheduler(store)
+        if not sched.has_kickoff(ph):
+            err.print(f"[dim]no kickoff report for {ph.key} yet; running `garden kickoff` first...[/dim]")
+            try:
+                path = sched.run_kickoff_now(ph)
+            except RuntimeError as e:
+                err.print(f"[yellow]kickoff failed, planning anyway: {e}[/yellow]")
+            else:
+                console.print(f"kickoff written to {store.rel(path)}")
+                ph = store.phase(product, phase)  # the kickoff may have filed drafts of its own
     if import_file:
         items = parse_plan(import_file.read_text())
     else:
@@ -79,6 +91,23 @@ def plan(
         console.print(f"created {t.id} {_style(t.status.value)} {t.title}" + (f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""))
     if not created:
         console.print("no new tasks (all titles already existed)")
+
+
+@app.command(rich_help_panel=PANEL_PLAN)
+def kickoff(target: str = typer.Argument(..., help="product/phase")):
+    """Before a phase starts, one planner-tier run flags design gaps, goals with no
+    measurable outcome, questions for the owner, and docs that need attention. Dispatches a
+    run now; `garden tick` (or `garden watch`) writes <phase>/docs/kickoff.md when it's done."""
+    store = _store()
+    ph = _phase(store, *_split_target(target))
+    sched = _scheduler(store)
+    try:
+        run = sched.start_kickoff(ph)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{ph.key}: kickoff run {run.run_id} started (model {run.model or 'default'})")
+    console.print("[dim]run `garden tick` (or `garden watch`) to let it finish[/dim]")
 
 
 @app.command(rich_help_panel=PANEL_REVIEW)
