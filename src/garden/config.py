@@ -69,6 +69,9 @@ DEFAULTS: dict[str, Any] = {
                                   # separate from review.difficulty so nobody has to edit config before a retro
     },
     "harnesses": {},
+    "prices": {},              # generic per-model price table (input/cached_input/cache_write/output per
+                               # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
+                               # the codex defaults and docs/codex.md for where the numbers came from
     "ssh": {"hosts": []},
     "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
@@ -217,9 +220,21 @@ class Config:
         return dict(s) if isinstance(s, dict) else {}
 
     def harness(self, name: str):
-        from .harness import Harness
+        from .harness import DEFAULT_HARNESSES, Harness
 
-        return Harness(name, dict((self.data.get("harnesses") or {}).get(name) or {}))
+        cfg = dict((self.data.get("harnesses") or {}).get(name) or {})
+        # Prices merge per model rather than replace wholesale (unlike `models`, which is an
+        # intentional full-replace tier map): this harness's own built-in defaults (codex's
+        # price table), then the generic top-level `prices:` any harness can draw on (e.g. a
+        # future harness reusing the codex-jsonl output format under a different name), then
+        # `harnesses.<name>.prices`, each layer overriding only the models it names — so
+        # editing one price in garden.yaml does not silently drop the rest of the table.
+        default_prices = dict((DEFAULT_HARNESSES.get(name) or {}).get("prices") or {})
+        generic_prices = self.data.get("prices")
+        merged = {**default_prices, **(generic_prices if isinstance(generic_prices, dict) else {}), **(cfg.get("prices") or {})}
+        if merged:
+            cfg["prices"] = merged
+        return Harness(name, cfg)
 
     def harness_choices(self) -> dict[str, list[str]]:
         """harness name -> known model choices, for every harness under `harnesses:` (or

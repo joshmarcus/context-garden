@@ -16,7 +16,11 @@ import os
 import signal
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .events import EventLog
 
 
 @dataclass
@@ -284,6 +288,35 @@ class RunStore:
         """Total cost_usd of runs that finished at or after `since_iso` (an events.parse_since
         cutoff), for a spend-rate reading beside the operating profile (CG-221)."""
         return round(sum(r.cost_usd or 0.0 for r in self.all_runs() if (r.finished_at or "") >= since_iso), 4)
+
+    def backfill_codex_costs(self, config: Config, events: EventLog | None = None) -> int:
+        """Recompute usage/cost_usd/model for every codex run from its stored transcript
+        (`stdout.json`), using the harness's current price table (`garden costs --backfill`,
+        CG-233): a one-off fix for runs recorded before codex usage was priced, so today's
+        runs enter the cost record instead of sitting at `cost_usd: null` forever. Patches the
+        matching `run_finished` events too (see `EventLog.patch_run_costs`), so `garden costs`,
+        `garden metrics` and the retro pick up the correction. Returns the number of runs
+        changed."""
+        harness = config.harness("codex")
+        patches: dict[str, dict[str, Any]] = {}
+        updated = 0
+        for run in self.all_runs():
+            if run.harness != "codex":
+                continue
+            stdout = run.stdout_text()
+            if not stdout.strip():
+                continue
+            parsed = harness.parse(stdout, run.stderr_text(), model=run.model)
+            usage, cost, model = parsed.get("usage") or {}, parsed.get("cost_usd"), str(parsed.get("model") or run.model)
+            if usage == run.usage and cost == run.cost_usd and model == run.model:
+                continue
+            run.usage, run.cost_usd, run.model = usage, cost, model
+            run.save()
+            updated += 1
+            patches[run.run_id] = {"cost_usd": cost, "usage": usage, "model": model}
+        if events is not None:
+            events.patch_run_costs(patches)
+        return updated
 
 
 def _rollup(runs: list[Run]) -> dict[str, Any]:

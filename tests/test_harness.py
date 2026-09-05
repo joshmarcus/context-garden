@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from garden.harness import Harness
 from garden.runs import Run
 
@@ -160,7 +162,74 @@ def test_codex_resume_and_permissions():
 
 def test_codex_usage_does_not_double_count_cache():
     parsed = Harness("codex", {}).parse('{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}')
-    assert parsed["usage"] == {"input_tokens": 8, "cache_read_input_tokens": 2, "output_tokens": 3}
+    assert parsed["usage"] == {"input_tokens": 8, "cache_read_input_tokens": 2, "output_tokens": 3,
+                               "cache_creation_input_tokens": 0}
+
+
+def _codex_usage_line(**usage: int) -> str:
+    import json as _json
+
+    return _json.dumps({"type": "turn.completed", "usage": usage})
+
+
+@pytest.mark.parametrize("model, expected_cost", [
+    ("gpt-5.6-luna", (900 * 0.2 + 100 * 0.02 + 200 * 1.2) / 1_000_000),
+    ("gpt-5.6-terra", (900 * 2.0 + 100 * 0.2 + 200 * 12.0) / 1_000_000),
+    ("gpt-5.6-sol", (900 * 4.0 + 100 * 0.4 + 200 * 20.0) / 1_000_000),
+    ("gpt-6-astra", (900 * 10.0 + 100 * 1.0 + 200 * 50.0) / 1_000_000),
+])
+def test_codex_cost_for_each_priced_model(model, expected_cost):
+    line = _codex_usage_line(input_tokens=1000, cached_input_tokens=100, output_tokens=200)
+    out = Harness("codex", {}).parse(line, model=model)
+    assert out["cost_usd"] == pytest.approx(expected_cost)
+    assert out["missing_price"] == ""
+    assert out["model"] == model
+
+
+def test_codex_cost_unpriced_model_records_usage_with_no_cost():
+    line = _codex_usage_line(input_tokens=1000, cached_input_tokens=100, output_tokens=200)
+    out = Harness("codex", {}).parse(line, model="some-other-model")
+    assert out["usage"] == {"input_tokens": 900, "cache_read_input_tokens": 100, "output_tokens": 200,
+                            "cache_creation_input_tokens": 0}
+    assert out["cost_usd"] is None
+    assert out["missing_price"] == "some-other-model"
+
+
+def test_codex_cost_counts_cache_write_and_reasoning_tokens():
+    line = _codex_usage_line(input_tokens=1000, cached_input_tokens=100, cache_write_input_tokens=50,
+                             output_tokens=200, reasoning_output_tokens=30)
+    out = Harness("codex", {}).parse(line, model="gpt-6-astra")
+    assert out["usage"] == {"input_tokens": 900, "cache_read_input_tokens": 100,
+                            "cache_creation_input_tokens": 50, "output_tokens": 230}
+    expected = (900 * 10.0 + 100 * 1.0 + 50 * 12.5 + 230 * 50.0) / 1_000_000
+    assert out["cost_usd"] == pytest.approx(expected)
+
+
+def test_codex_cost_uses_long_context_tier_above_threshold():
+    line = _codex_usage_line(input_tokens=300_000, cached_input_tokens=0, output_tokens=1000)
+    out = Harness("codex", {}).parse(line, model="gpt-6-astra")
+    expected = (300_000 * 20.0 + 1000 * 75.0) / 1_000_000
+    assert out["cost_usd"] == pytest.approx(expected)
+
+
+def test_codex_model_confirmed_from_cli_output_overrides_dispatch_model():
+    lines = "\n".join([
+        '{"type":"thread.started","thread_id":"t1","model":"gpt-5.6-terra"}',
+        '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}',
+    ])
+    out = Harness("codex", {}).parse(lines, model="gpt-5.6-luna")
+    assert out["model"] == "gpt-5.6-terra"
+
+
+def test_codex_prices_configurable_and_generic_prices_merge():
+    from garden.config import Config
+
+    cfg = Config(root=Path("/tmp"), data={"prices": {"my-model": {"input": 1.0, "output": 2.0}},
+                                          "harnesses": {"codex": {"prices": {"gpt-5.6-luna": {"input": 99.0, "output": 99.0}}}}})
+    h = cfg.harness("codex")
+    assert h.cfg["prices"]["my-model"] == {"input": 1.0, "output": 2.0}
+    assert h.cfg["prices"]["gpt-5.6-luna"] == {"input": 99.0, "output": 99.0}
+    assert "gpt-6-astra" in h.cfg["prices"]  # codex's own defaults still present
 
 
 def test_parse_classifies_not_logged_in_as_an_auth_env_error():

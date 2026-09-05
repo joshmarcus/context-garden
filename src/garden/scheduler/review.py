@@ -145,6 +145,7 @@ class ReviewMixin:
                 collected = runner.collect(run)
                 run.usage = collected.get("usage") or {}
                 run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
             except Exception as e:  # noqa: BLE001
                 run.error = str(e)
         run.finished_at = now_iso()
@@ -247,6 +248,7 @@ class ReviewMixin:
             collected = runner.collect(run)
             run.usage = collected.get("usage") or {}
             run.cost_usd = collected.get("cost_usd")
+            run.model = str(collected.get("model") or run.model)
             run.error = collected.get("error") or ""
             final = collected.get("final_text") or ""
             if final and not (run.path / "final.md").exists():
@@ -428,6 +430,7 @@ class ReviewMixin:
                 collected = runner.collect(run)
                 run.usage = collected.get("usage") or {}
                 run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
                 run.error = collected.get("error") or ""
                 final = collected.get("final_text") or ""
                 if final and not (run.path / "final.md").exists():

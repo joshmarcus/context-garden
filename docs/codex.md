@@ -54,6 +54,45 @@ entitlement to every model. Check your Codex model picker before starting a larg
 not automatically vary with difficulty. Keep the same reasoning setting when comparing
 models, and use arguments supported by both `exec` and `exec resume`.
 
+### Pricing
+
+Every codex run is costed like a claude run: `garden costs`, `garden metrics`, trials and
+the retro all read a run's `cost_usd`, computed from its usage and a per-model price table,
+so the two harnesses compare on one basis. The table lives at `harnesses.codex.prices` (a
+generic `prices:` map at the top level works for any harness that reuses the codex-jsonl
+output format under a different name); each model gives `input`, `cached_input`,
+`cache_write` and `output` prices in USD per million tokens:
+
+```yaml
+harnesses:
+  codex:
+    prices:
+      gpt-5.6-terra: {input: 2.0, cached_input: 0.2, output: 12.0}
+```
+
+Setting a model here overrides only that model; the rest of the built-in table (below)
+stays in place, so a price bump needs one line, not a copy of the whole table.
+
+Built-in defaults, from OpenAI list pricing recorded by the operator on 2026-09-05 (see
+`context-garden/phase-05/specs/cost-aware-model-routing.md`'s operator notes): cached input
+at 10% of the input price throughout.
+
+| Model | input | cached input | cache write | output |
+|---|---|---|---|---|
+| `gpt-6-astra` | $10 | $1 | $12.50 | $50 (a long-context tier above 272K tokens in one request: $20 / $75 input/output) |
+| `gpt-5.6-sol` | $4 | $0.40 | — | $20 (promotional) |
+| `gpt-5.6-terra` | $2 | $0.20 | — | $12 |
+| `gpt-5.6-luna` | $0.20 | $0.02 | — | $1.20 |
+
+Both a Claude subscription and a Codex/ChatGPT subscription bill by quota, not by these list
+prices — this table exists so quota consumption compares across harnesses on one basis, not
+to predict a bill. **List prices change; update this table** (`harnesses.codex.prices` or
+the example `garden.yaml`'s defaults) when they do — `garden doctor` does not check it. A
+model with usage but no entry here records that usage with `cost_usd: null` and a log line
+naming the missing price, rather than costing it at the wrong rate. `garden costs --backfill`
+recomputes `cost_usd` for existing codex runs from their stored transcripts, e.g. after adding
+a price or fixing one.
+
 The default policy is workspace writes with `approval_policy="never"`, so detached
 workers cannot wait for terminal approvals. The legacy garden value `full-auto` maps
 to this policy. `read-only` is also supported. `bypass` explicitly disables the sandbox

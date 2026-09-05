@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from garden.charts import cost_stack_svg
 from garden.costs import cost_series
 from garden.model import Status, Task
@@ -139,6 +141,46 @@ def test_cli_and_web_costs_agree_on_a_fixture_log(garden):
     page = client(garden).get("/costs?by=model").text
     assert "$2.55" in page and "$1.60" in page
     assert '<option value="model" selected>' in page
+
+
+def test_backfill_recomputes_codex_cost_from_stored_transcript(garden):
+    """CG-233: a codex run recorded before costs were priced (cost_usd null, usage never
+    computed from its transcript) gets a real cost_usd on `garden costs --backfill`, and the
+    matching run_finished event is corrected so `garden costs` picks it up too."""
+    from tests.test_cli import run as cli_run
+
+    run_dir = garden / ".garden" / "runs" / "DM-001" / "20260101T000000Z-work"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({
+        "task_id": "DM-001", "run_id": "20260101T000000Z-work", "dir": str(run_dir),
+        "runner": "local", "mode": "work", "harness": "codex", "model": "gpt-5.6-terra",
+        "status": "done", "started_at": "2026-01-01T00:00:00+00:00", "finished_at": "2026-01-01T00:05:00+00:00",
+        "usage": {}, "cost_usd": None,
+    }))
+    (run_dir / "stdout.json").write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t1"}) + "\n"
+        + json.dumps({"type": "turn.completed",
+                     "usage": {"input_tokens": 1000, "cached_input_tokens": 100, "output_tokens": 200}}) + "\n"
+    )
+    _write_events(garden, [{"at": "2026-01-01T00:05:00+00:00", "kind": "run_finished", "task": "DM-001",
+                           "run": "20260101T000000Z-work", "mode": "work", "harness": "codex",
+                           "model": "gpt-5.6-terra", "status": "done", "cost_usd": None, "usage": {}}])
+
+    r = cli_run(garden, "costs", "--backfill")
+    assert r.exit_code == 0, r.output
+    assert "1 codex run" in r.output
+
+    expected_cost = (900 * 2.0 + 100 * 0.2 + 200 * 12.0) / 1_000_000
+    reloaded = json.loads((run_dir / "run.json").read_text())
+    assert reloaded["cost_usd"] == pytest.approx(expected_cost)
+    assert reloaded["usage"]["input_tokens"] == 900
+
+    patched = json.loads((garden / ".garden" / "events.jsonl").read_text().splitlines()[0])
+    assert patched["cost_usd"] == pytest.approx(expected_cost)
+
+    # a second backfill is a no-op: the run already carries the recomputed cost
+    r = cli_run(garden, "costs", "--backfill")
+    assert "0 codex run" in r.output
 
 
 def test_costs_page_shows_hourly_spend_dropping_after_the_tier_change(garden):
