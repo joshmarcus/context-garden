@@ -85,6 +85,36 @@ def test_dispatch_cli_refuses_frozen_task_without_exception(garden):
     assert Store(garden).task("DM-001").status == Status.READY  # never dispatched
 
 
+def test_plan_refuses_frozen_phase(garden, monkeypatch):
+    """CG-161: a frozen phase refuses `garden plan` outright -- there is no freeze exception
+    for planning since the tasks it would create do not exist yet to carry one; unfreeze first."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "plan")
+    assert run(garden, "freeze", "demo/p1").exit_code == 0
+
+    r = run(garden, "plan", "demo/p1")
+    assert r.exit_code == 1 and "frozen" in r.output and "unfreeze" in r.output
+    assert not Store(garden).tasks().get("DM-003")
+
+    assert run(garden, "unfreeze", "demo/p1").exit_code == 0
+    r = run(garden, "plan", "demo/p1")
+    assert r.exit_code == 0, r.output
+    assert Store(garden).tasks().get("DM-003")
+
+
+def test_plan_dry_run_allowed_on_frozen_phase(garden):
+    assert run(garden, "freeze", "demo/p1").exit_code == 0
+    r = run(garden, "plan", "demo/p1", "--dry-run")
+    assert r.exit_code == 0, r.output
+
+
+def test_web_plan_refuses_frozen_phase(garden):
+    assert run(garden, "freeze", "demo/p1").exit_code == 0
+    c = TestClient(create_app(Store(garden), watch=False))
+    r = c.post("/phases/demo/p1/plan", data={"guidance": ""}, follow_redirects=True)
+    assert "frozen" in r.text
+    assert not Store(garden).tasks().get("DM-003")
+
+
 def test_scheduler_does_not_dispatch_into_frozen_phase(garden, sched):
     store = Store(garden)
     store.set_phase_frozen(store.phase("demo", "p1"), "2026-09-04")

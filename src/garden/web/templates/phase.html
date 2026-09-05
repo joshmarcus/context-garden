@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ phase.key }}{% endblock %}
 {% block body %}
-{% if phase.frozen %}<div class="warn">frozen since {{ phase.frozen }} — approve and dispatch refuse this phase's tasks unless a task carries <code>freeze_exception: true</code> with a <code>freeze_exception_reason</code>. <code>garden unfreeze {{ phase.key }}</code> lifts it.</div>{% endif %}
+{% if phase.frozen %}<div class="warn">frozen since {{ phase.frozen }} — approve and dispatch refuse this phase's tasks unless a task carries <code>freeze_exception: true</code> with a <code>freeze_exception_reason</code>, and planning is blocked outright. <code>garden unfreeze {{ phase.key }}</code> lifts it.</div>{% endif %}
 <div class="page-head">
   <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}{% if phase.frozen %} <span class="badge hot">frozen</span>{% endif %}</h1>
     <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
