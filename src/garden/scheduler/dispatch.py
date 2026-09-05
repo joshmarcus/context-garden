@@ -92,6 +92,7 @@ class DispatchMixin:
             # A stored pending_feedback always comes with the changes_requested transition
             # (CG-140): nothing dispatches from in_review, so feedback parked there while the
             # task stays in_review would sit forever and hold automerge silently.
+            manual_task = False
             if t.status == Status.IN_REVIEW and str(st.get("pending_feedback") or "").strip():
                 reason = "pending feedback recorded but the task is in_review, not changes_requested"
             # These statuses wait on a human or GitHub and have their own Inbox handling.
@@ -104,17 +105,25 @@ class DispatchMixin:
                     continue  # a rebase run is dispatchable (its own queue, no feedback needed)
                 has_fb = bool(str(st.get("pending_feedback") or "").strip())
                 under_cap = bool(st.get("pending_feedback_rebase")) or int(st.get("revisions", 0)) < max_rev
-                if has_fb and under_cap:
+                manual_task = not self.runner_for(t).detached
+                if has_fb and under_cap and not manual_task:
                     continue  # a revise run is dispatchable
-                reason = ("no feedback recorded to revise against" if not has_fb
-                          else f"{max_rev} revision rounds already used")
+                if has_fb and under_cap:
+                    # A manual-runner task: dispatch_ready never auto-dispatches its revise
+                    # round, so without this flag it would sit in changes_requested forever
+                    # with no Inbox card telling anyone to take it (CG-158).
+                    reason = "manual task has a revise round waiting; take it with `garden take`"
+                else:
+                    reason = ("no feedback recorded to revise against" if not has_fb
+                              else f"{max_rev} revision rounds already used")
             else:
                 reason = f"nothing to dispatch from status {t.status.value}"
             note = f"stuck: {reason}"
             st["needs_human"] = note
             self.events.emit("needs_human", t.id, reason=note, stuck=True)
             notify(self.cfg.data, t.id, "needs_human", note, t.pr or "")
-            t.log(f"{note}; resume with one more round (`garden retry {t.id}`) "
+            hint = f"take it (`garden take {t.id}`)" if manual_task else f"resume with one more round (`garden retry {t.id}`)"
+            t.log(f"{note}; {hint} "
                   f'or send it back (`garden triage {t.id} --changes "..."`)')
             self.store.save(t)
             rep.transitions.append(f"{t.id} stuck ({reason})")
@@ -167,6 +176,7 @@ class DispatchMixin:
         runner = runner or self.runner_for(task)
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        st.pop("needs_human", None)
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
