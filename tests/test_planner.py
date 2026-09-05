@@ -1,3 +1,4 @@
+import pytest
 
 from garden.model import Status
 from garden.planner import import_plan, parse_plan, plan_prompt, run_planner
@@ -116,6 +117,21 @@ def test_import_supersedes_skips_already_done(garden):
     store.invalidate()
     # DONE is terminal; must not be overwritten
     assert store.task("DM-001").status == Status.DONE
+
+
+def test_import_plan_refuses_closed_phase_without_reopen(garden):
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    store.set_phase_closed(ph, "2026-09-04")
+    store.invalidate()
+
+    with pytest.raises(ValueError, match="is closed"):
+        import_plan(store, "demo", "p1", [{"title": "Late arrival", "body": "## Goal\n\nfoo"}])
+    assert store.phase("demo", "p1").closed  # untouched
+
+    created = import_plan(store, "demo", "p1", [{"title": "Late arrival", "body": "## Goal\n\nfoo"}], reopen=True)
+    assert len(created) == 1
+    assert not store.phase("demo", "p1").closed
 
 
 def test_run_planner_with_fake_claude(garden, monkeypatch):

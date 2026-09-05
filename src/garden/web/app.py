@@ -694,6 +694,11 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         key = f"{product}/{phase}"
         if hub.planning.get(key, "").startswith("running"):
             return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
+        s = hub.fresh()
+        ph = s.phase(product, phase)
+        if ph.closed:
+            hub.planning[key] = f"failed {now_iso()}: {ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)"
+            return RedirectResponse(f"/phases/{product}/{phase}", status_code=303)
         hub.planning[key] = f"running since {now_iso()}"
 
         def job() -> None:

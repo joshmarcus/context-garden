@@ -139,8 +139,18 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
     return out
 
 
-def import_plan(store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None) -> list[Task]:
+def import_plan(
+    store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None, reopen: bool = False
+) -> list[Task]:
     """Create task files; resolve batch-internal dependencies by title."""
+    ph = store.phase(product, phase)
+    if ph.closed:
+        if not reopen:
+            raise ValueError(f"{ph.key} is closed ({ph.closed}); pass --reopen or run `garden reopen-phase {ph.key}` first")
+        from .events import EventLog
+
+        store.set_phase_closed(ph, "")
+        EventLog(store.config.garden_dir / "events.jsonl").emit("phase_reopened", "", phase=ph.key)
     if status is None:
         status = "ready" if bool(store.config.get("plan.auto_approve", True)) else "draft"
     existing_titles = {t.title.strip().lower(): t.id for t in store.tasks().values()}
