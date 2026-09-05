@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from garden.events import EventLog, digest
 from garden.model import Status, Task
-from tests.conftest import wait_for_runs
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -12,7 +11,6 @@ BRANCH = "garden/dm-001-first-task"
 def _in_review(sched, fake_github, *, automerge=True):
     """Drive DM-001 to in_review with a PR, an approving automated review and green gates."""
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     t = sched.store.task("DM-001")
     assert t.status == Status.IN_REVIEW

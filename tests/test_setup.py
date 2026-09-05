@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -13,7 +13,6 @@ from garden.model import Status
 from garden.runner.base import RunnerError, run_setup, setup_marker
 from garden.scheduler import Scheduler
 from garden.store import Store
-from tests.conftest import wait_for_runs
 
 # ---- run_setup unit tests ---------------------------------------------------
 
@@ -79,26 +78,24 @@ def test_local_runner_runs_setup_with_env(garden, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     store = _garden_with_setup(garden, {"command": "echo prepared", "env": {"WIDGET_HOME": "/opt/widget"}})
     sc = Scheduler(store, github=fake_github, log=print)
-
-    captured: list[dict] = []
-    import garden.runner.local as local_mod
-    orig = subprocess.Popen
-
-    def spy(*args, **kwargs):
-        if kwargs.get("env") is not None:
-            captured.append(dict(kwargs["env"]))
-        return orig(*args, **kwargs)
-
-    monkeypatch.setattr(local_mod.subprocess, "Popen", spy)
     sc.tick()
-    wait_for_runs(sc)
 
     t = sc.store.task("DM-001")
     assert setup_marker(sc.worktree_for(t)).exists()
-    worker_env = [e for e in captured if "GARDEN_TASK_ID" in e]
-    assert worker_env and worker_env[0].get("WIDGET_HOME") == "/opt/widget"
     run = sc.runs.latest("DM-001")
     assert (run.path / "setup.log").read_text().strip() == "prepared"
+
+    # The worker runs in the prepared environment: launch the real LocalRunner with its
+    # Popen stubbed out and look at the env it hands the process (nothing is started).
+    import garden.runner.local as local_mod
+    from garden.runner.local import LocalRunner
+
+    launched: list[dict] = []
+    monkeypatch.setattr(local_mod.subprocess, "Popen",
+                        lambda *a, **k: launched.append(dict(k["env"])) or SimpleNamespace(pid=4242))
+    LocalRunner({"setup": sc.cfg.product_setup("demo")}, sc.cfg.harness("claude")).start(run, sc.worktree_for(t), "brief")
+    assert launched and launched[0].get("WIDGET_HOME") == "/opt/widget"
+    assert launched[0]["GARDEN_TASK_ID"] == "DM-001"
 
 
 def test_setup_failure_fails_the_run(garden, fake_github, monkeypatch):

@@ -6,20 +6,17 @@ from garden.checks import github_actions_failures
 from garden.config import Config
 from garden.runs import RunStore
 from garden.trials import TrialLog, ranking_markdown
-from tests.conftest import wait_for_runs
 
 
 def test_usage_rollup_per_task_and_mode(sched, fake_github):
     from garden.github import Feedback
 
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
     pr.updated_at = "t2"
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "fix", "created": "2099-01-01T00:00:00Z"}])
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     rs = RunStore(sched.cfg.garden_dir)
     u = rs.usage_for("DM-001")
@@ -33,9 +30,7 @@ def test_usage_rollup_per_task_and_mode(sched, fake_github):
 def test_trial_records_tokens_and_cost_per_point(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
     sched.start_trial(sched.store.task("DM-001"), ["claude:sonnet", "claude:opus"])
-    wait_for_runs(sched)
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     log = TrialLog(sched.cfg.garden_dir / "trials.jsonl")
     rec = log.read()[-1]

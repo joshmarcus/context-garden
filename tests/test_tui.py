@@ -6,7 +6,6 @@ from textual.widgets import DataTable
 from garden.model import Status
 from garden.store import Store
 from garden.tui.app import GardenTUI
-from tests.conftest import wait_for_runs
 
 
 def _setup_decisions(sched, monkeypatch):
@@ -16,7 +15,6 @@ def _setup_decisions(sched, monkeypatch):
                             status="draft", task_id="DM-003")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover-kinds")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick(dispatch=False)
     sched.store.invalidate()
 

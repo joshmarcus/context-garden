@@ -10,7 +10,6 @@ from __future__ import annotations
 from garden.events import EventLog, digest
 from garden.inbox import build_inbox
 from garden.model import Status
-from tests.conftest import wait_for_runs
 
 
 def _reap_with_decisions(sched, monkeypatch):
@@ -20,7 +19,6 @@ def _reap_with_decisions(sched, monkeypatch):
                             status="draft", task_id="DM-003")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover-kinds")
     sched.tick()  # dispatches DM-001
-    wait_for_runs(sched)
     sched.tick(dispatch=False)  # reap only; leaves DM-002/DM-003 alone
     sched.store.invalidate()
 
@@ -133,7 +131,6 @@ def test_no_kind_discovery_is_still_a_task(sched, fake_github, monkeypatch):
     """Existing workers that emit `discovered` without a `kind` keep filing tasks."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick(dispatch=False)
     sched.store.invalidate()
     tasks = sched.store.tasks()

@@ -1,5 +1,6 @@
 """Helpers shared by the scheduler tests. The `garden`, `sched` and `fake_github` fixtures
-and `wait_for_runs` come from tests/conftest.py."""
+come from tests/conftest.py. Workers run in process (tests/inprocess.py): a run is finished
+by the time `dispatch()` returns, so a test ticks to dispatch and ticks again to reap."""
 
 import json
 import os
@@ -8,16 +9,6 @@ import os
 def statuses(sched):
     sched.store.invalidate()
     return {tid: t.status.value for tid, t in sched.store.tasks().items()}
-
-
-def wait_for_stdout(run, timeout=5.0):
-    import time
-    from pathlib import Path
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if (Path(run.dir) / "stdout.json").exists():
-            return
-        time.sleep(0.02)
 
 
 def make_idle(run, minutes):
