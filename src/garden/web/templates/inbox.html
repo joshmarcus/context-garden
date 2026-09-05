@@ -48,6 +48,10 @@
       {% if it.group == 'attention' %}
         {% if it.get('kind_blurb') %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
         {% if it.get('evidence') %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+        {% if it.get('decision_kind') == 'question' %}
+          {% if it.question_context %}<div class="why">{{ it.question_context }}</div>{% endif %}
+          {% if it.question_options %}<div class="why">options: {{ it.question_options|join(', ') }}</div>{% endif %}
+        {% endif %}
         {% if it.get('discuss') %}<div id="discuss-{{ it.task }}" hidden style="margin-top:6px">
           <textarea id="discuss-text-{{ it.task }}" readonly style="width:100%;box-sizing:border-box;min-height:130px">{{ it.discuss }}</textarea>
           <div class="actions" style="margin-top:4px"><button data-copy="discuss-text-{{ it.task }}">Copy prompt</button><span class="faint">paste it into a chat session or <code>garden take {{ it.task }}</code></span></div>
@@ -68,6 +72,9 @@
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
+      {% elif it.group == 'attention' and it.get('decision_kind') == 'question' %}
+        <form method="post" action="/decisions/{{ it.decision }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="answer" placeholder="Your answer." required></textarea><button class="primary">Answer</button></form>
+        <form method="post" action="/decisions/{{ it.decision }}/dismiss"><button class="quiet danger">Dismiss</button></form>
       {% elif it.group == 'attention' and it.get('decision') %}
         <form method="post" action="/decisions/{{ it.decision }}/accept"><button class="primary">Accept</button></form>
         <form method="post" action="/decisions/{{ it.decision }}/reject"><button class="quiet danger">Reject</button></form>
