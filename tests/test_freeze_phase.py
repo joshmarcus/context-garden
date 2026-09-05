@@ -11,7 +11,6 @@ from garden.cli import app
 from garden.model import Status
 from garden.store import Store
 from garden.web.app import create_app
-from tests.conftest import wait_for_runs
 
 runner = CliRunner()
 
@@ -109,8 +108,7 @@ def test_discovered_task_in_frozen_phase_lands_as_deferred_draft(sched, fake_git
     its discoveries -- including a `blocking: true` one that would otherwise auto-approve --
     land as drafts, logged as deferred."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "discover")
-    sched.tick()
-    wait_for_runs(sched)
+    sched.tick()  # dispatches and runs DM-001 synchronously
     sched.store.set_phase_frozen(sched.store.phase("demo", "p1"), "2026-09-04")
     sched.tick(dispatch=False)  # reap only
     sched.store.invalidate()
