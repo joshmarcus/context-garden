@@ -30,6 +30,23 @@ def test_status_ls_graph_validate(garden):
     assert run(garden, "validate").exit_code == 0
 
 
+def test_status_shows_retro_waiting_for_personas(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    ph = sched.store.phase("demo", "p1")
+    entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name,
+             "personas": ["designer", "security", "user"], "skip_personas": False,
+             "next_phase": "p2", "self_product": "demo", "stage": "personas", "persona_runs": {}}
+    sched._retro_list().append(entry)
+    sched.state.save()
+
+    r = run(garden, "status")
+    assert r.exit_code == 0, r.output
+    assert "demo/p1 retro: waiting for personas (0 of 3)" in r.output
+
+
 def test_set_and_clear_max_parallel(garden):
     r = run(garden, "status")
     assert r.exit_code == 0 and "workers: 0/2" in r.output and "live override" not in r.output

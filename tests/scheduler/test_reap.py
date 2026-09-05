@@ -3,12 +3,12 @@
 import os
 import shutil
 import subprocess
-import sys
 
 from garden.model import Status
 from garden.runner.manual import ManualRunner
-from tests.conftest import FAKE_CLAUDE, git, wait_for_runs, write
-from tests.scheduler.conftest import make_idle, statuses, wait_for_stdout
+from tests import fake_claude
+from tests.conftest import git, write
+from tests.scheduler.conftest import make_idle, statuses
 
 
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
@@ -20,7 +20,6 @@ def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched,
     from garden import gitops
 
     sched.tick()
-    wait_for_runs(sched)
 
     real_push = gitops.push
     calls = {"n": 0}
@@ -62,7 +61,8 @@ def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched,
 def _run_fake_claude(cwd, task_id, run_id, when):
     env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
     env.pop("FAKE_CLAUDE_MODE", None)
-    subprocess.run([sys.executable, str(FAKE_CLAUDE)], cwd=cwd, input="brief", capture_output=True, text=True, env=env, check=True)
+    _, _, code = fake_claude.run([], "brief", cwd, env)
+    assert code == 0
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
@@ -102,7 +102,6 @@ def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt"}], "ci": []}
     sched.cfg.data["max_revisions"] = 2
     sched.tick()
-    wait_for_runs(sched)
     sched.state.get("DM-001")["revisions"] = 2  # pretend two revise rounds were already used
     sched.state.save()
     rep = sched.tick()  # reap -> pre-PR check fails at the cap
@@ -132,7 +131,6 @@ def test_check_failing_at_moved_base_is_rebased_not_revised(sched, fake_github):
     _seed_base_guard(sched, "bad")  # red base: guard fails here and on any branch cut from it
 
     sched.tick()  # dispatch DM-001 from the red base
-    wait_for_runs(sched)
     _seed_base_guard(sched, "ok")  # main goes green before the branch is reaped
 
     rep = sched.tick()  # reap: guard fails on the branch; base moved + green -> rebase, pass, PR
@@ -153,7 +151,6 @@ def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
     base_sha = _seed_base_guard(sched, "bad")  # red base that stays put
 
     sched.tick()
-    wait_for_runs(sched)
     runs_before = len(sched.runs.runs_for("DM-001"))
     rep = sched.tick()  # reap: guard fails on the branch and at the unmoved base -> card
 
@@ -175,11 +172,9 @@ def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
 def test_crash_retries_then_fails(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "crash")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
     assert rep.dispatched == ["DM-001(work)"]  # retried immediately
-    wait_for_runs(sched)
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "failed"
     t = sched.store.task("DM-001")
@@ -189,7 +184,6 @@ def test_crash_retries_then_fails(sched, monkeypatch):
 def test_no_commits_is_a_failure(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "blocked")
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     assert statuses(sched)["DM-001"] == "failed"
     assert "Which database?" in sched.store.task("DM-001").body
@@ -198,20 +192,17 @@ def test_no_commits_is_a_failure(sched, monkeypatch):
 def test_noresult_retries(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.tick()
-    wait_for_runs(sched)
     rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
 
 
 def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
-    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "30")
     sched.cfg.data["idle_kill_minutes"] = 5
     sched.cfg.data["max_attempts"] = 1  # terminal on first failure: no second stall worker
-    sched.tick()  # dispatch DM-001; the worker starts sleeping
+    sched.tick()  # dispatch DM-001; the worker goes silent and never writes exit_code
     run = sched.runs.latest("DM-001")
-    assert run.status == "running" and run.pid
-    wait_for_stdout(run)
+    assert run.status == "running" and not run.process_finished()
     # nothing has changed for 12 minutes, past idle_kill_minutes but well under timeout_minutes
     make_idle(run, 12)
     rep = sched.tick()
@@ -224,23 +215,19 @@ def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
 def test_running_card_shows_idle_time(sched, monkeypatch):
     from garden.inbox import running_now
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
-    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "30")
     sched.cfg.data["idle_minutes"] = 5
     sched.tick()
     run = sched.runs.latest("DM-001")
-    wait_for_stdout(run)
     # a fresh worker is not flagged
     assert all(r["idle"] is None for r in running_now(sched.store))
     make_idle(run, 8)
     row = next(r for r in running_now(sched.store) if r["task"] == "DM-001")
     assert row["idle"] is not None and row["idle"] >= 5
-    run.kill()
 
 
 def test_no_github_still_pushes(sched, fake_github):
     fake_github.available = False
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     t = sched.store.task("DM-001")
     assert t.status == Status.IN_REVIEW and not t.pr and "GitHub unavailable" in t.body

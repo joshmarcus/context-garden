@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
 import yaml
 
+from garden import runner as runner_registry
 from garden.github import Feedback, PRInfo
 from garden.scheduler import Scheduler
 from garden.store import Store
+from tests.inprocess import InProcessRunner
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
 FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
+
+
+@pytest.fixture(autouse=True)
+def in_process_workers(monkeypatch):
+    """No test drives a subprocess worker: for the whole suite the `local` runner (and its
+    `claude-local` alias) is the in-process one from tests/inprocess.py, so every Scheduler
+    a test builds, directly or through the web app, CLI or TUI, runs the fake harness
+    synchronously inside `dispatch()`. A test that needs the real LocalRunner's launch
+    mechanics constructs `LocalRunner` itself and stubs `subprocess.Popen`."""
+    monkeypatch.setitem(runner_registry.REGISTRY, "local", InProcessRunner)
+    monkeypatch.setitem(runner_registry.REGISTRY, "claude-local", InProcessRunner)
 
 
 @pytest.fixture(autouse=True)
@@ -214,14 +226,3 @@ def sched(garden, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     store = Store(garden)
     return Scheduler(store, github=fake_github, log=print)
-
-
-def wait_for_runs(sched: Scheduler, timeout: float = 15.0) -> None:
-    """Block until every active detached run has written its exit_code (fake claude is fast)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        active = [r for r in sched.runs.active() if r.runner != "manual"]
-        if all((r.path / "exit_code").exists() for r in active):
-            return
-        time.sleep(0.05)
-    raise TimeoutError("fake workers did not finish")

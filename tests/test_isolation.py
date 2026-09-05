@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -122,25 +123,27 @@ def test_garden_root_env_invalid(tmp_path, monkeypatch):
 
 
 def test_local_runner_sets_garden_root(sched, monkeypatch):
-    """The local runner must pass GARDEN_ROOT to workers pointing at a non-existent path."""
+    """The local runner must pass GARDEN_ROOT to workers pointing at a non-existent path.
+
+    The real LocalRunner's launch is exercised with its Popen stubbed out: the worker's
+    environment is captured at the launch call and no process is started."""
     import garden.runner.local as local_mod
+    from garden.runner.local import LocalRunner
 
-    captured_envs: list[dict] = []
-    orig_popen = subprocess.Popen
+    launched: list[dict] = []
 
-    def spy_popen(*args, **kwargs):
-        env = kwargs.get("env")
-        if env is not None:
-            captured_envs.append(dict(env))
-        return orig_popen(*args, **kwargs)
+    def stub_popen(*args, **kwargs):
+        launched.append(dict(kwargs["env"]))
+        return SimpleNamespace(pid=4242)
 
-    monkeypatch.setattr(local_mod.subprocess, "Popen", spy_popen)
-    sched.tick()
+    monkeypatch.setattr(local_mod.subprocess, "Popen", stub_popen)
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local")
+    LocalRunner({"setup": {}}, sched.cfg.harness("claude")).start(run, sched.store.root, "brief")
 
-    # Find the worker launch: it has GARDEN_TASK_ID set (git calls do not pass env at all)
-    worker_envs = [e for e in captured_envs if "GARDEN_TASK_ID" in e]
-    assert worker_envs, "no worker subprocess.Popen call was intercepted (with GARDEN_TASK_ID)"
-    env = worker_envs[0]
+    assert launched, "no worker launch was intercepted"
+    env = launched[0]
+    assert env["GARDEN_TASK_ID"] == task.id and env["GARDEN_RUN_ID"] == run.run_id
     assert "GARDEN_ROOT" in env, "GARDEN_ROOT must be set in worker environment"
     # The sentinel path must not be a valid garden (no garden.yaml there)
     assert not (Path(env["GARDEN_ROOT"]) / "garden.yaml").exists(), (

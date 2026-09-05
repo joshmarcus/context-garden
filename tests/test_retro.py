@@ -5,22 +5,25 @@ garden directly."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import textwrap
 from pathlib import Path
 
 import yaml
+from typer.testing import CliRunner
 
 from garden.retro import (
     next_phase_name,
     parse_retro,
+    reconcile_brief,
     reconciliation_table,
     render_next_goals,
     render_retro_doc,
 )
 from garden.scheduler import Scheduler
 from garden.store import Store
-from tests.conftest import FAKE_CLAUDE, wait_for_runs
+from tests.conftest import FAKE_CLAUDE
 
 
 # --------------------------------------------------------------------------- pure logic
@@ -181,7 +184,6 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
     ph = store.phase("gdn", "p1")
     entry = sched.start_retro(ph, ["designer"], skip_personas=True)
     assert entry["stage"] == "reconciling", entry  # designer report exists, so no persona run
-    wait_for_runs(sched)
     rep = sched.tick()  # reap_retro -> render, commit, push, PR
     assert not rep.errors, rep.errors
 
@@ -221,14 +223,71 @@ def test_retro_runs_missing_personas_first_then_reconciles(tmp_path, fake_github
     entry = sched.start_retro(ph, ["usability-expert"], skip_personas=False)
     assert entry["stage"] == "personas"
     assert entry["persona_runs"], "no persona review dispatched"
-    wait_for_runs(sched)
     sched.tick()  # reap the persona review (writes its report), then dispatch the reconcile run
-    wait_for_runs(sched)
     rep = sched.tick()  # reap the reconcile run -> PR
     assert not rep.errors, rep.errors
     assert fake_github.created, "no retro PR opened after personas ran"
     # the persona report landed under the phase's reviews (an input, like garden persona-review)
     assert list((root / "gdn" / "p1" / "docs" / "reviews").glob("usability-expert-*.md"))
+
+
+def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_github, monkeypatch):
+    """CG-145: the phase-02 retro dispatched the reconciliation while personas were still being
+    started, because completion was judged by whether a run was still active rather than by
+    what had actually landed on disk. `start_retro` saves state after each persona it kicks
+    off (dispatch_aux), so a concurrent `garden tick` can read the retro entry mid-loop, when
+    some personas are recorded and others have not even started. Reproduce that state
+    directly and check `reap_retro`/`retro_pending` judge it by the reports on disk, not by
+    run activity."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    from garden.personas import DEFAULT_PERSONAS
+
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv.")
+
+    ph = store.phase("gdn", "p1")
+    names = sorted(DEFAULT_PERSONAS)
+    assert len(names) == 6
+    # a retro entry naming all six personas, none dispatched yet (the mid-race snapshot);
+    # only "designer" has a report on disk (pre-seeded by _live_garden)
+    entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name, "personas": names,
+             "skip_personas": False, "next_phase": "p2", "self_product": "gdn",
+             "stage": "personas", "persona_runs": {}}
+    sched._retro_list().append(entry)
+    sched.state.save()
+
+    assert sched.retro_pending(ph.key) == {"done": 1, "total": 6}
+    rep = sched.tick()  # tick() reloads state from disk, so re-fetch the entry after each call
+    assert not rep.errors, rep.errors
+    entry = sched._retro_list()[0]
+    assert entry["stage"] == "personas", "reconciled before every persona report existed"
+    assert not fake_github.created
+
+    reviews = ph.path / "docs" / "reviews"
+    for name in names:
+        if name == "designer":
+            continue
+        (reviews / f"{name}-2026-01-02.md").write_text(f"# {name} review of gdn/p1\n\nfine.\n")
+
+    assert sched.retro_pending(ph.key) == {"done": 6, "total": 6}
+    friction, reports, task_rows, merged = sched._retro_materials(ph, names)
+    brief = reconcile_brief(store, ph, "main", friction, reports, task_rows, merged, "p2")
+    assert "(none)" not in brief.split("## Persona reviews")[1].split("## ")[0]
+    for name in names:
+        assert name in brief
+
+    rep = sched.tick()  # every report is in now -> the reconciliation dispatches
+    assert not rep.errors, rep.errors
+    entry = sched._retro_list()[0]
+    assert entry["stage"] == "reconciling"
+    wait_for_runs(sched)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    assert fake_github.created, "reconciliation never dispatched once every report landed"
 
 
 def test_retro_dry_run_prints_the_plan_and_a_cost_estimate(tmp_path, fake_github, monkeypatch):
@@ -250,3 +309,31 @@ def test_retro_dry_run_prints_the_plan_and_a_cost_estimate(tmp_path, fake_github
     assert plan["est_tokens"] > 0
     # no PR is opened by a dry run
     assert not fake_github.created
+
+
+def test_retro_dry_run_shows_waiting_for_personas_when_a_retro_is_already_in_flight(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv.")
+
+    ph = store.phase("gdn", "p1")
+    entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name,
+             "personas": ["designer", "security"], "skip_personas": False,
+             "next_phase": "p2", "self_product": "gdn", "stage": "personas", "persona_runs": {}}
+    sched._retro_list().append(entry)
+    sched.state.save()
+
+    from garden.cli import app
+
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        r = CliRunner().invoke(app, ["retro", "gdn/p1", "--dry-run"])
+    finally:
+        os.chdir(cwd)
+    assert r.exit_code == 0, r.output
+    assert "retro: waiting for personas (1 of 2)" in r.output

@@ -43,12 +43,11 @@ def test_board_columns_and_list_views(garden):
 def test_board_list_surfaces_a_waiting_question(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import FakeGitHub, wait_for_runs
+    from tests.conftest import FakeGitHub
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     c = client(garden)
     text = c.get("/partials/board?view=list").text
@@ -82,7 +81,6 @@ def test_trial_form_picks_contenders_from_config(garden):
     claude and codex, see the `garden` fixture) instead of a free-text harness:model field."""
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import wait_for_runs
 
     c = client(garden)
     page = c.get("/tasks/DM-001").text
@@ -99,7 +97,6 @@ def test_trial_form_picks_contenders_from_config(garden):
     assert r.status_code == 303
     assert "flash" not in r.headers["location"]
     sched = Scheduler(Store(garden))
-    wait_for_runs(sched)
     trial = sched.state.get("DM-001").get("trial")
     assert trial and {c["label"] for c in trial["contenders"]} == {"claude:sonnet", "claude:opus"}
 
@@ -112,7 +109,6 @@ def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
     from garden.model import Status
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import wait_for_runs
 
     sched = Scheduler(Store(garden))
     task = sched.store.task("DM-001")
@@ -129,7 +125,6 @@ def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
     assert r.status_code == 303
 
     sched2 = Scheduler(Store(garden))
-    wait_for_runs(sched2)
     st = sched2.state.get("DM-001")
     assert not st.get("needs_human")  # the stop is cleared, not left dangling
     assert st["review_rounds"] == 2  # rolled back one by the bypass, then re-incremented on dispatch
@@ -227,12 +222,11 @@ def test_friction_report_files_and_redirects(garden):
 def test_events_page_and_answer_flow(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import FakeGitHub, wait_for_runs
+    from tests.conftest import FakeGitHub
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
     sched = Scheduler(Store(garden), github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     c = client(garden)
     page = c.get("/tasks/DM-001").text
@@ -266,6 +260,22 @@ def test_budget_form_and_route(garden):
     assert Scheduler(Store(garden), github=FakeGitHub()).budget_for("demo/p1") == 0.0
     # A non-numeric amount is rejected.
     assert c.post("/phases/demo/p1/budget", data={"amount": "abc"}).status_code == 400
+
+
+def test_phase_page_shows_retro_waiting_for_personas(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden))
+    ph = sched.store.phase("demo", "p1")
+    entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name,
+             "personas": ["designer", "security", "user"], "skip_personas": False,
+             "next_phase": "p2", "self_product": "demo", "stage": "personas", "persona_runs": {}}
+    sched._retro_list().append(entry)
+    sched.state.save()
+
+    c = client(garden)
+    assert "retro: waiting for personas (0 of 3)" in c.get("/phases/demo/p1").text
 
 
 def test_trials_page_and_persona_form(garden):
@@ -302,7 +312,7 @@ def test_inbox_triage_flow(garden, monkeypatch):
 
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import FakeGitHub, wait_for_runs
+    from tests.conftest import FakeGitHub
 
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["github"] = {"draft_pr": True}
@@ -311,7 +321,6 @@ def test_inbox_triage_flow(garden, monkeypatch):
     gh = FakeGitHub()
     sched = Scheduler(store, github=gh)
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     c = TestClient(create_app(store, watch=False))
     home = c.get("/").text
@@ -320,7 +329,6 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert r.status_code == 303 and r.headers["location"].endswith("/")
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "changes_requested"
     sched.tick()
-    wait_for_runs(sched)
     sched.tick()
     assert "awaiting_triage" in next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"]
     c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
@@ -358,7 +366,7 @@ def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
 
     from garden.scheduler import Scheduler
     from garden.store import Store
-    from tests.conftest import FakeGitHub, wait_for_runs
+    from tests.conftest import FakeGitHub
 
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["harnesses"]["claude"]["output_format"] = "stream-json"
@@ -366,7 +374,6 @@ def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
     store = Store(garden)
     sched = Scheduler(store, github=FakeGitHub())
     sched.tick()
-    wait_for_runs(sched)
 
     c = client(garden)
     r = c.get("/tasks/DM-001")

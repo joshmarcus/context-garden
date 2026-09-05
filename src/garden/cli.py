@@ -271,6 +271,7 @@ def status(
     sched = _scheduler(store)
     stack = bool(store.config.get("stack", True))
     closed_phases = []
+    retro_waiting = []
     for prod in store.products():
         if product and prod.name != product:
             continue
@@ -291,7 +292,12 @@ def status(
                 money = f"[red]{money}[/red]"
             attn_cell = f"[bold red]{attn}[/bold red]" if attn else "[dim]·[/dim]"
             table.add_row(ph.key, *[_count(counts[s], s) for s in cols], attn_cell, money)
+            pending = sched.retro_pending(ph.key)
+            if pending:
+                retro_waiting.append((ph.key, pending))
     console.print(table)
+    for key, pending in retro_waiting:
+        console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
     if closed_phases:
         n = len(closed_phases)
         listing = ", ".join(f"{ph.key} (closed {ph.closed})" for ph in closed_phases)
@@ -1468,6 +1474,9 @@ def retro(
     if dry_run:
         plan = sched.retro_plan(ph, names, skip_personas=skip_personas, next_phase=next_phase)
         console.print(f"[bold]retro plan for {plan['phase']}[/bold]")
+        pending = sched.retro_pending(ph.key)
+        if pending:
+            console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
         console.print(f"  harvest: {plan['friction']} friction item(s) from {plan['merged']} merged PR(s), {plan['tasks']} task(s)")
         if plan["personas_run"]:
             console.print(f"  personas to run: {', '.join(plan['personas_run'])}")

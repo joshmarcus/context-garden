@@ -18,8 +18,8 @@ from .base import Runner, RunnerError, run_setup
 class LocalRunner(Runner):
     name = "local"
 
-    def harness_shell(self, run: Run, worktree: Path, final_path: Path | None) -> str:
-        """Build the shell command with the harness binary resolved to its absolute path.
+    def harness_argv(self, run: Run, worktree: Path, final_path: Path | None) -> list[str]:
+        """The harness argv for this run, with the binary resolved to its absolute path.
 
         The worktree and `run.fence_paths` are handed to the harness so it can scope the
         worker's writes to the worktree and deny edits to the live garden and the product
@@ -33,7 +33,27 @@ class LocalRunner(Runner):
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
-        return " ".join(shlex.quote(c) for c in cmd)
+        return cmd
+
+    def harness_shell(self, run: Run, worktree: Path, final_path: Path | None) -> str:
+        """`harness_argv` as one shell-quoted command line."""
+        return " ".join(shlex.quote(c) for c in self.harness_argv(run, worktree, final_path))
+
+    def worker_env(self, run: Run, setup: dict[str, Any]) -> dict[str, str]:
+        """The environment a worker runs in: this process's, minus CLAUDECODE (so a worker
+        can be launched from inside another Claude Code session), plus the product's
+        `setup.env`, the run's identity and a GARDEN_ROOT that keeps `garden` commands off
+        the live garden: any `garden` command run inside the worktree hits find_root(),
+        which checks this variable and fails loudly because the path below does not
+        contain a garden.yaml."""
+        env = dict(os.environ)
+        env.pop("CLAUDECODE", None)
+        for k, v in (setup.get("env") or {}).items():  # the prepared environment the worker runs in
+            env[str(k)] = str(v)
+        env["GARDEN_TASK_ID"] = run.task_id
+        env["GARDEN_RUN_ID"] = run.run_id
+        env["GARDEN_ROOT"] = no_live_garden_root(run.path)
+        return env
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         if self.harness is None:
@@ -43,8 +63,16 @@ class LocalRunner(Runner):
         run_setup(worktree, setup, log_path=d / "setup.log")  # prepare the env before the worker starts
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
-        final_path = d / "final.md"
-        inner = self.harness_shell(run, worktree, final_path)
+        self.launch(run, worktree, brief_path, self.worker_env(run, setup))
+
+    def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
+        """Start the harness detached: a shell runs it in the worktree with the brief on
+        stdin, captures stdout/stderr beside the run record and writes `exit_code` when it
+        ends (the completion signal reap waits for). The test suite's in-process runner
+        overrides only this step."""
+        assert self.harness is not None
+        d = run.path
+        inner = self.harness_shell(run, worktree, d / "final.md")
         timeout_min = int(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
             inner = f"timeout {timeout_min * 60} {inner}"
@@ -53,16 +81,6 @@ class LocalRunner(Runner):
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
             f"2> {shlex.quote(str(d / 'stderr.log'))}; echo $? > {shlex.quote(str(d / 'exit_code'))}"
         )
-        env = dict(os.environ)
-        env.pop("CLAUDECODE", None)  # allow launching from inside another Claude Code session
-        for k, v in (setup.get("env") or {}).items():  # the prepared environment the worker runs in
-            env[str(k)] = str(v)
-        env["GARDEN_TASK_ID"] = run.task_id
-        env["GARDEN_RUN_ID"] = run.run_id
-        # Prevent the worker from finding and mutating the live garden: any `garden`
-        # command run inside the worktree will hit find_root() which checks this variable
-        # and fails loudly because the path below does not contain a garden.yaml.
-        env["GARDEN_ROOT"] = no_live_garden_root(d)
         proc = subprocess.Popen(
             ["sh", "-c", script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
