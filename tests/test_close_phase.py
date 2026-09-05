@@ -215,6 +215,25 @@ def test_closed_phase_page_shows_the_closing_header(garden):
     assert "Approve all drafts" not in html and "Plan phase" not in html and "Run personas" not in html
 
 
+def test_herbarium_shows_persona_scores_and_links_to_the_retro(garden):
+    """CG-146: a closed phase whose retro has run shows each persona's score on its Herbarium
+    card and links to its retro page; the closed-phase header links there too."""
+    finish_all(garden)
+    docs = garden / "demo" / "p1" / "docs"
+    (docs / "reviews").mkdir(parents=True, exist_ok=True)
+    (docs / "reviews" / "designer-2026-09-01.md").write_text(
+        "# designer review\n\n**Persona:** designer · **Score:** 8/10 · now\n\nSolid.\n")
+    (docs / "retro.md").write_text("# Retrospective: demo/p1\n\nAll reconciled.\n")
+    assert run(garden, "close-phase", "demo/p1").exit_code == 0
+
+    c = TestClient(create_app(Store(garden), watch=False))
+    herb = c.get("/herbarium").text
+    assert "personas:" in herb and "designer" in herb and "8/10" in herb
+    assert "/phases/demo/p1/retro" in herb
+    # the closed-phase header links to the retro too
+    assert "/phases/demo/p1/retro" in c.get("/phases/demo/p1").text
+
+
 def test_phase_summary_figures():
     from garden.events import phase_summary
     from garden.model import Status, Task

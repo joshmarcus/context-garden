@@ -80,6 +80,7 @@ def register(app: FastAPI, site: Site) -> None:
                 request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), sheet=sheet,
                 summary=summary, metrics=m, spent=spent, review_heads=review_heads, artifacts=artifacts,
                 trials_n=trials_n, merged_rows=merged_rows, unmerged_rows=unmerged_rows,
+                has_retro=bool(_retro_doc(ph)),
                 rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id, {}))
                       for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
             ))
@@ -102,7 +103,7 @@ def register(app: FastAPI, site: Site) -> None:
             budget=sched.budget_for(ph.key), spent=spent, metrics=m,
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
-            retro_pending=sched.retro_pending(ph.key),
+            retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
@@ -124,6 +125,8 @@ def register(app: FastAPI, site: Site) -> None:
                     "spent": sched.spent_for(ph.key),
                     "friction_url": f"/phases/{ph.product}/{ph.name}/doc/docs/friction.md" if friction.exists() else "",
                     "closing_url": f"/phases/{ph.product}/{ph.name}/doc/{closing.relative_to(ph.path)}" if closing else "",
+                    "retro_url": f"/phases/{ph.product}/{ph.name}/retro" if _retro_doc(ph) else "",
+                    "scores": _persona_scores(ph),
                 })
         entries.sort(key=lambda e: str(e["phase"].closed), reverse=True)
         groups: list[tuple[str, list]] = []
@@ -135,6 +138,41 @@ def register(app: FastAPI, site: Site) -> None:
         else:
             groups = [("", entries)]
         return templates.TemplateResponse(request, "herbarium.html", ctx(request, page="herbarium", groups=groups, n=len(entries)))
+
+    @app.get("/phases/{product}/{phase}/retro", response_class=HTMLResponse)
+    def phase_retro(request: Request, product: str, phase: str):
+        s = hub.fresh()
+        try:
+            ph = s.phase(product, phase)
+        except KeyError:
+            raise HTTPException(404) from None
+
+        def doc_url(p: Path) -> str:
+            return f"/phases/{ph.product}/{ph.name}/doc/{p.relative_to(ph.path)}"
+
+        recon = _retro_doc(ph)
+        operator = _retro_operator(ph)
+        reviews_dir = ph.path / "docs" / "reviews"
+        reviews = sorted(reviews_dir.glob("*.md"), reverse=True) if reviews_dir.exists() else []
+        persona_heads = []
+        for p in reviews:
+            head = _review_head(p)
+            head["url"] = doc_url(p)
+            persona_heads.append(head)
+        retro_tasks = sorted((t for t in s.tasks().values() if t.discovered_from == f"retro:{ph.key}"),
+                             key=lambda t: (t.phase, t.priority, t.id))
+        all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        phase_tasks = {t.id: t for t in ph.tasks}
+        summary = phase_summary(all_events, phase_tasks)
+        runs = sum(r["runs"] for r in summary["metrics"]["tasks"])
+        cancelled = sum(1 for t in ph.tasks if t.status.value == "cancelled")
+        spent = hub.reader().spent_for(ph.key)
+        return templates.TemplateResponse(request, "phase_retro.html", ctx(
+            request, page="phase", phase_key=ph.key, phase=ph, summary=summary,
+            runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
+            retro_html=render_md(recon.read_text()) if recon else "",
+            operator_html=render_md(operator.read_text()) if operator else "",
+            persona_heads=persona_heads, retro_tasks=retro_tasks))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
     def phase_doc(request: Request, product: str, phase: str, name: str):
@@ -149,6 +187,35 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(404)
         return templates.TemplateResponse(request, "doc.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, name=name, doc_html=render_md(target.read_text())))
+
+
+def _retro_doc(ph: Any) -> Path | None:
+    """The reconciled retro document on disk once a phase's retro has run: docs/retro.md
+    (what `garden retro` writes) or docs/retro/README.md (the phase-02 layout)."""
+    for rel in ("retro.md", "retro/README.md"):
+        p = ph.path / "docs" / rel
+        if p.exists():
+            return p
+    return None
+
+
+def _retro_operator(ph: Any) -> Path | None:
+    """The operator's own retrospective, if written: docs/retro/operator.md."""
+    p = ph.path / "docs" / "retro" / "operator.md"
+    return p if p.exists() else None
+
+
+def _persona_scores(ph: Any) -> list[dict[str, str]]:
+    """The latest score per persona from docs/reviews/, newest kept, for the Herbarium card."""
+    d = ph.path / "docs" / "reviews"
+    if not d.exists():
+        return []
+    latest: dict[str, dict[str, str]] = {}
+    for p in sorted(d.glob("*.md")):
+        head = _review_head(p)
+        if head["score"]:
+            latest[head["persona"]] = {"persona": head["persona"], "score": head["score"]}
+    return list(latest.values())
 
 
 def _review_head(path: Path) -> dict[str, Any]:

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ phase.key }} retro{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><span class="eyebrow">{{ phase.product }} · retrospective</span><h1>{{ phase.name }}</h1>
+    <p>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done{% if cancelled %} · {{ cancelled }} cancelled{% endif %} · {{ runs }} run(s) · spent ${{ '%.2f' % spent }}{% if phase.closed %} · closed {{ phase.closed }}{% endif %}</p></div>
+  <div class="tools"><a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}">Phase page</a><a class="btn" href="/herbarium">Herbarium</a></div>
+</div>
+{% if not has_retro %}
+<div class="empty">no retro yet — <code>garden retro {{ phase.key }}</code> reconciles the phase's friction and files this page</div>
+{% else %}
+<div class="grid2">
+  <div class="stack">
+    <div class="panel prose"><div class="eyebrow">Reconciled retrospective</div>
+      {{ retro_html|safe }}
+    </div>
+    {% if operator_html %}<div class="panel prose"><div class="eyebrow">Operator retro</div>
+      {{ operator_html|safe }}
+    </div>{% endif %}
+  </div>
+  <div class="stack">
+    <div class="panel"><div class="eyebrow">Persona reports</div>
+      {% for r in persona_heads %}
+      <div style="padding:10px 0; border-bottom:1px dashed var(--line)">
+        <div><b>{{ r.persona }}</b>{% if r.score %} <span class="badge">score {{ r.score }}</span>{% endif %} <span class="muted mono" style="font-size:11.5px">{{ r.date }}</span> · <a href="{{ r.url }}" class="mono" style="font-size:12px">full report</a></div>
+        {% if r.highs %}<ul style="margin:6px 0 0; padding-left:18px; font-size:13px">{% for h in r.highs %}<li>{{ h }}</li>{% endfor %}</ul>{% endif %}
+      </div>
+      {% else %}<div class="empty">no persona reports on disk</div>{% endfor %}
+    </div>
+    <div class="panel"><div class="eyebrow">Tasks from this retro</div>
+      <div class="scroll"><table>
+        <tr><th>id</th><th>status</th><th>phase</th><th>title</th><th>pr</th></tr>
+        {% for t in retro_tasks %}
+        <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+          <td><span class="state s-{{ t.status.value }}" title="{{ stage_word(t.status.value) }}">{{ stage(t.status.value, 18) }}{{ t.status.value.replace('_',' ') }}</span></td>
+          <td class="mono">{{ t.phase }}</td><td class="title">{{ t.title }}</td>
+          <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% endif %}</td></tr>
+        {% else %}<tr><td colspan="5" class="faint">the retro filed no tasks</td></tr>{% endfor %}
+      </table></div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
