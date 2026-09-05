@@ -78,6 +78,67 @@ def test_rebased_branch_pushes_with_lease(origin_repo: tuple[Path, Path]) -> Non
     assert _sha(remote, "refs/heads/feature") == _sha(repo)
 
 
+def _parent_branch(repo: Path) -> str:
+    """Push a parent branch (main + one commit) to origin; return its sha. Leaves repo on main."""
+    _git("checkout", "-b", "garden/parent", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "parent work", cwd=repo)
+    _git("push", "-q", "-u", "origin", "garden/parent", cwd=repo)
+    sha = _sha(repo)
+    _git("checkout", "main", cwd=repo)
+    return sha
+
+
+def test_prepare_worktree_fast_forwards_stacked_child_onto_parent(origin_repo, tmp_path) -> None:
+    """A stacked child whose branch has no commits of its own must be checked out on the
+    parent branch, not left at main (the recurring stacked-provisioning bug, CG-126)."""
+    repo, _ = origin_repo
+    parent_sha = _parent_branch(repo)
+    # A child branch left over on disk pointing at main (an earlier dispatch before the parent
+    # had a PR), with no commits of its own.
+    _git("branch", "garden/child", "main", cwd=repo)
+
+    wt = tmp_path / "wt-child"
+    gitops.prepare_worktree(repo, wt, "garden/child", base="garden/parent")
+
+    assert _sha(wt) == parent_sha  # the child now sits on the parent branch
+
+
+def test_prepare_worktree_reuse_fast_forwards_onto_parent(origin_repo, tmp_path) -> None:
+    """Re-provisioning an existing worktree (reuse path) also moves a commit-less branch from a
+    stale base onto the parent it now stacks on."""
+    repo, _ = origin_repo
+    parent_sha = _parent_branch(repo)
+
+    wt = tmp_path / "wt-child"
+    gitops.prepare_worktree(repo, wt, "garden/child", base="main")  # early dispatch, based on main
+    assert _sha(wt) == _sha(repo, "main")
+
+    gitops.prepare_worktree(repo, wt, "garden/child", base="garden/parent")  # now stacks on parent
+    assert _sha(wt) == parent_sha
+
+
+def test_prepare_worktree_keeps_child_commits_on_stale_base(origin_repo, tmp_path) -> None:
+    """A branch that carries its own commits on a different base is left untouched: a reset
+    would discard the work, and rebasing is the restack path's job, not provisioning's."""
+    repo, _ = origin_repo
+    _parent_branch(repo)
+    # A child with its own commit, built on main rather than the parent.
+    _git("checkout", "-b", "garden/child", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "child work", cwd=repo)
+    child_sha = _sha(repo)
+    _git("checkout", "main", cwd=repo)
+
+    wt = tmp_path / "wt-child"
+    gitops.prepare_worktree(repo, wt, "garden/child", base="garden/parent")
+
+    assert _sha(wt) == child_sha  # own work preserved
+    # the parent tip was NOT silently merged into the child
+    not_merged = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", "origin/garden/parent", "HEAD"], cwd=wt
+    )
+    assert not_merged.returncode != 0
+
+
 def test_diverged_not_rebased_fails(origin_repo: tuple[Path, Path]) -> None:
     """origin/branch not ancestor of HEAD, origin/base not ancestor either: plain push fails."""
     repo, remote = origin_repo

@@ -30,8 +30,14 @@ def test_event_log_digest_and_metrics(sched, fake_github, tmp_path):
     assert kinds[:3] == ["dispatch", "transition", "run_finished"]
     assert "pr_opened" in kinds and kinds.count("transition") >= 3
     d = digest(log.read())
-    assert [e["task"] for e in d["prs_opened"]] == ["DM-001"] and [e["task"] for e in d["merged"]] == ["DM-001"]
-    assert d["cost_usd"] == 0.05 and d["dispatched"] >= 2
+    # DM-002 is dispatched (stacked on DM-001) in the second tick; whether its run has been
+    # reaped by now is a race (fast worker vs. tick timing), so it may or may not have opened
+    # a PR and reported its cost yet. Assert on DM-001's lifecycle, which is deterministic:
+    # it opens the first PR and is the only task merged. (metrics below still checks DM-001's
+    # exact per-task cost of 0.05.)
+    assert [e["task"] for e in d["prs_opened"]][:1] == ["DM-001"]
+    assert [e["task"] for e in d["merged"]] == ["DM-001"]
+    assert d["cost_usd"] >= 0.05 and d["dispatched"] >= 2
     m = metrics(log.read(), sched.store.tasks())
     row = next(r for r in m["tasks"] if r["id"] == "DM-001")
     assert row["runs"] == 1 and row["lead_hours"] is not None and row["cost_usd"] == 0.05
