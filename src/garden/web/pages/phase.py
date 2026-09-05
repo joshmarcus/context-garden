@@ -104,6 +104,7 @@ def register(app: FastAPI, site: Site) -> None:
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
             retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
+            new_task=_new_task_prefill(request),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
@@ -216,6 +217,16 @@ def _persona_scores(ph: Any) -> list[dict[str, str]]:
         if head["score"]:
             latest[head["persona"]] = {"persona": head["persona"], "score": head["score"]}
     return list(latest.values())
+
+
+# The new-task form's field names; a failed submission redirects here with `nt_<field>`
+# query params carrying back what was typed (see actions/phases.py: new_task_web).
+NEW_TASK_FIELDS = ("title", "goal", "context", "acceptance", "difficulty", "priority", "reading", "depends_on", "ready")
+NEW_TASK_DEFAULTS = {"difficulty": "medium", "priority": "3", "acceptance": "- [ ] \n- [ ] \n- [ ] "}
+
+
+def _new_task_prefill(request: Request) -> dict[str, str]:
+    return {f: request.query_params.get(f"nt_{f}", NEW_TASK_DEFAULTS.get(f, "")) for f in NEW_TASK_FIELDS}
 
 
 def _review_head(path: Path) -> dict[str, Any]:
