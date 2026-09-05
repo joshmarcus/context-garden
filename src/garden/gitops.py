@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .github import repo_slug_from_remote
@@ -27,8 +29,102 @@ class LeaseRejected(GitError):
         )
 
 
+def _empty_hooks_dir() -> str:
+    """A directory that is guaranteed to hold no hook scripts, for `core.hooksPath` (see
+    `_git_env`). Shared and machine-wide, like `runner.base.worker_home`'s throwaway home:
+    nothing is ever written into it, so nothing to keep separate per garden or per repo."""
+    d = Path(tempfile.gettempdir()) / "garden-empty-hooks"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(d)
+
+
+def _git_env() -> dict[str, str]:
+    """The environment every scheduler-side `git` invocation in this module runs under:
+    `core.hooksPath` forced to an empty directory and `core.fsmonitor` forced off, via
+    `GIT_CONFIG_COUNT` (git reads `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs as the
+    highest-priority config, above the repo's own `.git/config`). A clone's `.git/config` or
+    `.git/hooks` is reachable from inside a worker's own worktree (a worktree shares its
+    clone's config unless `extensions.worktreeConfig` is set) — without this, a hook path or
+    an fsmonitor command planted there would run with the operator's own credentials the next
+    time the scheduler itself runs `git` in that clone (CG-239)."""
+    return {
+        **os.environ,
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": _empty_hooks_dir(),
+        "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
+    }
+
+
+_BLOCK_MARKER = ".garden-git-blocked"
+
+
+def worktree_admin_dir(worktree: Path) -> Path | None:
+    """The `.git/worktrees/<id>/` administrative directory a linked worktree's `.git` file
+    names, or None when `worktree` is not a linked worktree (an ordinary clone, whose `.git`
+    is a directory, or no `.git` at all)."""
+    dot_git = Path(worktree) / ".git"
+    if not dot_git.is_file():
+        return None
+    try:
+        line = dot_git.read_text().strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    admin = Path(line.split(":", 1)[1].strip())
+    if not admin.is_absolute():
+        admin = (Path(worktree) / admin).resolve()
+    return admin if admin.parent.name == "worktrees" else None
+
+
+def _common_dir(path: Path) -> Path:
+    """The repo `path` actually shares its config and hooks with: `path` itself for an
+    ordinary clone, or the clone a linked worktree's admin directory belongs to (`.git/worktrees/<id>`,
+    so its `.git` dir is one level up and the clone root another level up from there). Falls
+    back to `path` when it is not a git checkout at all, so blocking (or checking) a non-repo
+    path is simply a no-op."""
+    admin = worktree_admin_dir(path)
+    return admin.parent.parent.parent if admin is not None else Path(path)
+
+
+def block_repo(path: Path, reason: str) -> None:
+    """Refuse every future scheduler-side `git` command in `path`'s repo — and in every
+    worktree linked to it, since a linked worktree shares the same config and hooks — until a
+    person recreates it. A plain marker file on disk, so the block survives a scheduler
+    restart; used when the fence finds a clone's `.git/config`, its hooks directory, a
+    worktree's `.git` file or its `.git/worktrees/<id>/` admin directory changed since
+    dispatch (CG-239) — exactly the surface that would let a worktree write make a *later*
+    `git` call run arbitrary code with the operator's own credentials."""
+    clone = _common_dir(Path(path))
+    try:
+        (clone / _BLOCK_MARKER).write_text(reason)
+    except OSError:
+        pass
+
+
+def blocked_reason(path: Path) -> str:
+    """The reason `path`'s repo was blocked (see `block_repo`), or "" if it was not."""
+    marker = _common_dir(Path(path)) / _BLOCK_MARKER
+    try:
+        return marker.read_text().strip() if marker.exists() else ""
+    except OSError:
+        return ""
+
+
+def _ensure_not_blocked(cwd: Path | None) -> None:
+    if cwd is None:
+        return
+    reason = blocked_reason(cwd)
+    if reason:
+        raise GitError(f"refusing to run git in {cwd}: blocked ({reason})")
+
+
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    _ensure_not_blocked(cwd)
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=_git_env())
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} (in {cwd}): {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout
@@ -238,7 +334,8 @@ def stash_all(worktree: Path, message: str) -> str:
 
 def is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
     """Return True if ref_a is an ancestor of ref_b (or equal)."""
-    proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True)
+    _ensure_not_blocked(repo)
+    proc = subprocess.run(["git", "merge-base", "--is-ancestor", ref_a, ref_b], cwd=repo, capture_output=True, env=_git_env())
     return proc.returncode == 0
 
 
@@ -409,8 +506,9 @@ def patch_id(worktree: Path, base: str) -> str:
     diff_text = diff(worktree, base)
     if not diff_text.strip():
         return ""
+    _ensure_not_blocked(worktree)
     proc = subprocess.run(["git", "patch-id", "--stable"], input=diff_text, cwd=worktree,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=_git_env())
     if proc.returncode != 0 or not proc.stdout.strip():
         return ""
     return proc.stdout.split()[0]
