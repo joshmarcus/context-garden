@@ -28,10 +28,10 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
     "codex": {
         "bin": "codex",
         "output": "codex-jsonl",         # codex exec --json
-        "permission_mode": "full-auto",  # or "bypass"
-        "models": {},                    # empty = the CLI default for every tier
+        "permission_mode": "workspace-write",  # or "read-only", "bypass"
+        "models": {"easy": "gpt-5.6-luna", "medium": "gpt-5.6-terra", "hard": "gpt-5.6-sol"},
         "review_model": "",
-        "resume": False,                 # set true if your codex supports `codex exec resume <id>`
+        "resume": True,                  # `codex exec resume <id>` after a human answers
     },
 }
 
@@ -164,7 +164,12 @@ class Harness:
             if mode in ("bypass", "dangerously-bypass-approvals-and-sandbox"):
                 cmd.append("--dangerously-bypass-approvals-and-sandbox")
             else:
-                cmd.append("--full-auto")
+                # Config overrides work for both exec and exec resume. full-auto is
+                # retained as a garden config alias for older configurations.
+                sandbox = "workspace-write" if mode in ("", "full-auto") else mode
+                if sandbox not in ("workspace-write", "read-only"):
+                    raise ValueError(f"unsupported Codex permission_mode: {mode}")
+                cmd += ["-c", f'sandbox_mode="{sandbox}"', "-c", 'approval_policy="never"']
             if model:
                 cmd += ["-m", model]
             if final_path is not None:
@@ -308,6 +313,8 @@ def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
             ev = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(ev, dict):
+            continue
         t = ev.get("type", "")
         if t == "item.completed":
             item = ev.get("item") or {}
@@ -316,7 +323,8 @@ def _parse_codex(stdout: str, out: dict[str, Any]) -> None:
         elif t == "turn.completed":
             u = ev.get("usage") or {}
             out["usage"] = {
-                "input_tokens": u.get("input_tokens", 0),
+                # Codex input includes cached tokens; garden counts them separately.
+                "input_tokens": max(0, u.get("input_tokens", 0) - u.get("cached_input_tokens", 0)),
                 "output_tokens": u.get("output_tokens", 0),
                 "cache_read_input_tokens": u.get("cached_input_tokens", 0),
             }

@@ -57,7 +57,7 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
 
 @app.command(rich_help_panel=PANEL_DIAG)
 def doctor():
-    """Check config, tools (claude, gh/token), repos and the task graph."""
+    """Check config, tools (agent harness, gh/token), repos and the task graph."""
     import subprocess
 
     from ..github import GitHub

@@ -13,7 +13,7 @@ The human's job is: write goals and specs, approve the plan, review PRs, merge.
 Everything else is the loop.
 
 ```
- you                          garden (python, no LLM)                    claude -p (tokens)
+ you                          garden (python, no LLM)                    agent CLI (tokens)
  ───                          ──────────────────────                    ──────────────────
  write goals/specs  ──────▶   garden plan ────────────────────────────▶  planner: 1 call
  approve drafts     ──────▶   ready set from the dependency graph
@@ -66,7 +66,7 @@ Python 3.11+.
 ```bash
 git clone https://github.com/joshmarcus/context-garden && cd context-garden
 uv venv && uv pip install -e ".[dev]"      # or: pip install -e ".[dev]"
-.venv/bin/garden doctor                    # checks claude, gh / GITHUB_TOKEN, repos, graph
+.venv/bin/garden doctor                    # checks harness, gh / GITHUB_TOKEN, repos, graph
 ```
 
 Requirements on the machine that runs the loop: `git`, the harness CLI (`claude` and/or
@@ -74,6 +74,13 @@ Requirements on the machine that runs the loop: `git`, the harness CLI (`claude`
 
 **Windows:** the local runner requires a POSIX shell (`sh`). Run garden in WSL (Windows
 Subsystem for Linux) instead; `garden doctor` reports this if Windows is detected.
+
+## Codex setup
+
+New gardens default to Claude. To opt into Codex, install the Codex CLI, run
+`codex login`, and follow [the Codex workflow](docs/codex.md) for model configuration,
+interactive sessions, and the autonomous loop. Existing gardens keep their configured
+harness. `AGENTS.md` gives Codex the repository navigation and development rules.
 
 ## Quick start
 
@@ -114,6 +121,8 @@ principles/
     docs/*.md                     supporting docs; planner input
     tasks/<ID>-<slug>.md          one task = one PR; frontmatter is state, body is the brief
 .garden/                          gitignored: runs, worktrees, clones, state.json
+AGENTS.md                        Codex context navigation and interactive workflow
+.claude/skills/                   optional Claude interactive skills
 ```
 
 ### A task file
@@ -265,7 +274,7 @@ Borrowed from graph-based agent systems; all deterministic:
   cached on some machines); with no browser it captures HTML and text only and says so in
   the index. Pass `--url http://127.0.0.1:8765` to capture an already-running server
   instead of the in-process test app.
-- **Model trials.** `garden trial ID -c claude:sonnet -c claude:opus` runs the task once
+- **Model trials.** `garden trial ID -c claude:sonnet -c codex:gpt-5.6-terra` runs the task once
   per contender on separate branches, has one comparison run score the PRs, keeps the
   winner, closes the rest, and records scores. `garden trials` is the leaderboard.
 - **Checks without tokens.** `checks.pre_pr` commands gate PR creation in the worktree;
@@ -289,10 +298,15 @@ hard`, assigned by the planner and editable) to a model, so cost follows difficu
 ```yaml
 harnesses:
   claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
-  codex:  {models: {easy: gpt-5-mini, medium: gpt-5, hard: gpt-5}}
+  codex:  {models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}}
 ```
 
-An explicit `model:` on a task wins. Every run records harness, model, usage and cost.
+Claude remains the default harness. Switching to `harness: codex` uses the recommended
+Luna/Terra/Sol tiers; an explicit Codex `models: {}` uses the CLI default instead. See
+[Codex model recommendations and cross-provider trials](docs/codex.md#recommended-models).
+
+An explicit `model:` on a task wins. Every run records harness, model and usage, plus
+cost when the harness supplies it.
 
 ## Automated review
 
@@ -416,8 +430,8 @@ harnesses:
     models: {easy: haiku, medium: sonnet, hard: opus}
   codex:
     bin: codex
-    permission_mode: full-auto     # or bypass
-    models: {}
+    permission_mode: workspace-write  # or read-only, bypass
+    models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}
 ssh:
   hosts:
     - {name: box1, host: user@box1, repos: {widget: /srv/repos/widget}, max_parallel: 4}
@@ -492,7 +506,8 @@ an overlay replaces it with whatever CI the environment runs.
 
 ## Tokens and cost per task
 
-Every run records input, output and cache tokens plus cost. `garden usage` rolls them up
+Every run records input, output and cache tokens, plus cost when the harness supplies it.
+Codex dollar cost is unknown; dollar-budget enforcement cannot reliably cap Codex runs. `garden usage` rolls them up
 per task (with `--by-mode` to split work, revise, review, persona and trial runs);
 `garden usage ID` shows one task; `garden usage product/phase` one phase. Task pages show
 the same as a KPI row, phase pages carry tokens and cost per row, and `garden metrics`
@@ -526,7 +541,7 @@ MIT. See `LICENSE`.
 ## Development
 
 ```bash
-.venv/bin/pytest -q            # tests use tests/fake_claude.py and a local bare git remote
+PYTHONPATH=src .venv/bin/python -m pytest -q  # fake Claude/Codex CLIs and local git remotes
 .venv/bin/ruff check src tests
 .venv/bin/garden qa --scripted # the web app, end to end, on a throwaway garden (no tokens)
 ```

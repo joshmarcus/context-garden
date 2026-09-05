@@ -2,6 +2,7 @@ import os
 import subprocess
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from garden.model import Status
@@ -33,7 +34,7 @@ def test_codex_harness_and_difficulty_model(sched, garden, fake_github):
     sched.store.invalidate()
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     run = sched.runs.latest("DM-001")
-    assert run.usage["input_tokens"] == 500 and run.result["summary"] == "codex did it with gpt-max"
+    assert run.usage["input_tokens"] == 450 and run.result["summary"] == "codex did it with gpt-max"
     assert fake_github.created[0]["title"] == "Codex PR"
 
 
@@ -55,9 +56,11 @@ def test_easy_task_gets_cheap_model(sched):
     assert sched.runs.latest("DM-001").model == "haiku"
 
 
-def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path):
+@pytest.mark.parametrize("harness, output", [("claude", "worker-output.txt"), ("codex", "codex-output.txt")])
+def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path, harness, output):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
+    t.harness = harness
     sched.store.save(t)
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(work)"]
@@ -73,7 +76,7 @@ def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path):
     remote = tmp_path / "remote.git"
     out = subprocess.run(["git", "branch", "--list", "garden/*"], cwd=remote, capture_output=True, text=True, check=False).stdout
     assert "garden/dm-001-first-task" in out
-    assert (sched.worktree_for(t) / "worker-output.txt").exists()
+    assert (sched.worktree_for(t) / output).exists()
     assert fake_github.created[0]["head"] == "garden/dm-001-first-task"
 
 
@@ -188,3 +191,30 @@ def test_stream_json_harness_end_to_end(garden, fake_github, monkeypatch):
     run = sc.runs.latest("DM-001")
     assert run.result.get("status") == "done"
     assert run.usage.get("input_tokens") == 1234
+
+
+def test_codex_planning_review_and_resume(sched, monkeypatch, fake_github):
+    from garden.planner import import_plan, parse_plan, plan_prompt, run_planner
+
+    sched.cfg.data["harness"] = "codex"
+    sched.cfg.data["review"]["enabled"] = True
+    sched.cfg.data["worker_env"]["pass"].append("FAKE_CODEX_*")
+    (sched.store.root / "garden.yaml").write_text(yaml.safe_dump(sched.cfg.data))
+    prompt = plan_prompt(sched.store, "demo", "p1")
+    planned = parse_plan(run_planner(sched.store, prompt))
+    tasks = import_plan(sched.store, "demo", "p1", planned, status="draft")
+    assert tasks[0].title == "Codex planned task"
+    monkeypatch.setenv("FAKE_CODEX_MODE", "needs_input")
+    sched.tick()
+    sched.tick()
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.status == Status.WAITING_HUMAN
+    assert sched.state.get(task.id)["session_id"] == "th_1"
+    run = sched.answer(task, "Use SQLite")
+    assert run.mode == "resume" and run.session_id == "th_1"
+    sched.tick()
+    sched.tick()
+    assert fake_github.created[0]["title"] == "Codex PR"
+    assert any("checked" in c for c in fake_github.comments)
+    assert "Use SQLite" in (sched.worktree_for(task) / "codex-resumed.txt").read_text()

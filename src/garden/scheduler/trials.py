@@ -34,7 +34,7 @@ class TrialsMixin:
             wt = self.cfg.worktree_path(f"{task.id}-trial-{suffix}")
             runner = self.runner_for(task, "local", harness)
             run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
-            trial["contenders"].append({"label": label, "harness": harness, "model": model, "branch": branch, "worktree": str(wt),
+            trial["contenders"].append({"label": label, "harness": harness, "model": run.model, "branch": branch, "worktree": str(wt),
                                         "run_id": run.run_id, "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None})
             runs.append(run)
         st["trial"] = trial
@@ -180,6 +180,8 @@ class TrialsMixin:
                     gitops.remove_worktree(self.repo_for(task), Path(c["worktree"]))
                 except Exception:  # noqa: BLE001
                     pass
+        task.harness = winner["harness"]
+        task.model = winner["model"]
         task.branch = winner["branch"]
         task.pr = winner.get("pr", "")
         st["pr_number"] = winner.get("pr_number") or 0

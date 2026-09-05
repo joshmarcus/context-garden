@@ -7,7 +7,32 @@ from pathlib import Path
 import yaml
 
 from .config import CONFIG_NAME
+from .harness import DEFAULT_HARNESSES
 from .store import Store
+
+AGENTS_TEMPLATE = """\
+# Working in this context garden
+
+Read `principles/00-index.md`, the selected product's `product.md`, its phase's
+`goals.md`, and the task's reading list. Use `garden status`, `garden ready`, and
+`garden brief ID` to select and inspect work without loading the entire garden.
+
+For planning, use `garden plan product/phase --dry-run` to inspect the planning
+prompt, then `garden plan product/phase --draft` to create tasks for approval.
+A human approves drafts with `garden approve`; follow the requested scope.
+
+For an interactive implementation, `garden take ID --worktree` claims the task and
+prints its brief. Work in the reported worktree, run the product's checks, commit,
+and report the single-line `GARDEN_RESULT` JSON specified in the brief. The garden
+controller runs `garden finish ID --result '<JSON>'` from the garden checkout to
+push and open the PR when authorized. Automated workers only report their result;
+the scheduler handles publication and state transitions.
+
+Task status and logs belong to the scheduler: use garden commands to change them.
+Workers must not run garden dispatch, tick, watch, serve, take, or finish from their
+worktrees, or modify the controller checkout or its `.garden` state. Answer human
+questions through `garden answer ID`; inspect feedback with `garden inbox`.
+"""
 
 DIGEST_TEMPLATE = """\
 # Principles digest
@@ -418,11 +443,18 @@ def init_garden(directory: Path, name: str) -> list[Path]:
             "review": {"enabled": True, "max_rounds": 2, "personas": []},
             "checks": {"pre_pr": [], "ci": []},
             "github": {"draft_pr": True},
-            "harnesses": {"claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}}},
+            "harnesses": {
+                "claude": {"models": {"easy": "haiku", "medium": "sonnet", "hard": "opus"}},
+                "codex": {"models": dict(DEFAULT_HARNESSES["codex"]["models"])},
+            },
             "ssh": {"hosts": []},
             "products": {},
         }, sort_keys=False))
         created.append(cfg)
+    agents = directory / "AGENTS.md"
+    if not agents.exists():
+        agents.write_text(AGENTS_TEMPLATE)
+        created.append(agents)
     pdir = directory / "principles"
     pdir.mkdir(exist_ok=True)
     digest = pdir / "00-index.md"
