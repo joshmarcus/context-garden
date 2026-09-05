@@ -350,6 +350,18 @@ files under `tasks/` must not be hand-edited.
     the head is rebased, checked and merged; the next candidate is taken on the following
     poll. So exactly one PR is rebased and merged per tick, each rebased once, right before
     it merges.
+- **A broken base parks, then continues on its own** (`scheduler/reap.py`). When a pre-PR
+  check fails, the scheduler probes the branch's base commit before spending a revise round.
+  If the same check fails at the base too and the base branch has **not** moved, the base is
+  itself broken: the task parks with a `base_broken` stop (recording the base branch and its
+  probed tip) — no revise round, no worker, no spend. Every following tick re-probes: while
+  the base tip is unchanged it just waits, but the moment the base branch goes green the
+  scheduler rebases the branch onto it mechanically (a no-cost `rebase` run, the same path as
+  above), force-pushes so any stale CI on the branch runs again, re-runs the pre-PR checks and
+  — on green — clears the stop and opens or updates the PR, all without a worker. A rebase that
+  does not apply, or checks that still fail after it, fall through to the normal revise path
+  (and only then); a base that moved but is still red simply re-parks against the new tip. The
+  event is `rebased_stale_base`.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
   `last_dispatched_at` count, minus the garden's own login (the `gh` user or the token's
   user) and `[bot]` accounts, so the scheduler's own review comments never trigger a
