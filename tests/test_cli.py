@@ -688,6 +688,24 @@ def test_pin_waits_for_tick_before_restart(garden, monkeypatch):
     assert order == ["canary", "tick", "restart"]
 
 
+def test_pin_refuses_to_install_when_canary_fails(garden, monkeypatch):
+    """A failed canary leaves the candidate out of the installer and scheduler."""
+    from types import SimpleNamespace
+
+    from garden import canary
+    from garden.cli import diagnostics
+
+    monkeypatch.setattr(canary, "run_canary", lambda *args, **kwargs: SimpleNamespace(
+        ok=False, summary=lambda: "canary: FAILED"))
+    monkeypatch.setattr(diagnostics, "_scheduler", lambda store: (_ for _ in ()).throw(
+        AssertionError("pin must not reach the scheduler after a failed canary")))
+
+    result = run(garden, "pin", "deadbeef", "--url", str(garden.parent / "repo"))
+
+    assert result.exit_code == 1
+    assert "canary: FAILED" in result.output
+
+
 def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):
     monkeypatch.setenv("COLUMNS", "80")
     r = run(garden, "status")
