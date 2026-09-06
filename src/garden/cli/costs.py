@@ -19,7 +19,7 @@ from .common import PANEL_INSIGHT, _store, app, console
 def costs(
     since: str = typer.Option("", "--since", help="24h, 3d, an ISO timestamp, or empty for all time"),
     bucket: str = typer.Option("day", "--bucket", help="day | hour"),
-    by: str = typer.Option("activity", "--by", help="activity | difficulty | model | harness | phase | task | session"),
+    by: str = typer.Option("activity", "--by", help="activity | difficulty | model | harness | pool_member | phase | task | session"),
     difficulty: str = typer.Option("", "--difficulty", help="easy | medium | hard"),
     model: str = typer.Option("", "--model"),
     harness: str = typer.Option("", "--harness"),

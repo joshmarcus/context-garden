@@ -87,13 +87,17 @@ class DispatchMixin:
                 break
             if self.budget_exceeded(task):
                 continue
-            runner = self.runner_for(task)
+            member = self.select_pool_member(task, task.difficulty)
+            runner = self.runner_for(task, harness_name=str(member["harness"]) if member else "")
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
+            if member is None and self.pool_members(task.difficulty):
+                continue  # every configured member is paused
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             try:
-                self.dispatch(task, mode=mode, runner=runner)
+                self.dispatch(task, mode=mode, runner=runner, model_override=(member or {}).get("model") or None,
+                              pool_member=(member or {}).get("label") or "")
                 rep.dispatched.append(f"{task.id}({mode})")
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
@@ -249,10 +253,18 @@ class DispatchMixin:
 
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
-                 worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+                 worktree_override: Path | None = None, model_override: str | None = None,
+                 pool_member: str = "") -> Run:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
-        runner = runner or self.runner_for(task)
+        if runner is None:
+            tier = "easy" if mode == "rebase" else task.difficulty
+            member = self.select_pool_member(task, tier)
+            if self.pool_members(tier) and member is None:
+                raise RuntimeError(f"every {tier} tier pool member is paused")
+            runner = self.runner_for(task, harness_name=str((member or {}).get("harness") or ""))
+            model_override = model_override if model_override is not None else (member or {}).get("model") or None
+            pool_member = pool_member or str((member or {}).get("label") or "")
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -343,6 +355,7 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
+        run.pool_member = pool_member
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
@@ -392,7 +405,7 @@ class DispatchMixin:
         how = "resumed session" if session_id else "fresh session"
         stacked = f" stacked on {stack['parent_id']}" if stack else ""
         tier_note = ", description only; easy tier" if revise_easy else (", conflict only; easy tier" if mode == "rebase" else "")
-        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
+        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness, pool_member=run.pool_member,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
         self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}{rebase_note}, ~{run.brief_tokens} tokens)")
         self.state.save()

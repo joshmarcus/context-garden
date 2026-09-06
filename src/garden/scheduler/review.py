@@ -78,10 +78,15 @@ class ReviewMixin:
         # review and persona rounds share the same `review.harness` config, so one resolved
         # name gates both kinds; a paused harness defers the round into pending_reviews
         # instead of failing it, the same way a full review_parallel does (CG-212).
-        review_harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         deferred: list[dict[str, Any]] = []
         for item in wanted:
             if self.review_slots_free() <= 0:
+                deferred.append(item)
+                continue
+            tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+            member = self.select_pool_member(task, tier, review=True)
+            review_harness = (member or {}).get("harness") or self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
+            if self.pool_members(tier, review=True) and member is None:
                 deferred.append(item)
                 continue
             if self.is_harness_paused(review_harness):
@@ -90,7 +95,7 @@ class ReviewMixin:
             kind = item["kind"]
             try:
                 if kind == "review":
-                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
+                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)), member=member)
                     rep.dispatched.append(f"{task.id}(review)")
                     self.log(f"{task.id}: review run {run.run_id} started")
                 else:
@@ -164,9 +169,14 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
-    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
+    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
+                        member: dict[str, Any] | None = None) -> Run:
         ensure_open(task)
-        harness_name = str(self.cfg.get("review.harness") or "")
+        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
+        if self.pool_members(review_tier, review=True) and member is None:
+            raise RuntimeError("every review pool member is paused")
+        harness_name = str((member or {}).get("harness") or self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
@@ -215,7 +225,11 @@ class ReviewMixin:
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
+        run.harness = runner.harness.name if runner.harness else ""
         run.model = self.model_for(task, runner, review_difficulty)
+        if member and member.get("model"):
+            run.model = str(member["model"])
+        run.pool_member = str((member or {}).get("label") or "")
         if runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
         run.brief_tokens = max(1, len(text) // 4)
@@ -225,7 +239,7 @@ class ReviewMixin:
         st["review_run"] = run.run_id
         if count_round:
             st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
-        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
+        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness, pool_member=run.pool_member)
         self.state.save()
         return run
 

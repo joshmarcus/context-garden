@@ -25,7 +25,7 @@ from .model import Task
 # scheduler run mode: it is synthesized from docs/operator-spend.jsonl by
 # `operator_spend.to_cost_events` before the events reach `cost_series`.
 ACTIVITIES = ("work", "revise", "rebase", "review", "persona", "retro", "check", "operator")
-GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "phase", "task", "session")
+GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "pool_member", "phase", "task", "session")
 BUCKET_CHOICES = ("hour", "day")
 
 
@@ -44,6 +44,8 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
         return str(ev.get("model") or "unknown")
     if group_by == "harness":
         return str(ev.get("harness") or "unknown")
+    if group_by == "pool_member":
+        return str(ev.get("pool_member") or "unpooled")
     if group_by == "difficulty":
         return str(task.difficulty) if task else "unknown"
     if group_by == "phase":

@@ -159,6 +159,53 @@ class Scheduler(
         runner yet (a review/persona batch still queued)."""
         return harness_name or task.harness or self.cfg.product_harness(task.product)
 
+    def pool_members(self, tier: str, review: bool = False) -> list[dict[str, Any]]:
+        """Normalise a configured tier/review pool, leaving old string tier maps alone."""
+        raw: Any = self.cfg.get("review.pool") if review else self.effective("models")
+        if review:
+            entries = raw if isinstance(raw, list) else []
+        else:
+            entries = (raw or {}).get(tier) if isinstance(raw, dict) else None
+        if not isinstance(entries, list):
+            return []
+        members: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("harness"):
+                continue
+            harness, model = str(entry["harness"]), str(entry.get("model") or "")
+            weight = max(1, int(entry.get("weight") or 1))
+            members.append({"harness": harness, "model": model, "weight": weight,
+                            "label": f"{harness}:{model}"})
+        return members
+
+    def select_pool_member(self, task: Task, tier: str, review: bool = False) -> dict[str, Any] | None:
+        """Choose an available pool member, preserving task pins and a stable weighted rotation."""
+        members = self.pool_members(tier, review=review)
+        if not members:
+            return None
+        if task.harness:
+            members = [m for m in members if m["harness"] == task.harness]
+        if task.model:
+            members = [m for m in members if m["model"] == task.model]
+        if not members:
+            # A pin is allowed to name a model outside the pool; it remains an explicit route.
+            if task.harness or task.model:
+                return {"harness": task.harness or self.cfg.product_harness(task.product),
+                        "model": task.model, "weight": 1,
+                        "label": f"{task.harness or self.cfg.product_harness(task.product)}:{task.model}"}
+            return None
+        available = [m for m in members if not self.is_harness_paused(m["harness"])]
+        if not available:
+            return None
+        policy = str(self.cfg.get("dispatch.spread") or "quota_aware")
+        slots = available if policy == "round_robin" else [m for m in available for _ in range(m["weight"])]
+        key = f"{'review' if review else 'work'}:{tier}:" + ",".join(m["label"] for m in members)
+        rotation = self.state.get("_pool_rotation")
+        index = int(rotation.get(key, 0)) % len(slots)
+        rotation[key] = index + 1
+        self.state.save()
+        return dict(slots[index])
+
     def model_for(self, task: Task, runner: Runner, difficulty: str = "") -> str:
         if runner.harness is None:
             return ""
@@ -174,7 +221,7 @@ class Scheduler(
         if key in ov:
             return str(ov[key])
         models = self.operating_profile().get("models") or {}
-        if models.get(d):
+        if isinstance(models.get(d), str) and models.get(d):
             return str(models[d])
         return runner.harness.model_for(d)
 

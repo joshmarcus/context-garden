@@ -15,7 +15,7 @@
     </select>
     <label class="muted" for="c-by">group by</label>
     <select id="c-by" name="by" onchange="this.form.submit()">
-      {% for v in ("activity", "difficulty", "model", "harness", "phase", "task", "session") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+      {% for v in ("activity", "difficulty", "model", "harness", "pool_member", "phase", "task", "session") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
     </select>
     <label class="muted" for="c-diff">difficulty</label>
     <select id="c-diff" name="difficulty" onchange="this.form.submit()">
