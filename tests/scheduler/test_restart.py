@@ -192,3 +192,23 @@ def test_run_finished_emitted_once_when_finalize_interrupted_during_fence(sched,
     assert statuses(sched)["DM-001"] == "in_review"
     finished = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"]) if e.get("run") == run.run_id]
     assert len(finished) == 1  # emitted exactly once despite the interrupted first finalize
+
+
+def test_restart_reconciles_a_no_pid_preparing_run_once(sched, fake_github):
+    """Preparation is durable but never reported as live without a pid.  Startup closes the
+    orphan once, leaves the ready task retryable, and the next tick launches one worker."""
+    run = sched.runs.new_run("DM-001", "local", initial_status="requested")
+    run.status = "preparing"
+    run.save()
+
+    fresh = _restart(sched, fake_github)
+    rep = fresh.reap_on_start()
+    assert fresh.runs.latest("DM-001").status == "failed"
+    assert statuses(fresh)["DM-001"] == "ready"
+    assert len([line for line in rep.transitions if run.run_id in line]) == 1
+
+    again = _restart(fresh, fake_github)
+    assert not again.reap_on_start().transitions
+    again.tick()
+    active = [candidate for candidate in again.runs.active() if candidate.task_id == "DM-001"]
+    assert len(active) == 1 and active[0].status == "running" and active[0].pid is not None

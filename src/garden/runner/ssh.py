@@ -203,6 +203,7 @@ class SSHRunner(Runner):
         proc = subprocess.Popen(["sh", "-c", wrapper], env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         run.pid = proc.pid
+        run.status = "running"
         run.harness = self.harness.name
         run.save()
         (d / "command.txt").write_text(wrapper + "\n")

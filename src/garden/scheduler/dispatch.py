@@ -272,7 +272,7 @@ class DispatchMixin:
             # startup details.  In that case the process owns the run and closing the
             # record here would leave a live worker behind.  The orphan sweep handles
             # a process that later disappears without an exit marker.
-            if run is not None and run.status == "running" and run.pid is None:
+            if run is not None and run.status in ("requested", "preparing", "running") and run.pid is None:
                 self._close_dispatch_failure(task, run, e)
             raise
         finally:
@@ -310,8 +310,11 @@ class DispatchMixin:
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
-        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
+        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id,
+                                initial_status="requested")
         self._dispatching_run = run
+        run.status = "preparing"
+        run.save()
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
@@ -413,6 +416,11 @@ class DispatchMixin:
         except Exception as e:  # setup/start failed: mark this run failed so it stops
             if run.pid is None:
                 self._close_dispatch_failure(task, run, e)
+            elif run.status != "running":
+                # A runner may launch successfully and fail while persisting its final
+                # startup detail.  A recorded pid is authoritative confirmed-live work.
+                run.status = "running"
+                run.save()
             raise
         if not branch_override:
             task.branch = branch

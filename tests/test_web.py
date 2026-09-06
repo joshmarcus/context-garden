@@ -1878,6 +1878,82 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     done.wait(timeout=10)
 
 
+def test_incident_health_and_control_status_do_not_touch_slow_reads(garden, monkeypatch):
+    """Incident probes stay bounded even when ordinary task discovery is overloaded."""
+    import time
+
+    app = create_app(Store(garden), watch=False)
+    c = TestClient(app)
+    monkeypatch.setattr(Store, "tasks", lambda self: (time.sleep(2), {})[1])
+
+    started = time.monotonic()
+    assert c.get("/healthz").text == "ok"
+    assert c.get("/api/control/status").json()["dispatch"] == "running"
+    assert c.post("/pause", data={"reason": "incident"}, follow_redirects=False).status_code == 303
+    assert c.get("/api/control/status").json()["dispatch"] == "paused"
+    assert time.monotonic() - started < 0.5
+
+
+def test_operation_endpoint_exposes_preparing_and_finished_identity(garden):
+    from garden.runs import RunStore
+
+    runs = RunStore(Store(garden).config.garden_dir)
+    run = runs.new_run("DM-001", "local", initial_status="requested")
+    run.status = "preparing"
+    run.save()
+    c = client(garden)
+
+    preparing = c.get(f"/api/operations/DM-001/{run.run_id}").json()
+    assert preparing == {"operation_id": run.run_id, "task_id": "DM-001", "state": "preparing",
+                         "status": "preparing", "pid": None, "requested_at": run.started_at,
+                         "finished_at": "", "error": ""}
+    run.status = "failed"
+    run.finished_at = run.started_at
+    run.error = "startup interrupted"
+    run.save()
+    finished = c.get(f"/api/operations/DM-001/{run.run_id}").json()
+    assert finished["state"] == "finished" and finished["status"] == "failed"
+
+
+def test_timed_out_dispatch_retry_does_not_duplicate_preparing_work(garden, monkeypatch):
+    """The first request keeps preparing after its caller gives up; a concurrent retry
+    reconciles against the durable run instead of launching a second worker."""
+    import threading
+
+    from garden.runner.local import LocalRunner
+    from garden.runs import RunStore
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_start = LocalRunner.start
+
+    def slow_start(self, run, worktree, brief_text):
+        entered.set()
+        assert release.wait(5)
+        return real_start(self, run, worktree, brief_text)
+
+    monkeypatch.setattr(LocalRunner, "start", slow_start)
+    app = create_app(Store(garden), watch=False)
+    c = TestClient(app)
+    responses = []
+    original = threading.Thread(target=lambda: responses.append(
+        c.post("/tasks/DM-001/dispatch", follow_redirects=False)), daemon=True)
+    original.start()
+    assert entered.wait(5)
+
+    runs = RunStore(Store(garden).config.garden_dir).runs_for("DM-001")
+    assert len(runs) == 1 and runs[0].status == "preparing" and runs[0].pid is None
+    retry = threading.Thread(target=lambda: responses.append(
+        c.post("/tasks/DM-001/dispatch", follow_redirects=False)), daemon=True)
+    retry.start()
+    release.set()
+    original.join(5)
+    retry.join(5)
+
+    assert len(RunStore(Store(garden).config.garden_dir).runs_for("DM-001")) == 1
+    assert len(responses) == 2 and all(response.status_code == 303 for response in responses)
+
+
 def test_inbox_renders_taskless_question_once(garden, monkeypatch):
     from garden.scheduler import Scheduler
 

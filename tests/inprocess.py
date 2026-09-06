@@ -55,6 +55,7 @@ class InProcessRunner(LocalRunner):
         # What the shell wrapper records for a real run: the resolved command line.
         (d / "command.txt").write_text(" ".join(shlex.quote(c) for c in argv) + "\n")
         run.pid = os.getpid()
+        run.status = "running"
         run.harness = self.harness.name
         run.save()
         # The shell redirects create both files before the harness prints anything.
@@ -83,6 +84,8 @@ class InProcessRunner(LocalRunner):
         from garden.checkrun import run_check_job
 
         d = run.path
+        run.status = "running"
+        run.save()
         env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
         if env.get("TMPDIR"):
             payload = {**payload, "temp_dir": env["TMPDIR"]}

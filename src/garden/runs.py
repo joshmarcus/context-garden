@@ -72,7 +72,9 @@ class Run:
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
     session_id: str = ""  # harness session, for resume
-    status: str = "running"  # running | done | blocked | failed | timeout | cancelled | superseded
+    # Startup is durable too: requested is the record reservation, preparing covers
+    # worktree/setup work, and running means a worker pid has actually been recorded.
+    status: str = "running"  # requested | preparing | running | done | blocked | failed | timeout | cancelled | superseded
     pid: int | None = None
     started_at: str = ""
     finished_at: str = ""
@@ -99,6 +101,11 @@ class Run:
     def path(self) -> Path:
         return Path(self.dir)
 
+    @property
+    def lifecycle_state(self) -> str:
+        """Stable control-plane state; terminal result variants collapse to finished."""
+        return self.status if self.status in ("requested", "preparing", "running") else "finished"
+
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
@@ -117,10 +124,9 @@ class Run:
     # ---- process state -----------------------------------------------------
     @property
     def no_process(self) -> bool:
-        """A record written at dispatch and never launched: still running, no pid and no
-        output. The scheduler counts it against a slot until a tick reaps it, so the Now page
-        shows it as what it is and a review behind it says what it waits for."""
-        return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
+        """A requested/preparing record is not confirmed live until it has a pid."""
+        return (self.status in ("requested", "preparing", "running") and self.pid is None
+                and not (self.path / "stdout.json").exists())
 
     def process_finished(self) -> bool:
         if (self.path / "exit_code").exists():
@@ -335,7 +341,7 @@ class RunStore:
                 for run in found:
                     grouped.setdefault(run.task_id, []).append(run)
                 idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
-                idx.active = tuple(run for run in found if run.status == "running")
+                idx.active = tuple(run for run in found if run.status in ("requested", "preparing", "running"))
                 idx.totals = _totals(found)
                 idx.task_fingerprints = task_fingerprints
                 idx.archive_fingerprint = archive_fingerprint
@@ -443,7 +449,8 @@ class RunStore:
             d = self.dir / task_id / run_id
         return run_id
 
-    def new_run(self, task_id: str, runner: str, mode: str = "work", run_id: str = "") -> Run:
+    def new_run(self, task_id: str, runner: str, mode: str = "work", run_id: str = "",
+                initial_status: str = "running") -> Run:
         run_id = run_id or self.next_run_id(task_id, mode)
         d = self.dir / task_id / run_id
         d.mkdir(parents=True, exist_ok=True)
@@ -453,6 +460,7 @@ class RunStore:
             dir=str(d),
             runner=runner,
             mode=mode,
+            status=initial_status,
             started_at=dt.datetime.now(dt.UTC).isoformat(),
         )
         run.save()
