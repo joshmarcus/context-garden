@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from .config import Config, find_root
 from .model import Phase, Product, Task, join_frontmatter, now_iso, split_frontmatter
@@ -176,10 +178,47 @@ class Store:
         raise KeyError(f"no product {name!r}")
 
     # ---- writing -----------------------------------------------------------
-    def save(self, task: Task) -> None:
+    def save(self, task: Task) -> bool:
+        """Write a task file, merging our change onto whatever is on disk instead of trusting the
+        in-memory copy to be current. A task file is a whole document but a save only ever means
+        to change a few of its fields, so a concurrent tick and web action that touch different
+        fields (a status transition and a priority edit, say) must both survive rather than the
+        later writer clobbering the earlier one's whole file.
+
+        Under an exclusive lock (a single `.garden/tasks.lock`, so the read-merge-write is atomic
+        across threads and processes) this re-reads the current file and 3-way-merges against the
+        snapshot the task was loaded from: only fields this writer actually changed are reapplied,
+        and appended log lines from both writers are kept. A brand-new task, or one being written
+        to a new path (a move), is written whole.
+
+        Returns True if it wrote. Returns False without writing when the file this task was loaded
+        from is gone — a concurrent move relocated it — so a stale save can't recreate the old
+        path and leave two files with the same id (which would stop the whole garden). The moved
+        file already carries the current state; the next tick reapplies anything this drop lost."""
+        loaded_fm = task._loaded_fm
+        loaded_body = task._loaded_body
+        moved = task._loaded_path is not None and task._loaded_path != task.path
         task.touch()
         task.path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(task.path, task.render())
+        lock_path = self.config.garden_dir / "tasks.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            if loaded_fm is None or moved:
+                # a task never loaded from disk (freshly created), or a rename to a new path:
+                # nothing on disk here to merge against, so write our copy whole.
+                fm, body = task.to_frontmatter(), task.body
+            elif not task.path.exists():
+                # the file we loaded is gone: a concurrent move took it. Recreating it here would
+                # resurrect the task at its old location as a duplicate id. Drop this save.
+                return False
+            else:
+                disk_fm, disk_body = _read_task(task.path, task.product, task.phase)
+                fm = _merge_frontmatter(loaded_fm, task.to_frontmatter(), disk_fm)
+                body = _merge_body(loaded_body or "", task.body, disk_body)
+            _atomic_write(task.path, join_frontmatter(fm, body))
+        task.snapshot()
+        return True
 
     def next_id(self, product: str) -> str:
         prefix = str(self.config.product(product).get("id_prefix") or _prefix_for(product))
@@ -274,6 +313,55 @@ def _prefix_for(product: str) -> str:
     if len(parts) >= 2:
         return "".join(p[0] for p in parts[:3]).upper()
     return product[:3].upper()
+
+
+def _read_task(path: Path, product: str, phase: str) -> tuple[dict[str, Any], str]:
+    """The on-disk frontmatter (in canonical `to_frontmatter` shape) and body of a task file,
+    for merging a save against. Parsing through `Task` normalises types so the three sides of
+    the merge compare like with like."""
+    disk = Task.parse(path, path.read_text(), product=product, phase=phase)
+    return disk.to_frontmatter(), disk.body
+
+
+_MISSING = object()
+
+
+def _merge_frontmatter(base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any]:
+    """3-way merge of frontmatter: reapply only the keys this writer changed (`ours` vs `base`)
+    onto the current disk copy (`theirs`), so a key another writer changed meanwhile is kept.
+    A key we changed wins over a concurrent change to the same key; a key neither of us touched
+    keeps its disk value. Setting a key to absent (dropped from `to_frontmatter`) counts as a
+    change. Key order follows `ours`, then any keys only the other writer added."""
+    merged: dict[str, Any] = {}
+    for key in list(ours) + [k for k in theirs if k not in ours] + [k for k in base if k not in ours and k not in theirs]:
+        if key in merged:
+            continue
+        b, o, t = base.get(key, _MISSING), ours.get(key, _MISSING), theirs.get(key, _MISSING)
+        chosen = o if o != b else t  # we changed it -> ours; else whatever disk has now
+        if chosen is not _MISSING:
+            merged[key] = chosen
+    return merged
+
+
+def _merge_body(base: str, ours: str, theirs: str) -> str:
+    """3-way merge of the task body. The body changes almost only by `Task.log` appending lines,
+    so when both sides changed it, reapply the lines we appended past the shared prefix onto the
+    disk copy (skipping any already there). A change that is not a clean append keeps our body."""
+    if ours == theirs or theirs == base:
+        return ours
+    if ours == base:
+        return theirs
+    base_lines, our_lines = base.rstrip("\n").splitlines(), ours.rstrip("\n").splitlines()
+    i = 0
+    while i < len(base_lines) and i < len(our_lines) and base_lines[i] == our_lines[i]:
+        i += 1
+    if i < len(base_lines):
+        return ours  # we changed existing content, not a clean append; can't safely splice
+    merged = theirs.rstrip("\n").splitlines()
+    for line in our_lines[i:]:
+        if line not in merged:
+            merged.append(line)
+    return "\n".join(merged) + "\n"
 
 
 def _atomic_write(path: Path, text: str) -> None:

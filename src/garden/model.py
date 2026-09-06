@@ -151,6 +151,25 @@ class Task:
     extra: dict[str, Any] = field(default_factory=dict)
     body: str = ""
 
+    def __post_init__(self) -> None:
+        # Snapshot of the frontmatter, body and path this task was last loaded from (or last
+        # saved to). Not stored on disk and not a dataclass field: `Store.save` uses it to
+        # 3-way-merge a write onto the current on-disk file, so a concurrent tick and action
+        # each reapply only the fields they changed instead of clobbering the whole file, and
+        # to spot a save whose file a concurrent move has taken out from under it. A task built
+        # by hand (never loaded from disk) has no snapshot and is written whole.
+        self._loaded_fm: dict[str, Any] | None = None
+        self._loaded_body: str | None = None
+        self._loaded_path: Path | None = None
+
+    def snapshot(self) -> None:
+        """Record the current frontmatter/body/path as the baseline `Store.save` merges against.
+        Called after a load and after a successful save, so the next save diffs from what this
+        task last agreed with on disk."""
+        self._loaded_fm = self.to_frontmatter()
+        self._loaded_body = self.body
+        self._loaded_path = self.path
+
     # ---- (de)serialisation -------------------------------------------------
     KNOWN = (
         "id",
@@ -191,7 +210,7 @@ class Task:
         except ValueError as e:
             raise ValueError(f"{path}: unknown status {status_raw!r}") from e
         extra = {k: v for k, v in data.items() if k not in cls.KNOWN}
-        return cls(
+        task = cls(
             path=path,
             id=str(data["id"]),
             title=str(data.get("title", "")),
@@ -221,6 +240,8 @@ class Task:
             extra=extra,
             body=body,
         )
+        task.snapshot()
+        return task
 
     def to_frontmatter(self) -> dict[str, Any]:
         data: dict[str, Any] = {
