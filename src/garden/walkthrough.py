@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import html
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -369,6 +371,12 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     store = Store(garden_root)
     phase = store.phase(str(ctx["product"]), str(ctx["phase"]))
     result = capture(store, phase, out_dir, screenshots=True)
+    if not result.screenshots and "not installed" not in result.browser_note.lower():
+        # Playwright's Python package is part of context-garden, while its Chromium binary is
+        # machine-local. Prepare that binary on first use so a fresh worker needs no hand step.
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                       capture_output=True, text=True, timeout=300, check=False)
+        result = capture(store, phase, out_dir, screenshots=True)
     captures = [str(p) for p in sorted(out_dir.iterdir()) if p.suffix in {".png", ".html", ".txt", ".md"}]
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
     if not result.screenshots:

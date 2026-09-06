@@ -17,6 +17,7 @@ dependencies = [
     "markdown>=3.5",
     "textual>=0.60",
     "python-multipart>=0.0.9",
+    "playwright>=1.40",
 ]
 
 [project.scripts]
