@@ -43,6 +43,21 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Capacity</div>
+  <h3>Local execution boundary</h3>
+  <p class="muted" style="margin:0">
+    Host admission: <strong>{{ resource_status.active }}/{{ resource_status.limit }}</strong> ·
+    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong>
+    {% if resource_status.heavy_waiting %}({{ resource_status.heavy_waiting }} waiting: heavy-test budget full){% endif %} ·
+    cgroup isolation: <strong>{{ resource_status.isolation }}</strong>.
+    Available memory: <strong>{{ resource_status.memory_available_mb if resource_status.memory_available_mb is not none else "unknown" }} MiB</strong>
+    {% if resource_status.cgroup_available_mb is not none %}(effective cgroup headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
+    temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
+  </p>
+  {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget. Configure a delegated <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Dispatch</div>
   <h3>Parallelism</h3>
   <p style="color:var(--muted);margin:0 0 10px">

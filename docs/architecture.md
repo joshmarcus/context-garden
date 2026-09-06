@@ -312,6 +312,16 @@ Reaping is never gated, so pressure drains without a restart; the rail and opera
 name the effective bound and recovery action. Queue-specific `max_parallel` and
 `review_parallel` remain narrower caps inside that host bound.
 
+Local supervisors additionally share `resources.heavy_test_parallel` kernel leases across
+every garden owned by the same OS user (one by default). An admitted run waits explicitly at
+that boundary before any harness or check starts; exit, cancellation and crashes release its
+`flock`, so reservations cannot become stale. The lease covers the whole run, avoiding a
+nested-lock deadlock when that run starts tests itself. With `resources.execution_cgroup`, the
+supervisor moves into a preconfigured delegated cgroup before spawning, so all descendants
+share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose
+waiting counts and whether cgroup isolation is enforced. Arbitrary commands launched outside
+the local runner and remote hosts are outside this boundary and must be bounded separately.
+
 Dispatching one task means: choose the runner (task, then product, then garden default),
 the harness (same order), the model (an explicit `model:`, else the harness's tier map by
 `difficulty`), the base branch (a stack parent's branch or the product base), prepare the

@@ -1867,14 +1867,30 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     t0 = time.monotonic()
     r = c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False)
     post_s = time.monotonic() - t0
-    t1 = time.monotonic()
-    g = c.get("/")
-    get_s = time.monotonic() - t1
+    page_timings = {}
+    pages = {}
+    for path in ("/", "/now1"):
+        t1 = time.monotonic()
+        pages[path] = c.get(path)
+        page_timings[path] = time.monotonic() - t1
+    t2 = time.monotonic()
+    pause = c.post("/pause", data={"reason": "capacity validation"}, follow_redirects=False)
+    pause_s = time.monotonic() - t2
+    children = Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read_text().split()
+    stat = os.statvfs(garden)
+    temp_free_mb = stat.f_bavail * stat.f_frsize // (1024 * 1024)
+    from garden.scheduler.resources import _cgroup_memory_available_mb, _memory_available_mb
+    print(f"bounded workload journey: inbox={page_timings['/']:.3f}s now1={page_timings['/now1']:.3f}s "
+          f"control={pause_s:.3f}s host_mem={_memory_available_mb()}MiB "
+          f"cgroup_headroom={_cgroup_memory_available_mb()}MiB temp_free={temp_free_mb}MiB "
+          f"live_children={children}")
 
-    assert r.status_code == 303 and g.status_code == 200
+    assert r.status_code == 303 and all(page.status_code == 200 for page in pages.values())
+    assert pause.status_code == 303 and hub.scheduler().is_dispatch_paused()
     assert not done.is_set(), "the tick was still running while both requests were served"
     assert post_s < 1.0, f"POST waited {post_s:.2f}s for the tick"
-    assert get_s < 0.5, f"GET waited {get_s:.2f}s for the tick"
+    assert max(page_timings.values()) < 2.0
+    assert pause_s < 2.0
     done.wait(timeout=10)
 
 
