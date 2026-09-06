@@ -456,6 +456,27 @@ def test_inbox_and_task_page_include_the_same_decision_card_fragment():
         assert '{% include "_decision_card.html" %}' in (templates / name).read_text()
 
 
+def test_inbox_attention_cards_keep_their_discuss_prompts_separate(garden):
+    """Each shared card targets its own discuss prompt when the Inbox has several stops."""
+    from garden.model import Status
+    from garden.store import Store
+
+    store = Store(garden)
+    for task_id in ("DM-001", "DM-002"):
+        task = store.task(task_id)
+        task.status = Status.FAILED
+        store.save(task)
+
+    page = client(garden).get("/").text
+    for task_id in ("DM-001", "DM-002"):
+        assert f'data-toggle="discuss-{task_id}"' in page
+        assert f'id="discuss-{task_id}"' in page
+        assert f'id="discuss-text-{task_id}"' in page
+        assert f'data-copy="discuss-text-{task_id}"' in page
+    assert 'id="discuss-panel"' not in page
+    assert 'id="discuss-text"' not in page
+
+
 def test_budget_form_and_route(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store
