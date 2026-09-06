@@ -469,6 +469,11 @@ class HumanMixin:
 
         if phase.closed:
             return ""
+        from ..stabilization import gate
+
+        proven, missing = gate(phase)
+        if not proven:
+            raise RuntimeError(f"{phase.key} stabilization is UNPROVEN: " + "; ".join(missing))
         blocking = [t for t in phase.tasks if t.retro_blocking and not t.status.terminal]
         if blocking and not force:
             ids = ", ".join(f"{t.id} ({t.status.value})" for t in blocking)

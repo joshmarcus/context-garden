@@ -249,5 +249,15 @@ def unfreeze(target: str = typer.Argument(..., help="product/phase")):
     if not ph.frozen:
         err.print(f"[yellow]{ph.key} is not frozen[/yellow]")
         raise typer.Exit(1) from None
+    product_row = next(p for p in store.products() if p.name == product)
+    index = next(i for i, item in enumerate(product_row.phases) if item.name == phase)
+    if index:
+        from ..stabilization import gate
+
+        prior = product_row.phases[index - 1]
+        proven, missing = gate(prior)
+        if not proven:
+            err.print(f"[red]{prior.key} stabilization is UNPROVEN; cannot release {ph.key}: {'; '.join(missing)}[/red]")
+            raise typer.Exit(1) from None
     _set_phase_frozen(store, ph, "")
     console.print(f"{ph.key} unfrozen")
