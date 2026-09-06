@@ -285,6 +285,18 @@ def _pid_alive(pid: int) -> bool:
 
 def _process_group_alive(pgid: int) -> bool:
     """Whether any process remains in a local run's session/process group."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                fields = (entry / "stat").read_text().split(")", 1)[1].split()
+                if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
+                    return True
+            return False
+        except (OSError, ValueError):
+            pass
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
