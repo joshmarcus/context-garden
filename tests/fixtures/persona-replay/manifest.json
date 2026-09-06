@@ -1,0 +1,22 @@
+{
+  "20260905T223519Z-result.txt": {
+    "persona": "security",
+    "cost_usd": 5.12,
+    "usage": {"input_tokens": 1}
+  },
+  "20260905T223635Z-result.txt": {
+    "persona": "usability-expert",
+    "cost_usd": 5.38,
+    "usage": {"input_tokens": 1}
+  },
+  "20260905T223405Z-result.txt": {
+    "persona": "product-manager",
+    "cost_usd": 5.67,
+    "usage": {"input_tokens": 1}
+  },
+  "20260905T223557Z-result.txt": {
+    "persona": "staff-engineer",
+    "cost_usd": 5.84,
+    "usage": {"input_tokens": 1}
+  }
+}

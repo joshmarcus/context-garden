@@ -350,31 +350,29 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
-@pytest.mark.parametrize("filename, persona, cost", [
-    ("20260905T223519Z-result.txt", "security", 5.12),
-    ("20260905T223635Z-result.txt", "usability-expert", 5.38),
-    ("20260905T223405Z-result.txt", "product-manager", 5.67),
-    ("20260905T223557Z-result.txt", "staff-engineer", 5.84),
-])
-def test_replay_discarded_persona_outputs_keeps_done_cost_and_persona(filename, persona, cost):
+def test_replay_discarded_persona_outputs_keeps_done_cost_and_persona():
     """Replay the four surviving phase-04 final persona messages through result events.
 
-    The original stdout.json files were truncated; the surviving final-message fixtures
-    preserve the marker-bearing report shape supplied for the incident.
+    The original stdout.json files were truncated. The fixture manifest preserves each
+    result event's metadata and cost, while the adjacent files preserve the complete
+    marker-bearing final result text supplied for the incident.
     """
     h = Harness("claude", {"output_format": "stream-json"})
-    report = (Path(__file__).parent / "fixtures" / "persona-replay" / filename).read_text()
-    stdout = json.dumps({
-        "type": "result", "subtype": "success", "is_error": False,
-        "result": report + '\nGARDEN_RESULT: {"status":"done"}',
-        "usage": {"input_tokens": 1}, "total_cost_usd": cost,
-    })
+    replay_dir = Path(__file__).parent / "fixtures" / "persona-replay"
+    manifest = json.loads((replay_dir / "manifest.json").read_text())
+    for filename, expected in manifest.items():
+        report = (replay_dir / filename).read_text()
+        stdout = json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": report + '\nGARDEN_RESULT: {"status":"done"}',
+            "usage": expected["usage"], "total_cost_usd": expected["cost_usd"],
+        })
 
-    out = h.parse(stdout)
+        out = h.parse(stdout)
 
-    assert out["env_error"] is False and out["env_kind"] == ""
-    assert out["result"]["status"] == "done" and out["cost_usd"] == cost
-    assert parse_persona(out["final_text"])["persona"] == persona
+        assert out["env_error"] is False and out["env_kind"] == ""
+        assert out["result"]["status"] == "done" and out["cost_usd"] == expected["cost_usd"]
+        assert parse_persona(out["final_text"])["persona"] == expected["persona"]
 
 
 def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():
