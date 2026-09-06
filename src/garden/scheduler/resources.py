@@ -8,12 +8,18 @@ can drain and recover without losing run records or restarting the controller.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..model import now_iso
+
+_ADMISSION_LOCKS: dict[str, threading.Lock] = {}
+_ADMISSION_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,28 @@ def _free_mb(path: Path) -> int | None:
 
 
 class ResourceMixin:
+    @contextmanager
+    def _local_admission_lock(self):
+        """Serialize the capacity decision with publishing its running record.
+
+        The thread lock is needed because ``flock`` locks are process-associated on some
+        platforms; the file lock covers independent CLI, web and service processes.
+        """
+        path = self.cfg.garden_dir / "resource-admission.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = str(path.resolve())
+        with _ADMISSION_LOCKS_GUARD:
+            thread_lock = _ADMISSION_LOCKS.setdefault(key, threading.Lock())
+        with thread_lock, path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                # A different process may have published a run while this process's run
+                # index was warm. Force the filesystem view used by resource_status.
+                self.runs.invalidate()
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
     def resource_parallel_limit(self) -> int:
         configured = self.effective("resources.max_parallel")
         if configured not in (None, ""):
@@ -119,3 +147,9 @@ class ResourceMixin:
                 f"{kind} deferred by resource pressure: {'; '.join(status.reasons)}; "
                 "pause dispatch or wait for active runs to drain, then retry"
             )
+
+    def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "") -> Any:
+        """Atomically admit and publish a running local run across all launchers."""
+        with self._local_admission_lock():
+            self._admit_local_launch(kind)
+            return self.runs.new_run(task_id, "local", mode=mode, run_id=run_id)

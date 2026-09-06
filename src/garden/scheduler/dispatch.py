@@ -303,8 +303,6 @@ class DispatchMixin:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
-        if runner.name == "local":
-            self._admit_local_launch(mode)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -314,7 +312,8 @@ class DispatchMixin:
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
-        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
+        run = (self._new_local_run(task.id, mode, mode, run_id=run_id)
+               if runner.name == "local" else self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id))
         self._dispatching_run = run
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)

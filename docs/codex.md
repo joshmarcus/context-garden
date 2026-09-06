@@ -126,7 +126,8 @@ resources:
 
 All scheduler and direct CLI launches consult the same run records and limits, so
 `garden dispatch` and `garden review` cannot create extra local concurrency outside the
-served loop. A pressure stop never kills or fails existing work: reaping continues, new
+served loop; admission is serialized across processes when the running record is created.
+A pressure stop never kills or fails existing work: reaping continues, new
 local launches wait, and admission resumes when a run finishes or headroom returns. The
 web rail and `garden observe` show the effective local limit, the measured pressure and
 the recovery action. `garden pause --reason "resource pressure"` is available when an
@@ -134,7 +135,9 @@ operator also wants to hold ordinary dispatch while the current work drains.
 
 Per-run temporary directories live below `work_dir/tmp`, receive both `TMPDIR` and
 `PYTEST_DEBUG_TEMPROOT`, and are removed only after their run record is terminal. Keep
-`work_dir` on disk rather than tmpfs. Process-level CPU and memory ceilings remain an OS
+`work_dir` on disk rather than tmpfs. A per-run subreaper owns daemonized descendants too,
+so stopping a run terminates them and cleanup waits for the whole process tree. Process-level
+CPU and memory ceilings remain an OS
 responsibility; when running `garden serve` as a user service, use persistent systemd
 settings such as `CPUQuota=200%`, `CPUWeight=20`, `MemoryHigh=3G`, `MemoryMax=4G` and
 `MemorySwapMax=512M`. The garden admission gate is still required because it covers

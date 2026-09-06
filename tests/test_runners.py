@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -190,6 +191,31 @@ def test_local_runner_launch_flips_process_finished(tmp_path):
     assert run.process_finished()
     assert (d / "exit_code").read_text().strip() == "0"
     assert "hello from the brief" in (d / "stdout.json").read_text()
+
+
+def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
+    """A child in a new session still keeps its run active through the subreaper."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "setsid sh -c 'sleep 0.8' >/dev/null 2>&1 &"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    d = tmp_path / "run"
+    d.mkdir()
+    run = Run(task_id="T-001", run_id="r1", dir=str(d), runner="local")
+    brief = tmp_path / "brief.md"
+    brief.write_text("")
+
+    runner.launch(run, tmp_path, brief, dict(os.environ))
+    assert run.pid is not None
+    # The harness shell returns immediately, but the supervisor remains the subreaper for
+    # its new-session descendant and withholds the completion signal.
+    deadline = time.monotonic() + 0.5
+    while not (d / "stdout.json").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not run.process_finished()
+    os.waitpid(run.pid, 0)
+    assert run.process_finished()
 
 
 def test_ssh_runner_uses_bare_bin(sched, fake_github):

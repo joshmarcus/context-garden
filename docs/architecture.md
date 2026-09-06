@@ -306,6 +306,8 @@ its runner is `manual` (a person takes those with `garden take`).
 Local admission is also host-wide: `resources.max_parallel` counts workers, reviews,
 personas and checks together, including automatic base probes and direct CLI dispatches.
 Optional available-memory and work-dir temp-free thresholds defer every new local launch.
+The capacity check and new running record are published under one filesystem lock, so a
+service action and concurrent CLI commands cannot all claim the final slot.
 Reaping is never gated, so pressure drains without a restart; the rail and operator feed
 name the effective bound and recovery action. Queue-specific `max_parallel` and
 `review_parallel` remain narrower caps inside that host bound.

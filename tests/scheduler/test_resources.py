@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing
+from pathlib import Path
+
 import pytest
 
 from garden.observe import resolve, status_line
@@ -9,6 +12,19 @@ from garden.scheduler.resources import ResourcePressureError
 
 def _set_resource_limit(sched, key: str, value: int) -> None:
     sched.set_override(f"resources.{key}", value, by="test")
+
+
+def _claim_slot(root: str, start, outcomes) -> None:
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    scheduler = Scheduler(Store(Path(root)), read_only=True)
+    start.wait()
+    try:
+        scheduler._new_local_run(f"race-{multiprocessing.current_process().pid}", "work", "work")
+        outcomes.put("admitted")
+    except ResourcePressureError:
+        outcomes.put("deferred")
 
 
 def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sched):
@@ -29,6 +45,23 @@ def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sch
     worker.status = "done"
     worker.save()
     assert sched.local_slots_free() == 1
+
+
+def test_concurrent_launchers_atomically_claim_the_last_host_slot(sched):
+    _set_resource_limit(sched, "max_parallel", 1)
+    context = multiprocessing.get_context("fork")
+    start, outcomes = context.Event(), context.Queue()
+    processes = [context.Process(target=_claim_slot, args=(str(sched.store.root), start, outcomes))
+                 for _ in range(2)]
+    for process in processes:
+        process.start()
+    start.set()
+    result = sorted(outcomes.get(timeout=5) for _ in processes)
+    for process in processes:
+        process.join(timeout=5)
+        assert process.exitcode == 0
+
+    assert result == ["admitted", "deferred"]
 
 
 def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, monkeypatch):
