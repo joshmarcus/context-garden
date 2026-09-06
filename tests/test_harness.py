@@ -350,17 +350,20 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
-def test_surviving_persona_results_keep_done_cost_and_persona():
-    """Parse the four surviving phase-04 final persona messages as result events.
+def test_recovered_persona_result_texts_replay_done_cost_and_persona():
+    """Replay the four recovered final persona messages inside result events.
 
-    The raw stdout.json files are unavailable; the adjacent fixtures preserve the complete
-    final result text, and the manifest preserves the result metadata and recorded cost.
+    The raw stdout.json files were truncated and are unavailable. The adjacent fixtures
+    preserve the complete marker-bearing result text, while the manifest preserves the
+    recorded result metadata and cost; this is the closest possible replay of the incident.
     """
     h = Harness("claude", {"output_format": "stream-json"})
     replay_dir = Path(__file__).parent / "fixtures" / "persona-replay"
     manifest = json.loads((replay_dir / "manifest.json").read_text())
+    assert len(manifest) == 4
     for filename, expected in manifest.items():
         report = (replay_dir / filename).read_text()
+        assert "GARDEN_PERSONA:" in report
         stdout = json.dumps({
             "type": "result", "subtype": "success", "is_error": False,
             "result": report + '\nGARDEN_RESULT: {"status":"done"}',
