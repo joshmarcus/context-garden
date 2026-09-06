@@ -741,7 +741,37 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual" or run.run_id in owned or not run.process_finished():
+            if run.runner == "manual":
+                continue
+            no_exit_code = not (run.path / "exit_code").exists()
+            process_missing = run.pid is None
+            process_dead = not process_missing and run.process_finished()
+            # The in-process test runner represents a live stalled worker with no pid,
+            # but creates stdout.json before it starts the harness. Real local launches
+            # record their pid, so a bare pid-less run remains a never-started orphan.
+            synthetic_process = (process_missing and no_exit_code
+                                 and (run.path / "stdout.json").exists())
+            if synthetic_process:
+                continue
+            if no_exit_code and (process_missing or process_dead):
+                task = tasks.get(run.task_id)
+                reason = "process never started" if process_missing else "process vanished"
+                run.status = "failed"
+                run.finished_at = now_iso()
+                run.error = reason
+                run.save()
+                self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                                 harness=run.harness, model=run.model, status="failed",
+                                 cost_usd=None, usage={}, error=reason, orphaned=True)
+                rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} failed ({reason})")
+                if (task is not None and task.status == Status.RUNNING
+                        and run.mode in ("work", "revise", "resume", "trial", "rebase")
+                        and self.latest_worker_run(task.id).run_id == run.run_id):
+                    self._retry_or_fail(task, run, rep, reason)
+                continue
+            if run.run_id in owned:
+                continue
+            if not run.process_finished():
                 continue
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()

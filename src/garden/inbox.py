@@ -492,6 +492,14 @@ def running_now(store: Store) -> list[dict[str, Any]]:
     warn = float(store.config.get("idle_minutes", 0) or 0)
     out = []
     for r in rs.active():
+        # A run is shown here only while its worker process is live. The in-process test
+        # runner has no pid, but leaves its output streams in place while a stall is active;
+        # retain that useful development signal without treating a bare run.json as live.
+        has_process = r.pid is not None and not r.process_finished()
+        synthetic_process = (r.pid is None and not (r.path / "exit_code").exists()
+                             and (r.path / "stdout.json").exists())
+        if not (has_process or synthetic_process):
+            continue
         t = tasks.get(r.task_id)
         idle = round(r.idle_minutes())
         out.append({"task": r.task_id, "title": t.title if t else "", "mode": r.mode, "model": r.model,

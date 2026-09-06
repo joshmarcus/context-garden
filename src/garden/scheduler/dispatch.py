@@ -333,9 +333,13 @@ class DispatchMixin:
         try:
             runner.start(run, wt or self.store.root, text)
         except Exception as e:  # setup/start failed: mark this run failed so it stops
-            run.status = "failed"    # counting against active() (a leaked slot) and re-raise
+            run.status = "failed"
+            run.finished_at = now_iso()
             run.error = str(e)
             run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
+                             harness=run.harness, model=run.model, status="failed",
+                             cost_usd=run.cost_usd, usage=run.usage, error=run.error)
             raise
         if not branch_override:
             task.branch = branch
