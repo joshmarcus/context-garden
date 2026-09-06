@@ -12,22 +12,7 @@
     </form></div>
   <div class="tools">{% if has_retro %}<a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}/retro">Retro</a>{% endif %}<a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
 </div>
-<div class="panel" id="kickoff" style="margin-bottom:16px">
-  <div class="eyebrow">Kickoff</div>
-  {% if kickoff.running %}
-    <p>A kickoff review is running; <code>garden tick</code> (or <code>garden watch</code>) writes the report when it finishes.</p>
-  {% elif not kickoff.has_report %}
-    <p>No kickoff report yet. Before this phase's tasks start taking runs, a planner-tier review can flag design gaps, goals with no measurable outcome, questions for you, and docs that need attention.</p>
-    <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/kickoff"><button class="primary">Kick off</button></form>
-  {% else %}
-    <p><a href="/phases/{{ phase.product }}/{{ phase.name }}/doc/docs/kickoff.md">Kickoff report</a></p>
-    {% if kickoff.design_tasks %}<div class="why">Design needed:</div><ul class="tl">{% for t in kickoff.design_tasks %}<li><span class="k"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></span><span>{{ t.title }} — <span class="state s-{{ t.status.value }}">{{ t.status.value.replace('_',' ') }}</span></span></li>{% endfor %}</ul>{% endif %}
-    {% if kickoff.doc_tasks %}<div class="why">Docs that need attention:</div><ul class="tl">{% for t in kickoff.doc_tasks %}<li><span class="k"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></span><span>{{ t.title }} — <span class="state s-{{ t.status.value }}">{{ t.status.value.replace('_',' ') }}</span></span></li>{% endfor %}</ul>{% endif %}
-    {% if kickoff.questions %}<div class="why">Questions still open:</div><ul class="tl">{% for d in kickoff.questions %}<li><span>{{ d.question }}</span></li>{% endfor %}</ul>{% if kickoff.questions %}<p class="muted">Answer them from the <a href="/inbox">Inbox</a>.</p>{% endif %}{% endif %}
-    {% if not kickoff.design_tasks and not kickoff.doc_tasks and not kickoff.questions %}<p class="muted">Nothing this kickoff raised is still open.</p>{% endif %}
-    <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/kickoff"><button class="quiet">Kick off again</button></form>
-  {% endif %}
-</div>
+{% if not has_approved %}{% include "_kickoff.html" %}{% endif %}
 <div class="grid2">
   <div class="stack">
     {% include "_retro_verdict.html" %}
@@ -73,6 +58,7 @@
         <label class="check"><input type="checkbox" name="file_tasks" value="1"> file high findings as tasks</label>
         <button>Run personas</button>
       </form>
+      {% if has_approved %}{% include "_kickoff.html" %}{% endif %}
     </div>
     <details class="panel" id="new-task"{% if new_task.title or new_task.goal or new_task.context %} open{% endif %}>
       <summary>New task</summary>

@@ -62,5 +62,5 @@ def describe(stop: dict[str, Any]) -> str:
     if stop.get("retro_difficulty"):
         bits.append(f"retro {stop['retro_difficulty']}")
     if stop.get("observe"):
-        bits.append(f"observe {stop['observe']}")
+        bits.append(f"feed {stop['observe']}")
     return " · ".join(bits)

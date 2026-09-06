@@ -356,7 +356,7 @@ def pin(
     console.print(f"[green]queued {sha[:12]}[/green]; the scheduler installs and restarts after its current tick")
 
 
-@app.command()
+@app.command(rich_help_panel=PANEL_DIAG)
 def canary(
     sha: str = typer.Argument("", help="git commit to install and check (default: the pending tool upgrade)"),
     url: str = typer.Option("", "--url", help="git URL or local path to install from (default: the tool product's repo)"),

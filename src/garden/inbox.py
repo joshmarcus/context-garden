@@ -18,7 +18,7 @@ from .store import Store
 # informational — the loop is already handling it — so it renders but never counts.
 GROUPS = [
     ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
-    ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer.", "decision"),
+    ("question", "Questions to answer", "A worker, kickoff, or retrospective is waiting for your answer.", "decision"),
     ("retro_verdict", "Accept or change a retro's verdict", "A retrospective reopened the phase: the named tasks must land before it can close. Accept to approve them and keep the phase open, or change the verdict to close instead.", "decision"),
     ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
@@ -429,7 +429,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             source = str(d.get("source") or d.get("discovered_from") or "")
             origin = "retro" if source.startswith("retro:") else "kickoff"
             items.append({
-                "group": "attention", "group_title": titles["attention"], "task": "",
+            "group": "question", "group_title": titles["question"], "task": "",
                 "title": str(d.get("question") or ""),
                 "phase": str(d.get("phase") or ""), "status": "", "pr": "",
                 "why": f"the {d.get('phase') or 'phase'} {origin} is asking",
@@ -525,7 +525,12 @@ def counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 def decisions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Items whose group needs a person's call — what the badge and digest count."""
-    return [i for i in items if GROUP_KIND.get(i["group"]) == "decision"]
+    return [i for i in items if needs_you(i)]
+
+
+def needs_you(item: dict[str, Any]) -> bool:
+    """Whether an Inbox item needs a person, shared by every surface's badge or count."""
+    return GROUP_KIND.get(str(item.get("group") or "")) == "decision"
 
 
 def notices(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
