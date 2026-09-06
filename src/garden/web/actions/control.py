@@ -5,11 +5,8 @@ from __future__ import annotations
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from ...events import EventLog
 from ...github import GitHubError
 from ...gitops import GitError
-from ...model import now_iso
-from ...scheduler.state import State
 from ..common import LOGGER, Site, _flash_url
 
 
@@ -27,18 +24,9 @@ def register(app: FastAPI, site: Site) -> None:
         back = request.headers.get("referer", "/")
         try:
             with hub.action_lock:
-                # Incident stop path: only the small side-store and append-only event file.
-                # Constructing Scheduler runs startup reconciliation and may discover tasks,
-                # exactly the expensive path pause must remain independent from.
-                state = State(hub.store.config.garden_dir / "state.json")
-                ctrl = state.get("_control")
-                ctrl["dispatch"] = "paused"
-                ctrl["by"] = "web"
-                ctrl["at"] = now_iso()
-                ctrl["reason"] = reason.strip()
-                state.save()
-                EventLog(hub.store.config.garden_dir / "events.jsonl").emit(
-                    "dispatch_paused", "", by="web", reason=reason.strip())
+                # The read-only facade skips startup reconciliation and task discovery;
+                # pause itself touches only the side-store and event append.
+                hub.reader().pause(by="web", reason=reason.strip())
             hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
         except (RuntimeError, GitError, GitHubError) as e:
             message = str(e)
