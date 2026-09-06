@@ -223,10 +223,30 @@ class ReapMixin:
         if runner.remote:
             gitops.fetch(repo)
             try:
-                gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo)
-                ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
-            except gitops.GitError:
+                if run.pushed_ref:
+                    staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
+                    remote_head = gitops.git("rev-parse", "--verify", staged, cwd=repo).strip()
+                    if not run.pushed_head or remote_head != run.pushed_head:
+                        raise gitops.GitError("the staged commit does not match the head reported by the worker")
+                    ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..{staged}", cwd=repo).strip() or 0)
+                    # Empty start_head deliberately means "the branch must not exist".
+                    # This lease protects promotion from both stale workers and any other
+                    # writer that moved (or created) the task branch during the run.
+                    if ahead:
+                        gitops.git("push", f"--force-with-lease={branch}:{run.start_head}", "origin",
+                                   f"{run.pushed_head}:refs/heads/{branch}", cwd=repo)
+                        gitops.fetch(repo)
+                else:
+                    # SSH runners push the task branch themselves and predate the pull-based
+                    # worker's lease-specific staging transport.
+                    remote_head = gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo).strip()
+                    if run.pushed_head and remote_head != run.pushed_head:
+                        raise gitops.GitError("the pushed branch head does not match the head reported by the worker")
+                    ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
+            except gitops.GitError as e:
                 ahead = 0
+                if run.pushed_head:
+                    run.error = str(e)
             if ahead == 0:
                 run.status = "failed"
                 run.error = "no commits pushed"

@@ -178,6 +178,7 @@ DEFAULTS: dict[str, Any] = {
                                # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
                                # the codex defaults and docs/codex.md for where the numbers came from
     "ssh": {"hosts": []},
+    "workers": {"lease_seconds": 120, "poll_seconds": 5, "hosts": []},
     "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined

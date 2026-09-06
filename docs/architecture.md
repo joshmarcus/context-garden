@@ -9,7 +9,8 @@ Everything on this page is what the code does today (`src/garden/`), not a plan.
 
 ## The shape of it
 
-Three kinds of process, one shared filesystem, one external service.
+Three kinds of process, one local audit filesystem, one external service. Pull-based remote
+workers may share nothing with the scheduler except HTTPS and the product's git remote.
 
 ```mermaid
 flowchart LR
@@ -58,6 +59,10 @@ flowchart LR
   detached: the scheduler keeps no handle to them and they outlive whichever process
   started them. The same transport carries reviewers, persona reviewers and trial
   comparisons; they are workers with a different brief.
+- The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
+  claims a leased run over HTTPS, clones the product, uses host-owned credentials, pushes,
+  streams its transcript, and posts its result and usage. Work, reviews, checks, personas,
+  and comparisons use the same run records; an expired lease returns to the queue.
 - **GitHub** holds the pull requests and the review conversation. Only the scheduler talks
   to it, through the `gh` CLI when it is installed and logged in, otherwise the REST API
   with `GITHUB_TOKEN`. Workers never push and never open PRs.
@@ -92,7 +97,7 @@ of the loop touch different files.
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it |
 | `scheduler/upgrades.py` | the pinned tool install: note a merge, upgrade, auto-upgrade on an idle tick |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
-| `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
+| `harness.py`, `runner/`, `remote_worker.py` | harness definitions and output parsing; the `local`, `ssh`, `remote` and `manual` runner backends; the pull-based worker agent |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
@@ -201,6 +206,12 @@ keyed by phase (verdict, status, who accepted it and when, and the ids of the ta
 | `final.md` | harness or scheduler | the worker's final message (the `GARDEN_RESULT` line is its last line) |
 | `exit_code` | the shell wrapper (or `garden finish`) | the completion signal the scheduler waits for |
 | `result.json` | `garden finish` | the result of a human-driven run |
+
+Pull-based remote run records also carry a unique lease token and staging git ref for the
+current claim. A reclaim replaces both, fencing heartbeat and finish calls from the previous
+worker generation; only the scheduler promotes an accepted staging commit to the task branch.
+Remote check payloads retain the ordinary branch, PR, head, and failed-check context but
+replace scheduler-local checkout paths with the independent host's clone paths.
 
 ## One tick
 

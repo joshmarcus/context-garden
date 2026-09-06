@@ -167,7 +167,8 @@ class ReviewMixin:
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
         ensure_open(task)
         harness_name = str(self.cfg.get("review.harness") or "")
-        runner = self.runner_for(task, "local", harness_name)
+        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
         base = self.base_for(task)

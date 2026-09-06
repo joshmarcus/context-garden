@@ -54,8 +54,9 @@ class CheckRunMixin:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
-        runner = self.runner_for(task, "local")
-        run = self.runs.new_run(task.id, "local", mode="check")
+        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner = self.runner_for(task, runner_name)
+        run = self.runs.new_run(task.id, runner_name, mode="check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:

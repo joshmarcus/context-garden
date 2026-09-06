@@ -24,7 +24,10 @@ class Client:
     refused and the message is the failure."""
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=10.0)
+        # A form action can prepare a worktree before it redirects.  Give each request the
+        # same budget as the flow that contains it; a shorter, hidden HTTP timeout makes a
+        # healthy but loaded canary fail before its advertised flow deadline.
+        self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=timeout)
         self.timeout = timeout
         self.last_page = "/"
 

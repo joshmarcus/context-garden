@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,38 @@ import typer
 from rich.table import Table
 
 from .common import PANEL_BOARD, PANEL_DIAG, _scheduler, _store, app, console, err
+
+
+@app.command(rich_help_panel=PANEL_DIAG)
+def worker(
+    garden: str = typer.Option(..., "--garden", help="Garden web app URL."),
+    host: str = typer.Option(..., "--host", help="Configured worker host name."),
+    token_env: str = typer.Option("GARDEN_WORKER_TOKEN", help="Environment variable holding the bearer token."),
+    work_dir: Path = typer.Option(Path(".garden-worker"), help="Clone and scratch directory."),
+    harness: list[str] = typer.Option([], "--harness"),
+    tier: list[str] = typer.Option(["easy", "medium", "hard"], "--tier"),
+    capacity: int = typer.Option(1, min=1),
+    once: bool = typer.Option(False, "--once"),
+    doctor: bool = typer.Option(False, "--doctor"),
+    repo: str = typer.Option("", "--repo"),
+):
+    """Claim and execute runs from a garden on this independent host."""
+    from ..remote_worker import doctor_worker, run_worker
+
+    token = os.environ.get(token_env, "")
+    offered = harness or [name for name in ("claude", "codex") if shutil.which(name)]
+    if doctor:
+        problems = doctor_worker(token, repo, offered)
+        if problems:
+            for problem in problems:
+                err.print(f"[red]{problem}[/red]")
+            raise typer.Exit(1)
+        console.print("[green]worker host ok: token present, git access and harnesses available[/green]")
+        return
+    if not token:
+        err.print(f"[red]{token_env} is not set[/red]")
+        raise typer.Exit(2)
+    run_worker(garden, host, token, work_dir.resolve(), offered, tier, capacity, once)
 
 
 # --------------------------------------------------------------------------- runs / diagnostics

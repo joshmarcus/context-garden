@@ -8,6 +8,7 @@ loop runs in a background thread when `watch=True` (the `garden serve` default).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +63,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     # The allowlist is the bound address plus any web.trusted_origins; the request's Host is
     # never trusted, so a DNS-rebound page is refused even when its Host and Origin agree.
     allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
-    app.add_middleware(OriginCheck, allowed_origins=allowed)
+    tokens = [os.environ.get(str(h.get("token_env") or ""), "")
+              for h in (store.config.get("workers.hosts") or [])]
+    app.add_middleware(OriginCheck, allowed_origins=allowed, worker_tokens=tokens)
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))
