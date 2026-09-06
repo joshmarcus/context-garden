@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from ...runs import RunStore
 from ..common import Site
+from .design import recorded_captures
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -59,9 +60,7 @@ def register(app: FastAPI, site: Site) -> None:
         brief_text = brief_path.read_text() if brief_path.exists() else ""
         captures = [{"name": p.relative_to(run.path).as_posix(),
                      "href": f"/runs/{task_id}/{run_id}/captures/{p.relative_to(run.path).as_posix()}"}
-                    for p in sorted(run.path.rglob("*")) if p.is_file() and p.name not in {
-                        "run.json", "brief.md", "stdout.json", "stderr.log", "final.md", "exit_code",
-                        "command.txt", "remote.sh", "result.json", "checks_input.json"}]
+                    for p in recorded_captures(run)]
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
@@ -73,7 +72,7 @@ def register(app: FastAPI, site: Site) -> None:
         run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
                     if r.run_id == run_id), None)
         path = run.path / "ui" / Path(name).name if run else None
-        if path is None or not path.is_file():
+        if path is None or path.resolve() not in (recorded_captures(run) if run else []):
             raise HTTPException(404)
         media = "text/html" if path.suffix.lower() in {".html", ".htm"} else None
         headers = {"Content-Security-Policy": "sandbox"} if media else {}

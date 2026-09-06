@@ -57,7 +57,9 @@ def test_run_page_links_and_serves_every_capture_type(garden):
     run_dir = garden / ".garden" / "runs" / "DM-001" / "capture-run"
     run = Run(task_id="DM-001", run_id="capture-run", dir=str(run_dir), runner="local",
               started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
-              status="done")
+              status="done", result={"captures": [str(run_dir / "ui" / "page.png"),
+                                                  str(run_dir / "ui" / "page.html"),
+                                                  "notes.md"]})
     run.save()
     (run_dir / "ui").mkdir()
     (run_dir / "ui" / "page.png").write_bytes(b"png")
@@ -75,6 +77,9 @@ def test_run_page_links_and_serves_every_capture_type(garden):
     assert c.get("/runs/DM-001/capture-run/captures/../run.json").status_code == 404
     html = c.get("/runs/DM-001/capture-run/captures/ui/page.html")
     assert html.headers["content-security-policy"] == "sandbox"
+    assert c.get("/runs/DM-001/capture-run/captures/run.json").status_code == 404
+    (run_dir / "garden.yaml").write_text("token: secret")
+    assert c.get("/runs/DM-001/capture-run/captures/garden.yaml").status_code == 404
 
 
 def test_header_has_seedling_mark_and_favicon(garden):

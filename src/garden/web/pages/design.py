@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from ...runs import Run
 from ...store import Store
 from ..common import Site, product_checkout, product_design_root, render_md
 from ..trust import safe_relative_path
@@ -31,6 +32,36 @@ def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
 
 def _media(path: str) -> str:
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def recorded_captures(run: Run) -> list[Path]:
+    """Return only files explicitly reported as captures by the run.
+
+    Checks report absolute paths while a worker may report paths relative to its run
+    directory, so normalize both forms before applying the run-directory fence.
+    """
+    paths: set[Path] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "captures" and isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, str):
+                            candidate = Path(item)
+                            if not candidate.is_absolute():
+                                candidate = run.path / candidate
+                            resolved = candidate.resolve()
+                            if run.path.resolve() in resolved.parents and resolved.is_file():
+                                paths.add(resolved)
+                else:
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(run.result)
+    return sorted(paths)
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -81,7 +112,7 @@ def register(app: FastAPI, site: Site) -> None:
         if not run:
             raise HTTPException(404)
         target = (run.path / relative).resolve()
-        if run.path.resolve() not in target.parents or not target.is_file():
+        if target not in recorded_captures(run):
             raise HTTPException(404)
         media = _media(relative)
         headers = {"Content-Security-Policy": "sandbox"} if media == "text/html" else {}
