@@ -528,6 +528,9 @@ def amend_a_criterion(call: Call, result: dict) -> None:
         "reason": "The original outcome was false.",
     }]
 
+def omit_preflight(call: Call, result: dict) -> None:
+    result.pop("pre_flight", None)
+
 
 WORKERS: dict[str, Worker] = {
     "done": Worker(),
@@ -554,6 +557,7 @@ WORKERS: dict[str, Worker] = {
     "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
     "criteria-amend": Worker(tweak=amend_a_criterion),
+    "omit-preflight": Worker(tweak=omit_preflight),
 }
 
 
@@ -572,12 +576,19 @@ def commit_counter(call: Call) -> None:
 
 
 def done_result(call: Call) -> dict:
+    pre_flight_items = [
+        "A test or stated reason for every acceptance criterion", "Lint is clean",
+        "No conflict markers remain", "UI changes have 1280px and 390px captures",
+        "The PR description states the goal and outcome without process history",
+        "Every acceptance criterion is addressed by name",
+    ]
     return {
         "status": "done",
         "summary": "revised per feedback" if call.revise else ("resumed and finished" if call.resumed else "implemented the thing"),
         "pr_title": "Fake: implemented the thing",
         "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
         "verified": verified_for(call),
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "fake check"} for item in pre_flight_items],
         "notes": "",
     }
 

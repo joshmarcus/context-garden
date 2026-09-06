@@ -25,18 +25,20 @@ checks if they are fast. Do NOT modify any file and do NOT commit.
 
 Check, in this order:
 
-1. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
-   quote the `criterion`, set `met` true or false, and give an `evidence` field plus a
-   one-line `reason` pointing at it (the diff, a test, a page). The author's own per-criterion evidence is under
+1. **Worker pre-flight.** The author must report every item in the pre-flight checklist below.
+   A missing item is a blocking finding; check the evidence rather than trusting it.
+2. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
+   quote the `criterion`, set `met` true or false, and give a one-line `reason` pointing at
+   the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
    "Author's verification" below; check each claim against the diff rather than taking it on
    trust. A criterion with no evidence, or one the author marked not done without a reason you
    accept, is `met: false` and a blocking finding. If the task has no criteria, judge its Goal
    on the author's evidence and return `criteria: []`.
    Every returned criterion needs its own non-empty `evidence`: the scheduler mechanically
    changes the verdict to `request_changes` for an unmet or evidence-less criterion.
-2. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
-3. **Scope.** Changes outside the task, or task work that is missing.
-4. **PR description.** It must give a reader without the task file the broader context:
+3. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
+4. **Scope.** Changes outside the task, or task work that is missing.
+5. **PR description.** It must give a reader without the task file the broader context:
    what is being accomplished and why, how it fits the phase goals, what was verified, and
    any follow-ups. It must have no scar tissue: no references to earlier review rounds or
    abandoned approaches ("as requested", "reverted the previous attempt"), no narration of
@@ -44,7 +46,7 @@ Check, in this order:
    commented-out code, no stray debug output, no "fixed review comment" commit messages
    left in the final story of the change. Describe the change as if it were written right
    the first time.
-5. **Principles.** Tests skipped or weakened, scope widened, history rewritten, new
+7. **Principles.** Tests skipped or weakened, scope widened, history rewritten, new
    dependencies without justification.
 
 When a "Rendered UI captures" section is present, open every listed PNG with the image
@@ -75,10 +77,10 @@ The JSON must be on one line.
 """
 
 
-def _verification_brief(task: Task, verified: Any) -> str:
+def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = None) -> str:
     """The author's per-criterion evidence, laid out for the reviewer to check the diff
     against. Empty when the task has no criteria and the author claimed nothing."""
-    rows = reconcile(parse_criteria(task.body), verified)
+    rows = reconcile(criteria if criteria is not None else parse_criteria(task.body), verified)
     if not rows:
         return ""
     lines = ["## Author's verification\n", "One row per acceptance criterion; check each against the diff.\n"]
@@ -95,8 +97,10 @@ def _verification_brief(task: Task, verified: Any) -> str:
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
-                 reask_missing_fixes: bool = False) -> str:
-    task_brief = build_brief(store, task, include_rules=False)
+                 reask_missing_fixes: bool = False, criteria_snapshot: list[str] | None = None,
+                 pre_flight: Any = None) -> str:
+    frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
+    task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
                   if isinstance(a, dict) and isinstance(a.get("index"), int)}
     criteria_note = ""
@@ -115,9 +119,18 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     ]
     if criteria_note:
         parts.append(criteria_note)
-    verification = _verification_brief(task, verified)
+    verification = _verification_brief(task, verified, frozen)
     if verification:
         parts.append(verification)
+    if isinstance(pre_flight, list):
+        parts.append("## Author's pre-flight\n\n" + "\n".join(
+            f"- **{row.get('item', '')}** — {row.get('status', '')}: {row.get('evidence', '')}"
+            for row in pre_flight if isinstance(row, dict)
+        ) + "\n")
+    current = parse_criteria(task.body)
+    if current != frozen:
+        parts.append("## Criteria changed after dispatch\n\nThe worker was judged against the frozen criteria above. "
+                     "The task now has:\n\n" + "\n".join(f"- {item}" for item in current) + "\n")
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")

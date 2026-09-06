@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .criteria import parse_criteria
 from .model import Task, estimate_tokens, goals_text
+from .preflight import preflight_section
 from .store import Store
 
 RESULT_MARKER = "GARDEN_RESULT:"
@@ -327,6 +328,7 @@ def build_brief(
     stack: dict | None = None,
     qa: list[dict] | None = None,
     commits_ahead: list[str] | None = None,
+    criteria_snapshot: list[str] | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -388,6 +390,12 @@ def build_brief(
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
+    frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
+    if frozen:
+        sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
+                         "\n".join(f"- {item}" for item in frozen) + "\n"))
+    if include_rules:
+        sections.append(("pre_flight", preflight_section()))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []
