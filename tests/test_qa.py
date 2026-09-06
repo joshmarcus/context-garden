@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from garden import runner as runner_registry
 from garden.cli import app
 from garden.qa import _normalise, qa_brief, run_qa
-from garden.qa.flows import FLOWS, Flow, FlowFailed
+from garden.qa.flows import FLOWS, Client, Flow, FlowFailed
 from garden.runner.local import LocalRunner
 
 
@@ -35,6 +35,14 @@ def run(cwd, *args):
         return CliRunner().invoke(app, list(args))
     finally:
         os.chdir(old)
+
+
+def test_scripted_client_uses_the_flow_timeout_for_requests():
+    client = Client("http://127.0.0.1", timeout=37)
+    try:
+        assert client.http.timeout.read == 37
+    finally:
+        client.close()
 
 
 def test_scripted_agent_completes_every_flow(tmp_path):
