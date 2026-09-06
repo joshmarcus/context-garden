@@ -118,6 +118,7 @@ class Scheduler(
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self.log = log or (lambda msg: None)
+        self._migrate_fence_bookkeeping()
         # A new CLI process has no old Store instance to compare against.  Check active
         # dispatch manifests before constructing anything that could use garden.yaml.
         self._hold_startup_config_against_fences()
@@ -461,6 +462,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()
         self.state = State(self.state.path)
+        self._migrate_fence_bookkeeping()
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
             self._reap_all(rep)
@@ -483,6 +485,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
+        self._migrate_fence_bookkeeping()
         try:
             # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
             # change against an in-flight run's fence manifest until it's safe or an operator
