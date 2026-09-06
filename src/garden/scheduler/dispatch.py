@@ -67,7 +67,9 @@ class DispatchMixin:
         by the walker, not here, so the order stays true even for a line the tick passes over."""
         tasks = self.store.tasks()
         max_rev = int(self.cfg.get("max_revisions", 3))
-        candidates = worker_candidates(tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+        candidates = [(task, mode) for task, mode in worker_candidates(
+            tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+            if mode != "work" or not self.state.get(task.id).get("needs_human")]
         queue = [(task, mode, (
             "rebase round, goes first" if mode == "rebase" else
             f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
