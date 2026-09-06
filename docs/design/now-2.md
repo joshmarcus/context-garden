@@ -414,8 +414,8 @@ fill the missing observations without guessing operational facts.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
-1019 passed, 3 skipped; `.venv/bin/ruff check src tests` passes. The dedicated
-mock tests pass after adaptation to the snapshot. An HTML inspection finds no
+1020 passed, 3 skipped (477.46s); `.venv/bin/ruff check src tests` passes. The dedicated
+mock tests report 3 passed. An HTML inspection finds no
 duplicate IDs, no missing local plate images, and all four window panels.
 These are structural checks; the limited visual evidence is described above and no
 persona approval is implied. No typecheck
