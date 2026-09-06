@@ -85,6 +85,10 @@ def garden(tmp_path: Path) -> Path:
     write(repo / "README.md", "# demo\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
+    # pytest's numbered temporary-directory cleanup can remove an older sibling while
+    # this fixture is being assembled. Ensure the bare remote's parent still exists
+    # immediately before Git creates it.
+    remote.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)
