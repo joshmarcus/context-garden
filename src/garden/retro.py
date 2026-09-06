@@ -215,7 +215,8 @@ def parse_retro(text: str) -> dict[str, Any]:
     return {}
 
 
-def numbers_section(worker_cost_usd: float, operator_cost_usd: float) -> str:
+def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
+                    outcomes: dict[str, Any] | None = None) -> str:
     """The phase's spend, workers against the operator watching them (CG-223): what the
     "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
     loop's most expensive seat is compared against the workers', not guessed at."""
@@ -224,6 +225,24 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float) -> str:
     lines = [f"- workers: ${worker_cost_usd:.2f}",
              f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
              f"- total: ${total:.2f}"]
+    outcomes = outcomes or {}
+    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
+        rows = outcomes.get(dimension) or {}
+        if not rows:
+            continue
+        lines += ["", f"### Outcomes by {label}", "",
+                  f"| {label} | mean/run | cost/accepted task | first-pass approval |",
+                  "|---|---:|---:|---:|"]
+        for value, row in rows.items():
+            mean = row.get("mean_cost_usd")
+            per_accepted = row.get("cost_per_accepted_task")
+            first_pass = row.get("first_pass_rate")
+            lines.append(
+                f"| {value} | "
+                f"{f'${mean:.2f}' if mean is not None else '—'} | "
+                f"{f'${per_accepted:.2f}' if per_accepted is not None else '—'} | "
+                f"{f'{first_pass:.0%}' if first_pass is not None else '—'} |"
+            )
     return "\n".join(lines)
 
 

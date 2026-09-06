@@ -418,7 +418,7 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
 def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
-    """Lead time, revise rounds, first-pass approval and cost per task and per difficulty tier."""
+    """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
     from ..events import EventLog
     from ..events import metrics as _metrics
 
@@ -438,7 +438,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"{r['lead_hours']:.1f}" if r["lead_hours"] is not None else "")
     console.print(table)
     table = Table(title="per difficulty tier (is 'easy' really easy?)")
-    for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "criteria met", "cost", "avg lead h"):
+    for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "criteria met", "cost", "cost/accepted", "avg lead h"):
         table.add_column(c)
     for tier in ("easy", "medium", "hard"):
         d = m["by_difficulty"].get(tier)
@@ -448,8 +448,20 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         table.add_row(tier, str(d["tasks"]), str(d["done"]), str(d["avg_revisions"]),
                       f"{d['first_pass_rate']:.0%}" if d["first_pass_rate"] is not None else "",
                       criteria,
-                      f"${d['cost_usd']:.2f}", f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
+                      f"${d['cost_usd']:.2f}",
+                      f"${d['cost_per_accepted_task']:.2f}" if d["cost_per_accepted_task"] is not None else "",
+                      f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
     console.print(table)
+    for dimension, label in (("by_model", "model"), ("by_harness", "harness")):
+        table = Table(title=f"outcomes by {label}")
+        for c in (label, "accepted", "cost/accepted", "first-pass approve", "reviewed"):
+            table.add_column(c)
+        for value, row in m[dimension].items():
+            table.add_row(value, str(row["accepted"]),
+                          f"${row['cost_per_accepted_task']:.2f}" if row["cost_per_accepted_task"] is not None else "",
+                          f"{row['first_pass_rate']:.0%}" if row["first_pass_rate"] is not None else "",
+                          str(row["reviewed"]))
+        console.print(table)
     rb = m.get("rebase") or {}
     table = Table(title="rebases (their own mode: cheapest thing that brings a PR forward)")
     for c in ("rebases", "mechanical", "agent", "merges", "rebases per merge", "rebase cost"):

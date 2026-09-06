@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from ... import operator_spend as ops
 from ...charts import cost_stack_svg
 from ...costs import GROUP_BY_CHOICES, cost_series
-from ...events import EventLog, parse_since
+from ...events import EventLog, metrics, parse_since
 from ..common import Site
 
 
@@ -43,6 +43,7 @@ def register(app: FastAPI, site: Site) -> None:
         series = cost_series(events, tasks, since=window_since, bucket=bucket, group_by=by,
                              difficulty=difficulty, model=model, harness=harness, phase=phase, task=task,
                              session=session)
+        outcomes = metrics(events, tasks)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})
@@ -57,6 +58,7 @@ def register(app: FastAPI, site: Site) -> None:
         ]
         return templates.TemplateResponse(request, "costs.html", ctx(
             request, page="costs", series=series,
+            outcomes=outcomes,
             chart=cost_stack_svg(series, compactions=compactions, annotations=annotations),
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
             phase=phase, task=task, session=session, models=models, harnesses=harnesses, task_ids=task_ids,
