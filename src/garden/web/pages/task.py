@@ -11,7 +11,7 @@ from ...brief import build_brief
 from ...criteria import parse_criteria, reconcile, worker_verified
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
-from ...inbox import approve_phase_options, attention_view, split_log
+from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -78,7 +78,7 @@ def register(app: FastAPI, site: Site) -> None:
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
             friction_text=friction_text,
             initial_stdout=initial_stdout,
-            attention=attention_view(t, st, rs),
+            decision_card=decision_card_view(t, st, rs),
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,

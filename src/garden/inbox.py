@@ -240,6 +240,40 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             "discuss": discuss_prompt(t, info, evidence, actions)}
 
 
+def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, Any] | None:
+    """The pending human decision shown on both the Inbox and a task page.
+
+    A worker report takes precedence over its status so an interrupted transition cannot send
+    a person to a task page that has the report in state but no decision to make.
+    """
+    if t.status.terminal:
+        return None
+    dec = st.get("decision")
+    if isinstance(dec, dict) and dec.get("kind"):
+        kind = str(dec["kind"])
+        verb = "will not do this task" if kind == "wont_do" else "found nothing to change this round"
+        return {
+            "type": "worker_decision", "kind": kind,
+            "title": "The worker asks you to decide",
+            "reason": str(dec.get("reason") or "(no reason given)"),
+            "blurb": f"The worker {verb}.", "final": str(dec.get("final") or ""),
+            "evidence": _evidence_lines(t, st, runs),
+        }
+    if t.status == Status.WAITING_HUMAN:
+        return {
+            "type": "question", "title": "The worker is waiting for you",
+            "reason": str(st.get("question") or "(no question recorded)"),
+            "blurb": "Its session resumes with your answer.", "final": "",
+            "evidence": _evidence_lines(t, st, runs),
+        }
+    attention = attention_view(t, st, runs)
+    if attention is not None:
+        return {"type": "attention", "title": f"Needs a decision: {attention['kind_title']}",
+                "reason": attention["reason"], "blurb": attention["kind_blurb"], "final": "",
+                "evidence": attention["evidence"], "attention": attention}
+    return None
+
+
 def merge_queue_view(store: Store, state: Any, drop_events: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """What the merge queue is doing, for the Board/Inbox: the in-flight head (rebased, waiting
     for its rollup) and whether it is still waiting on CI, the candidates queued behind it with
@@ -303,7 +337,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
-        if t.status == Status.WAITING_HUMAN and st.get("decision"):
+        if st.get("decision") and not t.status.terminal:
             dec = st.get("decision") or {}
             kind = str(dec.get("kind") or "")
             reason = str(dec.get("reason") or "(no reason given)")
@@ -311,10 +345,12 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             add("decision", t, f"the worker {verb}: {reason}", [
                 {"label": "Accept", "kind": "accept", "command": f"garden accept {t.id}"},
                 {"label": "Reject", "kind": "reject", "command": f'garden reject {t.id} "..."'},
-            ], decision_kind=kind, reason=reason, final=str(dec.get("final") or ""))
+            ], decision_kind=kind, reason=reason, final=str(dec.get("final") or ""),
+                decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.WAITING_HUMAN:
             add("question", t, str(st.get("question") or "(no question recorded)"),
-                [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=st.get("question", ""))
+                [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=st.get("question", ""),
+                decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.AWAITING_TRIAGE:
             rev = st.get("last_review") or {}
             why = "draft PR open"
@@ -346,7 +382,8 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             att = attention_view(t, st, runs)
             if att:
                 add("attention", t, f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
-                    **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")})
+                    **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")},
+                    decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.DRAFT:
             eff = effective_status(t, tasks, stack)
             why = "discovered by " + t.discovered_from if t.discovered_from else "planned, not yet approved"
