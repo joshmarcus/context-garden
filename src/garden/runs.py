@@ -85,6 +85,7 @@ class Run:
     claimed_at: str = ""  # pull-based remote runner lease
     lease_expires_at: str = ""
     lease_token: str = ""  # unique claim generation; fences a stale worker after reclaim
+    pushed_ref: str = ""  # lease-specific staging ref; only an accepted finish promotes it
     pushed_head: str = ""
     session_id: str = ""  # harness session, for resume
     # Startup is durable too: requested is the record reservation, preparing covers
