@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
-from .base import Runner, RunnerError, run_setup, run_temp_dir, scrubbed_env
+from .base import Runner, RunnerError, run_temp_dir, scrubbed_env
 
 
 class LocalRunner(Runner):
@@ -76,7 +76,11 @@ class LocalRunner(Runner):
         # The scrubbed environment (see worker_env): what the setup command and the worker
         # get, and nothing else of the scheduler's.
         env = self.worker_env(run, setup, worktree)
-        run_setup(worktree, setup, log_path=d / "setup.log", env=env)  # prepare the env before the worker starts
+        # The supervisor runs setup only after it owns the heavy-execution lease and has
+        # entered the execution cgroup.  Persisting the small payload also keeps the
+        # detached launch recoverable/auditable.
+        if str(setup.get("command") or "").strip():
+            (d / "setup_input.json").write_text(json.dumps(setup))
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         self.launch(run, worktree, brief_path, env)

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import time
@@ -290,6 +291,39 @@ def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
     for run in runs:
         if run is not waiting:
             run.stop(timeout=2)
+
+
+def test_setup_waits_inside_the_heavy_execution_budget(tmp_path, monkeypatch):
+    """Setup is validation-capable, so it must not run before the supervisor's lease."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    runner = LocalRunner({"timeout_minutes": 0, "worker_env": {"pass": ["XDG_RUNTIME_DIR"]},
+                          "setup": {"command": "touch setup-started"}},
+                         Harness("tiny", {"command": ["sh", "-c", "sleep 0.35"]}))
+    runs = []
+    for number in (1, 2):
+        worktree = tmp_path / f"wt{number}"
+        worktree.mkdir()
+        d = tmp_path / f"setup-run{number}"
+        d.mkdir()
+        run = Run(task_id=f"T-{number}", run_id=f"s{number}", dir=str(d), runner="local")
+        runner.start(run, worktree, "")
+        runs.append((run, worktree))
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        states = [json.loads((run.path / "execution.json").read_text()).get("state")
+                  for run, _ in runs if (run.path / "execution.json").exists()]
+        started = sum((worktree / "setup-started").exists() for _, worktree in runs)
+        if sorted(states) == ["running", "waiting"] and started == 1:
+            break
+        time.sleep(0.01)
+    assert sum((worktree / "setup-started").exists() for _, worktree in runs) == 1
+    for run, _ in runs:
+        os.waitpid(run.pid, 0)
+    assert all((worktree / "setup-started").exists() for _, worktree in runs)
 
 
 def test_ssh_runner_uses_bare_bin(sched, fake_github):

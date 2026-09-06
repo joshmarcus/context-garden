@@ -87,6 +87,22 @@ def _signal_descendants(sig: int) -> None:
             pass
 
 
+def _run_setup(run_dir: Path) -> bool:
+    payload = run_dir / "setup_input.json"
+    if not payload.exists():
+        return True
+    from garden.runner.base import RunnerError, run_setup
+
+    try:
+        run_setup(Path.cwd(), json.loads(payload.read_text()), log_path=run_dir / "setup.log",
+                  env=dict(os.environ))
+    except (OSError, ValueError, RunnerError) as exc:
+        (run_dir / "stderr.log").write_text(f"{exc}\n")
+        (run_dir / "exit_code").write_text("1")
+        return False
+    return True
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         return 2
@@ -106,6 +122,8 @@ def main() -> int:
     except InterruptedError:
         (run_dir / "exit_code").write_text("143")
         return 143
+    if not _run_setup(run_dir):
+        return 1
     child = subprocess.Popen(["sh", "-c", script])
     code = child.wait()
     deadline = time.monotonic() + 5.0 if stopping else None
