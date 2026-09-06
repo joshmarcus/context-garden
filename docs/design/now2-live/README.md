@@ -25,6 +25,8 @@ full lifecycle cost for accepted tasks, explicit missing-price counts, reviewed
 first-pass denominators, and unrounded row-relative ranks. `garden metrics`
 prints the same five matrices; `--since` / `--until` bound those comparisons.
 Legacy summary tables retain their established lifetime semantics.
+The phase window retains garden-wide profile, configuration and upgrade marks
+while keeping another phase's activity out of its spend and outcome totals.
 
 Unavailable facts stay explicit: unmapped goal progress, insufficient duration
 samples, unreported spend, missing manual-merge attribution, unknown next tick,
