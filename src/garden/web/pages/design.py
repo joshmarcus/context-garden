@@ -19,6 +19,7 @@ from ..trust import safe_relative_path
 # also contain transcripts, briefs and run metadata; those are never captures merely because a
 # worker mentions them in its result.
 CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", ".markdown", ".png", ".webp"})
+INTERNAL_CAPTURE_NAMES = frozenset({"brief.md", "exit_code", "final.md", "run.json", "stderr.log", "stdout.json"})
 
 
 def _design_root(store: Store) -> Path:
@@ -58,6 +59,7 @@ def recorded_captures(run: Run) -> list[Path]:
                                 candidate = run.path / candidate
                             resolved = candidate.resolve()
                             if (run.path.resolve() in resolved.parents and resolved.is_file()
+                                    and resolved.name not in INTERNAL_CAPTURE_NAMES
                                     and resolved.suffix.lower() in CAPTURE_SUFFIXES):
                                 paths.add(resolved)
                 else:
