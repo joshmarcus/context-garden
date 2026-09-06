@@ -376,11 +376,22 @@ live `/now2` route. The build must add its own route and browser clock tests,
 including 59→60, 3599→3600, offset clock, new run identity, delayed dispatch,
 tab return, missing typical, failure persistence and reduced motion.
 
-Before acceptance, capture 1280px and 390px in light and dark from the supplied snapshot;
-check layout, table scrolling, focus and untruncated queue reasons. Browser tooling
-is not installed in the prepared worker environment, so a visual pass cannot be
-claimed from markup inspection. The mock uses existing local plates and fallback
-fonts so the capture can run without external resources.
+Windows Edge produced a [1280px light capture](now-2/captures/light-1280.png)
+of the supplied snapshot. The Now/Next columns remain separate, long run titles
+and queue reasons wrap, clocks and process uncertainty remain readable, and the
+phase/outcomes headings follow the active work. This 2400px-tall viewport does
+not include the matrix or state atlas, so it cannot verify those regions.
+
+The [390px diagnostic capture](now-2/captures/light-390-diagnostic.png) is clipped
+on the right and is **not passing phone evidence**. Whether Edge laid out a wider
+viewport than its screenshot or the document overflowed could not be established:
+subsequent DOM measurement and dark-mode attempts failed at the WSL interop boundary
+with `UtilAcceptVsock:271: accept4 failed 110`. No dark capture was produced.
+See [capture notes and reproduction](now-2/captures/README.md). The owner's fallback
+allows shipping the mock when Edge fails; it does not establish visual correctness.
+390px light/dark and 1280px dark inspection, the lower regions, table scrolling,
+focus, and reduced-motion interaction still need browser validation. The mock uses
+local plates and fallback fonts and needs no external resources.
 
 Designer and usability-expert persona findings belong here with severity, concrete
 change and artifact reference. **Neither review has run:** worker rules prohibit
@@ -406,7 +417,8 @@ Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` report
 1019 passed, 3 skipped; `.venv/bin/ruff check src tests` passes. The dedicated
 mock tests pass after adaptation to the snapshot. An HTML inspection finds no
 duplicate IDs, no missing local plate images, and all four window panels.
-These are structural checks; no visual or persona approval is implied. No typecheck
+These are structural checks; the limited visual evidence is described above and no
+persona approval is implied. No typecheck
 command is configured in `pyproject.toml` or the repository CI workflow.
 
 Table values, sample counts and rank marks all use the ink foreground. Endpoint
