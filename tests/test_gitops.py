@@ -356,3 +356,74 @@ def test_patch_id_changes_when_the_branchs_own_content_changes(origin_repo: tupl
 
     assert after != before
     assert after == ""  # the branch's commit contributed nothing once rebased; the diff is empty
+
+
+# ---- CG-239: hooks/fsmonitor forced off, and the block-repo refusal --------
+
+def test_git_ignores_a_hook_committed_into_git_hooks(tmp_path: Path) -> None:
+    """A `pre-commit` hook that exits non-zero would normally fail the commit; the scheduler's
+    `git` wrapper must never consult a clone's real hooks directory (core.hooksPath is forced
+    to an empty directory), so the hook neither runs nor blocks the commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitops.git("init", "-q", "-b", "main", cwd=repo)
+    gitops.git("config", "user.email", "t@example.com", cwd=repo)
+    gitops.git("config", "user.name", "t", cwd=repo)
+    marker = tmp_path / "hook-ran"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    hook.chmod(0o755)
+    (repo / "file.txt").write_text("x\n")
+    gitops.git("add", "-A", cwd=repo)
+
+    gitops.git("commit", "-q", "-m", "test", cwd=repo)  # would raise if the hook ran and blocked it
+
+    assert not marker.exists()
+
+
+def test_git_env_forces_hookspath_and_fsmonitor_off(tmp_path: Path, monkeypatch) -> None:
+    import subprocess as subprocess_module
+
+    captured = {}
+    real_run = subprocess_module.run
+
+    def spy(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(gitops.subprocess, "run", spy)
+    gitops.git("status", cwd=tmp_path, check=False)
+
+    env = captured["env"]
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "core.hooksPath" and env["GIT_CONFIG_VALUE_0"]
+    assert env["GIT_CONFIG_KEY_1"] == "core.fsmonitor" and env["GIT_CONFIG_VALUE_1"] == "false"
+
+
+def test_block_repo_refuses_further_git_calls(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitops.git("init", "-q", "-b", "main", cwd=repo)
+
+    gitops.block_repo(repo, "test block")
+
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=repo)
+
+
+def test_block_repo_also_blocks_a_linked_worktree(tmp_path: Path) -> None:
+    """A clone's `.git/config` and hooks are shared with every worktree linked to it, so
+    blocking the clone must refuse `git` in those worktrees too, not just the clone itself."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitops.git("init", "-q", "-b", "main", cwd=repo)
+    gitops.git("config", "user.email", "t@example.com", cwd=repo)
+    gitops.git("config", "user.name", "t", cwd=repo)
+    gitops.git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    wt = tmp_path / "wt"
+    gitops.git("worktree", "add", "-b", "feature", str(wt), "main", cwd=repo)
+
+    gitops.block_repo(repo, "blocked")
+
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=wt)

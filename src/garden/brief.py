@@ -198,9 +198,17 @@ def product_dirs(store: Store, task: Task) -> list[Path]:
 
 def resolve_reading(store: Store, task: Task, rel: str) -> tuple[Path | None, Path | None]:
     """Find a reading-list entry: first in the garden, then in the product's checkout.
-    Returns (path, base) or (None, None)."""
+    Refuses an absolute path and any path that resolves outside its base (a `../` escape)
+    rather than following it off the garden or the product checkout — a task's reading list
+    is plain text a planner or a discovered-task write, not a trusted boundary, so it must not
+    be able to pull an arbitrary host file into a worker's brief (CG-239). Returns (path, base)
+    or (None, None)."""
+    if Path(rel).is_absolute():
+        return None, None
     for base in [store.root, *product_dirs(store, task)]:
         p = (base / rel).resolve()
+        if not p.is_relative_to(base.resolve()):
+            continue
         if p.exists():
             return p, base
     return None, None

@@ -9,6 +9,9 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from garden import gitops
 from garden.gitops import head_sha
 from garden.harness import Harness
 from garden.inbox import build_inbox
@@ -249,6 +252,49 @@ def test_fence_attributes_paths_named_relative_to_the_worktree(sched, tmp_path):
     violations = sched._fence_check(task, run)
     assert violations and "rogue.py" in violations[0]["files"]
     assert not (clone / "rogue.py").exists()  # the escape is undone
+
+
+# ---- the git-internals guard (CG-239) --------------------------------------
+
+def test_worktree_config_write_is_attributed_and_blocks_git_at_reap(sched, fake_github):
+    """A `git config` run from inside a worker's own worktree can rewrite the *shared* clone's
+    `.git/config` (a worktree shares its clone's config by default) — e.g. pointing
+    core.hooksPath somewhere a later scheduler-side `git` call in that clone would run it with
+    the operator's own credentials. The fence must catch this at reap, attribute it on the
+    task, and refuse every further git command in that clone."""
+    sched.cfg.data["stack"] = False
+    task = sched.store.task("DM-001")
+    clone = sched.repo_for(task)
+    wt = sched.worktree_for(task)
+
+    sched.tick()  # dispatch DM-001 (the in-process worker runs synchronously and commits)
+    cfg_path = clone / ".git" / "config"
+    cfg_path.write_text(cfg_path.read_text() + "\n[core]\n\thooksPath = /tmp/garden-test-evil-hooks\n")
+
+    sched.tick()  # reap: the git guard runs before the ordinary fence and git-based checks
+
+    task = sched.store.task("DM-001")
+    assert task.status.value == "failed"
+    card = _attention_card(sched, "DM-001")
+    assert "git internals" in card and "clone .git/config" in card
+    assert not fake_github.created  # never reached the PR step
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=clone)
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=wt)
+
+
+def test_worktree_commits_alone_do_not_trip_the_git_guard(sched, fake_github):
+    """A well-behaved run commits into its own worktree — moving HEAD, the index and the
+    admin directory's logs — and dispatches a sibling task against the same shared clone,
+    which adds that branch's tracking entry to the clone's `.git/config`. Neither is tampering
+    and neither must trip the git guard."""
+    sched.tick()  # dispatches DM-001 and (with the default stack setting) may touch DM-002 too
+    sched.tick()  # reap
+
+    task = sched.store.task("DM-001")
+    assert task.status.value != "failed"
+    assert not _attention_card(sched, "DM-001")
 
 
 # ---- first line of defence: the harness deny rules ------------------------

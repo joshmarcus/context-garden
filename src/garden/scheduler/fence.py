@@ -1,10 +1,14 @@
-"""The worktree fence: snapshot the guarded repos at dispatch, revert a worker's writes outside its worktree."""
+"""The worktree fence: snapshot the guarded repos at dispatch, revert a worker's writes outside
+its worktree. Also the git-internals guard (CG-239): hash a clone's `.git/config`, its hooks
+directory and a worktree's git-admin files at dispatch, and block every scheduler-side `git`
+command in that clone at reap if any of them changed."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +145,162 @@ class FenceMixin:
             violations.append({"label": "the live garden", "path": str(path), "commits": [],
                                "files": [rel], "foreign": [], "reverted": reverted})
         return violations
+
+    # ---- the git-internals guard (CG-239) ----------------------------------
+    def _git_guard_targets(self, task: Task) -> list[tuple[str, Path]]:
+        """(label, path) for the git internals a write inside a worker's own worktree could
+        turn into arbitrary code execution the next time the scheduler runs `git` against this
+        clone: the clone's `.git/config` and hooks directory (shared by every task dispatched
+        against it — a worktree shares its clone's config unless `extensions.worktreeConfig` is
+        set), and this task's own worktree's `.git` file and the `.git/worktrees/<id>/` admin
+        directory it names."""
+        out: list[tuple[str, Path]] = []
+        try:
+            clone = Path(self.repo_for(task))
+        except Exception:  # noqa: BLE001 - a missing/URL repo just means nothing to guard here
+            clone = None
+        if clone is not None and gitops.is_repo(clone):
+            out.append(("clone .git/config", clone / ".git" / "config"))
+            out.append(("clone .git/hooks", clone / ".git" / "hooks"))
+        wt = self.worktree_for(task)
+        dot_git = wt / ".git"
+        if dot_git.exists():
+            out.append(("worktree .git", dot_git))
+            admin = gitops.worktree_admin_dir(wt)
+            if admin is not None:
+                out.append(("worktree .git/worktrees/<id>", admin))
+        return out
+
+    # Files inside `.git/worktrees/<id>/` a worktree's own git activity never rewrites: `gitdir`
+    # (this worktree's own `.git` file location) and `commondir` (the shared repo it points
+    # back to) never change once the worktree is created, and `config.worktree` only exists at
+    # all when per-worktree config is in use. Everything else there — `HEAD`, `index`, `logs/`,
+    # `ORIG_HEAD` — changes on every ordinary commit the worker makes, so hashing the whole
+    # directory would flag a well-behaved run's own commits as tampering.
+    _ADMIN_DIR_GUARDED_FILES = ("gitdir", "commondir", "config.worktree")
+
+    @classmethod
+    def _hash_admin_dir(cls, admin: Path) -> str:
+        h = hashlib.sha256()
+        for name in cls._ADMIN_DIR_GUARDED_FILES:
+            f = admin / name
+            try:
+                data = f.read_bytes() if f.exists() else b"<absent>"
+            except OSError:
+                data = b"<absent>"
+            h.update(name.encode())
+            h.update(data)
+        return h.hexdigest()
+
+    # `git worktree add` sets up branch tracking (`branch.<name>.remote`/`.merge`) in the
+    # clone's *shared* `.git/config` for every new task branch by default — expected churn on
+    # a clone many tasks dispatch against concurrently, not tampering. Nothing dangerous (a
+    # hooksPath, an alias, an include) is ever a `[branch "..."]` key, so those sections are
+    # excluded before hashing the file.
+    _CONFIG_SECTION_RE = re.compile(r'^\[[^\]]+\]\s*$')
+    _CONFIG_BRANCH_SECTION_RE = re.compile(r'^\[branch\s+"[^"]*"\]\s*$')
+
+    @classmethod
+    def _hash_config(cls, path: Path) -> str:
+        try:
+            lines = path.read_text().splitlines(keepends=True)
+        except OSError:
+            lines = []
+        kept = []
+        skipping = False
+        for line in lines:
+            stripped = line.strip()
+            if cls._CONFIG_SECTION_RE.match(stripped):
+                skipping = bool(cls._CONFIG_BRANCH_SECTION_RE.match(stripped))
+                if skipping:
+                    continue
+            if not skipping:
+                kept.append(line)
+        return hashlib.sha256("".join(kept).encode("utf-8", "replace")).hexdigest()
+
+    @staticmethod
+    def _hash_tree(path: Path) -> str:
+        """A content hash of `path`: a file's bytes, or the sorted (relative path, content) of
+        every file under a directory. Reads files directly rather than through `gitops.git`, so
+        it stays meaningful even once a clone has been blocked (`gitops.block_repo`)."""
+        h = hashlib.sha256()
+        if path.is_dir():
+            for f in sorted(p for p in path.rglob("*") if p.is_file()):
+                try:
+                    h.update(str(f.relative_to(path)).encode())
+                    h.update(f.read_bytes())
+                except OSError:
+                    continue
+        elif path.exists():
+            try:
+                h.update(path.read_bytes())
+            except OSError:
+                pass
+        else:
+            h.update(b"<absent>")
+        return h.hexdigest()
+
+    @classmethod
+    def _hash_git_guard_target(cls, label: str, path: Path) -> str:
+        if label == "worktree .git/worktrees/<id>":
+            return cls._hash_admin_dir(path)
+        if label == "clone .git/config":
+            return cls._hash_config(path)
+        return cls._hash_tree(path)
+
+    def _git_guard_snapshot(self, task: Task, run: Run | None) -> None:
+        """Hash the clone's git internals (see `_git_guard_targets`) into a manifest beside the
+        run, so `_git_guard_check` at reap can tell whether any of them changed while this run
+        was live."""
+        if run is None:
+            return
+        manifest = [{"label": label, "path": str(path), "sha": self._hash_git_guard_target(label, path)}
+                    for label, path in self._git_guard_targets(task)]
+        (run.path / "git_guard.json").write_text(json.dumps(manifest))
+
+    def _git_guard_check(self, task: Task, run: Run | None) -> list[dict[str, Any]]:
+        """Compare the clone's git internals against the hashes taken at dispatch. Any change
+        is reported here; the caller (`_git_guard_fail`) blocks every scheduler-side `git`
+        command in that clone and attributes the change on the task. Unlike the worktree fence,
+        there is no "was it the worker's" attribution question and nothing to revert: this is
+        not a write a worker could plausibly make by accident, and reverting a hooks directory
+        or an admin dir is not something to do blind — a person recreates the clone instead."""
+        if run is None:
+            return []
+        manifest_path = run.path / "git_guard.json"
+        if not manifest_path.exists():
+            return []
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        violations: list[dict[str, Any]] = []
+        for entry in manifest:
+            path = Path(entry["path"])
+            if self._hash_git_guard_target(str(entry["label"]), path) != entry.get("sha"):
+                violations.append({"label": entry["label"], "path": str(path)})
+        return violations
+
+    def _git_guard_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
+        """A clone's git internals changed while a run was live: block every scheduler-side
+        `git` command in that clone (`gitops.block_repo`) so the next tick cannot trust it, and
+        attribute the change on the task instead of letting it surface as an unexplained git
+        failure later."""
+        try:
+            clone = Path(self.repo_for(task))
+            gitops.block_repo(clone, f"{task.id}: git internals changed since dispatch (run {run.run_id})")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"{task.id}: could not block the clone after a git-guard violation: {e}")
+        names = ", ".join(f"{v['label']} ({v['path']})" for v in violations)
+        card = (f"the clone's git internals changed since dispatch: {names}; every git command "
+                "in this clone is refused until it is recreated by hand")
+        self.state.get(task.id)["needs_human"] = card
+        self.events.emit("git_guard_violation", task.id, run=run.run_id, changed=[v["label"] for v in violations])
+        run.status = "failed"
+        run.error = (run.error + " | " if run.error else "") + "clone git internals changed (blocked)"
+        run.save()
+        self._transition(task, Status.FAILED, f"git guard: {card}"[:400], needs_human=True)
+        rep.transitions.append(f"{task.id} -> failed (git guard)")
 
     @staticmethod
     def _worker_named(transcript: str, repo: Path, rel: str, worktree: Path | None = None) -> bool:
