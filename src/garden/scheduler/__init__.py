@@ -515,3 +515,4 @@ class Scheduler(
         with self._step(rep, "audit"):
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
             self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))
+            self._guard(rep, "id audit", lambda: self._audit_ids(rep))

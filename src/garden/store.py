@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Config, find_root
@@ -19,6 +22,9 @@ class Store:
         self.config = config or Config.load(self.root)
         self._tasks: dict[str, Task] | None = None
         self._products: list[Product] | None = None
+        # Ids claimed by more than one task file, found on the last scan: quarantined out of
+        # `_tasks` (they are ambiguous, so they cannot dispatch) and surfaced by `duplicate_ids`.
+        self._duplicate_ids: dict[str, list[Path]] = {}
         self._config_sig = self._config_signature()
         # keys whose value changed in the most recent reload, so the scheduler can log them once.
         # Set only when a reload actually happens (never cleared by a no-op invalidate), so a
@@ -141,14 +147,32 @@ class Store:
     def tasks(self) -> dict[str, Task]:
         if self._tasks is None:
             tasks: dict[str, Task] = {}
+            dups: dict[str, list[Path]] = {}
             for p in self.products():
                 for ph in p.phases:
                     for t in ph.tasks:
+                        if t.id in dups:
+                            dups[t.id].append(t.path)
+                            continue
                         if t.id in tasks:
-                            raise ValueError(f"duplicate task id {t.id}: {t.path} and {tasks[t.id].path}")
+                            # An id claimed by two files is ambiguous: quarantine it. Drop both
+                            # claimants from the map so neither can dispatch, and record the
+                            # collision for `duplicate_ids` (surfaced by `garden validate` and the
+                            # tick) rather than raising and taking every page and tick down with it.
+                            dups[t.id] = [tasks.pop(t.id).path, t.path]
+                            continue
                         tasks[t.id] = t
             self._tasks = tasks
+            self._duplicate_ids = dups
         return self._tasks
+
+    def duplicate_ids(self) -> dict[str, list[str]]:
+        """Ids claimed by more than one task file, each mapped to the files that claim it. Such
+        an id is ambiguous: `tasks()` keeps it out of the task map so it cannot dispatch, and this
+        is how `garden validate`, `doctor` and the tick surface it. Empty when the garden is
+        healthy."""
+        self.tasks()  # ensure a scan has populated _duplicate_ids
+        return {tid: [self.rel(p) for p in paths] for tid, paths in self._duplicate_ids.items()}
 
     def task(self, task_id: str) -> Task:
         tasks = self.tasks()
@@ -182,12 +206,20 @@ class Store:
         _atomic_write(task.path, task.render())
 
     def next_id(self, product: str) -> str:
+        """The next free id for `product`, skipping both existing task files and any ids reserved
+        in the durable ledger (see `reserve_ids`). Advisory: it takes no lock, so a caller that
+        must not collide with a concurrent creator uses `create_task` or `reserve_ids`, which
+        allocate under one."""
+        return self._compute_next_id(product, self._read_reservations())
+
+    def _compute_next_id(self, product: str, ledger: dict[str, dict]) -> str:
         prefix = str(self.config.product(product).get("id_prefix") or _prefix_for(product))
+        up = prefix.upper() + "-"
         n = 0
-        for t in self.tasks().values():
-            if t.id.upper().startswith(prefix.upper() + "-"):
+        for tid in (*self.tasks().keys(), *ledger.keys()):
+            if tid.upper().startswith(up):
                 try:
-                    n = max(n, int(t.id.split("-", 1)[1]))
+                    n = max(n, int(tid.split("-", 1)[1]))
                 except ValueError:
                     pass
         return f"{prefix}-{n + 1:03d}"
@@ -210,29 +242,124 @@ class Store:
     ) -> Task:
         from .model import Status, slugify
 
-        tid = task_id or self.next_id(product)
-        ph = self.phase(product, phase)
-        path = ph.path / "tasks" / f"{tid}-{slugify(title)}.md"
-        t = Task(
-            path=path,
-            id=tid,
-            title=title,
-            status=Status(status),
-            product=product,
-            phase=phase,
-            depends_on=list(depends_on or []),
-            priority=priority,
-            estimate=estimate,
-            reading=list(reading or []),
-            difficulty=difficulty,
-            discovered_from=discovered_from,
-            created=now_iso(),
-            updated=now_iso(),
-            body=body,
-        )
-        self.save(t)
+        def build(tid: str) -> Task:
+            ph = self.phase(product, phase)
+            return Task(
+                path=ph.path / "tasks" / f"{tid}-{slugify(title)}.md",
+                id=tid,
+                title=title,
+                status=Status(status),
+                product=product,
+                phase=phase,
+                depends_on=list(depends_on or []),
+                priority=priority,
+                estimate=estimate,
+                reading=list(reading or []),
+                difficulty=difficulty,
+                discovered_from=discovered_from,
+                created=now_iso(),
+                updated=now_iso(),
+                body=body,
+            )
+
+        if task_id is None:
+            # Allocate the id and write the file under the reservation lock, so the id is durably
+            # taken (the file itself is the record) before any concurrent creator or reservation
+            # can pick it — the same lock every reserve_ids call holds.
+            with self._reservation_lock():
+                self._tasks = None  # rescan under the lock, so a file another creator just wrote is seen
+                ledger = self._prune_reservations_locked(self._read_reservations())
+                t = build(self._compute_next_id(product, ledger))
+                self.save(t)
+        else:
+            t = build(task_id)
+            self.save(t)
         self.invalidate()
         return t
+
+    # ---- durable id reservations ------------------------------------------
+    # A retro drafts its next-phase tasks into a git worktree, not the live tree, so their ids are
+    # invisible to next_id until the PR merges. Between filing and merge every live task creator
+    # (discovered work, another retro, the planner) would hand out the same ids and collide on
+    # merge. Reserving those ids in `.garden/reservations.json` — read by next_id and held under a
+    # lock shared with create_task — closes that window durably (it survives a restart).
+    @property
+    def reservations_path(self) -> Path:
+        return self.config.garden_dir / "reservations.json"
+
+    @contextmanager
+    def _reservation_lock(self):
+        garden_dir = self.config.garden_dir
+        garden_dir.mkdir(parents=True, exist_ok=True)
+        with open(garden_dir / (self.reservations_path.name + ".lock"), "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            yield
+
+    def _read_reservations(self) -> dict[str, dict]:
+        try:
+            raw = json.loads(self.reservations_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
+
+    def _write_reservations_locked(self, ledger: dict[str, dict]) -> None:
+        if ledger:
+            _atomic_write(self.reservations_path, json.dumps(ledger, indent=2, sort_keys=True))
+        else:
+            self.reservations_path.unlink(missing_ok=True)
+
+    def _prune_reservations_locked(self, ledger: dict[str, dict]) -> dict[str, dict]:
+        """Drop reservations whose id now exists as a task file: the reservation did its job (the
+        worktree draft merged) and is redundant. The natural release for a completed retro."""
+        tasks = self.tasks()
+        return {tid: meta for tid, meta in ledger.items() if tid not in tasks}
+
+    def reserve_ids(self, product: str, count: int, *, owner: str, reason: str = "") -> list[str]:
+        """Atomically reserve `count` ids for `product` and record them durably, so every other
+        creator (via next_id / create_task) skips them until they are materialised as task files
+        or released. Reservations survive a restart. `owner` groups them so `release_reservation`
+        can drop an abandoned batch; a batch is otherwise released piecemeal as its ids merge (see
+        `_prune_reservations_locked`)."""
+        if count <= 0:
+            return []
+        ids: list[str] = []
+        with self._reservation_lock():
+            self._tasks = None  # rescan under the lock, past any file another creator just wrote
+            ledger = self._prune_reservations_locked(self._read_reservations())
+            for _ in range(count):
+                tid = self._compute_next_id(product, ledger)
+                ledger[tid] = {"owner": owner, "reason": reason, "at": now_iso()}
+                ids.append(tid)
+            self._write_reservations_locked(ledger)
+        return ids
+
+    def release_reservation(self, owner: str) -> list[str]:
+        """Drop every reservation held by `owner`. A retro releases its own batch before it files
+        a fresh one, so an abandoned prior attempt's ids are reclaimed rather than leaked."""
+        with self._reservation_lock():
+            ledger = self._read_reservations()
+            released = [tid for tid, meta in ledger.items() if meta.get("owner") == owner]
+            for tid in released:
+                ledger.pop(tid, None)
+            if released:
+                self._write_reservations_locked(ledger)
+        return released
+
+    def prune_reservations(self) -> list[str]:
+        """Drop reservations whose id has since become a task file (the worktree draft merged).
+        Called each tick so the ledger does not accumulate fulfilled entries."""
+        with self._reservation_lock():
+            self._tasks = None
+            ledger = self._read_reservations()
+            kept = self._prune_reservations_locked(ledger)
+            pruned = [tid for tid in ledger if tid not in kept]
+            if pruned:
+                self._write_reservations_locked(kept)
+        return pruned
+
+    def reserved_ids(self) -> dict[str, dict]:
+        """The current reservation ledger (id -> {owner, reason, at}). A copy of what is on disk."""
+        return self._read_reservations()
 
     def set_phase_closed(self, phase: Phase, closed: str) -> None:
         """Write (or, with an empty string, clear) `closed:` in the phase's goals.md frontmatter."""

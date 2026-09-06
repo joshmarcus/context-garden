@@ -132,6 +132,26 @@ class DispatchMixin:
             self.store.save(t)
             rep.transitions.append(f"{t.id} stuck ({reason})")
 
+    def _audit_ids(self, rep: TickReport) -> None:
+        """Task-id hygiene, once a tick. Prune reservations whose worktree draft has since merged
+        (their id is now a real file), then surface any id claimed by two files: `store.tasks()`
+        already keeps such an id out of the map so it cannot dispatch and the rest of the tick runs
+        normally, so this only records it — on the report each tick (for `garden tick`), and, once
+        per change, on the running log and the event stream — so a person actually resolves it."""
+        self.store.prune_reservations()
+        dups = self.store.duplicate_ids()
+        for tid, paths in sorted(dups.items()):
+            rep.errors.append(f"duplicate task id {tid}: {', '.join(paths)} (quarantined from dispatch; resolve to restore it)")
+        audit = self.state.get("_id_audit")
+        if dups != (audit.get("duplicate_ids") or {}):
+            audit["duplicate_ids"] = dups
+            if dups:
+                detail = "; ".join(f"{tid} ({', '.join(paths)})" for tid, paths in sorted(dups.items()))
+                self.log(f"duplicate task ids quarantined from dispatch: {detail}")
+                self.events.emit("duplicate_ids", "", ids=sorted(dups))
+            else:
+                self.events.emit("duplicate_ids_cleared", "")
+
     def _sweep_terminal_state(self, rep: TickReport) -> None:
         """Backstop for a terminal task (done, cancelled, wont_do) still carrying a stale
         needs_human, pending-feedback or automerge stop — left over from before `_transition`

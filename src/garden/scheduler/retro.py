@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -335,14 +336,14 @@ class RetroMixin:
 
     def _file_retro_features(self, phase: Phase, next_phase: str, rev: dict[str, Any], wt: Path,
                              rel_product: Path, existing_titles: dict[str, str],
-                             prefix: str, num: int,
-                             persona_feats: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
+                             alloc: Callable[[], str],
+                             persona_feats: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Turn the reconciliation's `features`, plus any structured `features` a persona
         reported (CG-188), into draft task files inside the retro's own worktree, so they land
         with the same PR as the retro document and the next phase's goals draft (the next phase
         may not exist on disk yet, so this cannot go through `store.create_task`, which requires
         an already-discovered phase). Skips whatever `resolve_features` flags as a duplicate;
-        returns the filed list and the next free id number."""
+        each id it uses comes from `alloc`, which reserves it durably (see `_finish_retro`)."""
         resolved = resolve_features(rev, existing_titles, persona_feats)
         tasks_dir = wt / rel_product / next_phase / "tasks"
         filed: list[dict[str, Any]] = []
@@ -351,8 +352,7 @@ class RetroMixin:
                 filed.append({**f, "task_id": "", "status": "skipped"})
                 self.log(f"retro {phase.key}: feature {f['title']!r} skipped ({f['reason']})")
                 continue
-            tid = f"{prefix}-{num:03d}"
-            num += 1
+            tid = alloc()
             body = f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\nProposed at the {phase.key} retro."
             if f.get("source"):
                 body += f" Raised by the {f['source']} persona."
@@ -363,19 +363,19 @@ class RetroMixin:
                                        self._retro_priority(f.get("priority")), f["difficulty"])
             existing_titles[f["title"].strip().lower()] = tid
             filed.append({**f, "task_id": tid, "status": "draft"})
-        return filed, num
+        return filed
 
     def _file_retro_findings(self, phase: Phase, next_phase: str, persona_findings: dict[str, list[dict[str, Any]]],
                              wt: Path, rel_product: Path, existing_titles: dict[str, str],
-                             prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
+                             alloc: Callable[[], str]) -> list[dict[str, Any]]:
         """Turn every persona finding into a draft task in the next phase (CG-187): every
         severity, not only high, priority from severity, and findings that say the same thing
         across personas collapsed into one task via `group_findings`'s title match. Mirrors
         `_file_retro_features`: writes directly into the retro's own worktree, and shares its
-        id counter."""
+        durable id allocator."""
         flat = flatten_findings(persona_findings)
         if not flat:
-            return [], num
+            return []
         groups = group_findings(flat)
         resolved = resolve_findings(groups, existing_titles)
         tasks_dir = wt / rel_product / next_phase / "tasks"
@@ -385,8 +385,7 @@ class RetroMixin:
                 filed.append({**f, "task_id": "", "status": "skipped"})
                 self.log(f"retro {phase.key}: finding {f['summary']!r} skipped ({f['reason']})")
                 continue
-            tid = f"{prefix}-{num:03d}"
-            num += 1
+            tid = alloc()
             personas = f["personas"]
             provenance = f"persona:{personas[0]}:{phase.key}"
             title = finding_title(f)
@@ -400,14 +399,14 @@ class RetroMixin:
             t.path.write_text(t.render())
             existing_titles[title.strip().lower()] = tid
             filed.append({**f, "task_id": tid, "status": "draft"})
-        return filed, num
+        return filed
 
     def _file_retro_followups(self, phase: Phase, next_phase: str, rev: dict[str, Any], wt: Path,
                               rel_product: Path, existing_titles: dict[str, str],
-                              prefix: str, num: int) -> tuple[list[dict[str, Any]], int]:
+                              alloc: Callable[[], str]) -> list[dict[str, Any]]:
         """File the verdict's `followups` as draft tasks in the next phase (in the worktree, like
         features): a `close_with_followups` verdict carries work worth doing next but not blocking
-        the close. Returns the filed list and the next free id number."""
+        the close. Each id comes from `alloc`, the shared durable allocator."""
         resolved = resolve_retro_tasks(rev.get("followups"), existing_titles)
         tasks_dir = wt / rel_product / next_phase / "tasks"
         filed: list[dict[str, Any]] = []
@@ -416,15 +415,14 @@ class RetroMixin:
                 filed.append({**f, "task_id": "", "status": "skipped"})
                 self.log(f"retro {phase.key}: follow-up {f['title']!r} skipped ({f['dup_reason']})")
                 continue
-            tid = f"{prefix}-{num:03d}"
-            num += 1
+            tid = alloc()
             body = (f"## Goal\n\n{f['body'] or f['title']}\n\n## Context\n\n"
                     f"A follow-up carried into {next_phase} by the {phase.key} retro verdict.\n")
             self._write_worktree_draft(tasks_dir, tid, phase, next_phase, f["title"], body,
                                        self._retro_priority(f.get("priority")), f["difficulty"])
             existing_titles[f["title"].strip().lower()] = tid
             filed.append({**f, "task_id": tid, "status": "draft"})
-        return filed, num
+        return filed
 
     def _file_retro_blocking(self, phase: Phase, rev: dict[str, Any],
                              existing_titles: dict[str, str]) -> list[dict[str, Any]]:
@@ -485,18 +483,28 @@ class RetroMixin:
         existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
         # Blocking tasks go live into the current phase (it exists, they must dispatch and block
         # the close); features, followups and findings go into the worktree next phase (which may
-        # not exist yet) to land with the retro PR. Blocking is filed first so the live id counter
-        # is past those ids before the worktree drafts reserve theirs.
+        # not exist yet) to land with the retro PR. Blocking is filed first, as real files, so the
+        # reservations below allocate past them.
         blocking = self._file_retro_blocking(phase, rev, existing_titles)
-        prefix, num_s = self.store.next_id(phase.product).rsplit("-", 1)
-        num = int(num_s)
+        # Each worktree draft's id is reserved durably before it is written, so no live task
+        # creator (discovered work, another retro, the planner) hands out the same id between now
+        # and the PR merging — a collision that would otherwise disable every page and tick. The
+        # reservation survives a restart; a re-run first releases this phase's prior batch, so an
+        # abandoned earlier attempt's ids are reclaimed rather than leaked, and a merged draft's
+        # id is pruned from the ledger once its file exists (store.prune_reservations, each tick).
+        owner = f"retro:{phase.key}"
+        self.store.release_reservation(owner)
+
+        def alloc() -> str:
+            return self.store.reserve_ids(phase.product, 1, owner=owner, reason=f"{phase.key} retro draft")[0]
+
         persona_feats = persona_features(self._persona_sections(reports))
-        filed, num = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, prefix, num,
-                                               persona_feats=persona_feats)
+        filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, alloc,
+                                          persona_feats=persona_feats)
         persona_findings = self._persona_findings(phase, reports)
-        filed_findings, num = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
-                                                         existing_titles, prefix, num)
-        followups, num = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, prefix, num)
+        filed_findings = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
+                                                    existing_titles, alloc)
+        followups = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, alloc)
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         operator_records = read_operator_records(operator_spend_path(self.store.root))
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])

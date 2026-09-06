@@ -215,6 +215,12 @@ def doctor():
                               "git config, so a commit inside it never fails with "
                               "\"Author identity unknown\"[/red]")
                 fail(f"clone {clone.name} identity")
+    dups = store.duplicate_ids()
+    for tid, paths in sorted(dups.items()):
+        console.print(f"[red]duplicate task id {tid}: claimed by {', '.join(paths)}[/red]  "
+                      "(fix: rename or remove one; both are quarantined from dispatch until then)")
+    if dups:
+        fail("duplicate ids")
     problems = _validate(store.tasks())
     for pr_ in problems:
         console.print(f"[red]graph: {pr_}[/red]  (fix: correct or remove the offending depends_on)")
