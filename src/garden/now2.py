@@ -186,7 +186,12 @@ def period_data(events: list[dict], tasks: dict, records: list[dict], since: str
     series = cost_series(scoped + ([] if phase else operator), selected, since=since, until=until, group_by="activity")
     runs = {(e.get("task"), e.get("run") or e.get("at"), e.get("mode")): e for e in window_events if e.get("kind") == "run_finished"}
     rebases = Counter("mechanical" if e.get("how") == "mechanical" else "agent" for e in runs.values() if e.get("mode") == "rebase")
-    annotations = [e for e in window_events if e.get("kind") in ("profile_changed", "config_reloaded", "config_override", "upgraded")]
+    # Garden-wide operating changes also affect a selected phase. Keep those
+    # marks without pulling another phase's activity into its spend or outcomes.
+    annotations = [dict(e) for e in events
+                   if e.get("kind") in ("profile_changed", "config_reloaded", "config_override", "upgraded")
+                   and in_window(e)
+                   and (not phase or not e.get("phase") or e.get("phase") == phase)]
     annotations += [{**e, "kind": "operator compacted"} for e in ops.compaction_marks(records) if in_window(e)]
     buckets = [0] * 12
     duration = max(1, (timestamp(until)-timestamp(since)).total_seconds())

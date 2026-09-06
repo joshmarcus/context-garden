@@ -104,3 +104,19 @@ def test_period_operator_annotations_rebases_and_throughput():
     assert p["hand_unknown"] == 0
 
 
+def test_phase_window_keeps_global_operating_marks_without_other_phase_cost():
+    tasks = {"D-1": SimpleNamespace(difficulty="easy", status="done", key="demo/p1"),
+             "D-2": SimpleNamespace(difficulty="hard", status="done", key="demo/p2")}
+    events = history() + [
+        event("profile_changed", "11:05:00", task="", **{"from": "fast", "to": "efficient"}),
+        event("upgraded", "11:10:00", task=""),
+        event("config_override", "11:15:00", task="", phase="demo/p2"),
+        event("run_finished", "11:20:00", task="D-2", mode="work", cost_usd=100),
+        event("profile_changed", "12:00:00", task=""),
+    ]
+    p = period_data(events, tasks, [], "2026-09-06T11:00:00+00:00", NOW.isoformat(), "demo/p1")
+    assert [a["kind"] for a in p["annotations"]] == ["profile_changed", "upgraded"]
+    assert p["series"]["grand_total"]["cost_usd"] == 4
+    assert p["matrices"]["accepted_count"] == 1
+    assert all("position" not in e for e in events)
+
