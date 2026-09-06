@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 _INDEXES: dict[Path, _RunIndex] = {}
 _INDEXES_LOCK = threading.Lock()
+_MAX_SHARED_INDEXES = 32
 
 
 @dataclass
@@ -278,6 +279,8 @@ class RunStore:
         self.archive_dir = garden_dir / "run-archive"
         key = self.dir.resolve()
         with _INDEXES_LOCK:
+            if key not in _INDEXES and len(_INDEXES) >= _MAX_SHARED_INDEXES:
+                _INDEXES.pop(next(iter(_INDEXES)))
             self._index = _INDEXES.setdefault(key, _RunIndex())
 
     def invalidate(self) -> None:
