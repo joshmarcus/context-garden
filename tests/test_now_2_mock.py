@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import runpy
 from html.parser import HTMLParser
 from pathlib import Path
@@ -54,3 +55,44 @@ def test_now_2_snapshot_keeps_distinct_runs_and_process_uncertainty() -> None:
         assert rows[key]["data-started-at"] == run["started_at"]
     assert html.count("Process not found · run record still running") == 3
     assert "Queue reason conflicts with available capacity" in html
+
+
+def test_now_2_generator_delegates_matrices_to_events() -> None:
+    # Inspect provenance only: this source must never read the live garden in tests.
+    source = ast.parse((RENDERER.parent / "snapshot_generator_from_now1.py").read_text())
+    assert any(isinstance(node, ast.ImportFrom) and node.module == "garden.events"
+               and any(alias.name == "difficulty_by_model" for alias in node.names)
+               for node in source.body)
+    period = next(node for node in source.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "period")
+    result = next(node.value for node in period.body if isinstance(node, ast.Return))
+    tiers = next(value for key, value in zip(result.keys, result.values, strict=True)
+                 if isinstance(key, ast.Constant) and key.value == "tiers")
+    assert ast.unparse(tiers) == "difficulty_by_model(events, tasks, since)"
+
+
+def test_now_2_preserves_every_exported_metric_cell() -> None:
+    renderer = runpy.run_path(str(RENDERER))
+    for period in renderer["context"]()["snapshot"]["period"].values():
+        for source, rendered in zip(period["tiers"]["metrics"], renderer["matrices"](period), strict=True):
+            factor = {"pct": 100, "hours": 60}.get(source["unit"], 1)
+            for row in rendered["rows"]:
+                entries = source["rows"].get(row["difficulty"], {})
+                values = [e["value"] for e in entries.values() if e["value"] is not None]
+                for model, cell in zip(period["tiers"]["models"], row["cells"], strict=True):
+                    entry = entries.get(model, {"value": None, "n": 0})
+                    value = entry["value"]
+                    assert cell["n"] == entry["n"]
+                    if value is None:
+                        assert cell["display"] == "—"
+                        assert cell["rank"] == "missing"
+                        continue
+                    expected = {"usd": lambda v: f"${v:.2f}", "pct": lambda v: f"{v:.0f}%",
+                                "hours": lambda v: f"{v:.0f} min", "rounds": lambda v: f"{v:.1f}"}
+                    assert cell["display"] == expected[source["unit"]](value * factor)
+                    if min(values) == max(values):
+                        assert cell["rank"] == "equal"
+                    else:
+                        best = max(values) if source["better"] == "high" else min(values)
+                        worst = min(values) if source["better"] == "high" else max(values)
+                        assert cell["rank"] == ("best" if value == best else "worst" if value == worst else "between")

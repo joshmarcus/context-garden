@@ -25,11 +25,21 @@ specimens and four metric windows come from that export. The state atlas and
 “Preview arriving run” are explicitly simulated. This is a recorded view, not a
 live connection; the browser clock replays from capture time. No controller is run.
 
-The export contains aggregates rather than raw events and does not identify its
-computation version. The renderer preserves exported numbers and cohorts rather
-than recomputing or certifying them as `garden metrics` output. In particular,
-first-pass cells use the export's reviewed cohort, not the accepted cohort chosen
-below for the build. The shared-computation acceptance claim remains unverified.
+The owner identifies the fixed export's generator as
+[`snapshot_generator_from_now1.py`](now-2/snapshot_generator_from_now1.py).
+Its `period()` imports `difficulty_by_model` from `garden.events` and places
+`difficulty_by_model(events, tasks, since)` directly in `tiers`. This establishes
+the matrices' shared-metrics source; Now 2 only formats those values and n.
+The generator is retained as provenance, never imported or executed by this mock.
+The owner's explicit permission to inspect this data adapter does not change the
+independent layout, typography or motion design.
+
+The supplied generator targets a metrics extension absent from this branch's
+baseline. The fixed JSON contains rendered task/run projections and aggregates,
+not full historical events: we can verify the source call and lossless rendering,
+but cannot independently replay aggregation here. The live build must integrate
+the shared extension and the exact cohort/completeness contract below. In particular,
+first-pass cells preserve the export's reviewed cohort.
 Typical durations have no sample n; the mock says so. The supplied throughput
 values count runs (9 + 15 = 24 for the hour), not the eight accepted tasks, so
 that chart is honestly labelled run completions. Accepted-task throughput awaits
@@ -47,13 +57,13 @@ anchor, even though the brief describes an approximate earlier capture time.
 | Now | `now[]`: task/run identity, title, mode, state, harness, model, difficulty, `started_at`, `said`, `spend_usd`, `typical_s`, `no_process` | authoritative finish times, output/cost freshness, typical-duration sample counts and live run updates |
 | Next | `next.dispatch[]` order, mode and reasons; `next.merge.in_review` and `.waiting`; `garden.worker_busy`, `.max_parallel`, `.review_busy`, `.review_parallel`, `.last_tick` | reconciled scheduler eligibility, explicit next tick time, current pause reasons; `dispatch_paused: null` is unknown, not false |
 | Where we are | `where.primary`, `.others`, `.closed`: phase names, specimen metadata, counts, goals and available retro verdicts | authoritative goal membership and completeness, cancellation breakdown, updates when phase/task files change |
-| The last period | `period.hour`, `.today`, `.24h`, `.phase`: bounds, merged count, recorded cost, reviewed first-pass cohort, run counts, throughput buckets, activity totals, annotations and five exported `tiers.metrics` matrices with model columns and cell n | windowed difficulty-by-model output from the shared `events.metrics` extension below, raw lifecycle history and price completeness needed to verify it; accepted-task throughput timestamps |
+| The last period | `period.hour`, `.today`, `.24h`, `.phase`: bounds, merged count, recorded cost, reviewed first-pass cohort, run counts, throughput buckets, activity totals, annotations and five exported `tiers.metrics` matrices with model columns and cell n | windowed difficulty-by-model output from the shared events module with the completeness contract below; accepted-task throughput timestamps |
 | Live transport | No SSE stream or revision tokens are present in a JSON snapshot | the read-side SSE adapter and invalidation contract below |
 
-The supplied matrices permit a real-data visual comparison, but are not evidence
-that the shared computation already exists. The build must implement that contract
-once for the CLI and page, rather than treating this presentation adapter as a
-second metrics implementation. No simulated measurements replace missing fields.
+The supplied generator delegates matrices to the shared events module. The build
+must integrate that computation for the CLI and page, with the contract below;
+this presentation adapter must never become a second metrics implementation.
+No simulated measurements replace missing fields.
 
 Three run records say `running` with `no_process=true`; preserve them with an
 explicit “Process not found” label. Review waiting says “no review slot” while
@@ -443,20 +453,16 @@ never escalates a missing process into a failure or requests a retry. Keep the
 underlying reason and detail link visible in all three cases; Inbox is offered
 for an authoritative needs-you decision, not inferred solely from elapsed time.
 
-## Metrics evidence required
+## Fixed-input verification
 
-The aggregate snapshot contains no raw lifecycle history or generator identity.
-A reproducible metrics source needs the export generator and a sanitized input
-with `captured_at`, product/phase
-metadata and goals, task frontmatter (no task bodies needed except titles), active
-and historical run metadata, current queue/control/attention facts, first/latest
-tick and next scheduled tick, and events with enough preceding history to compute
-the selected windows. Include explicit completeness flags and model price coverage.
-Do not include credentials, full transcripts, host paths or session secrets;
-one sanitized latest assistant line per run is sufficient. The shared computation
-must reproduce the cell values, n, cohort membership and window boundaries; a
-comparison against copied aggregates or invented events would not establish
-provenance. Missing source data is the outstanding acceptance blocker.
+The owner authorizes `snapshot.json` as the fixed, sanitized input; it is not
+regenerated. `test_now_2_generator_delegates_matrices_to_events` inspects the supplied
+source without importing it and proves the direct shared-function handoff.
+`test_now_2_preserves_every_exported_metric_cell` compares every window, metric,
+difficulty and model against that input, including units, n, missing cells and
+rank direction. This verifies provenance wiring and presentation fidelity, not
+an independent replay of historical metrics. The build must test the shared
+aggregation itself when integrating the metrics extension.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
