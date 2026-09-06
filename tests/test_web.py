@@ -807,7 +807,15 @@ def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden)
     base = (Path(__file__).parents[1] / "src/garden/web/templates/base.html").read_text()
     decision_layout = base[base.index(".decision-card"):base.index("/* ---- trellis")]
     assert "position:absolute" not in decision_layout
-    assert "grid-template-columns:34px minmax(0,1fr)" in base
+    # The 18rem text track leaves enough measure for words at both the 1280px
+    # desktop layout and the 390px phone layout. These widths account for the
+    # shell, page/card padding, glyph column, and grid gap.
+    assert "grid-template-columns:34px minmax(18rem,1fr)" in base
+    assert "grid-template-columns:26px minmax(18rem,1fr)" in base
+    desktop_text_width = 1280 - 236 - (2 * 32) - 2 - (2 * 12) - 34 - 14
+    phone_text_width = 390 - (2 * 14) - 2 - (2 * 12) - 26 - 10
+    assert desktop_text_width >= 18 * 16
+    assert phone_text_width >= 18 * 16
     assert "@media (max-width:600px)" in base
 
 
