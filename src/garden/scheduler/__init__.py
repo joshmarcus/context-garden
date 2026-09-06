@@ -336,6 +336,10 @@ class Scheduler(
             run = self.latest_worker_run(t.id)
             if self._is_unreaped(t, run):
                 out.add(run.run_id)
+            review_id = str(self.state.get(t.id).get("review_run") or "")
+            review = next((r for r in self.runs.runs_for(t.id) if r.run_id == review_id), None)
+            if review is not None and review.status == "running" and review.process_finished():
+                out.add(review.run_id)
         return out
 
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
@@ -422,6 +426,7 @@ class Scheduler(
         tasks = self.store.tasks()
         for t in list(tasks.values()):
             try:
+                review_pending = bool(self.state.get(t.id).get("review_run"))
                 if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
                     rep.reaped.append(t.id)
                     continue
@@ -437,7 +442,10 @@ class Scheduler(
                     continue
                 if t.status == Status.RUNNING and self.reap(t, rep):
                     rep.reaped.append(t.id)
-                elif t.status.pr_open and self.reap_review(t, rep):
+                # A review is its own run, not part of the task's status machine. A
+                # failed rebase can put the task back in READY before its already-finished
+                # review is collected.
+                if review_pending and self.reap_review(t, rep):
                     rep.reaped.append(t.id)
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 rep.errors.append(f"{t.id}: reap failed: {e}")

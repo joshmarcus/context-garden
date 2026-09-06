@@ -287,6 +287,7 @@ class ReviewMixin:
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+                            "review_head": gitops.head_sha(wt),
                             "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
@@ -334,6 +335,8 @@ class ReviewMixin:
         if run is None:
             st["review_run"] = ""
             return False
+        if self._verdict_is_moot(task) or not self._review_evidence_is_current(task, run):
+            return self._close_obsolete_review(task, run, rep)
         if run.status != "running":
             # The run record is already terminal. Usually a prior reap applied its verdict and
             # only the tick that would clear this pointer was lost — but if the process was
@@ -399,6 +402,42 @@ class ReviewMixin:
             run.status = "done" if review else "failed"
             run.save()
         return self._apply_review(task, run, review, rep, emitted=False)
+
+    def _review_evidence_is_current(self, task: Task, run: Run) -> bool:
+        """Whether this review inspected the branch head that is still current."""
+        reviewed = str((run.env_snapshot or {}).get("review_head") or "")
+        if not reviewed:
+            return False
+        current = gitops.head_sha(self.worktree_for(task))
+        return current == reviewed
+
+    def _close_obsolete_review(self, task: Task, run: Run, rep: TickReport) -> bool:
+        """Collect a completed review for accounting without applying an obsolete verdict."""
+        st = self.state.get(task.id)
+        if run.status == "running":
+            runner = self.runner_for(task, run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                return False
+            if run.status != "timeout":
+                run.exit_code = run.read_exit_code()
+                run.finished_at = now_iso()
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
+                run.error = collected.get("error") or ""
+                run.status = "done" if run.exit_code in (0, None) else "failed"
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review",
+                             cost_usd=run.cost_usd, usage=run.usage, status=run.status,
+                             obsolete=True)
+        st["review_run"] = ""
+        note = "review verdict discarded because the task or reviewed head moved on"
+        run.error = f"{run.error} ({note})" if run.error else note
+        run.save()
+        self.state.save()
+        self.log(f"{task.id}: review run {run.run_id} closed; {note}")
+        rep.transitions.append(f"{task.id} review run {run.run_id} closed (obsolete)")
+        return True
 
     def _review_comment_posted(self, slug: str, number: int, run_id: str) -> bool:
         """True if a comment carrying this run's marker (see `mark_garden_comment`) is already
