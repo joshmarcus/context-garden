@@ -1,5 +1,5 @@
+import math
 import os
-import statistics
 import time
 from pathlib import Path
 
@@ -44,15 +44,22 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden):
     c = client(garden)
     timings = []
     scans = rs.scan_count
-    for url in ("/", "/board", "/partials/board", "/now2", "/now2/period") * 2:
-        started = time.perf_counter()
-        assert c.get(url).status_code == 200
-        timings.append(time.perf_counter() - started)
+    reads = rs.read_count
+    urls = ("/", "/board", "/partials/board", "/now2", "/now2/period")
+    for interval in range(3):
+        for url in urls * 4:
+            started = time.perf_counter()
+            assert c.get(url).status_code == 200
+            timings.append(time.perf_counter() - started)
+        if interval < 2:
+            time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
 
-    p95 = statistics.quantiles(timings, n=20)[18]
-    print(f"3003 runs, 3 active: page p95={p95:.3f}s max={max(timings):.3f}s scans={rs.scan_count - scans}")
+    p95 = sorted(timings)[math.ceil(0.95 * len(timings)) - 1]
+    print(f"3003 runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
+          f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
     assert p95 < 2.0
-    assert rs.scan_count - scans <= len(timings)
+    assert p95 <= max(timings)
+    assert rs.read_count - reads == 3003
 
 
 def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):
@@ -63,6 +70,15 @@ def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatc
     monkeypatch.setattr(Scheduler, "_hold_startup_config_against_fences", unexpected)
     reader = Hub(Store(garden), watch=False).reader()
     assert reader.control() == {}
+
+
+def test_pages_refuse_partial_totals_when_archive_index_is_corrupt(garden):
+    archive = garden / ".garden" / "run-archive"
+    archive.mkdir(parents=True)
+    (archive / "index.json").write_text("not json")
+    response = client(garden).get("/board")
+    assert response.status_code == 503
+    assert "history is temporarily unavailable" in response.text.lower()
 
 
 def test_design_files_are_safe_and_use_the_product_checkout(garden):

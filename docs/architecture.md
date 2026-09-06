@@ -126,10 +126,14 @@ Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
 Run metadata is indexed in process and shared by scheduler/read facades. A writer in the
-process invalidates it immediately; writes from another process appear within one second. One
-caller rebuilds an expired view while concurrent callers wait for that result, so page
-partials cannot fan out into duplicate history scans. The archive's compact `index.json`
-participates in costs and run listings; ordinary reads never walk the archive tree.
+process invalidates its task bucket immediately and touches that bucket for other processes;
+external changes appear within one second. An expiry stats the bounded set of task buckets
+and reparses only buckets whose fingerprint changed, while concurrent callers wait for that
+single refresh. It does not reparse every historical `run.json`. The archive's compact
+`index.json` is read only when its own fingerprint changes and participates in costs and run
+listings; ordinary reads never walk the archive tree. If that ledger is missing or corrupt,
+totals and affected web pages report history unavailable instead of silently showing partial
+figures.
 
 `garden archive-runs --older-than-days 30` moves only terminal runs with a recorded finish
 before the cutoff. It retains running/unreaped records and any run id still named by

@@ -49,7 +49,15 @@ class _RunIndex:
     by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
     active: tuple[Run, ...] = ()
     totals: dict[str, Any] = field(default_factory=dict)
+    task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
+    archive_fingerprint: tuple[int, int] | None = None
+    dirty_tasks: set[str] = field(default_factory=set)
     scans: int = 0
+    reads: int = 0
+
+
+class HistoryUnavailable(RuntimeError):
+    """Durable history exists but its compact index cannot be trusted."""
 
 
 @dataclass
@@ -94,7 +102,11 @@ class Run:
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
-        _invalidate_index(self.path.parents[1])
+        # A metadata rewrite does not change the parent directory mtime by itself.  Touch
+        # the task bucket so other processes can detect this one changed without statting
+        # every run.json in it.
+        self.path.parent.touch()
+        _invalidate_index(self.path.parents[1], self.task_id)
 
     @classmethod
     def load(cls, d: Path) -> Run:
@@ -262,13 +274,15 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
-def _invalidate_index(runs_dir: Path) -> None:
+def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:
     key = runs_dir.resolve()
     with _INDEXES_LOCK:
         idx = _INDEXES.get(key)
     if idx is not None:
         with idx.lock:
             idx.generation += 1
+            if task_id:
+                idx.dirty_tasks.add(task_id)
 
 
 class RunStore:
@@ -296,14 +310,25 @@ class RunStore:
         now = time.monotonic()
         with idx.lock:
             if idx.built_generation != idx.generation or now - idx.built_at > self.MAX_INDEX_AGE_SECONDS:
-                found: list[Run] = []
-                if self.dir.exists():
-                    for run_json in self.dir.glob("*/*/run.json"):
-                        try:
-                            found.append(Run.load(run_json.parent))
-                        except (OSError, json.JSONDecodeError, TypeError):
-                            continue
-                found.extend(self._archived_runs())
+                task_fingerprints = self._task_fingerprints()
+                archive_fingerprint = self._archive_fingerprint()
+                initial = idx.built_generation < 0
+                changed = (set(task_fingerprints) if initial else {
+                    task for task in set(task_fingerprints) | set(idx.task_fingerprints)
+                    if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
+                }) | idx.dirty_tasks
+                active_by_task: dict[str, list[Run]] = {}
+                for run in idx.runs:
+                    if not str(run.path).startswith(str(self.archive_dir)):
+                        active_by_task.setdefault(run.task_id, []).append(run)
+                for task in changed:
+                    active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
+                found = [run for runs in active_by_task.values() for run in runs]
+                if initial or archive_fingerprint != idx.archive_fingerprint:
+                    archived = self._archived_runs()
+                else:
+                    archived = [r for r in idx.runs if str(r.path).startswith(str(self.archive_dir))]
+                found.extend(archived)
                 found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
                 idx.runs = tuple(found)
                 grouped: dict[str, list[Run]] = {}
@@ -312,23 +337,61 @@ class RunStore:
                 idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
                 idx.active = tuple(run for run in found if run.status == "running")
                 idx.totals = _totals(found)
+                idx.task_fingerprints = task_fingerprints
+                idx.archive_fingerprint = archive_fingerprint
+                idx.dirty_tasks.clear()
                 idx.built_generation = idx.generation
                 idx.built_at = time.monotonic()
                 idx.scans += 1
             return idx
 
+    def _task_fingerprints(self) -> dict[str, tuple[int, int]]:
+        """Cheap freshness signal: writers touch a task directory when run metadata changes."""
+        out: dict[str, tuple[int, int]] = {}
+        if not self.dir.exists():
+            return out
+        for task_dir in self.dir.iterdir():
+            if not task_dir.is_dir():
+                continue
+            try:
+                stat = task_dir.stat()
+                out[task_dir.name] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                continue
+        return out
+
+    def _read_task_runs(self, task: str) -> list[Run]:
+        found: list[Run] = []
+        for run_json in (self.dir / task).glob("*/run.json"):
+            try:
+                found.append(Run.load(run_json.parent))
+                self._index.reads += 1
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        return found
+
+    def _archive_fingerprint(self) -> tuple[int, int] | None:
+        manifest = self.archive_dir / "index.json"
+        try:
+            stat = manifest.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except FileNotFoundError:
+            return None
+
     def _archived_runs(self) -> list[Run]:
         """Read the compact archive index, never the archived directory tree."""
         manifest = self.archive_dir / "index.json"
         if not manifest.exists():
+            if self.archive_dir.exists() and any(self.archive_dir.iterdir()):
+                raise HistoryUnavailable("archive index is missing; historical totals are unavailable")
             return []
         try:
             rows = json.loads(manifest.read_text()).get("runs", [])
             for row in rows:
                 row["dir"] = str(self.archive_dir / row["task_id"] / row["run_id"])
             return [Run(**row) for row in rows]
-        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
-            return []
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+            raise HistoryUnavailable("archive index is unreadable; historical totals are unavailable") from exc
 
     def archive_health(self) -> str:
         """Return an honest, cheap archive problem description, or an empty string."""
@@ -349,6 +412,10 @@ class RunStore:
     def scan_count(self) -> int:
         """Diagnostic count used by bounded-work regression tests and measurements."""
         return self._index.scans
+
+    @property
+    def read_count(self) -> int:
+        return self._index.reads
 
     @property
     def generation(self) -> int:
@@ -510,7 +577,15 @@ class RunStore:
         tmp = self.archive_dir / "index.json.tmp"
         tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
         os.replace(tmp, self.archive_dir / "index.json")
+        self.invalidate()
         return len(rows)
+
+    def update_archived(self, run: Run) -> None:
+        """Persist an archived metadata correction and atomically refresh its ledger."""
+        if not str(run.path).startswith(str(self.archive_dir)):
+            raise ValueError("run is not archived")
+        run.save()
+        self.rebuild_archive_index()
 
     def _active_disk_runs(self) -> list[Run]:
         out: list[Run] = []
@@ -544,7 +619,10 @@ class RunStore:
             if usage == run.usage and cost == run.cost_usd and model == run.model:
                 continue
             run.usage, run.cost_usd, run.model = usage, cost, model
-            run.save()
+            if str(run.path).startswith(str(self.archive_dir)):
+                self.update_archived(run)
+            else:
+                run.save()
             updated += 1
             patches[run.run_id] = {"cost_usd": cost, "usage": usage, "model": model}
         if events is not None:

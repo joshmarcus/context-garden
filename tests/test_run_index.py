@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from garden.runs import RunStore
+import pytest
+
+from garden.runs import HistoryUnavailable, RunStore
 
 
 def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
@@ -27,6 +31,11 @@ def test_shared_index_coalesces_concurrent_history_reads(tmp_path: Path):
 
     assert sizes == [200] * 24
     assert rs.scan_count - before == 1
+
+    reads = rs.read_count
+    time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
+    assert len(rs.all_runs()) == 200
+    assert rs.read_count == reads, "cache expiry must not re-read unchanged run records"
 
 
 def test_run_save_invalidates_index_and_results_are_isolated(tmp_path: Path):
@@ -79,6 +88,8 @@ def test_archive_health_reports_missing_or_corrupt_index(tmp_path: Path):
     assert "missing" in rs.archive_health()
     (rs.archive_dir / "index.json").write_text("not json")
     assert "unreadable" in rs.archive_health()
+    with pytest.raises(HistoryUnavailable, match="unreadable"):
+        rs.totals()
 
 
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
@@ -93,3 +104,25 @@ def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
     else:
         raise AssertionError("corrupt archived history was silently omitted")
     assert not (rs.archive_dir / "index.json").exists()
+
+
+def test_archived_cost_backfill_updates_manifest_and_fresh_store(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "20260101T000000Z-work", 1.0)
+    run.harness = "codex"
+    run.save()
+    (run.path / "stdout.json").write_text("usage")
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+
+    class Harness:
+        def parse(self, *_args, **_kwargs):
+            return {"usage": {"input_tokens": 5}, "cost_usd": 4.5, "model": "fixed"}
+
+    class Config:
+        def harness(self, _name):
+            return Harness()
+
+    assert rs.backfill_codex_costs(Config()) == 1
+    manifest = json.loads((rs.archive_dir / "index.json").read_text())
+    assert manifest["runs"][0]["cost_usd"] == 4.5
+    assert RunStore(tmp_path).totals()["cost_usd"] == 4.5
