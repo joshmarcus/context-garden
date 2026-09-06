@@ -123,8 +123,11 @@ def test_failed_edit_does_not_loop_forever(sched, monkeypatch):
         sched.tick()
     edits = [r for r in sched.runs.runs_for("DM-001") if r.mode == "edit"]
     assert len(edits) == sched.EDIT_MAX_ATTEMPTS  # capped, not endless
-    # once the cap is hit the work run is allowed through despite the pending suggestion
-    assert sched.store.task("DM-001").status == Status.RUNNING
+    # The second lost edit run is an auxiliary stop, not permission to discard the suggestion
+    # and start the task's work from scratch.
+    task = sched.store.task("DM-001")
+    assert task.status == Status.READY
+    assert sched.state.get(task.id)["needs_human"]["kind"] == "edit_failed"
 
 
 def test_suggestion_on_running_task_waits_and_rides_revise(sched, fake_github, monkeypatch):

@@ -116,7 +116,7 @@ def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     exactly like the review path — it does not leave the task queued-but-skipped."""
     # A branch-owned failure (passes at the base, where worker-output.txt does not exist, so the
     # CG-131 base probe does not divert it) that still fails once the revision cap is reached.
-    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt"}], "ci": []}
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt || { echo check-failed; exit 1; }"}], "ci": []}
     sched.cfg.data["max_revisions"] = 2
     sched.tick()
     sched.state.get("DM-001")["revisions"] = 2  # pretend two revise rounds were already used
@@ -304,6 +304,74 @@ def test_noresult_retries(sched, monkeypatch):
     sched.tick()
     rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
+
+
+def test_failed_rebase_retries_then_parks_without_restarting_work(sched, monkeypatch):
+    """CG-330: a lost conflict-resolution run belongs to its open PR, not a new work round."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.test/acme/widget/pull/7"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"rebase_pending": True, "rebase_base": "main", "rebase_files": ["widget.py"]})
+    sched.state.save()
+    sched.dispatch(task, mode="rebase")
+
+    rep = sched.tick()
+    assert "DM-001(rebase)" in rep.dispatched
+    assert "DM-001(work)" not in rep.dispatched
+    assert task.attempts == 0
+    assert task.pr.endswith("/7")
+
+    rep = sched.tick()
+    task = sched.store.task("DM-001")
+    stop = sched.state.get(task.id)["needs_human"]
+    assert task.status == Status.IN_REVIEW and task.pr.endswith("/7")
+    assert task.attempts == 0
+    assert stop["kind"] == "rebase_failed" and "rebase conflict" in stop["reason"]
+    assert not any(item.startswith("DM-001(work)") for item in rep.dispatched)
+    assert "rebase run" in task.body and "will retry" in task.body
+
+
+def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
+    """CG-330: no-output checks retry their detached continuation, never a revise run."""
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/acme/widget/pull/7"
+    sched.store.save(task)
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), task.default_branch(), "main")
+    specs = [{"name": "unit", "command": "kill -TERM $$"}]
+    cont = sched._pre_pr_cont(None, wt, task.default_branch(), "main", "")
+    sched._dispatch_check_run(task, worktree=wt, branch=task.default_branch(), base="main", specs=specs,
+                              stage="merge_rebase", cont=cont, rep=TickReport())
+
+    rep = sched.tick(dispatch=False)
+    assert "DM-001(check:merge_rebase)" in rep.dispatched
+    assert sched.state.get(task.id).get("revisions", 0) == 0
+    assert not sched.state.get(task.id).get("pending_feedback")
+
+    sched.tick(dispatch=False)
+    task = sched.store.task("DM-001")
+    stop = sched.state.get(task.id)["needs_human"]
+    assert task.status == Status.IN_REVIEW
+    assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
+    assert sched.state.get(task.id).get("revisions", 0) == 0
+
+
+def test_auxiliary_reapers_do_not_dispatch_work_directly():
+    """CG-330: only the work/revise reap path may put a task back on the work queue."""
+    import inspect
+
+    from garden.scheduler.checkruns import CheckRunMixin
+    from garden.scheduler.edits import EditsMixin
+    from garden.scheduler.reap import ReapMixin
+
+    assert "Status.READY" not in inspect.getsource(ReapMixin._retry_or_park_rebase)
+    assert "dispatch(task, mode=\"work\")" not in inspect.getsource(CheckRunMixin._retry_or_park_check)
+    assert "dispatch(task, mode=\"work\")" not in inspect.getsource(EditsMixin.reap_edit)
 
 
 def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
