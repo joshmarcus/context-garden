@@ -7,733 +7,6 @@
   },
   "events": [
     {
-      "at": "2026-09-05T20:11:59+00:00",
-      "cost_usd": 0.5153176,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T200728Z-review",
-      "status": "request_changes",
-      "task": "CG-231",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:11:59+00:00",
-      "blocking": 1,
-      "criteria_met": 1,
-      "criteria_total": 1,
-      "description_ok": true,
-      "kind": "review",
-      "run": "20260905T200728Z-review",
-      "summary": "The --wait loop's shape is correct, but --interval 0 is silently coerced to the 60s config default, making the new test actually sleep 60 real seconds and leaving no way to request a zero-delay poll.",
-      "task": "CG-231",
-      "verdict": "request_changes"
-    },
-    {
-      "at": "2026-09-05T20:12:00+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "automated review requested changes: The --wait loop's shape is correct, but --interval 0 is silently coerced to the 60s config default, making the new test actually sleep 60 real seconds and leaving no way to request a zero-delay poll. cost=$0.52",
-      "task": "CG-231",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:12:19+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T201219Z-revise",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:12:19+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260905T201219Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~17989 tokens)",
-      "task": "CG-231",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:13:27+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T201030Z-check",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:13:27+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:13:27+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:13:29+00:00",
-      "base": "main",
-      "draft": false,
-      "kind": "pr_opened",
-      "pr": "https:<path>",
-      "stacked_on": "",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:13:29+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "opened https:<path> (base main): garden trial --again now resets a task cleanly: it closes (or, with --keep-prs, leaves open) the previous contenders' PRs, deletes their remote branches, drops their worktrees, and clears the task's cached PR/review state before starting new contenders named from the task's default branch rather than the last winner's; the trials and task pages show every past trial for a task with closed contenders marked. cost=$4.72",
-      "task": "CG-232",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:13:29+00:00",
-      "items": 2,
-      "kind": "friction",
-      "phase": "context-garden/phase-04",
-      "run": "20260905T194814Z-work",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:13:30+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201330Z-review",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:14:59+00:00",
-      "cost_usd": 0.37465639999999995,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201219Z-revise",
-      "status": "done",
-      "task": "CG-231",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:15:00+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T201500Z-check",
-      "stage": "pre_pr",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:15:23+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "re-enabled by hand; revise run will follow",
-      "task": "CG-212",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:16:49+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T201649Z-revise",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:16:49+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260905T201649Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~21006 tokens)",
-      "task": "CG-212",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:17:57+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T201500Z-check",
-      "status": "done",
-      "task": "CG-231",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:17:57+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:17:57+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:17:58+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "pushed revision to https:<path> Fixed the reviewer's blocking finding: `--interval 0` no longer gets silently coerced to the 60s config default, since `interval` now defaults to `None` and only falls back to config when genuinely unset. Full test suite and lint pass. cost=$0.37",
-      "task": "CG-231",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:17:59+00:00",
-      "items": 1,
-      "kind": "friction",
-      "phase": "context-garden/phase-04",
-      "run": "20260905T201219Z-revise",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:18:00+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201800Z-review",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:18:00+00:00",
-      "cost_usd": 0.5485410000000001,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T201330Z-review",
-      "status": "request_changes",
-      "task": "CG-232",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:18:00+00:00",
-      "blocking": 1,
-      "criteria_met": 3,
-      "criteria_total": 4,
-      "description_ok": true,
-      "kind": "review",
-      "run": "20260905T201330Z-review",
-      "summary": "The --again reset itself is correct (verified live: branches renamed from base, PRs closed, state cleared), but the new trial-history view can display a closed PR as still open because closing a previously-open winner's PR during --again is never reflected back into the append-only trials.jsonl record.",
-      "task": "CG-232",
-      "verdict": "request_changes"
-    },
-    {
-      "at": "2026-09-05T20:18:01+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "automated review requested changes: The --again reset itself is correct (verified live: branches renamed from base, PRs closed, state cleared), but the new trial-history view can display a closed PR as still open because closing a previously-open winner's PR during --again is never reflected back into the append-only trials.jsonl record. cost=$0.55",
-      "task": "CG-232",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:18:21+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T201821Z-revise",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:18:21+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260905T201821Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~10700 tokens)",
-      "task": "CG-232",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:22:28+00:00",
-      "cost_usd": 0.3946978,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T201800Z-review",
-      "status": "approve",
-      "task": "CG-231",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:22:28+00:00",
-      "blocking": 0,
-      "criteria_met": 1,
-      "criteria_total": 1,
-      "description_ok": true,
-      "kind": "review",
-      "run": "20260905T201800Z-review",
-      "summary": "garden trial --wait correctly polls until the trial concludes and prints the resolved table; tests and lint pass, description is clean.",
-      "task": "CG-231",
-      "verdict": "approve"
-    },
-    {
-      "at": "2026-09-05T20:22:29+00:00",
-      "cost_usd": 0.5875680000000001,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201821Z-revise",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:22:30+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T202230Z-check",
-      "stage": "pre_pr",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:22:38+00:00",
-      "kind": "automerged",
-      "method": "merge",
-      "pr": "https:<path>",
-      "review_rounds": 2,
-      "review_run": "20260905T201800Z-review",
-      "task": "CG-231",
-      "verdict": "approve"
-    },
-    {
-      "at": "2026-09-05T20:24:04+00:00",
-      "cost_usd": 1.4922369999999998,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201649Z-revise",
-      "status": "done",
-      "task": "CG-212",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:24:05+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T202405Z-check",
-      "stage": "pre_pr",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:24:07+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "PR merged by the garden: https:<path>",
-      "task": "CG-231",
-      "to": "done"
-    },
-    {
-      "at": "2026-09-05T20:25:33+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T202230Z-check",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:25:33+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:25:33+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:25:34+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "pushed revision to https:<path> Addressed the review's blocking finding: --again's PR closes now reflect back into the already-written trials.jsonl record via a new TrialLog.mark_closed, so trial-history views never show a PR as open after --again has closed it. cost=$0.59",
-      "task": "CG-232",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:25:36+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T202536Z-review",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:25:39+00:00",
-      "base": "main",
-      "files": [
-        "src/garden/cli/loop.py"
-      ],
-      "how": "agent",
-      "kind": "rebase",
-      "resolved": false,
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:25:39+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/cli/loop.py); a rebase agent will resolve it",
-      "task": "CG-232",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:25:55+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "rebase",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T202555Z-rebase",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:25:55+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched rebase run 20260905T202555Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~9795 tokens)",
-      "task": "CG-232",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:27:03+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T202405Z-check",
-      "status": "done",
-      "task": "CG-212",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:27:03+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:27:03+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:27:05+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "pushed revision to https:<path> Fixed the reviewer's blocking finding: a quota env_error during an after-rebase (count_round=False) review round was unconditionally decrementing review_rounds and requeuing as count_round=True, wrongly charging an exempt round against review.max_rounds on retry. Snapshotted count_round on the run so the env_error handler only gives back a round that was actually counted, and requeues with the same exemption. cost=$1.49",
-      "task": "CG-212",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:27:06+00:00",
-      "items": 1,
-      "kind": "friction",
-      "phase": "context-garden/phase-04",
-      "run": "20260905T201649Z-revise",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:27:06+00:00",
-      "kind": "needs_human",
-      "reason": "4 automated review round(s) used; this PR is yours",
-      "stop_kind": "review_cap",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:27:06+00:00",
-      "cost_usd": 0.222514,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "rebase",
-      "model": "claude-sonnet-5",
-      "run": "20260905T202555Z-rebase",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:27:07+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T202707Z-check",
-      "stage": "pre_pr",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:28:48+00:00",
-      "by": "human",
-      "decision": "changes",
-      "kind": "triaged",
-      "note": "CI fails on the PR's merge with main: tests/test_extras.py::test_trial_login_failure_reuses_the_harness_env_classifier (from CG-229, merged after this branch was cut) expects the transition 'DM-001 ->",
-      "pr": "https:<path>",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:28:48+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "triage: changes requested by hand: CI fails on the PR's merge with main: tests/test_extras.py::test_trial_login_failure_reuses_the_harness_env_classifier (",
-      "task": "CG-212",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:30:06+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T202707Z-check",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:30:06+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:30:06+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:30:07+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "pushed revision to https:<path> Rebased onto origin/main; resolved the single conflict in src/garden/cli/loop.py's trial() signature by keeping both sides' new options (--wait/--interval from main's CG-231, --again/--keep-prs from this branch) rather than letting one clobber the other. Rebase completed cleanly, no other files touched. cost=$0.22",
-      "task": "CG-232",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:30:07+00:00",
-      "kind": "rebase",
-      "patch_id_after": "",
-      "patch_id_before": "",
-      "run": "20260905T202555Z-rebase",
-      "task": "CG-232",
-      "verdict_kept": false
-    },
-    {
-      "at": "2026-09-05T20:30:07+00:00",
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T202536Z-review",
-      "status": "superseded",
-      "task": "CG-232",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:30:08+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T203008Z-review",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:30:30+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T203030Z-revise",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:30:30+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260905T203030Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~21533 tokens)",
-      "task": "CG-212",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:30:45+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T203030Z-work",
-      "task": "CG-233"
-    },
-    {
-      "at": "2026-09-05T20:30:45+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260905T203030Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~26792 tokens)",
-      "task": "CG-233",
-      "to": "running"
-    },
-    {
       "at": "2026-09-05T20:34:49+00:00",
       "cost_usd": 0.3478172,
       "kind": "run_finished",
@@ -29792,6 +29065,619 @@
       "model": "gpt-5.6-sol",
       "run": "20260906T201032Z-review",
       "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:10:38+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "resumed": false,
+      "run": "20260906T201037Z-revise",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:10:38+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260906T201037Z-revise via local [codex model=gpt-5.6-terra] (fresh session, base main, rebase round 6 (not counted), ~10974 tokens)",
+      "task": "CG-293",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:10:40+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "resumed": false,
+      "run": "20260906T201038Z-revise",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T20:10:40+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260906T201038Z-revise via local [codex model=gpt-5.6-sol] (fresh session, base main, ~10327 tokens)",
+      "task": "CG-338",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:10:49+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR236 merged after current-head CI and removal of unrelated snapshot; auxiliary retry semantics reviewed and passed.",
+      "task": "CG-330",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-06T20:11:34+00:00",
+      "kind": "resumed",
+      "reason": "review finding repeated after a revise round: ui captures not read for: board, board-list, config, events, herbarium, inbox, n",
+      "stop_kind": "stall",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:11:34+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "nothing to fix; resumed to in review by hand",
+      "task": "CG-337",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T20:11:34+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "reset to ready by hand",
+      "task": "CG-338",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-06T20:11:35+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "Operator safety hold until CG-338 shared admission and descendant ownership land: removing check/edit slot gates without their own bound risks the observed suite contention. Preserve PR233, revisit when CG-338 is verified. Correctness tests approved; not a request to redo worker-slot implementation.",
+      "task": "CG-329",
+      "to": "draft"
+    },
+    {
+      "at": "2026-09-06T20:11:45+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/scheduler/checkruns.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:11:45+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/scheduler/checkruns.py); a rebase agent will resolve it",
+      "task": "CG-337",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:11:48+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "gpt-5.6-luna",
+      "resumed": false,
+      "run": "20260906T201146Z-rebase",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:11:48+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260906T201146Z-rebase via local [codex model=gpt-5.6-luna] (fresh session, base main, conflict only; easy tier, ~8517 tokens)",
+      "task": "CG-337",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:11:54+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "Reconciled to existing active revision; automatic dispatch had started before operator retry. Preserve existing run, do not duplicate.",
+      "task": "CG-338",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:12:22+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "Operator retry raced automatic revision startup and cancelled run201038. Verified cancelled PID20418 absent; no live replacement yet. Return ready for exactly one replacement; preserve worktree/transcript. Previous running reconciliation was incorrect and is superseded.",
+      "task": "CG-338",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-06T20:12:50+00:00",
+      "cost_usd": 0.00956008,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "gpt-5.6-luna",
+      "run": "20260906T201146Z-rebase",
+      "status": "done",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:12:53+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T201252Z-check",
+      "stage": "pre_pr",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:12:53+00:00",
+      "cost_usd": 0.2846128,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T201032Z-review",
+      "status": "approve",
+      "task": "CG-343",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:12:53+00:00",
+      "blocking": 0,
+      "criteria_met": 3,
+      "criteria_total": 3,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260906T201032Z-review",
+      "summary": "The change correctly reconciles completed review runs across ready, running, and terminal task states while preventing stale-head verdict application and duplicate accounting. The five-file diff is scoped, focused tests pass (48 passed), and the PR description clearly captures the outcome and verification.",
+      "task": "CG-343",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-06T20:13:01+00:00",
+      "cost_usd": 0.0,
+      "how": "mechanical",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "run": "20260906T201300Z-rebase",
+      "status": "done",
+      "task": "CG-343",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:13:01+00:00",
+      "base": "main",
+      "files": [],
+      "how": "mechanical",
+      "kind": "rebase",
+      "resolved": true,
+      "run": "20260906T201300Z-rebase",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:13:01+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T201301Z-check",
+      "stage": "merge_rebase",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:14:03+00:00",
+      "cost_usd": 7.000533600000001,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T193955Z-work",
+      "status": "done",
+      "task": "CG-358",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:14:05+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T201405Z-check",
+      "stage": "pre_pr",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:27:15+00:00",
+      "cost_usd": 0.8759796,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T201037Z-revise",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:27:17+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T202717Z-check",
+      "stage": "pre_pr",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:27:17+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T201252Z-check",
+      "status": "done",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:27:17+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:27:17+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:27:17+00:00",
+      "kind": "check",
+      "name": "ui",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "HTML-only capture; Chromium would not launch after automatic preparation (BrowserType.launch: Target page, context or browser has been closed\nBrowser logs:\n\n<launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n<launched> pid=358788\n[pid=358788][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\nCall log:\n  - <launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n  - <launched> pid=358788\n  - [pid=358788][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\n  - [pid=358788] <gracefully close start>\n  - [pid=358788] <kill>\n  - [pid=358788] <will force kill>\n  - [pid=358788] exception while trying to kill process: Error: kill ESRCH\n  - [pid=358788] <process did exit: exitCode=127, signal=null>\n  - [pid=358788] starting temporary directories cleanup\n  - [pid=358788] finished temporary directories cleanup\n  - [pid=358788] <gracefully close end>\n); install its system libraries.",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:27:18+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "pushed revision to https:<path> Rebased CG-337 onto origin/main and resolved the check-run state conflict without other changes cost=$0.01",
+      "task": "CG-337",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T20:27:19+00:00",
+      "kind": "rebase",
+      "patch_id_after": "",
+      "patch_id_before": "",
+      "run": "20260906T201146Z-rebase",
+      "task": "CG-337",
+      "verdict_kept": false
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T202720Z-review",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T201301Z-check",
+      "status": "done",
+      "task": "CG-343",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "kind": "rebase",
+      "patch_id_after": "05f58d235a8bb0b59ad174516bd497577d083dda",
+      "patch_id_before": "05f58d235a8bb0b59ad174516bd497577d083dda",
+      "run": "20260906T201300Z-rebase",
+      "task": "CG-343",
+      "verdict_kept": true
+    },
+    {
+      "at": "2026-09-06T20:27:20+00:00",
+      "kind": "merge_head",
+      "reason": "rebased; awaiting rollup",
+      "task": "CG-343",
+      "waiting": true
+    },
+    {
+      "at": "2026-09-06T20:27:34+00:00",
+      "kind": "automerged",
+      "method": "merge",
+      "pr": "https:<path>",
+      "review_rounds": 2,
+      "review_run": "20260906T201032Z-review",
+      "task": "CG-343",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-06T20:27:37+00:00",
+      "kind": "stashed",
+      "name": "garden:CG-338:2026-09-06T20:27:36+00:00",
+      "sha": "b42c294b945c6425addfcc615d54c152de280a64",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T20:27:40+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-sol",
+      "resumed": false,
+      "run": "20260906T202735Z-work",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T20:27:40+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T202735Z-work via local [codex model=gpt-5.6-sol] (fresh session, base main, ~9832 tokens)",
+      "task": "CG-338",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:28:56+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T201405Z-check",
+      "status": "done",
+      "task": "CG-358",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:28:56+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:28:56+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:28:56+00:00",
+      "kind": "check",
+      "name": "ui",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "HTML-only capture; Chromium would not launch after automatic preparation (BrowserType.launch: Target page, context or browser has been closed\nBrowser logs:\n\n<launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n<launched> pid=384002\n[pid=384002][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\nCall log:\n  - <launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n  - <launched> pid=384002\n  - [pid=384002][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\n  - [pid=384002] <gracefully close start>\n  - [pid=384002] <kill>\n  - [pid=384002] <will force kill>\n  - [pid=384002] exception while trying to kill process: Error: kill ESRCH\n  - [pid=384002] <process did exit: exitCode=127, signal=null>\n  - [pid=384002] starting temporary directories cleanup\n  - [pid=384002] finished temporary directories cleanup\n  - [pid=384002] <gracefully close end>\n); install its system libraries.",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:28:59+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:28:59+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Incident controls now remain responsive independently of expensive task/history reads, while recovery launches expose durable lifecycle identity and deduplicate retries. Interrupted preparation is reconciled once, including setup children that survive a server restart. cost=$7.00",
+      "task": "CG-358",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T20:29:00+00:00",
+      "items": 1,
+      "kind": "friction",
+      "phase": "context-garden/phase-05",
+      "run": "20260906T193955Z-work",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:29:02+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged by the garden: https:<path>",
+      "task": "CG-343",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-06T20:29:27+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-luna",
+      "resumed": false,
+      "run": "20260906T202905Z-work",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:29:27+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T202905Z-work via local [codex model=gpt-5.6-luna] (fresh session, base main, ~13526 tokens)",
+      "task": "CG-322",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:30:28+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T202717Z-check",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:30:28+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "fail",
+      "summary": "exit 1",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:30:28+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:30:29+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T203029Z-check",
+      "stage": "base_probe",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:30:29+00:00",
+      "cost_usd": 0.4065736,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T202720Z-review",
+      "status": "request_changes",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:30:29+00:00",
+      "blocking": 2,
+      "criteria_met": 4,
+      "criteria_total": 4,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260906T202720Z-review",
+      "summary": "The requested behavior and UI evidence are present and targeted checks pass, but the PR still replaces an unrelated generated runtime snapshot with roughly 69,000 changed lines.",
+      "task": "CG-337",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T20:30:30+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "automated review requested changes: The requested behavior and UI evidence are present and targeted checks pass, but the PR still replaces an unrelated generated runtime snapshot with roughly 69,000 changed lines. cost=$0.41",
+      "task": "CG-337",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:30:34+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203034Z-review",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:31:34+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T203029Z-check",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:31:34+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "base_probe",
+      "status": "fail",
+      "summary": "exit 127",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:31:34+00:00",
+      "base": "40fc26107ed27499877be1fa8706d26b37206788",
+      "checks": "test",
+      "kind": "check_base",
+      "moved": true,
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:31:36+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "pre-PR checks failed (test); no PR opened yet; revise run will fix cost=$0.88",
+      "task": "CG-293",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:31:36+00:00",
+      "cost_usd": 0.02139444,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "gpt-5.6-luna",
+      "run": "20260906T202905Z-work",
+      "status": "done",
+      "task": "CG-322",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:31:38+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T203138Z-check",
+      "stage": "pre_pr",
+      "task": "CG-322"
     }
   ],
   "metrics": {
@@ -29800,57 +29686,57 @@
         "accepted": 104,
         "accepted_cost_usd": 492.8325,
         "avg_lead_hours": 1.45,
-        "avg_revisions": 0.81,
+        "avg_revisions": 0.8,
         "cost_per_accepted_task": 4.7388,
-        "cost_usd": 498.1679,
+        "cost_usd": 498.1893,
         "criteria_met": 81,
         "criteria_rate": 0.86,
         "criteria_total": 94,
         "done": 104,
         "first_pass_approve": 80,
         "first_pass_rate": 0.81,
-        "mean_cost_usd": 0.8976,
+        "mean_cost_usd": 0.8944,
         "reviewed": 99,
         "revisions": 92,
-        "runs": 555,
-        "tasks": 114
+        "runs": 557,
+        "tasks": 115
       },
       "hard": {
         "accepted": 16,
         "accepted_cost_usd": 348.7418,
         "avg_lead_hours": 3.65,
-        "avg_revisions": 1.41,
+        "avg_revisions": 1.45,
         "cost_per_accepted_task": 21.7964,
-        "cost_usd": 379.8535,
+        "cost_usd": 387.2701,
         "criteria_met": 46,
         "criteria_rate": 0.57,
         "criteria_total": 81,
         "done": 16,
         "first_pass_approve": 8,
         "first_pass_rate": 0.42,
-        "mean_cost_usd": 2.2085,
+        "mean_cost_usd": 2.1635,
         "reviewed": 19,
-        "revisions": 31,
-        "runs": 172,
+        "revisions": 32,
+        "runs": 179,
         "tasks": 22
       },
       "medium": {
-        "accepted": 87,
-        "accepted_cost_usd": 718.3504,
-        "avg_lead_hours": 2.43,
-        "avg_revisions": 1.01,
-        "cost_per_accepted_task": 8.2569,
-        "cost_usd": 758.8887,
+        "accepted": 89,
+        "accepted_cost_usd": 723.2768,
+        "avg_lead_hours": 2.48,
+        "avg_revisions": 1.02,
+        "cost_per_accepted_task": 8.1267,
+        "cost_usd": 760.0492,
         "criteria_met": 117,
         "criteria_rate": 0.87,
         "criteria_total": 135,
-        "done": 87,
+        "done": 89,
         "first_pass_approve": 58,
         "first_pass_rate": 0.66,
-        "mean_cost_usd": 1.0749,
+        "mean_cost_usd": 1.0705,
         "reviewed": 88,
-        "revisions": 102,
-        "runs": 706,
+        "revisions": 103,
+        "runs": 710,
         "tasks": 101
       }
     },
@@ -29965,10 +29851,10 @@
               },
               "gpt-5.6-terra": {
                 "best": false,
-                "n": 14,
-                "rank": 0.286,
+                "n": 16,
+                "rank": 0.242,
                 "thin": false,
-                "value": 5.496,
+                "value": 5.117,
                 "worst": false
               },
               "sonnet": {
@@ -30127,10 +30013,10 @@
               },
               "gpt-5.6-luna": {
                 "best": true,
-                "n": 35,
+                "n": 36,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.06,
+                "value": 0.059,
                 "worst": false
               },
               "haiku": {
@@ -30144,7 +30030,7 @@
               "sonnet": {
                 "best": false,
                 "n": 13,
-                "rank": 0.448,
+                "rank": 0.449,
                 "thin": false,
                 "value": 1.06,
                 "worst": false
@@ -30154,7 +30040,7 @@
               "claude-fable-5-1": {
                 "best": false,
                 "n": 18,
-                "rank": 0.945,
+                "rank": 0.944,
                 "thin": false,
                 "value": 8.355,
                 "worst": false
@@ -30162,7 +30048,7 @@
               "claude-opus-4-8": {
                 "best": false,
                 "n": 2,
-                "rank": 0.642,
+                "rank": 0.631,
                 "thin": true,
                 "value": 6.243,
                 "worst": false
@@ -30185,10 +30071,10 @@
               },
               "gpt-5.6-sol": {
                 "best": true,
-                "n": 25,
+                "n": 26,
                 "rank": 0.0,
                 "thin": false,
-                "value": 1.775,
+                "value": 1.976,
                 "worst": false
               },
               "gpt-6-astra": {
@@ -30202,7 +30088,7 @@
               "sonnet": {
                 "best": false,
                 "n": 1,
-                "rank": 0.217,
+                "rank": 0.193,
                 "thin": true,
                 "value": 3.282,
                 "worst": false
@@ -30235,10 +30121,10 @@
               },
               "gpt-5.6-terra": {
                 "best": true,
-                "n": 68,
+                "n": 69,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.901,
+                "value": 0.9,
                 "worst": false
               },
               "sonnet": {
@@ -30339,7 +30225,7 @@
               "claude-fable-5-1": {
                 "best": false,
                 "n": 1,
-                "rank": 0.447,
+                "rank": 0.48,
                 "thin": true,
                 "value": 1.0,
                 "worst": false
@@ -30347,7 +30233,7 @@
               "claude-opus-4-8": {
                 "best": false,
                 "n": 46,
-                "rank": 0.264,
+                "rank": 0.283,
                 "thin": false,
                 "value": 0.739,
                 "worst": false
@@ -30355,17 +30241,17 @@
               "claude-sonnet-5": {
                 "best": false,
                 "n": 15,
-                "rank": 0.729,
+                "rank": 0.782,
                 "thin": false,
                 "value": 1.4,
                 "worst": false
               },
               "gpt-5.6-terra": {
                 "best": false,
-                "n": 14,
+                "n": 16,
                 "rank": 1.0,
                 "thin": false,
-                "value": 1.786,
+                "value": 1.688,
                 "worst": true
               },
               "sonnet": {
@@ -30489,7 +30375,7 @@
               },
               "gpt-5.6-terra": {
                 "best": false,
-                "n": 14,
+                "n": 16,
                 "rank": 1.0,
                 "thin": false,
                 "value": 4.642,
@@ -30536,16 +30422,16 @@
         "tasks": 179
       },
       "codex": {
-        "accepted": 28,
-        "accepted_cost_usd": 228.2811,
-        "cost_per_accepted_task": 8.1529,
-        "cost_usd": 203.9683,
+        "accepted": 30,
+        "accepted_cost_usd": 233.2075,
+        "cost_per_accepted_task": 7.7736,
+        "cost_usd": 211.8757,
         "first_pass_approve": 4,
         "first_pass_rate": 0.11,
-        "mean_cost_usd": 1.2992,
+        "mean_cost_usd": 1.316,
         "reviewed": 36,
-        "runs": 157,
-        "tasks": 46
+        "runs": 161,
+        "tasks": 47
       },
       "human": {
         "accepted": 9,
@@ -30563,12 +30449,12 @@
         "accepted": 7,
         "accepted_cost_usd": 94.4228,
         "cost_per_accepted_task": 13.489,
-        "cost_usd": 297.9295,
+        "cost_usd": 298.6207,
         "first_pass_approve": 4,
         "first_pass_rate": 0.57,
-        "mean_cost_usd": 0.3159,
+        "mean_cost_usd": 0.314,
         "reviewed": 7,
-        "runs": 943,
+        "runs": 951,
         "tasks": 7
       }
     },
@@ -30625,36 +30511,36 @@
         "accepted": 5,
         "accepted_cost_usd": 8.9752,
         "cost_per_accepted_task": 1.795,
-        "cost_usd": 2.2637,
+        "cost_usd": 2.2947,
         "first_pass_approve": 1,
         "first_pass_rate": 0.17,
-        "mean_cost_usd": 0.0503,
+        "mean_cost_usd": 0.0488,
         "reviewed": 6,
-        "runs": 45,
-        "tasks": 8
+        "runs": 47,
+        "tasks": 9
       },
       "gpt-5.6-sol": {
         "accepted": 4,
         "accepted_cost_usd": 26.3994,
         "cost_per_accepted_task": 6.5998,
-        "cost_usd": 44.3799,
+        "cost_usd": 51.3804,
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
-        "mean_cost_usd": 1.7752,
+        "mean_cost_usd": 1.9762,
         "reviewed": 7,
-        "runs": 25,
+        "runs": 26,
         "tasks": 9
       },
       "gpt-5.6-terra": {
-        "accepted": 15,
-        "accepted_cost_usd": 91.51,
-        "cost_per_accepted_task": 6.1007,
-        "cost_usd": 61.235,
+        "accepted": 17,
+        "accepted_cost_usd": 96.4364,
+        "cost_per_accepted_task": 5.6727,
+        "cost_usd": 62.111,
         "first_pass_approve": 1,
         "first_pass_rate": 0.05,
-        "mean_cost_usd": 0.9005,
+        "mean_cost_usd": 0.9002,
         "reviewed": 19,
-        "runs": 68,
+        "runs": 69,
         "tasks": 25
       },
       "gpt-6-astra": {
@@ -30697,12 +30583,12 @@
         "accepted": 18,
         "accepted_cost_usd": 104.0721,
         "cost_per_accepted_task": 5.7818,
-        "cost_usd": 297.9295,
+        "cost_usd": 298.6207,
         "first_pass_approve": 12,
         "first_pass_rate": 0.71,
-        "mean_cost_usd": 0.3094,
+        "mean_cost_usd": 0.3075,
         "reviewed": 17,
-        "runs": 963,
+        "runs": 971,
         "tasks": 19
       }
     },
@@ -30909,17 +30795,18 @@
         "CG-320": "2026-09-06T11:57:36+00:00",
         "CG-321": "2026-09-06T12:44:10+00:00",
         "CG-324": "2026-09-06T17:40:13+00:00",
-        "CG-342": "2026-09-06T16:30:53+00:00"
+        "CG-342": "2026-09-06T16:30:53+00:00",
+        "CG-343": "2026-09-06T20:29:02+00:00"
       },
-      "accepted_count": 202,
+      "accepted_count": 203,
       "first_pass": {
         "direction": "higher",
         "missing": 11,
-        "n": 191,
+        "n": 192,
         "rank": "",
         "shade": 0.0,
         "unit": "%",
-        "value": 75.39267015706807
+        "value": 75.0
       },
       "metrics": {
         "first_pass": {
@@ -31173,11 +31060,11 @@
               "gpt-5.6-terra": {
                 "direction": "higher",
                 "missing": 0,
-                "n": 13,
+                "n": 14,
                 "rank": "",
-                "shade": -0.8188034188034188,
+                "shade": -0.8317460317460317,
                 "unit": "%",
-                "value": 7.6923076923076925
+                "value": 7.142857142857143
               },
               "gpt-6-astra": {
                 "direction": "higher",
@@ -31468,11 +31355,11 @@
               "gpt-5.6-terra": {
                 "direction": "lower",
                 "missing": 0,
-                "n": 13,
+                "n": 14,
                 "rank": "",
-                "shade": -0.8867291040819933,
+                "shade": -0.4761441950874712,
                 "unit": "seconds",
-                "value": 12560.0
+                "value": 10236.5
               },
               "gpt-6-astra": {
                 "direction": "lower",
@@ -31763,11 +31650,11 @@
               "gpt-5.6-terra": {
                 "direction": "lower",
                 "missing": 0,
-                "n": 13,
+                "n": 14,
                 "rank": "",
-                "shade": -0.7894736842105265,
+                "shade": -0.7067669172932329,
                 "unit": "rounds",
-                "value": 1.8461538461538463
+                "value": 1.7857142857142858
               },
               "gpt-6-astra": {
                 "direction": "lower",
@@ -32054,11 +31941,11 @@
               "gpt-5.6-terra": {
                 "direction": "lower",
                 "missing": 3,
-                "n": 10,
+                "n": 11,
                 "rank": "",
-                "shade": 0.7150517680995696,
+                "shade": 0.7434596125719979,
                 "unit": "USD",
-                "value": 5.429825624
+                "value": 5.191035476363637
               },
               "gpt-6-astra": {
                 "direction": "lower",
@@ -32124,7 +32011,7 @@
                 "missing": 1,
                 "n": 91,
                 "rank": "",
-                "shade": -0.34561029526875586,
+                "shade": -0.3473230214763907,
                 "unit": "USD",
                 "value": 2.925296032967033
               },
@@ -32139,11 +32026,11 @@
               "gpt-5.6-luna": {
                 "direction": "lower",
                 "missing": 10,
-                "n": 6,
+                "n": 7,
                 "rank": "best",
                 "shade": 1.0,
                 "unit": "USD",
-                "value": 0.0985704
+                "value": 0.08754526285714286
               },
               "gpt-5.6-sol": {
                 "direction": "lower",
@@ -32174,7 +32061,7 @@
                 "missing": 0,
                 "n": 12,
                 "rank": "",
-                "shade": 0.795390318534301,
+                "shade": 0.7906912653107323,
                 "unit": "USD",
                 "value": 0.528394275
               },
@@ -32183,7 +32070,7 @@
                 "missing": 0,
                 "n": 5,
                 "rank": "",
-                "shade": 0.7036075876651777,
+                "shade": 0.6991487562657472,
                 "unit": "USD",
                 "value": 0.7212024
               },
@@ -32245,11 +32132,11 @@
               "gpt-5.6-sol": {
                 "direction": "lower",
                 "missing": 3,
-                "n": 7,
+                "n": 8,
                 "rank": "",
-                "shade": 0.6812399229513457,
+                "shade": 0.6163779664922737,
                 "unit": "USD",
-                "value": 3.2586952000000005
+                "value": 3.7264250000000003
               },
               "gpt-5.6-terra": {
                 "direction": "lower",
@@ -32409,20 +32296,20 @@
       "total_cost": {
         "direction": "lower",
         "missing": 57,
-        "n": 145,
+        "n": 146,
         "rank": "",
         "shade": 0.0,
         "unit": "USD",
-        "value": 7.031599992896552
+        "value": 7.002637897054795
       }
     },
     "rebase": {
-      "agent": 95,
-      "cost_usd": 24.9867,
-      "mechanical": 66,
-      "merges": 208,
-      "per_merge": 0.77,
-      "rebases": 161
+      "agent": 96,
+      "cost_usd": 24.9963,
+      "mechanical": 67,
+      "merges": 210,
+      "per_merge": 0.78,
+      "rebases": 163
     },
     "tasks": [
       {
@@ -36414,7 +36301,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 5.8382,
+        "cost_usd": 6.7141,
         "criteria_met": 0,
         "criteria_total": 0,
         "difficulty": "medium",
@@ -36427,8 +36314,8 @@
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 4,
-        "runs": 28,
+        "revisions": 5,
+        "runs": 31,
         "status": "changes_requested"
       },
       {
@@ -36841,6 +36728,25 @@
       },
       {
         "accepted": false,
+        "cost_usd": 0.0214,
+        "criteria_met": 0,
+        "criteria_total": 0,
+        "difficulty": "easy",
+        "first_review": "",
+        "harness": [
+          "codex"
+        ],
+        "id": "CG-322",
+        "model": [
+          "gpt-5.6-luna"
+        ],
+        "phase": "context-garden/phase-05",
+        "revisions": 0,
+        "runs": 2,
+        "status": "running"
+      },
+      {
+        "accepted": false,
         "cost_usd": 6.5652,
         "criteria_met": 0,
         "criteria_total": 0,
@@ -36914,10 +36820,10 @@
         "phase": "context-garden/phase-05",
         "revisions": 1,
         "runs": 8,
-        "status": "in_review"
+        "status": "draft"
       },
       {
-        "accepted": false,
+        "accepted": true,
         "cost_usd": 2.1233,
         "criteria_met": 3,
         "criteria_total": 3,
@@ -36927,17 +36833,18 @@
           "codex"
         ],
         "id": "CG-330",
+        "lead_hours": 8.567777777777778,
         "model": [
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
         "runs": 11,
-        "status": "in_review"
+        "status": "done"
       },
       {
         "accepted": false,
-        "cost_usd": 7.866,
+        "cost_usd": 8.2821,
         "criteria_met": 2,
         "criteria_total": 4,
         "difficulty": "hard",
@@ -36951,7 +36858,7 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 2,
-        "runs": 11,
+        "runs": 14,
         "status": "changes_requested"
       },
       {
@@ -36969,9 +36876,9 @@
           "gpt-5.6-sol"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 1,
-        "runs": 7,
-        "status": "changes_requested"
+        "revisions": 2,
+        "runs": 9,
+        "status": "running"
       },
       {
         "accepted": true,
@@ -36994,8 +36901,8 @@
         "status": "done"
       },
       {
-        "accepted": false,
-        "cost_usd": 2.5185,
+        "accepted": true,
+        "cost_usd": 2.8031,
         "criteria_met": 3,
         "criteria_total": 3,
         "difficulty": "medium",
@@ -37004,13 +36911,14 @@
           "codex"
         ],
         "id": "CG-343",
+        "lead_hours": 1.1088888888888888,
         "model": [
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 6,
-        "status": "in_review"
+        "runs": 7,
+        "status": "done"
       },
       {
         "accepted": true,
@@ -37056,7 +36964,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 0.0,
+        "cost_usd": 7.0005,
         "criteria_met": 0,
         "criteria_total": 0,
         "difficulty": "hard",
@@ -37070,8 +36978,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 1,
-        "status": "running"
+        "runs": 3,
+        "status": "in_review"
       },
       {
         "accepted": false,
@@ -37197,110 +37105,6 @@
   ],
   "queue": {},
   "runs": [
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T200728Z-review",
-      "status": "done",
-      "task": "CG-231"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T201030Z-check",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "claude",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201219Z-revise",
-      "status": "done",
-      "task": "CG-231"
-    },
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201330Z-review",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T201500Z-check",
-      "status": "done",
-      "task": "CG-231"
-    },
-    {
-      "harness": "claude",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201649Z-revise",
-      "status": "done",
-      "task": "CG-212"
-    },
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201800Z-review",
-      "status": "done",
-      "task": "CG-231"
-    },
-    {
-      "harness": "claude",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T201821Z-revise",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T202230Z-check",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T202405Z-check",
-      "status": "done",
-      "task": "CG-212"
-    },
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T202536Z-review",
-      "status": "superseded",
-      "task": "CG-232"
-    },
-    {
-      "harness": "claude",
-      "mode": "rebase",
-      "model": "claude-sonnet-5",
-      "run": "20260905T202555Z-rebase",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T202707Z-check",
-      "status": "done",
-      "task": "CG-232"
-    },
     {
       "harness": "claude",
       "mode": "review",
@@ -42362,7 +42166,7 @@
       "mode": "work",
       "model": "gpt-5.6-sol",
       "run": "20260906T193955Z-work",
-      "status": "running",
+      "status": "done",
       "task": "CG-358"
     },
     {
@@ -42458,14 +42262,126 @@
       "mode": "review",
       "model": "gpt-5.6-sol",
       "run": "20260906T201032Z-review",
-      "status": "running",
+      "status": "done",
       "task": "CG-343"
+    },
+    {
+      "harness": "codex",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T201037Z-revise",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "codex",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T201038Z-revise",
+      "status": "cancelled",
+      "task": "CG-338"
+    },
+    {
+      "harness": "codex",
+      "mode": "rebase",
+      "model": "gpt-5.6-luna",
+      "run": "20260906T201146Z-rebase",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T201252Z-check",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260906T201300Z-rebase",
+      "status": "done",
+      "task": "CG-343"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T201301Z-check",
+      "status": "done",
+      "task": "CG-343"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T201405Z-check",
+      "status": "done",
+      "task": "CG-358"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T202717Z-check",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T202720Z-review",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T202735Z-work",
+      "status": "running",
+      "task": "CG-338"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-luna",
+      "run": "20260906T202905Z-work",
+      "status": "done",
+      "task": "CG-322"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T203029Z-check",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203034Z-review",
+      "status": "running",
+      "task": "CG-358"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T203138Z-check",
+      "status": "running",
+      "task": "CG-322"
     },
     {
       "harness": "",
       "mode": "revise",
       "model": "",
-      "run": "20260906T201037Z-revise",
+      "run": "20260906T203139Z-revise",
       "status": "running",
       "task": "CG-293"
     }
@@ -44980,7 +44896,7 @@
       "id": "CG-322",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "running",
       "title": "A _TaskState written with dict.update or |= is not saved"
     },
     {
@@ -45036,7 +44952,7 @@
       "id": "CG-329",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "draft",
       "title": "The worker count the dispatcher enforces and the count the rail shows are the same number: checks, reviews and edit runs either take a slot visibly or not at all"
     },
     {
@@ -45044,7 +44960,7 @@
       "id": "CG-330",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "done",
       "title": "A failed rebase or check run never restarts a task's work from scratch: the PR stays, the rebase or check is retried, and only a failed work or revise run counts as an attempt"
     },
     {
@@ -45108,7 +45024,7 @@
       "id": "CG-338",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "changes_requested",
+      "status": "running",
       "title": "Keep the operator machine responsive under concurrent workers and test suites"
     },
     {
@@ -45148,7 +45064,7 @@
       "id": "CG-343",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "done",
       "title": "Finished reviews are reconciled even after their task leaves review states"
     },
     {
@@ -45196,7 +45112,7 @@
       "id": "CG-358",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "in_review",
       "title": "Keep incident control actions responsive and retry-safe during web overload"
     },
     {
