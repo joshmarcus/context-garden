@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import textwrap
 from pathlib import Path
@@ -48,9 +50,37 @@ def _no_ambient_garden_root(monkeypatch):
     monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
 
 
-def git(*args, cwd):
-    subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args], cwd=cwd, check=True,
-                   capture_output=True, text=True)
+def git(*args: str, cwd: Path, timeout: float = 30) -> None:
+    """Run a fixture Git command with a bounded wait and no leaked pipe holders.
+
+    Fixture repositories intentionally preserve their files after failures for pytest's
+    diagnostics.  A timed-out Git process is different: its process group can retain the
+    captured stderr pipe after Git itself exits, which otherwise leaves pytest waiting
+    indefinitely during setup.
+    """
+    command = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args]
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:  # pragma: no cover - the suite's supported CI hosts are POSIX.
+            process.terminate()
+        stdout, stderr = process.communicate()
+        raise RuntimeError(
+            f"fixture git command timed out after {timeout:.1f}s: {' '.join(command)}\n"
+            f"stderr:\n{stderr}"
+        ) from exc
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command, output=stdout, stderr=stderr)
 
 
 def write(path: Path, text: str) -> Path:
