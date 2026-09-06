@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status
+from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
 
@@ -234,6 +235,49 @@ def test_review_runs_do_not_consume_worker_slots(sched):
     sched.cfg.data["review_parallel"] = 1
     assert sched.review_parallel_limit() == 1
     assert sched.review_slots_free() == 0
+
+
+def test_checks_and_edits_do_not_consume_worker_slots(sched):
+    """The max_parallel count is the same worker-only count shown by the UI and CLI.
+    A check in flight must not prevent a ready task from taking a worker slot."""
+    check_run = sched.runs.new_run("DM-001", "local", mode="check")
+    check_run.status = "running"
+    check_run.save()
+    edit_run = sched.runs.new_run("DM-002", "local", mode="edit")
+    edit_run.status = "running"
+    edit_run.save()
+
+    assert len(sched.check_runs_active()) == 1
+    assert sched.slots_free() == 2
+    from garden.now1 import render_text, snapshot
+
+    snap = snapshot(sched.store, sched)
+    assert snap["garden"]["worker_busy"] == 0
+    assert "0 of 2 worker slots" in render_text(snap)
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
+    assert len(sched.worker_runs_active()) == 1
+    assert sched.slots_free() == 1
+
+
+def test_edit_dispatch_is_not_blocked_by_full_worker_cap(sched):
+    """An edit is slot-free, so pending suggestions are integrated even when workers are full."""
+    worker = sched.runs.new_run("DM-001", "local", mode="work")
+    worker.status = "running"
+    worker.save()
+    sched.set_override("max_parallel", 1)
+
+    task = sched.store.task("DM-002")
+    record_suggestion(sched.store, task, "cover the empty case", author="josh")
+
+    from garden.scheduler import TickReport
+
+    rep = TickReport()
+    sched.dispatch_edits(rep)
+
+    assert sched.slots_free() == 0
+    assert "DM-002(edit)" in rep.dispatched
+    assert sched.state.get("DM-002").get("edit_run")
 
 
 def test_pause_stops_dispatch(sched, fake_github):

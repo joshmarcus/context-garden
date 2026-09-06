@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from ...config import RESTART_KEYS
 from ...observe import BUILTIN_PROFILES
 from ...profiles import describe as describe_stop
-from ...scheduler import State
+from ...scheduler import WORKER_MODES, State
 from ..common import Site
 
 
@@ -57,6 +57,8 @@ def register(app: FastAPI, site: Site) -> None:
             budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS, config_hold=config_hold,
             max_parallel_file=cfg.get("max_parallel"), max_parallel_override=sched.overrides().get("max_parallel"),
             max_parallel_value=sched.effective_max_parallel(), max_parallel_source=sched.effective_source("max_parallel"),
+            worker_slot_modes=", ".join(mode for mode in ("work", "revise", "resume", "trial", "rebase")
+                                        if mode in WORKER_MODES),
             observe_profile_file=observe_cfg.get("profile") or "", observe_profile_names=profile_names,
             observe_profile_override=sched.overrides().get("observe.profile"),
             observe_profile_source=sched.effective_source("observe.profile"),
