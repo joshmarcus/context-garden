@@ -82,6 +82,10 @@ class Hub:
         self.action_lock = threading.Lock()
         self.events: list[dict[str, Any]] = []
         self.last_tick = ""
+        # What the last pass was, for a page that keeps a countdown: the Now page's stream reads
+        # this after each tick without the lock (a plain dict swapped whole, never mutated).
+        self.tick_seq = 0
+        self.tick_record: dict[str, Any] = {}
         self.watch = watch
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
@@ -111,7 +115,25 @@ class Hub:
         with self.lock:
             rep = self.scheduler().tick()
             self.last_tick = now_iso()
+            self.tick_seq += 1
+            self.tick_record = {"seq": self.tick_seq, "at": self.last_tick, "duration_s": round(rep.duration_s, 2),
+                                "summary": rep.summary(), "next_at": self.next_tick_at()}
             return rep.summary()
+
+    def tick_interval(self) -> int:
+        return int(self.store.config.get("tick_interval", 60))
+
+    def next_tick_at(self) -> str:
+        """When the watch loop's next pass starts, as ISO UTC, or '' when no loop runs."""
+        if not self.watch or not self.last_tick:
+            return ""
+        import datetime as dt
+
+        return (dt.datetime.fromisoformat(self.last_tick) + dt.timedelta(seconds=self.tick_interval())).isoformat()
+
+    def tick_state(self) -> dict[str, Any]:
+        """The last pass as a message for the Now page's stream (`seq` tells one from the next)."""
+        return {"seq": self.tick_seq, **self.tick_record, "next_at": self.next_tick_at()}
 
     def _loop(self) -> None:
         interval = int(self.store.config.get("tick_interval", 60))
@@ -178,6 +200,7 @@ class Site:
             "root": str(s.root),
             "watch": hub.watch,
             "last_tick": hub.last_tick,
+            "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": s.products(),
             "has_design": any(product_design_root(s, p.name).is_dir() for p in s.products()),
             "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},

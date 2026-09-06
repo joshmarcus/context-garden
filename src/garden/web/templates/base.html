@@ -317,14 +317,17 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .trellis .nstate { font:10px var(--mono); fill:var(--muted); letter-spacing:.04em; }
 .trellis a:hover .halo { stroke-width:1.6; }
 </style>
+{% block head %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}" data-server-now="{{ server_now|default('') }}">
 {{ DEFS|safe }}
 {{ VINE }}
 <div class="shell">
 <aside class="rail">
   <a class="wordmark" href="/">{{ mark(18) }}<span>{{ garden_name }}<small>context garden</small></span></a>
   <nav class="nav">
+    <a href="/now1" class="{{ 'on' if page == 'now1' else '' }}">Now 1</a>
+    <a href="/now2" class="{{ 'on' if page == 'now2' else '' }}">Now 2</a>
     <a href="/" class="{{ 'on' if page == 'inbox' else '' }}">Inbox <span class="count {{ 'hot' if inbox_count else '' }}">{{ inbox_count }}</span></a>
     <a href="/board" class="{{ 'on' if page == 'board' else '' }}">Board</a>
     <a href="/trellis" class="{{ 'on' if page == 'trellis' else '' }}">Trellis</a>
@@ -341,7 +344,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     {% for p in products %}{% if p.phases and not (p.phases|rejectattr('closed')|list) %}<span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">{{ p.name }} has no open phase — <code>garden new-phase</code> starts the next one</span>{% endif %}{% endfor %}
     {% if closed_count %}<a class="drawer {{ 'on' if page == 'herbarium' else '' }}" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>{{ closed_count }} closed phase{{ 's' if closed_count != 1 else '' }}</span></span></a>{% endif %}
   </div>
-  <div>
+  <div class="rail-running">
     <h4>Running now</h4>
     <div class="running-now">
       {% for r in running %}<div class="r"><span class="dot"></span><a href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.mode }}{% if r.model %} · {{ r.model }}{% endif %} · {{ r.minutes }} min{% if r.idle %} · <span class="idle">idle {{ r.idle }} min</span>{% endif %}</span></div>{% else %}<span class="faint">nothing running</span>{% endfor %}
@@ -369,7 +372,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span style="color:var(--warn)">dispatch paused{% if pause_ctrl.by %} · by {{ pause_ctrl.by }}{% endif %}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}{% endif %}{% if pause_ctrl.reason %} · {{ pause_ctrl.reason }}{% endif %}</span>
     <form method="post" action="/resume"><button class="quiet" style="color:var(--warn);border-color:var(--warn)">▶ Resume dispatch</button></form>
     {% else %}
-    <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick {{ last_tick[11:19] }}Z{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
+    <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick <span data-tick-at>{{ last_tick[11:19] }}Z</span>{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
     {% endif %}
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
@@ -390,6 +393,46 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </main>
 </div>
 <script>
+// ---- the live clock (the owner's rule, 2026-09-06 02:35Z; docs/design/now-1.md, "Live clocks"):
+// every element with data-started (a Now strip, a Board card, a task page's run row) shows how
+// long its run has been going, ticking once a second in the browser from the run's start time
+// and this page's clock, offset once against the server's (data-server-now on <body>) so the
+// figure matches the run page. data-typical (seconds) drives the scale bar and the "longer than
+// usual" words where a strip has them; data-stopped ends the count. Nothing here needs a stream.
+(function () {
+  var serverNow = Date.parse(document.body.dataset.serverNow || "");
+  var offset = isNaN(serverNow) ? 0 : serverNow - Date.now();
+  function fmt(s) {
+    s = Math.max(0, Math.floor(s));
+    var two = function (n) { return (n < 10 ? "0" : "") + n; };
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.floor(s / 60) + ":" + two(s % 60);
+    return Math.floor(s / 3600) + ":" + two(Math.floor(s % 3600 / 60)) + ":" + two(s % 60);
+  }
+  function tick() {
+    var now = Date.now() + offset;
+    document.querySelectorAll("[data-started]:not([data-stopped])").forEach(function (el) {
+      var started = Date.parse(el.dataset.started);
+      if (isNaN(started)) return;
+      var s = (now - started) / 1000;
+      var digits = el.querySelector("[data-elapsed]");
+      if (digits) digits.textContent = fmt(s);
+      var typical = parseFloat(el.dataset.typical);
+      if (!(typical > 0)) return;
+      var r = s / typical;
+      var scale = el.querySelector(".scale");
+      if (scale) {
+        scale.style.setProperty("--r", Math.min(r, 1).toFixed(3));
+        scale.style.setProperty("--o", Math.min(Math.max(r - 1, 0), 0.5).toFixed(3));
+      }
+      var longer = el.querySelector("[data-longer]");
+      if (longer) longer.hidden = r <= 1;
+    });
+  }
+  tick();
+  setInterval(tick, 1000);
+  window.gardenClock = { fmt: fmt, tick: tick, now: function () { return Date.now() + offset; } };
+})();
 document.querySelectorAll("[data-poll]").forEach(el => {
   const every = parseInt(el.dataset.every || "5000", 10);
   setInterval(async () => {
