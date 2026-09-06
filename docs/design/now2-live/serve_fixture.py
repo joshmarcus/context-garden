@@ -24,7 +24,7 @@ root.mkdir(parents=True)
 (root / 'demo/product.md').write_text('# Demo\nSynthetic capture fixture.\n')
 phase = root / 'demo/phase-05'
 (phase / 'tasks').mkdir(parents=True)
-(phase / 'goals.md').write_text('---\nplant: foxglove\n---\n# Adoption\n\n## Goals\n\n1. A second team can start a garden.\n2. Compare the cost of accepted work.\n3. Let workers run on any machine.\n')
+(phase / 'goals.md').write_text('---\nplant: foxglove\n---\n# Adoption\n\n## Goals\n\n1. **A second team can start a garden.** DM-1\n2. **Compare the cost of accepted work.** DM-6\n3. **Let workers run on any machine.** DM-5\n')
 closed = root / 'demo/phase-04'
 closed.mkdir()
 (closed / 'goals.md').write_text('---\nplant: pea\nclosed: 2026-09-05\n---\n# Leave the loop running\n')

@@ -32,6 +32,14 @@ field; both remain available to CLI callers.
 The phase window retains garden-wide profile, configuration and upgrade marks
 while keeping another phase's activity out of its spend and outcome totals.
 
+Goal marks use explicit task IDs cited in each numbered goal or third-level goal
+heading, including continuation lines. All referenced tasks done means ✓ Merged;
+started or partly completed work means → In flight; linked draft/ready work with
+no dispatch means ○ Not started. Each mark includes the linked done/total count.
+References resolve across the garden so goals can cite prerequisites in other
+phases. Missing references, empty mappings and work set aside never imply a
+completed goal. No title or keyword inference is used.
+
 Unavailable facts stay explicit: unmapped goal progress, insufficient duration
 samples, unreported spend, missing manual-merge attribution, unknown next tick,
 and operator ledger entries without phase attribution. In the phase window,
@@ -56,7 +64,8 @@ uses the same Edge rendering engine as the command-line screenshot recipe and
 supports the entire phone document. Scanned plates are existing repository assets.
 
 The inspected captures show wrapped metadata and attention reasons, visible
-elapsed clocks, independent queue headings, a phase plate and goals, green/red
+elapsed clocks, independent queue headings, a phase plate and all three goal
+marks (in flight, merged and not started) with linked-task counts, green/red
 comparison grounds with n and rank symbols, throughput annotations and operator
 spend. The phone document remains 390 pixels wide; only the model comparison
 scrolls. Inspection prompted combining a held reason with its existing task
