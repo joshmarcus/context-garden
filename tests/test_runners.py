@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -253,6 +254,48 @@ def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
     assert all(run.process_finished() for run in runs)
 
 
+def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
+    """A real focused pytest target runs once while the other supported launch waits."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    target = tmp_path / "test_bounded_target.py"
+    target.write_text("import time\n\ndef test_bounded_workload():\n    time.sleep(0.25)\n")
+    command = [sys.executable, "-m", "pytest", str(target), "-q"]
+    runner = LocalRunner({"timeout_minutes": 1}, Harness("focused-pytest", {"command": command}))
+    runs = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"pytest-run-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"pytest-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_EXECUTION_CGROUP": ""})
+        runs.append(run)
+
+    deadline = time.monotonic() + 3
+    observed = set()
+    while time.monotonic() < deadline:
+        for run in runs:
+            if (run.path / "execution.json").exists():
+                observed.add(json.loads((run.path / "execution.json").read_text())["state"])
+        if observed == {"running", "waiting"}:
+            break
+        time.sleep(0.01)
+    assert observed == {"running", "waiting"}
+    running = next(run for run in runs
+                   if json.loads((run.path / "execution.json").read_text())["state"] == "running")
+    execution = json.loads((running.path / "execution.json").read_text())
+    assert execution["pid"] == running.pid
+    assert "pytest" in (running.path / "command.txt").read_text()
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+        assert "1 passed" in (run.path / "stdout.json").read_text()
+
+
 def test_local_worker_env_carries_execution_budget(tmp_path):
     from garden.harness import Harness
     from garden.runs import Run
@@ -264,6 +307,44 @@ def test_local_worker_env_carries_execution_budget(tmp_path):
     env = runner.worker_env(run, {}, tmp_path)
     assert env["GARDEN_HEAVY_TEST_PARALLEL"] == "3"
     assert env["GARDEN_EXECUTION_CGROUP"] == "/sys/fs/cgroup/example"
+
+
+def test_execution_cgroup_requires_finite_limits_and_verified_migration(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    group = tmp_path / "bounded"
+    group.mkdir()
+    for name, value in (("cgroup.procs", ""), ("cpu.max", "100000 100000"),
+                        ("memory.high", "2147483648"), ("memory.max", "2684354560")):
+        (group / name).write_text(value)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("GARDEN_EXECUTION_CGROUP", str(group))
+
+    monkeypatch.setattr(supervisor, "_process_cgroup_path", lambda: group.resolve())
+    supervisor._enter_execution_cgroup(run_dir)
+    status = json.loads((run_dir / "isolation.json").read_text())
+    assert status["enforced"] is True
+    assert status["limits"]["cpu.max"] == "100000 100000"
+
+    monkeypatch.setattr(supervisor, "_process_cgroup_path", lambda: tmp_path.resolve())
+    supervisor._enter_execution_cgroup(run_dir)
+    status = json.loads((run_dir / "isolation.json").read_text())
+    assert status["enforced"] is False
+    assert "migration failed" in status["reason"]
+
+
+def test_nested_supported_launch_inherits_execution_lease(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    run_dir = tmp_path / "nested"
+    run_dir.mkdir()
+    monkeypatch.setenv("GARDEN_EXECUTION_LEASED", "1")
+    monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
+    slot = supervisor._execution_slot(run_dir, lambda: False)
+    status = json.loads((run_dir / "execution.json").read_text())
+    assert slot is None
+    assert status["state"] == "running" and status["inherited"] is True
 
 
 def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):

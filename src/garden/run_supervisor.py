@@ -13,9 +13,50 @@ import time
 from pathlib import Path
 
 
+def _finite_cgroup_limits(target: Path) -> tuple[bool, dict[str, str], str]:
+    """Return whether *target* has finite aggregate CPU and memory controls."""
+    try:
+        cpu_max = (target / "cpu.max").read_text().strip()
+        memory_high = (target / "memory.high").read_text().strip()
+        memory_max = (target / "memory.max").read_text().strip()
+    except OSError as exc:
+        return False, {}, f"cannot read execution cgroup limits: {exc}"
+    limits = {"cpu.max": cpu_max, "memory.high": memory_high, "memory.max": memory_max}
+    try:
+        cpu_finite = int(cpu_max.split()[0]) > 0
+    except (ValueError, IndexError):
+        cpu_finite = False
+    memory_finite = False
+    for value in (memory_high, memory_max):
+        try:
+            memory_finite |= int(value) > 0
+        except ValueError:
+            pass
+    if not cpu_finite or not memory_finite:
+        missing = " and ".join(name for name, finite in (
+            ("finite cpu.max", cpu_finite), ("finite memory.high or memory.max", memory_finite)
+        ) if not finite)
+        return False, limits, f"execution cgroup is unbounded: missing {missing}"
+    return True, limits, ""
+
+
+def _process_cgroup_path(pid: int | str = "self", root: Path = Path("/sys/fs/cgroup")) -> Path | None:
+    try:
+        relative = next(line.split("::", 1)[1] for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+                        if line.startswith("0::"))
+    except (OSError, StopIteration):
+        return None
+    return (root / relative.lstrip("/")).resolve()
+
+
 def _execution_slot(run_dir: Path, should_stop: object) -> object:
     """Take one host-wide execution lease, recoverable by kernel lock release."""
     limit = int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1"))
+    if os.environ.get("GARDEN_EXECUTION_LEASED") == "1":
+        (run_dir / "execution.json").write_text(json.dumps(
+            {"state": "running", "limit": limit, "inherited": True, "pid": os.getpid()}
+        ))
+        return None
     if limit <= 0:
         (run_dir / "execution.json").write_text(json.dumps({"state": "disabled", "limit": 0}))
         return None
@@ -33,6 +74,7 @@ def _execution_slot(run_dir: Path, should_stop: object) -> object:
             (run_dir / "execution.json").write_text(json.dumps(
                 {"state": "running", "slot": slot, "limit": limit, "pid": os.getpid()}
             ))
+            os.environ["GARDEN_EXECUTION_LEASED"] = "1"
             return handle
         (run_dir / "execution.json").write_text(json.dumps(
             {"state": "waiting", "reason": f"heavy-test budget full (limit {limit})", "limit": limit}
@@ -45,9 +87,19 @@ def _enter_execution_cgroup(run_dir: Path) -> None:
     status = {"configured": bool(configured), "enforced": False}
     if configured:
         try:
-            target = Path(configured)
+            target = Path(configured).resolve()
+            bounded, limits, reason = _finite_cgroup_limits(target)
+            status.update({"path": str(target), "limits": limits})
+            if not bounded:
+                status["reason"] = reason
+                (run_dir / "isolation.json").write_text(json.dumps(status))
+                return
             (target / "cgroup.procs").write_text(str(os.getpid()))
-            status.update({"enforced": True, "path": str(target)})
+            actual = _process_cgroup_path()
+            if actual != target:
+                status["reason"] = f"execution cgroup migration failed: process remains in {actual or 'unknown'}"
+            else:
+                status.update({"enforced": True, "actual_path": str(actual)})
         except OSError as exc:
             status["reason"] = f"execution cgroup unavailable: {exc}"
     else:

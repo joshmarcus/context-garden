@@ -317,7 +317,8 @@ every garden owned by the same OS user (one by default). An admitted run waits e
 that boundary before any harness or check starts; exit, cancellation and crashes release its
 `flock`, so reservations cannot become stale. The lease covers the whole run, avoiding a
 nested-lock deadlock when that run starts tests itself. With `resources.execution_cgroup`, the
-supervisor moves into a preconfigured delegated cgroup before spawning, so all descendants
+supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU
+and memory controls and its resulting membership, so all descendants
 share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose
 waiting counts and whether cgroup isolation is enforced. Arbitrary commands launched outside
 the local runner and remote hosts are outside this boundary and must be bounded separately.

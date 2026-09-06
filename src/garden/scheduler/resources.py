@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..model import now_iso
+from ..run_supervisor import _finite_cgroup_limits
 
 _ADMISSION_LOCKS: dict[str, threading.Lock] = {}
 _ADMISSION_LOCKS_GUARD = threading.Lock()
@@ -133,17 +134,21 @@ class ResourceMixin:
         execution_cgroup = str(self.effective("resources.execution_cgroup", "") or "")
         isolation = "not configured"
         if execution_cgroup:
-            procs = Path(execution_cgroup) / "cgroup.procs"
-            isolation = "enforced" if procs.exists() and os.access(procs, os.W_OK) else "unavailable"
-        heavy_limit = max(1, int(self.effective("resources.heavy_test_parallel", 1) or 1))
+            target = Path(execution_cgroup)
+            bounded, _, reason = _finite_cgroup_limits(target)
+            procs = target / "cgroup.procs"
+            isolation = "available" if bounded and procs.exists() and os.access(procs, os.W_OK) else reason or "unavailable"
+        heavy_limit = max(0, int(self.effective("resources.heavy_test_parallel", 1) or 0))
         heavy_running = heavy_waiting = 0
         for run in self.local_runs_active():
             try:
                 state = json.loads((run.path / "execution.json").read_text()).get("state")
                 if execution_cgroup:
                     actual = json.loads((run.path / "isolation.json").read_text())
-                    if not actual.get("enforced"):
-                        isolation = "unavailable"
+                    if actual.get("enforced"):
+                        isolation = "enforced"
+                    else:
+                        isolation = str(actual.get("reason") or "unavailable")
             except (OSError, ValueError):
                 continue
             heavy_running += state == "running"

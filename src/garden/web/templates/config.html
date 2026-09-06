@@ -54,7 +54,7 @@
     {% if resource_status.cgroup_available_mb is not none %}(effective cgroup headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
     temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
   </p>
-  {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget. Configure a delegated <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
+  {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget ({{ resource_status.isolation }}). Configure a delegated, finite <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
 </div>
 
 <div class="panel" style="margin-bottom:14px">

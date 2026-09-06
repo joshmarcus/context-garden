@@ -1,5 +1,6 @@
 import math
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -1917,6 +1918,93 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     assert max(page_timings.values()) < 2.0
     assert pause_s < 2.0
     done.wait(timeout=10)
+
+
+def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
+    """One bounded real workload runs and another visibly waits during the control journey."""
+    import json
+
+    from garden.harness import Harness
+    from garden.run_supervisor import _process_cgroup_path
+    from garden.runner.local import LocalRunner
+
+    # Retained terminal history exercises the same indexed read path used after the incident.
+    runs_store = RunStore(garden / ".garden")
+    for number in range(120):
+        run_dir = runs_store.dir / "HISTORY" / f"20260101T{number:06d}Z-work"
+        Run(task_id="HISTORY", run_id=run_dir.name, dir=str(run_dir), runner="local",
+            status="done", started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:01:00+00:00").save()
+
+    target = tmp_path / "test_control_capacity.py"
+    target.write_text("import time\n\ndef test_real_workload():\n    time.sleep(0.75)\n")
+    harness = Harness("focused-pytest", {"command": [sys.executable, "-m", "pytest", str(target), "-q"]})
+    runner = LocalRunner({"timeout_minutes": 1}, harness)
+    launched = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"journey-run-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"LOAD-{number}", run_id=f"load-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_EXECUTION_CGROUP": ""})
+        launched.append(run)
+
+    deadline = time.monotonic() + 3
+    states = set()
+    while time.monotonic() < deadline:
+        states = {json.loads((run.path / "execution.json").read_text())["state"] for run in launched
+                  if (run.path / "execution.json").exists()}
+        if states == {"running", "waiting"}:
+            break
+        time.sleep(0.01)
+    assert states == {"running", "waiting"}
+
+    cgroup = _process_cgroup_path()
+    event_names = ("high", "oom", "oom_kill")
+
+    def pressure() -> dict[str, object]:
+        events = {}
+        if cgroup is not None and (cgroup / "memory.events").exists():
+            parsed = dict(line.split() for line in (cgroup / "memory.events").read_text().splitlines())
+            events = {name: int(parsed.get(name, 0)) for name in event_names}
+        memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
+        temp = os.statvfs(tmp_path)
+        descendants = {run.pid: Path(f"/proc/{run.pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+                       for run in launched if run.pid and Path(f"/proc/{run.pid}/cmdline").exists()}
+        cpu = {pid: Path(f"/proc/{pid}/stat").read_text().split()[13:15] for pid in descendants}
+        return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
+                "descendants": descendants, "cpu_ticks": cpu}
+
+    before = pressure()
+    app = create_app(Store(garden), watch=False, host="testserver")
+    c = TestClient(app)
+    timings = {}
+    requests = (
+        ("inbox", lambda: c.get("/inbox")),
+        ("now", lambda: c.get("/now1")),
+        ("task-control", lambda: c.post("/tasks/DM-001/priority", data={"note": "2"},
+                                         follow_redirects=False)),
+        ("pause", lambda: c.post("/pause", data={"reason": "bounded workload evidence"},
+                                  follow_redirects=False)),
+    )
+    for name, request in requests:
+        started = time.monotonic()
+        response = request()
+        timings[name] = time.monotonic() - started
+        assert response.status_code in (200, 303)
+    after = pressure()
+    print("retained-history capacity journey", {"timings": timings, "before": before, "after": after})
+
+    assert max(timings.values()) < 2.0
+    assert app.state.hub.scheduler().is_dispatch_paused()
+    assert before["descendants"] and after["descendants"]
+    assert after["events"] == before["events"]
+    for run in launched:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
 
 
 def test_inbox_renders_taskless_question_once(garden, monkeypatch):

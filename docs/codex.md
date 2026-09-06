@@ -148,8 +148,10 @@ Per-run temporary directories live below `work_dir/tmp`, receive both `TMPDIR` a
 `work_dir` on disk rather than tmpfs. A per-run subreaper owns daemonized descendants too,
 so stopping a run terminates them and cleanup waits for the whole process tree.
 
-CPU and memory isolation is enforced when `resources.execution_cgroup` names a delegated
-cgroup whose `cgroup.procs` is writable: the supervisor moves itself before spawning, and
+CPU and memory isolation is enforced only when `resources.execution_cgroup` names a delegated
+cgroup whose `cgroup.procs` is writable, `cpu.max` is finite, and at least one of
+`memory.high` or `memory.max` is finite. The supervisor moves itself before spawning, verifies
+its effective cgroup membership, and
 every child and detached session inherits that budget. The rail and `garden observe` say
 `isolation enforced`, `unavailable`, or `not configured`; the last two are not isolation
 claims. Admission uses the tighter of host `MemAvailable` and the control process's effective
