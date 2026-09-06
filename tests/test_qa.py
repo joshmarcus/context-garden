@@ -37,6 +37,14 @@ def run(cwd, *args):
         os.chdir(old)
 
 
+def test_scripted_client_uses_the_flow_timeout_for_requests():
+    client = Client("http://127.0.0.1", timeout=37)
+    try:
+        assert client.http.timeout.read == 37
+    finally:
+        client.close()
+
+
 def test_scripted_agent_completes_every_flow(tmp_path):
     out = tmp_path / "qa"
     report = run_qa(out, scripted=True)
