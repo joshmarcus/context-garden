@@ -16,6 +16,12 @@ from ..common import Site, product_checkout, product_design_root, render_md
 from ..trust import safe_relative_path
 
 
+# These are the artifacts a UI check or design task can render for a person.  Run directories
+# also contain transcripts, briefs and run metadata; those are never captures merely because a
+# worker mentions them in its result.
+CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", ".markdown", ".png", ".webp"})
+
+
 def _design_root(store: Store) -> Path:
     """The checkout for the garden's first product (the self-product in normal use)."""
     product = store.products()[0]
@@ -52,7 +58,8 @@ def recorded_captures(run: Run) -> list[Path]:
                             if not candidate.is_absolute():
                                 candidate = run.path / candidate
                             resolved = candidate.resolve()
-                            if run.path.resolve() in resolved.parents and resolved.is_file():
+                            if (run.path.resolve() in resolved.parents and resolved.is_file()
+                                    and resolved.suffix.lower() in CAPTURE_SUFFIXES):
                                 paths.add(resolved)
                 else:
                     visit(child)

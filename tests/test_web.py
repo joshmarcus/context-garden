@@ -59,7 +59,7 @@ def test_run_page_links_and_serves_every_capture_type(garden):
               started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
               status="done", result={"captures": [str(run_dir / "ui" / "page.png"),
                                                   str(run_dir / "ui" / "page.html"),
-                                                  "notes.md"]})
+                                                  "notes.md", "run.json"]})
     run.save()
     (run_dir / "ui").mkdir()
     (run_dir / "ui" / "page.png").write_bytes(b"png")
