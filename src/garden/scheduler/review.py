@@ -59,6 +59,8 @@ class ReviewMixin:
                 rep.transitions.append(f"{task.id} review cap reached")
         required_personas = [item["name"] for item in requirements if item["kind"] == "persona"]
         for name in dict.fromkeys([*required_personas, *(str(n) for n in list(self.cfg.get("review.personas", []) or []))]):
+            if name in required_personas and evidence.get(f"persona:{name}") in ("running", "posted"):
+                continue  # required evidence is produced when this PR opens, not once per review round
             wanted.append({"kind": "persona", "name": name, "required": name in required_personas})
         self._dispatch_or_defer_reviews(task, wanted, rep, work_run=work_run)
 
