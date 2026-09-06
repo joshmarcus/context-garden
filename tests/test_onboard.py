@@ -42,8 +42,14 @@ def _valid_plan(_store: Store, _prompt: str) -> str:
     ])
 
 
-def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path):
+def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, monkeypatch):
     repo = _node_repo(tmp_path)
+    git("remote", "add", "origin", "git@github.com:example/sample-web.git", cwd=repo)
+
+    def unexpected_github_query(*_args, **_kwargs):
+        raise AssertionError("deterministic discovery must not query GitHub")
+
+    monkeypatch.setattr("garden.onboard._gh_json", unexpected_github_query)
     first = discover_project(repo)
     second = discover_project(repo)
 
@@ -73,7 +79,10 @@ def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkey
     assert (garden / "sample-web" / "product.md").exists()
     assert (garden / "principles" / "10-sample-web-conventions.md").exists()
     report = (garden / "sample-web" / "docs" / "onboarding.md").read_text()
-    assert all(section in report for section in ("## Read", "## Inferences", "## Could not determine", "## Decisions to make"))
+    assert all(section in report for section in ("## Read", "## Inferences and provenance", "## Could not determine", "## Decisions to make"))
+    assert "trusted author @maintainer from CODEOWNERS" in report
+    assert "backlog item from `TODO.md`: Add structured logging" in report
+    assert "backlog item from `src/index.js`: add a health endpoint" in report
     assert "super-secret-value" not in "\n".join(p.read_text(errors="replace") for p in garden.rglob("*") if p.is_file())
 
     from typer.testing import CliRunner
@@ -103,6 +112,21 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
     tasks = Store(garden).product("sample-web").phases[0].tasks
     assert [task.title for task in tasks] == ["First planned task", "Second planned task"]
     assert all(task.status.value == "draft" for task in tasks)
+
+
+def test_onboard_refuses_existing_product_without_changing_it(tmp_path):
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    onboard_project(repo, garden, planner=_valid_plan)
+    before = {p.relative_to(garden): p.read_bytes() for p in garden.rglob("*") if p.is_file()}
+
+    import pytest
+
+    with pytest.raises(ValueError, match="would overwrite an existing product"):
+        onboard_project(repo, garden, planner=_valid_plan)
+
+    after = {p.relative_to(garden): p.read_bytes() for p in garden.rglob("*") if p.is_file()}
+    assert after == before
 
 
 def test_init_scaffolds_onboard_skill(tmp_path):

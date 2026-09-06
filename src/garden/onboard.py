@@ -33,7 +33,7 @@ class ProjectDiscovery:
     lint_command: str
     module_map: list[str] = field(default_factory=list)
     conventions: list[str] = field(default_factory=list)
-    backlog: list[str] = field(default_factory=list)
+    backlog: list[tuple[str, str]] = field(default_factory=list)
     read: list[str] = field(default_factory=list)
     inferred: list[str] = field(default_factory=list)
     configure_by_hand: list[str] = field(default_factory=list)
@@ -92,7 +92,7 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
             if isinstance(issue, dict) and issue.get("title"):
                 milestone = (issue.get("milestone") or {}).get("title") if isinstance(issue.get("milestone"), dict) else ""
                 suffix = f" [milestone: {milestone}]" if milestone else ""
-                result.backlog.append(f"GitHub issue #{issue.get('number')}: {issue['title']}{suffix}")
+                result.backlog.append((f"GitHub issue #{issue.get('number')}: {issue['title']}{suffix}", f"github:{slug}:issue-{issue.get('number')}"))
     prs = _gh_json(repo, ["pr", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title"])
     if isinstance(prs, list):
         result.read.append(f"github:{slug}:open-prs")
@@ -164,7 +164,10 @@ def discover_project(repo: Path) -> ProjectDiscovery:
             result.read.append(rel)
             text = _text(path)
             if lower in {"todo", "roadmap"}:
-                result.backlog.extend(line.lstrip("- *").strip() for line in text.splitlines() if line.lstrip().startswith(("-", "*")))
+                result.backlog.extend(
+                    (line.lstrip("- *").strip(), rel)
+                    for line in text.splitlines() if line.lstrip().startswith(("-", "*"))
+                )
         if path.name in _SECRET_FILES or path.name.startswith(".env."):
             result.configure_by_hand.append(f"Secret file {rel} exists; configure its values by hand (file not read).")
 
@@ -173,7 +176,8 @@ def discover_project(repo: Path) -> ProjectDiscovery:
         if path.suffix in source_exts:
             for match in re.finditer(r"\b(?:TODO|FIXME)(?:\(([^)]+)\))?[: ]+([^\n]+)", _text(path, 30_000)):
                 owner = f" ({match.group(1)})" if match.group(1) else ""
-                result.backlog.append(f"{match.group(2).strip()}{owner} — {path.relative_to(repo)}")
+                source = path.relative_to(repo).as_posix()
+                result.backlog.append((f"{match.group(2).strip()}{owner} — {source}", source))
 
     ci_text = "\n".join(_text(p) for rel, p in rels.items() if rel.startswith(".github/workflows/"))
     for name in sorted(set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", ci_text))):
@@ -192,7 +196,6 @@ def discover_project(repo: Path) -> ProjectDiscovery:
     ]
     result.inferred.append(f"base branch from the current Git checkout: {base}")
     result.inferred.append("module map from top-level repository entries")
-    _add_github_metadata(repo, result)
     result.read = sorted(set(result.read))
     return result
 
@@ -216,9 +219,22 @@ def onboard_project(
     """Create or extend a garden from a checkout and draft its first planned tasks."""
     info = discover_project(repo)
     garden = garden.resolve()
-    created = init_garden(garden, f"{info.name} garden")
     product = _slug(info.name)
     cfg_path = garden / CONFIG_NAME
+    existing_config = yaml.safe_load(cfg_path.read_text()) or {} if cfg_path.exists() else {}
+    collisions = [
+        path for path in (garden / product, garden / "principles" / f"10-{product}-conventions.md")
+        if path.exists()
+    ]
+    if product in (existing_config.get("products") or {}) or collisions:
+        targets = [f"product {product!r} in garden.yaml"] if product in (existing_config.get("products") or {}) else []
+        targets.extend(str(path.relative_to(garden)) for path in collisions)
+        raise ValueError("onboarding would overwrite an existing product: " + ", ".join(targets))
+
+    # GitHub is optional enrichment of the deterministic local result. It happens only in
+    # the end-to-end command and every successful query is recorded in the report.
+    _add_github_metadata(repo, info)
+    created = init_garden(garden, f"{info.name} garden")
     config = yaml.safe_load(cfg_path.read_text()) or {}
     configured_repo = repo_value or os.path.relpath(repo.resolve(), garden)
     env_names = {
@@ -260,17 +276,24 @@ def onboard_project(
     store = Store(garden)
     created.extend(new_phase(store, product, "phase-01"))
     goals = garden / product / "phase-01" / "goals.md"
-    backlog = info.backlog[:50] or ["No existing backlog item was found; choose the first deliverable."]
+    backlog = info.backlog[:50] or [("No existing backlog item was found; choose the first deliverable.", "manual-decision")]
     goals.write_text(
         "# phase-01 goals (draft)\n\n## Why this phase\n\nTurn the existing project backlog into the first garden-managed slice.\n\n"
-        "## Goals\n\n" + "\n".join(f"{i}. {item}" for i, item in enumerate(backlog, 1)) + "\n\n"
+        "## Goals\n\n" + "\n".join(f"{i}. {item} _(source: `{source}`)_" for i, (item, source) in enumerate(backlog, 1)) + "\n\n"
         "## Non-goals\n\n- Work not represented in the discovered backlog.\n\n## Definition of done\n\n- The approved first-phase tasks are complete.\n"
     )
     store.invalidate()
-    raw = planner(store, plan_prompt(store, product, "phase-01", extra="All tasks are onboarding drafts. Use only backlog items stated in the goals."))
-    tasks = import_plan(store, product, "phase-01", parse_plan(raw), status="draft")
-    for task in tasks:
-        task.discovered_from = "onboard:project-backlog"
+    guidance = (
+        "All tasks are onboarding drafts. Use only backlog items stated in the goals. "
+        "For each item add discovered_from as onboard:<source>, using its stated source."
+    )
+    items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
+    tasks = import_plan(store, product, "phase-01", items, status="draft")
+    known_sources = {source for _, source in backlog}
+    for task, item in zip(tasks, items, strict=False):
+        provenance = str(item.get("discovered_from") or "")
+        source = provenance.removeprefix("onboard:") if provenance.startswith("onboard:") else ""
+        task.discovered_from = provenance if source in known_sources else "onboard:project-backlog"
         store.save(task)
         created.append(task.path)
 
@@ -281,9 +304,19 @@ def onboard_project(
         "Choose model tiers and phase budgets.", "Configure notifications and the automerge policy.",
         *info.configure_by_hand,
     ]
+    derived = [
+        f"product slug `{product}` from repository directory name `{info.name}`",
+        f"task id prefix `{_prefix(info.name)}` from repository directory name `{info.name}`",
+        f"configured repository `{configured_repo}` from the onboarding source",
+        *info.inferred,
+        *(f"trusted author @{author} from CODEOWNERS" for author in info.trusted_authors),
+        *(f"setup environment name `{name}` from a CI secret reference (value was not read)" for name in env_names),
+        *(f"principle from discovered project configuration: {item}" for item in info.conventions),
+        *(f"backlog item from `{source}`: {item}" for item, source in info.backlog),
+    ]
     report.write_text(
         "# Onboarding report (draft)\n\n## Read\n\n" + "\n".join(f"- `{p}`" for p in info.read) + "\n\n"
-        "## Inferences\n\n" + "\n".join(f"- {item}" for item in info.inferred) + "\n\n"
+        "## Inferences and provenance\n\n" + "\n".join(f"- {item}" for item in derived) + "\n\n"
         "## Could not determine\n\n" + "\n".join(f"- {label} command" for label, value in (("setup", info.setup_command), ("test", info.test_command), ("lint", info.lint_command)) if not value) + "\n\n"
         "## Decisions to make\n\n" + "\n".join(f"- {item}" for item in open_decisions) + "\n"
     )
