@@ -31,6 +31,28 @@ class QuotaMixin:
     def is_harness_paused(self, name: str) -> bool:
         return bool(name) and name in self.paused_harnesses()
 
+    def pool_quota_members(self) -> dict[str, Any]:
+        """Recent member-specific quota stops, retained until that account's probe works.
+
+        A pause is harness-wide because credentials belong to an account, but the pool keeps
+        the member that encountered it.  If an operator resumes the harness before its probe,
+        quota-aware rotation still gives that member half its normal share for a short window.
+        """
+        return self.control().setdefault("pool_quota_members", {})
+
+    def note_pool_quota_member(self, run: Run) -> None:
+        if not run.pool_member:
+            return
+        self.pool_quota_members()[run.pool_member] = {"at": now_iso(), "harness": run.harness}
+        self.state.save()
+
+    def pool_member_near_quota(self, member: dict[str, Any]) -> bool:
+        entry = self.pool_quota_members().get(str(member.get("label") or ""))
+        if not isinstance(entry, dict):
+            return False
+        window = float(self.cfg.get("dispatch.quota_window_hours", 6) or 0)
+        return window > 0 and _minutes_since(str(entry.get("at") or "")) < window * 60
+
     def pause_harness(self, name: str, reason: str, run_id: str = "") -> None:
         if not name:
             return
@@ -47,6 +69,12 @@ class QuotaMixin:
         if self.paused_harnesses().pop(name, None) is None:
             return
         self.state.save()
+        if by == "probe":
+            recent = self.pool_quota_members()
+            for label, entry in list(recent.items()):
+                if isinstance(entry, dict) and entry.get("harness") == name:
+                    del recent[label]
+            self.state.save()
         self.events.emit("dispatch_resumed", "", harness=name, by=by)
         self.log(f"harness {name} resumed by {by}")
 
@@ -68,6 +96,7 @@ class QuotaMixin:
         the way an ordinary failure would."""
         kind = str(collected.get("env_kind") or "quota")
         if run.harness:
+            self.note_pool_quota_member(run)
             self.pause_harness(run.harness, f"{kind} limit hit on {run.harness}", run_id=run.run_id)
 
     # ---- probe -----------------------------------------------------------

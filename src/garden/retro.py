@@ -226,7 +226,8 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
              f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
              f"- total: ${total:.2f}"]
     outcomes = outcomes or {}
-    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
+    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness"),
+                             ("by_pool_member", "pool member")):
         rows = outcomes.get(dimension) or {}
         if not rows:
             continue

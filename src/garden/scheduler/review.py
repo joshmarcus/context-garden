@@ -165,7 +165,8 @@ class ReviewMixin:
         note = "superseded by a newer review dispatch for the same task"
         run.error = f"{run.error} ({note})" if run.error else note
         run.save()
-        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="superseded",
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness,
+                         model=run.model, pool_member=run.pool_member, status="superseded",
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
@@ -230,7 +231,9 @@ class ReviewMixin:
         if member and member.get("model"):
             run.model = str(member["model"])
         run.pool_member = str((member or {}).get("label") or "")
-        if runner.harness and runner.harness.cfg.get("review_model"):
+        # A review pool names the exact harness/model member.  The legacy per-harness
+        # review_model remains the fallback only when no pool member selected a model.
+        if not (member and member.get("model")) and runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
@@ -296,7 +299,8 @@ class ReviewMixin:
                 self._pause_for_env_error(run, collected)
                 run.status = "env_error"
                 run.save()
-                self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
+                self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
+                                 model=run.model, pool_member=run.pool_member, status="env_error",
                                  cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
                 if counted:
                     st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
@@ -361,7 +365,8 @@ class ReviewMixin:
         pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
         if not emitted:
-            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
+                             model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd, usage=run.usage,
                              status=str(review.get("verdict") or run.status))
         if not review:
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
@@ -509,7 +514,8 @@ class ReviewMixin:
             note = "closed by orphan sweep: task moved on before this run's verdict was read"
             run.error = f"{run.error} ({note})" if run.error else note
             run.save()
-            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, harness=run.harness,
+                             model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd,
                              usage=run.usage, status=run.status, orphaned=True)
             self.log(f"{run.task_id}: {run.mode} run {run.run_id} closed ({run.status}); {note}")
             rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (orphaned)")

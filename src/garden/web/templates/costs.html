@@ -74,7 +74,7 @@
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">Accepted-task outcomes</div>
   <p class="muted" style="margin:8px 0 0;font-size:12.5px">Only tasks observed merged to the base branch count as accepted. Per-run cost and cost per accepted task make a lower run price directly comparable with the bill per merged task.</p>
-  {% for dimension, label in [('by_difficulty', 'tier'), ('by_model', 'model'), ('by_harness', 'harness')] %}
+  {% for dimension, label in [('by_difficulty', 'tier'), ('by_model', 'model'), ('by_harness', 'harness'), ('by_pool_member', 'pool member')] %}
   {% set rows = outcomes[dimension] %}
   {% if rows %}
   <h3 style="margin:16px 0 0;font-size:14px">By {{ label }}</h3>

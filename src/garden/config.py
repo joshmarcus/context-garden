@@ -175,7 +175,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "harnesses": {},
     "models": {},               # tier -> model string, or [{harness, model, weight}] pool
-    "dispatch": {"spread": "quota_aware"},
+    "dispatch": {"spread": "quota_aware", "quota_window_hours": 6},
     "prices": {},              # generic per-model price table (input/cached_input/cache_write/output per
                                # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
                                # the codex defaults and docs/codex.md for where the numbers came from

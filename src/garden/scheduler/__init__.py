@@ -182,7 +182,7 @@ class Scheduler(
         return members
 
     def select_pool_member(self, task: Task, tier: str, review: bool = False) -> dict[str, Any] | None:
-        """Choose an available pool member, preserving task pins and a stable weighted rotation."""
+        """Choose an available pool member, preserving pins and quota-aware weighting."""
         members = self.pool_members(tier, review=review)
         if not members:
             return None
@@ -201,7 +201,17 @@ class Scheduler(
         if not available:
             return None
         policy = str(self.cfg.get("dispatch.spread") or "quota_aware")
-        slots = available if policy == "round_robin" else [m for m in available for _ in range(m["weight"])]
+        if policy == "round_robin":
+            slots = available
+        elif policy == "quota_aware":
+            limited = [m for m in available if self.pool_member_near_quota(m)]
+            # Keep ordinary weighted rotation byte-for-byte stable when nobody is near a
+            # limit. Once there is a limited member, double healthy slots and retain limited
+            # slots at their ordinary weight: this represents a real half even for weight-one
+            # members, which cannot be halved in an integer slot list.
+            slots = [m for m in available for _ in range(m["weight"] * (1 if limited and m in limited else (2 if limited else 1)))]
+        else:
+            slots = [m for m in available for _ in range(m["weight"])]
         key = f"{'review' if review else 'work'}:{tier}:" + ",".join(m["label"] for m in members)
         rotation = self.state.get("_pool_rotation")
         index = int(rotation.get(key, 0)) % len(slots)
