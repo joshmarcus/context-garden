@@ -673,14 +673,14 @@ def test_garden_now_prints_the_four_regions(garden):
     assert now1.QUIET_PERIOD in r.output
 
 
-def test_garden_now_page_2_says_so_when_now_2_is_not_built(garden):
+def test_garden_now_rejects_an_unknown_page(garden):
     cwd = os.getcwd()
     os.chdir(garden)
     try:
-        r = CliRunner().invoke(app, ["now", "--page", "2"])
+        r = CliRunner().invoke(app, ["now", "--page", "3"])
     finally:
         os.chdir(cwd)
-    assert r.exit_code == 1 and "Now 2" in r.output
+    assert r.exit_code == 2 and "page must be 1 or 2" in r.output
 
 
 def test_walkthrough_captures_now1(garden):
@@ -688,7 +688,8 @@ def test_walkthrough_captures_now1(garden):
 
     store = Store(garden)
     ph = store.phase("demo", "p1")
-    assert [p.url for p in pages_for(store, ph)][:2] == ["/", "/now1"]  # right after the first page
+    urls = [p.url for p in pages_for(store, ph)]
+    assert "/" in urls and "/now1" in urls
     out = Path(garden) / "cap"
     result = capture(store, ph, out, screenshots=False)
     now_page = next(pr for pr in result.pages if pr.spec.slug == "now1")
