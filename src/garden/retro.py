@@ -96,15 +96,17 @@ retrospective is for:
   next phase. List it under `followups`; each becomes a draft task in the next phase.
 - `reopen` — some work must land in *this* phase before it can close. List it under `blocking`;
   each becomes a task in this phase (with a freeze exception so it still dispatches) and
-  `garden close-phase` refuses until each is done or cancelled. Give the reason each item
-  blocks. Reserve this for real blockers, not nice-to-haves.
+  `garden close-phase` refuses until each is done or cancelled. Each item must include a
+  testable `acceptance` checklist, a `reading` list of existing paths under the product, and
+  a difficulty. Give the reason each item blocks. Reserve this for real blockers, not
+  nice-to-haves.
 
 Do NOT edit any file and do NOT commit: the retro document, the next-goals draft, the verdict
 and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "acceptance": ["<testable criterion>"], "reading": ["<existing product-relative path>"], "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -458,6 +460,10 @@ def resolve_retro_tasks(items: Any, existing_titles: dict[str, str]) -> list[dic
         out.append({
             "title": title,
             "body": str(it.get("body") or "").strip(),
+            "acceptance": [str(v).strip() for v in (it.get("acceptance") or [])
+                           if isinstance(v, str) and v.strip()],
+            "reading": [str(v).strip() for v in (it.get("reading") or [])
+                        if isinstance(v, str) and v.strip()],
             "difficulty": str(it.get("difficulty") or "medium").strip() or "medium",
             "priority": it.get("priority"),
             "reason": str(it.get("reason") or "").strip(),
