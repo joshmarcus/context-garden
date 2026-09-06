@@ -1,0 +1,529 @@
+{#- The Now 1 mock. Rendered by now_1_mock.py from now-1-snapshot.json; the markup and the
+    `now-` styles are what the build lifts into src/garden/web/templates/now1.html. -#}
+{%- set g = garden -%}
+{%- set runs = now | selectattr("kind", "equalto", "run") | list -%}
+{%- set hands = now | rejectattr("kind", "equalto", "run") | list -%}
+{%- set p = where.primary -%}
+{%- set hour = period.hour -%}
+{%- set free = [g.max_parallel - g.worker_busy, 0] | max -%}
+{%- macro strip(s, cls="") -%}
+{%- set no_process = s.no_process | default(false) -%}
+<article class="specimen strip {{ cls }} st-{{ 'no_process' if no_process else s.state }}" data-task="{{ s.task }}" data-run="{{ s.run | default('') }}"{% if s.kind == "run" and not no_process %} data-started="{{ s.started_at }}" data-typical="{{ s.typical_s or '' }}"{% if s.verdict is defined %} data-stopped="{{ s.elapsed_s }}"{% endif %}{% endif %}>
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-{{ '' if no_process else s.dot }}" title="{{ 'no process' if no_process else s.state | replace('_', ' ') }}"></span>{{ stage(s.glyph, 22) }}</div>
+  <div class="head">
+    {% if s.task %}<a class="t" href="/tasks/{{ s.task }}">{{ s.title }}</a><span class="id">{{ s.task }}</span>{% else %}<span class="t">{{ s.title }}</span>{% endif %}
+  </div>
+  <div class="meta">
+    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}{% if s.run %} · <a class="open-run" href="/runs/{{ s.task }}/{{ s.run }}">open run</a>{% endif %}
+    {% else %}<span class="stamp">{{ s.state | replace('_', ' ') }}</span>{% endif %}
+  </div>
+  {% if no_process %}
+  <div class="bar"><span class="faint">no process recorded · started {{ s.started_at[11:16] }}Z · a slot is held until a tick reaps it</span></div>
+  {% elif s.kind == "run" %}
+  {%- set typical = s.typical_s -%}
+  <div class="bar">
+    {% if typical %}
+      {%- set ratio = s.elapsed_s / typical -%}
+      <span class="scale" aria-hidden="true" style="--r:{{ ([ratio, 1.0] | min) | round(3) }};--o:{{ ([([ratio - 1, 0.0] | max), 0.5] | min) | round(3) }}"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>{{ clock(s.elapsed_s) }}</span> · typically {{ minutes(typical) }}<span class="longer" data-longer{% if ratio <= 1 %} hidden{% endif %}> · longer than usual</span></span>
+    {% else %}
+      <span class="clock"><span data-elapsed>{{ clock(s.elapsed_s) }}</span></span>
+    {% endif %}
+    {% if s.verdict is defined %}<span class="verdict">{{ s.verdict }}</span>
+    {% elif s.spend_usd is not none %}<span class="spend">{{ money(s.spend_usd) }} so far</span>
+    {% elif s.tokens_so_far | default(0) %}<span class="spend">{{ ktok(s.tokens_so_far) }} tokens so far</span>
+    {% elif not s.harness %}<span class="spend faint">token-free</span>
+    {% else %}<span class="spend faint">no usage yet</span>{% endif %}
+  </div>
+  <div class="said">{% if s.said %}“{{ s.said }}”{% else %}<span class="faint">no words yet</span>{% endif %}</div>
+  {% else %}
+  <div class="said reason">{{ s.reason }}</div>
+  {% endif %}
+</article>
+{%- endmacro -%}
+{%- macro sheet(ph, big=true) -%}
+{%- set src = plate(ph.plant) -%}
+<div class="specimen sheet {{ 'big' if big else 'small' }}">
+  <span class="tape t1"></span>
+  <div class="mount plate-mount" style="--grown:{{ (ph.fraction * 100) | round(1) }}%">
+    {% if src %}<img class="plate ghost" src="{{ src }}" alt=""><img class="plate inked" src="{{ src }}" alt="{{ ph.latin }}, inked to {{ (ph.fraction * 100) | round | int }} percent">
+    {% else %}<span class="ghost">{{ plant(ph.plant, 200, 300) }}</span><span class="inked">{{ plant(ph.plant, 200, 300) }}</span>{% endif %}
+  </div>
+  {% if big %}<span class="tape t2"></span>{% endif %}
+  <div class="lbl"><b>{{ ph.product }} · plate {{ ph.plate }}</b><br><a href="/phases/{{ ph.key }}">{{ ph.name }}</a><br><i>{{ ph.latin }}</i> — {{ ph.common }}<br>{{ ph.done }} of {{ ph.total }} merged · {{ ph.prs_open }} PRs open · {{ ph.running }} running<br>{{ ph.stage_word }}{% if ph.spent %} · spent ${{ '%.2f' % ph.spent }}{% if ph.budget %} of ${{ '%.0f' % ph.budget }}{% endif %}{% endif %}</div>
+  <div class="stamps"><span class="stamp">{{ 'complete' if ph.fraction >= 1 else ('frozen' if ph.frozen else 'open') }}</span>{% if ph.retro %}<span class="stamp">{{ ph.retro.get('verdict', '') }}</span>{% endif %}</div>
+</div>
+{%- endmacro -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now 1 · {{ g.name }} (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
+<style>{{ base_css }}</style>
+<style>
+/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+.now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
+.now-five a { text-decoration-color:var(--line-strong); }
+.now-five .pause { color:var(--stamp); }
+.region { margin-top:30px; scroll-margin-top:16px; }
+.region-head { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.region-head .lead { font:italic 14px/1.4 var(--display); color:var(--muted); }
+.region-head .right { margin-left:auto; font:12px/1.4 var(--mono); color:var(--muted); display:flex; gap:4px 14px; align-items:center; flex-wrap:wrap; }
+.region-head .right .tick { white-space:nowrap; }
+.region-head .stamp { transform:rotate(-3deg); }
+.now-grid { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(300px, 1fr); gap:28px; align-items:start; }
+/* a run is a mount card on its side */
+.strip { display:grid; grid-template-columns:36px minmax(0, 1fr) auto; gap:5px 14px; padding:14px 18px 13px 14px; margin-bottom:12px; border-left:3px solid var(--line); transition:border-left-color 1.2s, opacity .5s, transform .36s cubic-bezier(.2,.7,.2,1); }
+.strip.new { border-left-color:var(--accent); }
+.strip .tape { left:50%; top:-7px; width:54px; height:14px; transform:translateX(-50%) rotate(-2deg); }
+.strip .glyphs { grid-row:1 / span 3; display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:2px; }
+.strip .glyphs .state::before { width:8px; height:8px; }
+.strip .head { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.strip .head .id { flex:none; color:var(--muted); }
+.strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
+.strip .meta .open-run { color:var(--muted); }
+.strip .bar { grid-column:2 / span 2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
+.strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); }
+.strip .bar .spend.faint { color:var(--faint); }
+.strip .bar .verdict { font-weight:700; }
+/* the elapsed scale: a plate's scale bar. The track is the typical duration; the fill grows
+   along it; past the end mark a dashed line grows on, to at most half a track more. */
+.scale { --track:160px; position:relative; width:calc(var(--track) * 1.5); height:11px; flex:none; }
+.scale .track { position:absolute; left:0; width:var(--track); top:5px; height:1px; background:var(--line-strong); }
+.scale .track::before { content:""; position:absolute; left:0; top:-4px; width:1px; height:9px; background:var(--ink); }
+.scale .fill { position:absolute; left:0; top:3px; height:5px; width:calc(var(--track) * var(--r)); background:var(--accent); transition:width 1s linear; }
+.scale .end { position:absolute; left:var(--track); top:1px; width:1px; height:9px; background:var(--ink); }
+.scale .over { position:absolute; left:calc(var(--track) + 1px); width:calc(var(--track) * var(--o)); top:5px; height:0; border-top:1px dashed var(--ink); transition:width 1s linear; }
+/* the live clock: the digits change in place; the words past typical are plain, never an alarm */
+.strip .clock { white-space:nowrap; }
+.strip .clock [data-elapsed] { color:var(--ink); }
+.strip .longer { color:var(--muted); }
+/* a run arriving: inserted at the top at no height, grows and fades in (the build's rule) */
+.strip.arriving { max-height:0; opacity:0; margin-bottom:0; padding-top:0; padding-bottom:0; overflow:hidden; }
+.strip.arrive { transition:max-height .36s cubic-bezier(.2,.7,.2,1), opacity .36s cubic-bezier(.2,.7,.2,1), margin .36s, padding .36s, border-left-color 1.2s; max-height:240px; }
+.strip .said { grid-column:2 / span 2; font:italic 14.5px/1.4 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .said.reason { font-style:normal; font:13.5px/1.45 var(--body); white-space:normal; color:var(--ink); }
+.strip.st-held, .strip.st-paused, .strip.st-needs_you, .strip.st-failed { border-left-style:dashed; }
+.strip.st-no_process { border-left-style:dotted; }
+.strip.st-no_process .glyphs svg, .strip.st-no_process .t { opacity:.55; }
+.strip.leaving { opacity:0; transform:translateY(-6px); }
+/* the empty mount sheet */
+.empty-sheet { padding:26px 22px 22px; text-align:center; }
+.empty-sheet .tape { left:50%; top:-7px; transform:translateX(-50%) rotate(-3deg); }
+.empty-sheet b { display:block; font:500 19px/1.3 var(--display); margin-bottom:4px; }
+.empty-sheet p { margin:0; color:var(--muted); font:13.5px/1.5 var(--body); }
+/* next */
+.queue { list-style:none; margin:0; padding:0; }
+.queue li { display:grid; grid-template-columns:26px 22px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); }
+.queue .pos { font:12px/1.4 var(--mono); color:var(--faint); text-align:right; }
+.queue .lt { grid-column:3 / span 2; font:15px/1.35 var(--display); overflow-wrap:anywhere; }
+.queue .why { grid-column:3 / span 2; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .why .id { color:var(--muted); }
+.queue .why .skip { color:var(--warn); font-weight:700; }
+.queue-more { display:block; margin:8px 4px 0; font:12px/1.4 var(--mono); }
+.sub { margin-top:20px; }
+.sub h3 { margin:0 0 6px; font:500 15px/1.3 var(--display); }
+.sub p, .sub li { margin:0; font:13.5px/1.5 var(--body); }
+.sub ul { list-style:none; padding:0; margin:0; }
+.sub li { padding:6px 4px; border-bottom:1px dashed var(--line); display:grid; grid-template-columns:68px minmax(0, 1fr); gap:2px 10px; align-items:baseline; }
+.sub li .id { padding-top:2px; }
+.sub li .fact { grid-column:2; font:12px/1.4 var(--mono); color:var(--muted); }
+.sub li .fact.held { color:var(--ink); }
+.sub li.faint { display:block; }
+/* where we are: the sheet grows */
+.sheet.big { padding:26px 18px 132px; min-height:520px; }
+.sheet .t1 { left:46%; top:150px; transform:rotate(-8deg); }
+.sheet .t2 { left:18%; top:392px; transform:rotate(11deg); }
+.sheet .mount { position:relative; display:flex; justify-content:center; }
+.sheet .mount .ghost { opacity:.14; filter:grayscale(1); }
+.sheet .mount .inked { position:absolute; inset:12px auto auto 50%; transform:translateX(-50%); clip-path:inset(calc(100% - var(--grown)) 0 0 0); transition:clip-path 1.2s cubic-bezier(.2,.7,.2,1); }
+.sheet .mount .inked.fresh { filter:drop-shadow(0 0 6px var(--accent)); }
+.sheet .mount img { max-height:420px; }
+.sheet .mount span svg { display:block; }
+.sheet .lbl { right:16px; bottom:16px; }
+.sheet .stamps { position:absolute; left:18px; bottom:32px; display:flex; gap:8px; }
+.sheet.small { display:grid; grid-template-columns:52px 1fr; gap:10px; padding:10px 12px; align-items:center; }
+.sheet.small .mount { padding:2px; }
+.sheet.small .mount img { max-height:70px; }
+.sheet.small .mount .inked { inset:2px auto auto 50%; }
+.sheet.small .tape { display:none; }
+.sheet.small .lbl { position:static; width:auto; border:none; padding:0; font-size:11px; }
+.sheet.small .stamps { position:static; margin-top:4px; }
+.sheet.small .stamp { font-size:9px; padding:0 5px; }
+.goals { list-style:none; margin:14px 0 0; padding:0; }
+.goals li { display:grid; grid-template-columns:22px minmax(0, 1fr) auto; gap:10px; align-items:baseline; padding:6px 2px; border-bottom:1px dashed var(--line); font:14px/1.4 var(--body); }
+.goals .n { font:12px/1.4 var(--mono); color:var(--faint); }
+.goals .fr { font:11.5px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.goals .fr.unlinked { color:var(--faint); font-style:italic; }
+.others { display:grid; gap:8px; margin-top:14px; }
+.closed-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:14px; }
+.closed-row a { display:flex; flex-direction:column; align-items:center; gap:4px; width:104px; text-decoration:none; font:11px/1.3 var(--mono); color:var(--muted); text-align:center; }
+.closed-row .thumb { width:44px; height:64px; border:1px solid var(--line); background:#f4efe3; overflow:hidden; display:flex; justify-content:center; }
+.closed-row img { height:64px; }
+.closed-row .stamp { font-size:8.5px; padding:0 4px; border-width:1.5px; }
+/* the last period */
+.figures { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:18px; margin:6px 0 18px; }
+.fig .v { font:500 32px/1.1 var(--display); display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; white-space:nowrap; }
+.fig .v small { font:400 14px/1.4 var(--display); color:var(--muted); padding-bottom:4px; display:inline-flex; gap:8px; align-items:center; }
+.fig .v .spark { margin-left:4px; }
+.fig .l { font:11px/1.4 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-top:4px; }
+.period-grid { display:grid; grid-template-columns:minmax(0, 1.6fr) minmax(280px, 1fr); gap:24px; align-items:start; }
+.period-grid table { font-size:12.5px; }
+.period-grid td, .period-grid th { padding:5px 7px; }
+.period-grid .chart-box { min-width:0; }
+.chart-narrow { display:none; }
+.hand { margin-top:14px; font:12.5px/1.5 var(--mono); color:var(--muted); }
+/* by difficulty and model: five small tables, the same shape each, read as one */
+.tiers { margin-top:26px; }
+.tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
+.tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.tier-tables.wide { grid-template-columns:minmax(0, 1fr); }  /* more than five models: one table per row, so no column is cut */
+.tier-tables .scroll { overflow-x:auto; }
+table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
+table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
+table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
+table.tier th .vendor { display:block; color:var(--faint); }
+table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
+table.tier caption small { font:11px/1.4 var(--mono); color:var(--muted); margin-left:6px; }
+table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; white-space:nowrap; }
+table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
+/* the heat scale (the owner's rule, 2026-09-06 02:45Z): --k is the cell's place on its row, 0 at
+   the best value, 1 at the worst; the ground is mixed between the two cell tokens, which are
+   pale in the light palette and deep in the dark one so the ink stays legible in both. */
+:root { --cell-good:#d9eedd; --cell-bad:#f5d9d4; }
+:root[data-theme="dark"] { --cell-good:#20402c; --cell-bad:#4a2a28; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cell-good:#20402c; --cell-bad:#4a2a28; } }
+table.tier td.scaled { background:color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)); }
+table.tier td.scaled.thin { background:color-mix(in oklab, color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)) 35%, transparent); }
+table.tier td.best b { font-weight:600; }
+table.tier td.thin b { color:var(--muted); font-style:italic; }
+table.tier .mark { font:700 10px/1 var(--mono); margin-right:4px; vertical-align:2px; }
+table.tier .mark.best, .tiers .lead .mark.best { color:var(--good); }
+table.tier .mark.worst, .tiers .lead .mark.worst { color:var(--bad); }
+table.tier .mark.thin, .tiers .lead .mark.thin { color:var(--muted); margin-right:2px; }
+.tiers .lead .mark { font:700 11px/1 var(--mono); }
+table.tier td .faint { color:var(--faint); }
+/* live region for a screen reader */
+.now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+/* the rail on this page: the page is the Running now block, so the rail does not repeat it */
+body.page-now .rail-running { display:none; }
+/* gallery: not part of the page */
+.gallery { margin-top:48px; padding-top:18px; border-top:2px dashed var(--line-strong); }
+.gallery h2 { font:500 20px/1.2 var(--display); margin:0 0 4px; }
+.gallery > p { margin:0 0 16px; color:var(--muted); }
+.gallery .g { margin-bottom:22px; }
+.gallery .g h4 { margin:0 0 8px; font:400 11px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.mock-tools { display:flex; gap:8px; align-items:center; }
+/* the phone: one column, the rail folded to wordmark and nav */
+@media (max-width:1000px) {
+  body.page-now .rail { padding:12px 14px; gap:10px; flex-direction:row; flex-wrap:wrap; align-items:center; height:auto; }
+  body.page-now .rail > :not(.wordmark):not(.nav) { display:none; }
+  body.page-now .nav { flex-direction:row; flex-wrap:wrap; gap:0 2px; }
+  body.page-now .nav a { min-height:32px; padding:0 8px; border-left:none; border-bottom:2px solid transparent; }
+  body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
+  body.page-now main { padding:18px 14px 48px; }
+  .now-five { font-size:17px; }
+  .region-head .right { margin-left:0; width:100%; }
+  .now-grid, .period-grid { grid-template-columns:1fr; }
+  .strip { grid-template-columns:28px minmax(0, 1fr); padding:12px 12px 11px 10px; }
+  .strip .glyphs { grid-row:1 / span 4; }
+  .strip .head { flex-wrap:wrap; gap:4px 10px; }
+  .strip .t { white-space:normal; }
+  .strip .meta { grid-column:2; text-align:left; white-space:normal; }
+  .strip .bar { grid-column:2; }
+  .strip .said { grid-column:2; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .scale { --track:110px; }
+  .queue li { grid-template-columns:22px 20px minmax(0, 1fr); }
+  .queue .lt, .queue .why { grid-column:3; }
+  .sheet.big { padding:18px 12px 18px; min-height:0; }
+  .sheet .t1 { top:120px; } .sheet .t2 { display:none; }
+  .sheet .mount img { max-height:300px; }
+  .sheet.big .lbl { position:static; width:auto; margin:14px 0 10px; }
+  .sheet.big .stamps { position:static; }
+  .figures { grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; }
+  .fig .v { font-size:28px; gap:6px; white-space:normal; }
+  .tier-tables { grid-template-columns:minmax(0, 1fr); }
+  .fig .l { letter-spacing:.03em; }
+  .chart-wide { display:none; } .chart-narrow { display:block; }
+}
+</style>
+</head>
+<body class="page-now" data-server-now="{{ captured_at }}">
+{{ DEFS }}
+{{ vine }}
+<div class="shell">
+<aside class="rail">
+  <a class="wordmark" href="/">{{ stage("ready", 18, "mark") }}<span>{{ g.name }}<small>context garden</small></span></a>
+  <nav class="nav">
+    <a href="/now1" class="on">Now 1</a>
+    <a href="/now2">Now 2</a>
+    <a href="/">Inbox <span class="count {{ 'hot' if g.inbox_decisions else '' }}">{{ g.inbox_decisions }}</span></a>
+    <a href="/board">Board</a>
+    <a href="/trellis">Trellis</a>
+    <a href="/events">Timeline</a>
+    <a href="/trials">Trials</a>
+    <a href="/runs">Runs</a>
+    <a href="/costs">Costs</a>
+    <a href="/config">Config</a>
+  </nav>
+  <div>
+    <h4>Phases</h4>
+    {% for ph in [p] + where.others if ph %}<a class="drawer" href="/phases/{{ ph.key }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="" width="38" height="58">{% else %}{{ plant(ph.plant, 34, 52) }}{% endif %}</span><span class="k"><b>{{ ph.name }}{% if ph.frozen %} <span class="badge hot">frozen</span>{% endif %}</b><i>Plate {{ ph.plate }} · {{ ph.latin }}</i><span>{{ ph.product }} · {{ ph.total }} tasks</span></span></a>{% endfor %}
+    {% if where.closed %}<a class="drawer" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>{{ where.closed | length }} closed phases</span></span></a>{% endif %}
+  </div>
+  <div class="rail-running">
+    <h4>Running now</h4>
+    <div class="running-now">{% for s in runs %}<div class="r"><span class="dot"></span><a href="/tasks/{{ s.task }}">{{ s.task }}</a><span>{{ s.mode }}{% if s.model %} · {{ s.model }}{% endif %} · {{ minutes(s.elapsed_s) }}</span></div>{% else %}<span class="faint">nothing running</span>{% endfor %}</div>
+  </div>
+  <div class="foot"><span>scheduler loop on · tick {{ g.last_tick[11:19] }}Z</span></div>
+</aside>
+<main>
+<div class="page-head">
+  <div><h1>Now</h1></div>
+  <div class="tools mock-tools"><span class="badge">mock · snapshot {{ captured_at[:16] }}Z</span><button class="quiet" type="button" data-theme-toggle>dark / light</button><button class="quiet" type="button" data-gallery-toggle>states</button><button class="quiet" type="button" data-arrive title="insert a strip as a dispatch would">a run arrives</button></div>
+</div>
+<p class="now-five">
+  {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ (g.dispatch_paused.at or '')[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
+  <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
+  {%- if next.dispatch %} <a href="#next">Next</a>: {{ short(next.dispatch[0].title) }}{% if next.dispatch | length > 1 %}, then {{ short(next.dispatch[1].title) }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
+  {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
+  <a href="#period">Last hour</a>: {{ hour.merged }} merged, ${{ '%.2f' % hour.cost }}.
+</p>
+<div class="now-live" aria-live="polite"></div>
+
+<section class="region" id="now">
+  <div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span>
+    <span class="right">{{ g.worker_busy }} of {{ g.max_parallel }} worker slots · {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if g.dispatch_paused %} <span class="stamp">paused</span>{% endif %}</span></div>
+  {% for s in runs %}{{ strip(s, "new" if loop.first else "") }}{% endfor %}
+  {% if not runs %}
+  <div class="specimen empty-sheet"><span class="tape"></span><b>Nothing running.</b>
+    {% if next.dispatch %}<p>Next tick in <span data-countdown>{{ g.tick_interval }}</span> s: it will dispatch <a href="/tasks/{{ next.dispatch[0].task }}">{{ short(next.dispatch[0].title) }}</a>{% if next.dispatch | length > 1 %} and <a href="/tasks/{{ next.dispatch[1].task }}">{{ short(next.dispatch[1].title) }}</a>{% endif %} into {{ free }} free slot{{ 's' if free != 1 }}.</p>
+    {% else %}<p>The garden is quiet. Nothing is ready: {{ g.drafts }} drafts wait for approval, {{ g.inbox_decisions }} cards wait on you in the Inbox. Next tick in <span data-countdown>{{ g.tick_interval }}</span> s polls PRs only.</p>{% endif %}</div>
+  {% endif %}
+  {% for s in hands %}{{ strip(s) }}{% endfor %}
+</section>
+
+<div class="now-grid">
+<section class="region" id="next">
+  <div class="region-head"><span class="eyebrow">Next</span><span class="lead">the order the tick will take</span>
+    <span class="right"><span class="tick">next tick in <span data-countdown>{{ g.tick_interval }}</span> s</span><span>{% if free %}{{ free }} slot{{ 's' if free != 1 }} free{% else %}no slot free: the first line waits for a run to finish{% endif %}</span></span></div>
+  {% if next.dispatch %}
+  <ol class="queue">
+    {% for q in next.dispatch[:8] %}
+    <li><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="lt" href="/tasks/{{ q.task }}">{{ q.title }}</a>
+      <span class="why"><span class="id">{{ q.task }}</span> · {{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
+    {% endfor %}
+  </ol>
+  {% if next.dispatch | length > 8 %}<a class="queue-more" href="/board?view=backlog">and {{ next.dispatch | length - 8 }} more →</a>{% endif %}
+  {% else %}<div class="empty">Nothing queued. Approve a draft on the Board to add work.</div>{% endif %}
+  {% set mq = next.merge %}
+  <div class="sub">
+    <h3>Merge queue</h3>
+    <ul>
+      {% if mq.head %}<li><a class="id" href="/tasks/{{ mq.head.task }}">{{ mq.head.task }}</a><span>{{ mq.head.title }}</span><span class="fact">rebased, waiting for its rollup · {% if mq.head.waits_on_ci %}CI {{ mq.head.checks or 'pending' }}{% else %}CI green: merges on the next tick{% endif %}</span></li>{% endif %}
+      {% for c in mq.candidates %}<li><a class="id" href="/tasks/{{ c.task }}">{{ c.task }}</a><span>{{ c.title }}</span><span class="fact {{ 'held' if c.blocked }}">{% if c.blocked %}held: {{ c.blocked }}{% else %}queued since {{ c.ready_at[11:16] }}Z{% endif %}</span></li>{% endfor %}
+      {% for r in mq.in_review %}<li><a class="id" href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.title }}</span><span class="fact">round {{ r.round }} of {{ r.max_rounds }} · CI {{ r.checks }}{% if r.reviewing %} · review running{% endif %}{% if r.blocked %} · {{ r.blocked }}{% endif %}</span></li>{% endfor %}
+      {% if not mq.head and not mq.candidates and not mq.in_review %}<li class="faint">no open PR</li>{% endif %}
+    </ul>
+    {% if mq.last_drop %}<p class="muted" style="margin-top:6px;font:12px/1.4 var(--mono)">last to leave the queue: {{ mq.last_drop.task }} · {{ mq.last_drop.reason }} · {{ mq.last_drop.at[11:16] }}Z</p>{% endif %}
+  </div>
+  {% if mq.waiting %}
+  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }} · {{ w.title }}</span><span class="fact {{ 'held' if w.gate == 'overdue' }}">{{ w.why }}{% if w.gate == 'overdue' %} · <a href="/tasks/{{ w.task }}#log">open the log</a>{% endif %}</span></li>{% endfor %}</ul></div>
+  {% endif %}
+</section>
+
+<section class="region" id="where">
+  <div class="region-head"><span class="eyebrow">Where we are</span><span class="lead">{% if p %}{{ p.name }}, {{ p.stage_word }}{% else %}no open phase{% endif %}</span></div>
+  {% if p %}
+  {{ sheet(p) }}
+  {% if p.retro %}<p class="muted" style="margin:8px 0 0;font:12px/1.4 var(--mono)">retro verdict {{ p.retro.get('verdict', '') }} · {{ p.retro.get('status', '') }}{% if p.retro.get('by') %} · accepted by {{ p.retro.get('by') }}{% endif %}{% if p.retro.get('at') %} at {{ p.retro.get('at')[:16] }}Z{% endif %}</p>{% endif %}
+  <ol class="goals">
+    {% for goal in p.goals %}<li><span class="n">{{ goal.n }}</span><span>{{ goal.label }}</span>{% if goal.mark %}<span class="fr">{{ stage(goal.mark, 16) }} {{ goal.done }} of {{ goal.total }} · {{ goal.word }}</span>{% else %}<span class="fr unlinked">unlinked</span>{% endif %}</li>{% endfor %}
+  </ol>
+  {% else %}<div class="empty">no open phase: <code>garden new-phase</code> starts the next</div>{% endif %}
+  {% if where.others %}<div class="others">{% for ph in where.others %}{{ sheet(ph, false) }}{% endfor %}</div>{% endif %}
+  {% if where.closed %}<div class="closed-row">{% for ph in where.closed %}<a href="/phases/{{ ph.key }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="">{% else %}{{ plant(ph.plant, 40, 60) }}{% endif %}</span><span>{{ ph.name }} · {{ ph.plate }}</span><span class="stamp ink">pressed</span></a>{% endfor %}</div>{% endif %}
+</section>
+</div>
+
+<section class="region" id="period">
+  <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
+    <span class="right filters" style="margin-bottom:0">{% for key, label in [("hour", "last hour"), ("today", "today"), ("24h", "last 24 hours"), ("phase", "this phase")] %}<a href="?window={{ key }}" data-window="{{ key }}" class="{{ 'on' if key == 'hour' }}">{{ label }}</a>{% endfor %}</span></div>
+  {% for key, w in period.items() %}
+  <div class="window" data-window-panel="{{ key }}" {% if key != 'hour' %}hidden{% endif %}>
+    {% if w.runs or w.merged %}
+    <div class="figures">
+      <div class="fig"><div class="v">{{ w.merged }}</div><div class="l">merged{% if w.merged_ids %} · {{ w.merged_ids[:4] | join(', ') }}{% if w.merged_ids | length > 4 %} and {{ w.merged_ids | length - 4 }} more{% endif %}{% endif %}</div></div>
+      <div class="fig"><div class="v">{% if w.first_pass.reviewed %}{{ (100 * w.first_pass.approved / w.first_pass.reviewed) | round | int }} %<small>{{ w.first_pass.approved }} of {{ w.first_pass.reviewed }}</small>{% else %}—{% endif %}</div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">${{ '%.2f' % w.cost }}<small>{{ w.runs }} runs {% if w.throughput | length > 1 %}{{ spark(w.throughput) }}{% endif %}</small></div><div class="l">cost{% if w.throughput | length > 1 %} · runs finished per {{ w.bucket }}{% endif %}</div></div>
+      <div class="fig"><div class="v">{{ money(w.per_accepted) }}</div><div class="l">per accepted task</div></div>
+    </div>
+    <div class="period-grid">
+      <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ chart(w, 640) }}</div><div class="chart-narrow">{{ chart(w, 360) }}</div>
+        {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}</div>
+      <div>
+        <div class="eyebrow">Runs by harness and model</div>
+        <div class="scroll"><table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          {% for row in w.by_model %}<tr><td class="mono">{{ row.who }}</td><td>{{ row.runs }}</td><td>${{ '%.2f' % row.cost }}</td><td>${{ '%.2f' % (row.cost / row.runs) }}</td></tr>{% endfor %}
+        </table></div>
+        <div class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</div>
+      </div>
+    </div>
+    {% set tiers = w.tiers %}
+    <div class="tiers">
+      <div class="eyebrow">By difficulty and model</div>
+      {% if tiers.models %}
+      <p class="lead">the five figures <code>garden metrics</code> reports, each cell with its n. Along a row the ground runs from green at the best value to red at the worst, <span class="mark best">▲</span> and <span class="mark worst">▽</span> mark the two ends; a cell under {{ tiers.thin }} samples is faint and marked <span class="mark thin">~</span>, and is never an end</p>
+      <div class="tier-tables {{ 'wide' if tiers.models | length > 5 }}">
+        {% for m in tiers.metrics %}
+        <div class="scroll"><table class="tier">
+          <caption>{{ m.label }} <small>{{ 'higher' if m.better == 'high' else 'lower' }} is better · n = {{ m.n_unit }}</small></caption>
+          <tr><th></th>{% for model in tiers.models %}{% set parts = model.split('-', 1) %}<th>{% if parts | length == 2 %}<span class="vendor">{{ parts[0] }}-</span>{{ parts[1] }}{% else %}{{ model }}{% endif %}</th>{% endfor %}</tr>
+          {% for d in ("easy", "medium", "hard") %}
+          <tr><th>{{ d }}</th>{% for model in tiers.models %}{% set c = m.rows[d].get(model) %}<td class="{{ 'scaled' if c and c.rank is not none }} {{ 'best' if c and c.best }} {{ 'worst' if c and c.worst }} {{ 'thin' if c and c.thin }}"{% if c and c.rank is not none %} style="--k:{{ c.rank }}"{% endif %}>{% if c %}<b>{% if c.best %}<span class="mark best" title="best of the row">▲</span>{% elif c.worst %}<span class="mark worst" title="worst of the row">▽</span>{% endif %}{{ cell(m.unit, c.value) }}</b><small>{% if c.thin %}<span class="mark thin" title="fewer than {{ tiers.thin }} samples">~</span>{% endif %}n {{ c.n }}</small>{% else %}<span class="faint">—</span>{% endif %}</td>{% endfor %}</tr>
+          {% endfor %}
+        </table></div>
+        {% endfor %}
+      </div>
+      {% else %}<p class="lead">No model did work in this window.</p>{% endif %}
+    </div>
+    {% else %}<div class="empty">No runs finished in this window.</div>{% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<section class="gallery" id="gallery" hidden>
+  <h2>States</h2>
+  <p>A design gallery, not part of the page: one strip per state, and the empty and quiet sheets. Each is the same markup as above with different data.</p>
+  {% set base = {"task": "CG-236", "title": "A trial winner's PR enters the review queue on its own", "run": "x", "mode": "work", "stage": "", "harness": "claude", "model": "claude-sonnet-5", "difficulty": "easy", "said": "", "spend_usd": 0.41, "tokens_so_far": 0, "no_process": false, "glyph": "running", "dot": "running", "kind": "run", "state": "running", "started_at": "2026-09-06T01:10:00+00:00"} %}
+  <template id="arrival">{{ strip(dict(base, task="CG-215", title="Onboarding: garden onboard drafts a garden from an existing repository", difficulty="hard", elapsed_s=0, typical_s=2700, said="", spend_usd=none, tokens_so_far=0, started_at=captured_at)) }}</template>
+  <div class="g"><h4>running, priced from the stream</h4>{{ strip(dict(base, elapsed_s=420, typical_s=1080, said="Tests pass; writing the PR description.", spend_usd=0.41)) }}</div>
+  <div class="g"><h4>running, no price table for the model: tokens instead of dollars</h4>{{ strip(dict(base, elapsed_s=420, typical_s=1080, said="Tests pass; writing the PR description.", spend_usd=none, tokens_so_far=163063)) }}</div>
+  <div class="g"><h4>running, past its typical time</h4>{{ strip(dict(base, elapsed_s=1860, typical_s=1080, said="Tests pass; writing the PR description.", spend_usd=1.12)) }}</div>
+  <div class="g"><h4>running, fewer than three finished runs to take a typical from</h4>{{ strip(dict(base, elapsed_s=300, typical_s=none, said="Reading the brief.", spend_usd=0.03)) }}</div>
+  <div class="g"><h4>finishing: done (holds eight seconds, then leaves)</h4>{{ strip(dict(base, elapsed_s=1140, typical_s=1080, glyph="done", dot="done", verdict="done · $1.42", said="Committed the change and the test.", state="finishing")) }}</div>
+  <div class="g"><h4>finishing: a review's verdict</h4>{{ strip(dict(base, mode="review", glyph="done", dot="in_review", elapsed_s=300, typical_s=290, verdict="approve · 4 of 4 criteria", said="All criteria are met and verified against the diff.", state="finishing")) }}</div>
+  <div class="g"><h4>failed</h4>{{ strip(dict(base, glyph="failed", dot="failed", elapsed_s=2700, typical_s=1080, verdict="failed · exit 1", said="No space left on device.", state="failed")) }}</div>
+  <div class="g"><h4>a run record without a process (a slot held until a tick reaps it)</h4>{{ strip(dict(base, mode="revise", harness="", model="", no_process=true, elapsed_s=3213, typical_s=360, started_at="2026-09-06T01:01:02")) }}</div>
+  <div class="g"><h4>needs you</h4>{{ strip({"kind": "needs_you", "state": "needs_you", "task": "CG-215", "title": "Onboarding skill and command", "reason": "Should the fixture be a Go project or a Node project? The spec names neither.", "glyph": "waiting_human", "dot": "waiting_human"}) }}</div>
+  <div class="g"><h4>held</h4>{{ strip({"kind": "held", "state": "held", "task": "CG-250", "title": "A reopen verdict is a working process", "reason": "automated review rounds used (4 of 4); a person decides whether to merge, revise by hand or close", "glyph": "in_review", "dot": "changes_requested"}) }}</div>
+  <div class="g"><h4>paused</h4>{{ strip({"kind": "paused", "state": "paused", "task": "", "title": "codex harness paused", "reason": "quota: usage limit reached · since 00:31Z · the probe resumes it on its own", "glyph": "blocked", "dot": "blocked"}) }}</div>
+  <div class="g"><h4>empty: nothing running, work queued</h4><div class="specimen empty-sheet"><span class="tape"></span><b>Nothing running.</b><p>Next tick in 42 s: it will dispatch <a href="/tasks/CG-237">The not-logged-in check reads a worker's prose as an…</a> and <a href="/tasks/CG-215">Onboarding skill and command</a> into 5 free slots.</p></div></div>
+  <div class="g"><h4>quiet: nothing running, nothing to dispatch</h4><div class="specimen empty-sheet"><span class="tape"></span><b>The garden is quiet.</b><p>Nothing is ready: 3 drafts wait for approval, 2 cards wait on you in the Inbox. Next tick in 42 s polls PRs only.</p></div></div>
+  <div class="g"><h4>next: lines the tick would skip, and the merge queue with a head, a held candidate and a PR in review</h4>
+    <ol class="queue">
+      <li><span class="pos">1</span>{{ stage('ready', 18) }}<a class="lt" href="/tasks/CG-215">Onboarding skill and command</a><span class="why"><span class="id">CG-215</span> · priority 2 · work · hard → <span class="skip">harness paused</span></span></li>
+      <li><span class="pos">2</span>{{ stage('ready', 18) }}<a class="lt" href="/tasks/CG-222">The evaluation corpus for routing</a><span class="why"><span class="id">CG-222</span> · priority 3 · work · medium → <span class="skip">phase frozen</span></span></li>
+    </ol>
+    <div class="sub"><h3>Merge queue</h3><ul>
+      <li><a class="id" href="/tasks/CG-245">CG-245</a><span>Isolate planner execution from operator state</span><span class="fact">rebased, waiting for its rollup · CI pending</span></li>
+      <li><a class="id" href="/tasks/CG-251">CG-251</a><span>Cost per accepted task and first-pass approval per model, tier and harness</span><span class="fact held">held: the automated review verdict is request_changes, not approve</span></li>
+      <li><a class="id" href="/tasks/CG-244">CG-244</a><span>Reserve retro task IDs and survive duplicate records</span><span class="fact">round 1 of 4 · CI success · only 1 review round so far, need 2</span></li>
+    </ul></div></div>
+  <div class="g"><h4>reviews waiting: one line per gate the scheduler applies, in its order</h4>
+    <div class="sub"><h3>Reviews waiting</h3><ul>
+      <li><a class="id" href="/tasks/CG-242">CG-242</a><span>review · Hold untrusted config changes before live reload</span><span class="fact">dispatch paused: reviews start again with dispatch</span></li>
+      <li><a class="id" href="/tasks/CG-242">CG-242</a><span>review · Hold untrusted config changes before live reload</span><span class="fact">its revise record has no process; the tick that reaps it starts the review</span></li>
+      <li><a class="id" href="/tasks/CG-250">CG-250</a><span>review · A reopen verdict is a working process</span><span class="fact">waits for its revise run to finish</span></li>
+      <li><a class="id" href="/tasks/CG-244">CG-244</a><span>persona:security · Reserve retro task IDs</span><span class="fact">claude harness paused</span></li>
+      <li><a class="id" href="/tasks/CG-245">CG-245</a><span>review · Isolate planner execution from operator state</span><span class="fact">no review slot (3 of 3 busy)</span></li>
+      <li><a class="id" href="/tasks/CG-236">CG-236</a><span>review · A trial winner's PR enters the review queue</span><span class="fact">queued: the next tick starts it</span></li>
+      <li><a class="id" href="/tasks/CG-237">CG-237</a><span>review · The not-logged-in check reads a worker's prose</span><span class="fact held">still queued after a tick and no gate explains it: see the task's log · <a href="/tasks/CG-237#log">open the log</a></span></li>
+    </ul></div></div>
+  <div class="g"><h4>dispatch paused (the region header)</h4><div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span><span class="right">3 of 5 worker slots · 0 of 3 review slots <span class="stamp">paused</span> · by cli at 00:31Z · quota on both accounts</span></div></div>
+  <div class="g"><h4>no runs in the window</h4><div class="empty">No runs finished in this window.</div></div>
+</section>
+</main>
+</div>
+<script>
+// The live clock (docs/design/now-1.md, "Live clocks"). This block is the one the build lifts
+// into base.html: it ticks every element with data-started (a Now strip, a Board card, the task
+// page's run line) from the run's start time and the page's own clock, offset once against the
+// server's (data-server-now on <body>), so the figure matches the run page. Nothing here needs
+// the events stream; the stream only adds, ends or replaces an element.
+(function () {
+  var serverNow = Date.parse(document.body.dataset.serverNow || "");
+  var offset = isNaN(serverNow) ? 0 : serverNow - Date.now();
+  function fmt(s) {
+    s = Math.max(0, Math.floor(s));
+    var two = function (n) { return (n < 10 ? "0" : "") + n; };
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.floor(s / 60) + ":" + two(s % 60);
+    return Math.floor(s / 3600) + ":" + two(Math.floor(s % 3600 / 60)) + ":" + two(s % 60);
+  }
+  function tick() {
+    var now = Date.now() + offset;
+    document.querySelectorAll("[data-started]:not([data-stopped])").forEach(function (el) {
+      var started = Date.parse(el.dataset.started);
+      if (isNaN(started)) return;
+      var s = (now - started) / 1000;
+      var digits = el.querySelector("[data-elapsed]");
+      if (digits) digits.textContent = fmt(s);
+      var typical = parseFloat(el.dataset.typical);
+      if (!(typical > 0)) return;
+      var r = s / typical;
+      var scale = el.querySelector(".scale");
+      if (scale) {
+        scale.style.setProperty("--r", Math.min(r, 1).toFixed(3));
+        scale.style.setProperty("--o", Math.min(Math.max(r - 1, 0), 0.5).toFixed(3));
+      }
+      var longer = el.querySelector("[data-longer]");
+      if (longer) longer.hidden = r <= 1;
+    });
+  }
+  tick();
+  setInterval(tick, 1000);
+  window.gardenClock = { fmt: fmt, now: function () { return Date.now() + offset; } };
+})();
+// Mock-only controls: the theme and gallery toggles, the window switch, the countdown and a
+// button that lets a run arrive so the slide-in and the count from zero can be seen.
+(function () {
+  var q = new URLSearchParams(location.search);
+  if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
+  if (q.get("gallery") === "1") document.getElementById("gallery").hidden = false;
+  var themeBtn = document.querySelector("[data-theme-toggle]");
+  themeBtn.addEventListener("click", function () {
+    var root = document.documentElement;
+    var dark = root.dataset.theme === "dark" || (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+    root.dataset.theme = dark ? "light" : "dark";
+  });
+  document.querySelector("[data-gallery-toggle]").addEventListener("click", function () {
+    var gal = document.getElementById("gallery"); gal.hidden = !gal.hidden; if (!gal.hidden) gal.scrollIntoView();
+  });
+  var initial = q.get("window") || "hour";
+  function show(key) {
+    document.querySelectorAll("[data-window-panel]").forEach(function (el) { el.hidden = el.dataset.windowPanel !== key; });
+    document.querySelectorAll("[data-window]").forEach(function (a) { a.classList.toggle("on", a.dataset.window === key); });
+  }
+  show(initial);
+  document.querySelectorAll("[data-window]").forEach(function (a) {
+    a.addEventListener("click", function (e) { e.preventDefault(); show(a.dataset.window); });
+  });
+  var left = {{ g.tick_interval }};
+  setInterval(function () {
+    left = left > 0 ? left - 1 : {{ g.tick_interval }};
+    document.querySelectorAll("[data-countdown]").forEach(function (el) { el.textContent = left; });
+  }, 1000);
+  // A run arrives: the template strip is cloned with its start time set to now, inserted at the
+  // top of Now at no height, and grows in; the clock picks it up on its next tick and counts
+  // from zero. The build does the same on a `dispatch` event.
+  document.querySelector("[data-arrive]").addEventListener("click", function () {
+    var strip = document.getElementById("arrival").content.firstElementChild.cloneNode(true);
+    strip.dataset.started = new Date(window.gardenClock.now()).toISOString();
+    strip.classList.add("arriving", "new");
+    var region = document.getElementById("now");
+    region.insertBefore(strip, region.querySelector(".region-head").nextSibling);
+    requestAnimationFrame(function () { requestAnimationFrame(function () {
+      strip.classList.add("arrive"); strip.classList.remove("arriving");
+      setTimeout(function () { strip.classList.remove("new"); }, 3000);
+    }); });
+  });
+})();
+</script>
+</body>
+</html>
