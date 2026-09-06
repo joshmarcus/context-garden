@@ -230,10 +230,11 @@ class FenceMixin:
         violations: list[dict[str, Any]] = []
         if saved_manifest and manifest_path.read_text() != saved_manifest:
             rel = str(manifest_path.relative_to(root))
-            if self._worker_named(transcript, root, rel, worktree):
+            evidence = self._worker_write_evidence(transcript, root, rel, worktree)
+            if evidence:
                 manifest_path.write_text(saved_manifest)
                 violations.append({"label": "the live garden", "path": str(manifest_path), "commits": [],
-                                   "files": [rel], "foreign": [], "reverted": True})
+                                   "files": [rel], "foreign": [], "evidence": {rel: evidence}, "reverted": True})
         for entry in manifest:
             path = Path(entry["abs"])
             rel = str(entry["rel"])
@@ -243,7 +244,8 @@ class FenceMixin:
                 continue
             if now_sha == entry.get("sha"):
                 continue  # unchanged
-            if not self._worker_named(transcript, root, rel, worktree):
+            evidence = self._worker_write_evidence(transcript, root, rel, worktree)
+            if not evidence:
                 continue  # the scheduler's own state.json write, or a person's config edit
             reverted = False
             if rel == str(self.state.path.relative_to(root)):
@@ -270,7 +272,7 @@ class FenceMixin:
                 except OSError as e:  # noqa: BLE001
                     self.log(f"fence: could not remove {rel}: {e}")
             violations.append({"label": "the live garden", "path": str(path), "commits": [],
-                               "files": [rel], "foreign": [], "reverted": reverted})
+                               "files": [rel], "foreign": [], "evidence": {rel: evidence}, "reverted": reverted})
         return violations
 
     # ---- the git-internals guard (CG-239) ----------------------------------
@@ -430,20 +432,18 @@ class FenceMixin:
         rep.transitions.append(f"{task.id} -> failed (git guard)")
 
     @staticmethod
-    def _worker_named(transcript: str, repo: Path, rel: str, worktree: Path | None = None) -> bool:
-        """True if the worker's transcript names this path, so the change is attributable to
-        the worker rather than to a person editing the live garden or the scheduler's own git.
+    def _worker_write_evidence(transcript: str, repo: Path, rel: str,
+                               worktree: Path | None = None) -> list[str]:
+        """Return tool-call evidence that a worker wrote ``repo / rel``.
 
-        `claude`'s output (a single result JSON, or stream-json tool events) carries the
-        worker's `Edit`/`Write` `file_path`, the `Bash` commands it ran, and its final
-        message — all as substrings of stdout. A path the worker touched appears there by its
-        absolute form; a path a person changed while the run was live does not. We also match
-        the path as it would be written relative to the worktree or its parent (the worker's
-        likely cwd), so a fenced path named across tool calls as `../../../garden.yaml` is
-        still attributed. Matching is always by a full path — never a bare filename — so a
-        person's edit that merely shares a name is not swept up."""
+        A final answer is a worker claim, not audit evidence: an operator can make a commit
+        while a run is live and the worker can mention its path in its summary.  Attribute a
+        live-repo change only when the captured stream contains an Edit/Write path or a Bash
+        command naming it.  This makes CLI, web, and ``garden commit`` activity external by
+        default, which is safer than discarding a completed worker run on a false positive.
+        """
         if not transcript:
-            return False
+            return []
         target = repo / rel
         candidates = {str(target)}
         try:
@@ -456,7 +456,39 @@ class FenceMixin:
                 candidates.add(os.path.relpath(str(target), str(anchor)))
             except (OSError, ValueError):
                 pass
-        return any(c in transcript for c in candidates)
+        evidence: list[str] = []
+        for line in transcript.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for tool in FenceMixin._tool_uses(event):
+                name = str(tool.get("name") or "")
+                inputs = tool.get("input")
+                if not isinstance(inputs, dict):
+                    continue
+                if name not in {"Edit", "Write", "Bash"}:
+                    continue
+                values = [str(value) for value in inputs.values() if isinstance(value, str)]
+                matched = next((candidate for candidate in candidates
+                                if any(candidate in value for value in values)), "")
+                if matched:
+                    evidence.append(f"{name} tool call names {rel}")
+        return evidence
+
+    @staticmethod
+    def _tool_uses(value: Any) -> list[dict[str, Any]]:
+        """Extract tool-use objects from Claude's stream-json event envelope."""
+        found: list[dict[str, Any]] = []
+        if isinstance(value, dict):
+            if value.get("type") == "tool_use" and isinstance(value.get("input"), dict):
+                found.append(value)
+            for child in value.values():
+                found.extend(FenceMixin._tool_uses(child))
+        elif isinstance(value, list):
+            for child in value:
+                found.extend(FenceMixin._tool_uses(child))
+        return found
 
     def _fence_check(self, task: Task, run: Run | None = None) -> list[dict[str, Any]]:
         """Compare each guarded repo against its dispatch snapshot; revert and report only the
@@ -487,7 +519,8 @@ class FenceMixin:
                 # A HEAD move (or write) that only touched task files or .garden/ is the
                 # scheduler's own (e.g. `garden sync`): not a worker escape.
                 continue
-            attributed = [p for p in changed if self._worker_named(transcript, path, p, worktree)]
+            evidence = {p: self._worker_write_evidence(transcript, path, p, worktree) for p in changed}
+            attributed = [p for p in changed if evidence[p]]
             foreign = [p for p in changed if p not in attributed]
             if not attributed:
                 # Nothing here is the worker's: a person's edit to the live garden, or a HEAD
@@ -500,7 +533,8 @@ class FenceMixin:
             commits = gitops.commits_between(path, head_before, head_now) if reset else []
             self._fence_revert(path, head_before, reset, attributed)
             violations.append({"label": str(before.get("label") or path.name), "path": path_str,
-                               "commits": commits, "files": attributed, "foreign": foreign, "reverted": True})
+                               "commits": commits, "files": attributed, "foreign": foreign,
+                               "evidence": {p: evidence[p] for p in attributed}, "reverted": True})
         return guard + violations
 
     def _fence_revert(self, repo: Path, head_before: str, reset: bool, touched: list[str]) -> None:
@@ -517,28 +551,52 @@ class FenceMixin:
         except gitops.GitError as e:
             self.log(f"fence: revert in {repo} was incomplete: {e}")
 
+    def _fence_kept_worktree_files(self, task: Task, run: Run) -> list[str]:
+        """List worker-worktree changes left intact after a live-garden violation."""
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not worktree.exists() or not gitops.is_repo(worktree):
+            return []
+        changed = {self._porcelain_path(line) for line in gitops.status_lines(worktree)}
+        base = run.base or self.base_for(task)
+        try:
+            changed.update(gitops.changed_files(worktree, gitops.base_ref(worktree, base), "HEAD"))
+        except gitops.GitError:
+            pass
+        return sorted(path for path in changed if path)
+
     def _fence_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
         parts = []
         foreign_seen = False
         kept_seen = False
+        reported_files: set[str] = set()
         for v in violations:
-            # Lead with the operator-critical facts (which repo, which files) and put the
-            # long absolute path last, so a truncated Inbox card still names what was touched.
+            # Lead with the operator-critical facts, so a truncated Inbox card still names
+            # the path and the transcript evidence that attributed it.
             bits = []
-            if v["files"]:
-                if not v.get("reverted", True):
-                    kept_seen = True
-                bits.append("wrote " + ", ".join(v["files"]))
+            files = [path for path in v["files"] if path not in reported_files]
+            reported_files.update(files)
+            if not files:
+                continue
+            if not v.get("reverted", True):
+                kept_seen = True
+            bits.append("wrote " + ", ".join(files))
+            proof = [item for path in files for item in v.get("evidence", {}).get(path, [])]
+            if proof:
+                bits.append("transcript evidence: " + "; ".join(proof))
             if v["commits"]:
                 bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
             if v.get("foreign"):
                 foreign_seen = True
                 bits.append("also changed (left in place, not attributed to the worker): "
                             + ", ".join(v["foreign"]))
-            parts.append(f"{v['label']}: " + " and ".join(bits) + f" ({v['path']})")
+            if bits:
+                parts.append(f"{v['label']}: " + " and ".join(bits))
         card = "worker wrote outside its worktree; the writes it made were reverted. Touched " + " | ".join(parts)
         if kept_seen:
             card += " — some paths the scheduler owns (e.g. .garden/state.json) could not be reverted; inspect them."
+        kept = self._fence_kept_worktree_files(task, run)
+        if kept:
+            card += " — worktree writes kept: " + ", ".join(kept) + "."
         if foreign_seen:
             card += " — the un-attributed changes were left for a person to check."
         self.state.get(task.id)["needs_human"] = card

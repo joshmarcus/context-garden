@@ -225,7 +225,7 @@ def test_fence_restores_attributed_sibling_run_output_and_audit_manifest(sched):
 
     manifest = run.path / "fence_guard.json"
     before = manifest.read_text()
-    (run.path / "stdout.json").write_text(json.dumps({"result": f"redirect {manifest}"}))
+    (run.path / "stdout.json").write_text(_tool_transcript(str(manifest)))
     manifest.write_text("worker redirect\n")
     violations = sched._fence_guard_check(task, run)
     assert violations and str(manifest.relative_to(sched.store.root)) in violations[0]["files"]
@@ -264,12 +264,16 @@ def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, 
 
 
 def _run_naming(sched, task_id: str, *paths: str):
-    """A fake run whose stdout.json names the given paths, as a real worker's transcript
-    (Edit/Write file_path, Bash commands, final message) would."""
+    """A fake run whose tool transcript records shell writes to the given paths."""
     run = sched.runs.new_run(task_id, "local")
-    result = {"type": "result", "result": "I edited " + " and ".join(paths) + "."}
-    (run.path / "stdout.json").write_text(json.dumps(result))
+    (run.path / "stdout.json").write_text(_tool_transcript(*paths))
     return run
+
+
+def _tool_transcript(*paths: str) -> str:
+    return "\n".join(json.dumps({"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "name": "Bash", "input": {"command": f"printf worker > {path}"},
+    }]}}) for path in paths)
 
 
 def test_fence_ignores_scheduler_owned_commits(sched, tmp_path):
@@ -319,6 +323,32 @@ def test_fence_leaves_changes_the_worker_did_not_make(sched, tmp_path):
     assert (clone / "config.yaml").read_text() == "changed by a person\n"
 
 
+def test_operator_commit_during_run_is_not_attributed_from_final_prose(sched, garden, monkeypatch):
+    """Replay the Now-page incident: a person commits a spec while a completed worker run
+    is waiting to be reaped. Its final prose mentions the spec, but no worker tool did."""
+    _init_repo(garden)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    monkeypatch.setattr(sched, "_pre_pr_specs", lambda task: [])
+
+    sched.tick()  # dispatch; the worker commits in its own worktree and exits
+    spec = garden / "demo" / "p1" / "specs" / "now-page.md"
+    spec.write_text("operator edit\n")
+    _git("add", "-A", cwd=garden)
+    _git("commit", "-q", "-m", "operator: revise Now spec", cwd=garden)
+
+    run = sched.runs.latest("DM-001")
+    assert run is not None
+    result = json.loads(run.stdout_text())
+    result["result"] += f"\nI saw {spec}."  # a claim is not transcript evidence
+    (run.path / "stdout.json").write_text(json.dumps(result))
+
+    sched.tick()  # reap completes normally instead of fencing the operator's commit
+
+    assert sched.store.task("DM-001").status.value == "in_review"
+    assert spec.read_text() == "operator edit\n"
+    assert not _attention_card(sched, "DM-001")
+
+
 def test_fence_reports_foreign_changes_alongside_the_reverted_ones(sched, tmp_path):
     """When the worker did escape, an interleaved human/other change in the same repo is
     reported on the card but left in place, not swept away with the worker's revert."""
@@ -335,6 +365,24 @@ def test_fence_reports_foreign_changes_alongside_the_reverted_ones(sched, tmp_pa
     assert violations[0]["foreign"] == ["person.txt"]    # reported, left in place
     assert not (clone / "worker.py").exists()             # the escape is undone
     assert (clone / "person.txt").read_text() == "a person's edit\n"  # left alone
+
+
+def test_live_garden_escape_logs_tool_evidence_and_keeps_worktree_writes(sched, garden, monkeypatch):
+    _init_repo(garden)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+
+    sched.tick()
+    worktree = sched.worktree_for(sched.store.task("DM-001"))
+    worker_output = worktree / "worker-output.txt"
+    assert worker_output.exists()
+    sched.tick()
+
+    card = sched.state.get("DM-001")["needs_human"]
+    assert "transcript evidence: Bash tool call names garden.yaml" in card
+    assert "worktree writes kept:" in card and "worker-output.txt" in card
+    assert worker_output.exists()
 
 
 def test_fence_attributes_paths_named_relative_to_the_worktree(sched, tmp_path):
