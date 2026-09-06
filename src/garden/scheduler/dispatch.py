@@ -332,6 +332,9 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
+        # Capture this before rendering the brief.  A task edit made after this
+        # point belongs to the next revise note, not this worker's contract.
+        criteria_snapshot = parse_criteria(task.body)
         if mode == "rebase":
             from ..brief import rebase_brief
 
@@ -339,7 +342,9 @@ class DispatchMixin:
                 self.store, task, branch=branch, base=base,
                 hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []))
         else:
-            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
+                                stack=stack, qa=qa, commits_ahead=commits_ahead,
+                                criteria_snapshot=criteria_snapshot)
             text = prompt_override or brief.text
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.start_head = start_head
@@ -349,7 +354,7 @@ class DispatchMixin:
         run.session_id = session_id
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
-        run.env_snapshot["criteria"] = parse_criteria(task.body)
+        run.env_snapshot["criteria"] = criteria_snapshot
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())
