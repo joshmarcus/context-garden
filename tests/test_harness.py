@@ -328,6 +328,29 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
+@pytest.mark.parametrize("persona, cost", [
+    ("security", 5.12),
+    ("designer", 5.38),
+    ("product-manager", 5.67),
+    ("user", 5.84),
+])
+def test_replay_discarded_persona_outputs_keeps_done_and_cost(persona, cost):
+    """Replay the four phase-04 persona reports that were discarded by the old guard."""
+    h = Harness("claude", {"output_format": "stream-json"})
+    report = (f"Persona: {persona}. The day's not logged in outage was discussed, "
+              "but the reviewed work completed successfully. " * 30)
+    stdout = json.dumps({
+        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "result": report + '\nGARDEN_RESULT: {"status":"done"}',
+        "usage": {"input_tokens": 1}, "total_cost_usd": cost,
+    })
+
+    out = h.parse(stdout)
+
+    assert out["env_error"] is False and out["env_kind"] == ""
+    assert out["result"]["status"] == "done" and out["cost_usd"] == cost
+
+
 def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():
     """A worker that reads harness.py prints the quota pattern into its transcript; that is
     not a limit. The pattern counts in the error text, on stderr, or as a short output with
