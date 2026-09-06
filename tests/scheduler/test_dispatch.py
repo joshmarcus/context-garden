@@ -110,6 +110,22 @@ def test_brief_drops_reading_not_present_at_the_task_base(sched, tmp_path):
     assert "## Brief gaps" in brief and "- `src/onbranch.py`" in brief
 
 
+def test_revise_brief_names_rebase_conflict_without_github_feedback(sched):
+    from garden.model import Status
+
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    state = sched.state.get(task.id)
+    state["pending_feedback_rebase"] = True
+    sched.dispatch(task, mode="revise")
+    brief = (sched.runs.latest(task.id).path / "brief.md").read_text()
+    assert "## Concrete blocker" in brief
+    assert "GitHub has no open review comments" in brief
+    assert "rebase conflict" in brief
+
+
 def test_redispatched_work_brief_lists_prior_commits(sched):
     """CG-125: a fresh work round that lands on a worktree an interrupted attempt left with
     commits gets those commits listed in its brief ("Already on this branch"), so it builds
