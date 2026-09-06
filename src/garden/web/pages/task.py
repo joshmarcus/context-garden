@@ -140,8 +140,6 @@ def register(app: FastAPI, site: Site) -> None:
             prior_trials=prior_trials,
             trial_view=trial_view,
             design_files=_design_files(t, s),
-            trial_view=trial_view,
-            design_files=_design_files(t, s),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
