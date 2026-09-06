@@ -15,7 +15,6 @@ from ...store import Store
 from ..common import Site, product_checkout, product_design_root, render_md
 from ..trust import safe_relative_path
 
-
 # These are the artifacts a UI check or design task can render for a person.  Run directories
 # also contain transcripts, briefs and run metadata; those are never captures merely because a
 # worker mentions them in its result.
