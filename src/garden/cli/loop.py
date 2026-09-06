@@ -544,27 +544,6 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                   f"{rb['per_merge']:.2f}" if rb.get("per_merge") is not None else "",
                   f"${rb.get('cost_usd', 0.0):.2f}")
     console.print(table)
-    tiers = m["by_difficulty_model"]
-    if tiers["models"]:
-        for metric in tiers["metrics"]:
-            table = Table(title=f"{metric['label']} by difficulty and model (value · n; * best, - worst, ~ under {tiers['thin']} samples)")
-            table.add_column("difficulty")
-            for model in tiers["models"]:
-                table.add_column(model, justify="right")
-            for d in ("easy", "medium", "hard"):
-                cells = metric["rows"][d]
-                table.add_row(d, *[_tier_cell(cells.get(model), metric["unit"]) for model in tiers["models"]])
-            console.print(table)
-
-
-def _tier_cell(cell: dict | None, unit: str) -> str:
-    from ..events import format_cell
-
-    if not cell:
-        return "[dim]—[/dim]"
-    mark = "~" if cell["thin"] else ("*" if cell["best"] else ("-" if cell["worst"] else ""))
-    text = f"{format_cell(unit, cell['value'])} · {cell['n']}{mark}"
-    return f"[dim]{text}[/dim]" if cell["thin"] else (f"[bold]{text}[/bold]" if cell["best"] else text)
 
 
 @app.command(rich_help_panel=PANEL_BOARD)

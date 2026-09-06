@@ -79,21 +79,18 @@
   <span class="why">{{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
 {%- endmacro -%}
 
-{#- What a table's n counts, per difficulty-by-model metric (events.TIER_METRICS); the runs
-    table carries its own `n_word`. -#}
-{%- set N_WORD = {"cost_per_accepted": "accepted tasks", "first_pass": "tasks first reviewed", "work_run_cost": "work runs",
-                  "revise_rounds": "accepted tasks", "lead_time": "accepted tasks"} -%}
-
 {%- macro heat_table(m, columns, rows, thin, heads={}) -%}
 {#- One shaded table (the owner's rule, 2026-09-06 02:45Z): a column per model, a row per key,
     each cell its value over its n, the ground and the best/worst/thin marks decided in the data
-    (`events.shade_row`); the template only styles them. `heads` adds a line under a column's
+    (`events._rank_row`: `rank` runs from 0 at the row's best to 1 at its worst, and is unset
+    when the row has fewer than two solid cells, so no ground is drawn); the template only
+    styles them. `m.n_unit` says what a cell's n counts; `heads` adds a line under a column's
     name (the runs table's total cost and count). -#}
 <div class="scroll"><table class="tier">
-  <caption>{{ m.label }}<span class="dir">{{ 'lower is better' if m.better == 'low' else 'higher is better' }}{% set n_word = m.n_word | default(N_WORD.get(m.key | default(''), '')) %}{% if n_word %} · n = {{ n_word }}{% endif %}</span></caption>
+  <caption>{{ m.label }}<span class="dir">{{ 'lower is better' if m.better == 'low' else 'higher is better' }}{% if m.n_unit %} · n = {{ m.n_unit }}{% endif %}</span></caption>
   <tr><th></th>{% for col in columns %}{% set parts = col.split(':', 1) if ':' in col else col.split('-', 1) %}<th>{% if parts | length == 2 %}<span class="vendor">{{ parts[0] }}{{ ':' if ':' in col else '-' }}</span>{{ parts[1] }}{% else %}{{ col }}{% endif %}{% if heads.get(col) %}<span class="tot">{{ heads[col] }}</span>{% endif %}</th>{% endfor %}</tr>
   {% for d in rows %}
-  <tr><th>{{ d }}</th>{% for col in columns %}{% set c = m.rows[d].get(col) %}{% if c %}<td class="heat{{ ' best' if c.best }}{{ ' worst' if c.worst }}{{ ' thin' if c.thin }}" style="--g:{{ f.grown(c.heat) }}" title="{{ m.label }}, {{ d }}, {{ col }}: {{ f.cell(m.unit, c.value) }} over {{ c.n }} sample{{ 's' if c.n != 1 }}{% if c.thin %}; fewer than {{ thin }}, so not a verdict{% elif c.best %}; the best of the row{% elif c.worst %}; the worst of the row{% endif %}"><b>{{ f.cell(m.unit, c.value) }}</b><small>n {{ c.n }}{% if c.thin %} · thin{% elif c.best %} · best{% elif c.worst %} · worst{% endif %}</small></td>{% else %}<td><span class="faint">—</span></td>{% endif %}{% endfor %}</tr>
+  <tr><th>{{ d }}</th>{% for col in columns %}{% set c = m.rows[d].get(col) %}{% if c %}<td class="{{ 'heat' if c.rank is not none else 'plain' }}{{ ' best' if c.best }}{{ ' worst' if c.worst }}{{ ' thin' if c.thin }}"{% if c.rank is not none %} style="--g:{{ f.grown(c.rank) }}"{% endif %} title="{{ m.label }}, {{ d }}, {{ col }}: {{ f.cell(m.unit, c.value) }} over {{ c.n }} sample{{ 's' if c.n != 1 }}{% if c.thin %}; fewer than {{ thin }}, so not a verdict{% elif c.best %}; the best of the row{% elif c.worst %}; the worst of the row{% endif %}"><b>{{ f.cell(m.unit, c.value) }}</b><small>n {{ c.n }}{% if c.thin %} · thin{% elif c.best %} · best{% elif c.worst %} · worst{% endif %}</small></td>{% else %}<td><span class="faint">—</span></td>{% endif %}{% endfor %}</tr>
   {% endfor %}
 </table></div>
 {%- endmacro -%}

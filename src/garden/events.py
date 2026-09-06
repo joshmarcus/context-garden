@@ -414,21 +414,19 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             "by_difficulty_model": difficulty_by_model(events, tasks)}
 
 
-# The five difficulty-by-model tables (the owner's ask of 2026-09-06 02:30Z), in the order the
-# Now page shows them: the phase's two definition-of-done numbers first. `better` says which end
-# of the scale is the good one, so a row's best and worst cells are decided here, never in a
-# template; `unit` is what a renderer formats with.
-TIER_METRICS: tuple[tuple[str, str, str, str], ...] = (
-    ("cost_per_accepted", "cost per accepted task", "usd", "low"),
-    ("first_pass", "first-pass approval", "pct", "high"),
-    ("work_run_cost", "work-run cost", "usd", "low"),
-    ("revise_rounds", "revise rounds", "rounds", "low"),
-    ("lead_time", "median lead time", "hours", "low"),
+# The difficulty-by-model tables (the owner's ask, 2026-09-06 02:30Z), in the order they are
+# shown: the phase's two definition-of-done numbers first. `better` says which end of the scale
+# is the good one; `n_unit` says what a cell's n counts, so a caption can say it.
+DIFFICULTY_MODEL_METRICS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("cost_per_accepted", "cost per accepted task", "usd", "low", "accepted tasks"),
+    ("first_pass", "first-pass approval", "pct", "high", "tasks first reviewed"),
+    ("work_run_cost", "work-run cost", "usd", "low", "work runs"),
+    ("revise_rounds", "revise rounds", "rounds", "low", "accepted tasks"),
+    ("lead_time", "median lead time", "hours", "low", "accepted tasks"),
 )
-THIN_SAMPLES = 3  # a cell with fewer samples is shown faint and is never marked best or worst
-DIFFICULTY_ROWS = ("easy", "medium", "hard")
-# The runs that write a task's code: what a model is credited for.
-WORK_MODES = ("work", "revise", "resume", "trial")
+DIFFICULTIES = ("easy", "medium", "hard")
+WORK_MODES = ("work", "revise", "resume", "trial")  # the runs that write a task's code: what a model is credited for
+THIN_SAMPLE = 3  # a cell with fewer samples is shown faint and never marked best or worst
 
 
 def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
@@ -442,24 +440,24 @@ def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
     return model
 
 
-def shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
-    """Mark a row's cells so a table reads at a glance (the owner's rule, 2026-09-06 02:45Z):
-    `heat` runs from 0.0 at the row's best value to 1.0 at its worst, over every cell, for the
-    light green-to-red ground; `thin` flags a cell under `THIN_SAMPLES`; `best` and `worst`
-    are set only among the solid cells, and only when there are two or more of them, so a
-    single lucky run never reads as best of class."""
-    if not cells:
-        return
-    values = [c["value"] for c in cells.values()]
-    lo, hi = min(values), max(values)
-    for c in cells.values():
-        pos = (c["value"] - lo) / (hi - lo) if hi > lo else 0.0
-        c["heat"] = round(pos if better == "low" else 1.0 - pos, 3)
-        c["thin"] = c["n"] < THIN_SAMPLES
-        c["best"] = c["worst"] = False
+def _rank_row(cells: dict[str, dict[str, Any]], better: str) -> None:
+    """Place a row's cells on a scale from its best value (rank 0) to its worst (rank 1). The
+    scale is set by the solid cells (n at or above THIN_SAMPLE); a comparison needs two of them.
+    A thin cell is placed on that scale, clamped, but is never the best or the worst, so a
+    single lucky run cannot read as a verdict; the page shows it faint and marked. A flat row
+    (every solid value the same) sits at rank 0 with no best or worst: there is no end to mark."""
     solid = [c for c in cells.values() if not c["thin"]]
     if len(solid) < 2:
         return
+    lo = min(c["value"] for c in solid)
+    hi = max(c["value"] for c in solid)
+    if hi == lo:
+        for c in cells.values():
+            c["rank"] = 0.0
+        return
+    for c in cells.values():
+        k = (c["value"] - lo) / (hi - lo)
+        c["rank"] = round(min(1.0, max(0.0, k if better == "low" else 1.0 - k)), 3)
     pick_best, pick_worst = (min, max) if better == "low" else (max, min)
     pick_best(solid, key=lambda c: c["value"])["best"] = True
     pick_worst(solid, key=lambda c: c["value"])["worst"] = True
@@ -467,23 +465,29 @@ def shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
 
 def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = "") -> dict[str, Any]:
     """The difficulty-by-model tables for a window: rows easy, medium, hard; a column per model
-    that did work in the window; each cell a value, its n and the marks `shade_row` sets. The
-    rule for every table is the one `metrics` uses for its per-difficulty figures (per-task
-    facts from the event stream, grouped by the task's difficulty), with one addition: a task
-    is credited to the model of its latest work-mode run finished at or before the event the
-    metric hangs on, so a task the loop escalated from one model to another counts for the
-    model that got it accepted.
+    that did work in the window; each cell a value, its n and its place on the row's scale.
 
-    - cost per accepted task: tasks whose latest `transition` to done is at or after `since`;
-      the task's whole run cost up to that moment (every mode); mean; n = accepted tasks.
+    Every table uses the rule `metrics` uses for its per-difficulty figures (per-task facts
+    from the event stream, grouped by the task's difficulty), with one addition: a task is
+    credited to the model of its latest work-mode run finished at or before the event the
+    metric hangs on, so a task the loop escalated is counted for the model that got it
+    accepted. `since` is an ISO timestamp; the history before it still counts (a task's first
+    review ever, its cost to date), only the crediting event must fall inside the window.
+
+    - cost per accepted task: tasks whose latest `transition` to done is in the window; the
+      task's whole run cost up to that moment (every mode); mean; n = accepted tasks.
     - first-pass approval: tasks whose first `review` ever is in the window; the share whose
-      verdict is approve; n = reviewed tasks.
+      verdict is approve; n = tasks first reviewed.
     - work-run cost: `run_finished` in the window with a work mode and a model; mean cost;
-      n = runs, each under the run's own model.
+      n = runs, each credited to its own model.
     - revise rounds: per accepted task, `dispatch` events with mode revise before its done
       transition; mean; n = accepted tasks.
     - median lead time: per accepted task, hours from its first dispatch to its done
       transition; median; n = accepted tasks.
+
+    A cell is {value, n, thin, rank, best, worst}: `rank` runs from 0 at the row's best value
+    to 1 at its worst (None when the row has fewer than two solid cells), `best` and `worst`
+    mark the two ends among cells with at least THIN_SAMPLE samples, `thin` marks the rest.
     """
     import statistics
 
@@ -510,7 +514,7 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
         elif k == "transition" and e.get("to") == "done":
             done_at[t] = at
     samples: dict[str, dict[str, dict[str, list[float]]]] = {
-        key: {d: defaultdict(list) for d in DIFFICULTY_ROWS} for key, *_ in TIER_METRICS}
+        key: {d: defaultdict(list) for d in DIFFICULTIES} for key, *_ in DIFFICULTY_MODEL_METRICS}
 
     def add(metric: str, task_id: str, model: str, value: float) -> None:
         d = getattr(tasks[task_id], "difficulty", "") or "medium"
@@ -526,8 +530,8 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
         if t in first_dispatch:
             add("lead_time", t, model, (_ts(at) - _ts(first_dispatch[t])).total_seconds() / 3600)
     for t, e in first_review.items():
-        if str(e.get("at") or "") >= since:
-            add("first_pass", t, _model_at(work_runs[t], str(e.get("at") or "")), 1.0 if e.get("verdict") == "approve" else 0.0)
+        if e["at"] >= since:
+            add("first_pass", t, _model_at(work_runs[t], e["at"]), 1.0 if e.get("verdict") == "approve" else 0.0)
     for e in events:
         if (e.get("kind") == "run_finished" and e.get("mode") in WORK_MODES and e.get("model")
                 and str(e.get("at") or "") >= since and e.get("task") in tasks):
@@ -539,29 +543,19 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
             for model, vals in cells.items():
                 weight[model] += len(vals)
     models = sorted(weight, key=lambda m: (-weight[m], m))
-    out = []
-    for key, label, unit, better in TIER_METRICS:
+    tables = []
+    for key, label, unit, better, n_unit in DIFFICULTY_MODEL_METRICS:
         rows: dict[str, dict[str, dict[str, Any]]] = {}
-        for d in DIFFICULTY_ROWS:
+        for d in DIFFICULTIES:
             cells = {}
             for model, vals in samples[key][d].items():
                 value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
-                cells[model] = {"value": round(value, 3), "n": len(vals)}
-            shade_row(cells, better)
+                cells[model] = {"value": round(value, 3), "n": len(vals), "thin": len(vals) < THIN_SAMPLE,
+                                "rank": None, "best": False, "worst": False}
+            _rank_row(cells, better)
             rows[d] = cells
-        out.append({"key": key, "label": label, "unit": unit, "better": better, "rows": rows})
-    return {"models": models, "metrics": out, "thin": THIN_SAMPLES}
-
-
-def format_cell(unit: str, value: float) -> str:
-    """A difficulty-by-model cell's value in its unit, the same on the page and in the CLI."""
-    if unit == "usd":
-        return f"${value:.2f}"
-    if unit == "pct":
-        return f"{round(value * 100)} %"
-    if unit == "hours":
-        return f"{value:.1f} h"
-    return f"{value:.1f}"
+        tables.append({"key": key, "label": label, "unit": unit, "better": better, "n_unit": n_unit, "rows": rows})
+    return {"models": models, "metrics": tables, "thin": THIN_SAMPLE}
 
 
 def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:

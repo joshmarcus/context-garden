@@ -170,8 +170,8 @@ def test_shading_marks_best_and_worst_per_row_in_the_metrics_direction():
     tasks, events = _six_easy_tasks()
     out = difficulty_by_model(events, tasks, since="2026-09-05T00:00:00+00:00")
     cost = next(m for m in out["metrics"] if m["key"] == "cost_per_accepted")["rows"]["easy"]
-    assert cost["a"]["best"] and cost["a"]["heat"] == 0.0 and not cost["a"]["thin"]      # lower cost: green
-    assert cost["b"]["worst"] and cost["b"]["heat"] == 1.0 and not cost["b"]["best"]
+    assert cost["a"]["best"] and cost["a"]["rank"] == 0.0 and not cost["a"]["thin"]      # lower cost: green
+    assert cost["b"]["worst"] and cost["b"]["rank"] == 1.0 and not cost["b"]["best"]
     # a thin cell (under three samples) is marked and never best or worst
     thin = difficulty_by_model(events[3:], tasks, since="2026-09-05T00:00:00+00:00")
     cost = next(m for m in thin["metrics"] if m["key"] == "cost_per_accepted")["rows"]["easy"]
@@ -180,7 +180,7 @@ def test_shading_marks_best_and_worst_per_row_in_the_metrics_direction():
     events += [_ev("review", f"T-{i}", "2026-09-05T10:20:00+00:00", verdict="approve" if i >= 3 else "request_changes") for i in range(6)]
     out = difficulty_by_model(events, tasks, since="2026-09-05T00:00:00+00:00")
     first = next(m for m in out["metrics"] if m["key"] == "first_pass")["rows"]["easy"]
-    assert first["b"]["best"] and first["b"]["heat"] == 0.0 and first["a"]["worst"] and first["a"]["heat"] == 1.0
+    assert first["b"]["best"] and first["b"]["rank"] == 0.0 and first["a"]["worst"] and first["a"]["rank"] == 1.0
 
 
 # ---- the harness's progress reader ----------------------------------------------------
@@ -198,13 +198,40 @@ def test_runs_by_model_is_a_shaded_table_of_mode_by_who():
     assert list(t["rows"]) == ["work", "rebase", "check", "review"]  # the loop's order: writing, mechanical, reading
     assert t["heads"] == {"claude:opus": "$15.50 · 4 runs", "codex:terra": "$6.00 · 3 runs", "garden": "$0.00 · 2 runs"}
     work = t["rows"]["work"]
-    assert work["codex:terra"] == {"value": 2.0, "n": 3, "heat": 0.0, "thin": False, "best": True, "worst": False}
-    assert work["claude:opus"] == {"value": 5.0, "n": 3, "heat": 1.0, "thin": False, "best": False, "worst": True}
-    review = t["rows"]["review"]  # one sample: thin, and never best or worst
-    assert review["claude:opus"]["thin"] and not review["claude:opus"]["best"] and "codex:terra" not in review
-    assert t["label"] == "cost per run" and t["better"] == "low" and t["n_word"] == "runs"
-    assert now1.runs_by_model([]) == {"label": "cost per run", "unit": "usd", "better": "low", "n_word": "runs",
+    assert work["codex:terra"] == {"value": 2.0, "n": 3, "rank": 0.0, "thin": False, "best": True, "worst": False}
+    assert work["claude:opus"] == {"value": 5.0, "n": 3, "rank": 1.0, "thin": False, "best": False, "worst": True}
+    review = t["rows"]["review"]  # one sample: thin, no scale, and never best or worst
+    assert review["claude:opus"] == {"value": 0.5, "n": 1, "rank": None, "thin": True, "best": False, "worst": False}
+    assert "codex:terra" not in review
+    assert t["label"] == "cost per run" and t["better"] == "low" and t["n_unit"] == "runs"
+    assert now1.runs_by_model([]) == {"label": "cost per run", "unit": "usd", "better": "low", "n_unit": "runs",
                                       "columns": [], "rows": {}, "heads": {}, "thin": 3}
+
+
+def test_a_flat_row_is_green_with_no_end_marked():
+    """Two solid cells with the same value: both at rank 0, neither best nor worst, so the page
+    never marks one cell as both ends of a row."""
+    cells = {"a": {"value": 0.4, "n": 3}, "b": {"value": 0.4, "n": 3}, "c": {"value": 9.0, "n": 1}}
+    now1.shade_row(cells, "low")
+    assert cells["a"] == {"value": 0.4, "n": 3, "rank": 0.0, "thin": False, "best": False, "worst": False}
+    assert cells["b"] == cells["a"]
+    assert cells["c"] == {"value": 9.0, "n": 1, "rank": 0.0, "thin": True, "best": False, "worst": False}
+
+
+def test_the_page_shades_a_row_with_two_solid_cells(garden):
+    """Three work runs per model in the window: the runs table's work row gets its green ground
+    at the cheaper model, its red ground at the dearer one, and the two marks."""
+    store = Store(garden)
+    log = EventLog(store.config.garden_dir / "events.jsonl")
+    at = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
+    for model, cost in (("sonnet", 1.0), ("opus", 4.0)):
+        for _ in range(3):
+            log.emit("run_finished", "DM-001", mode="work", model=model, harness="claude", cost_usd=cost, status="done")
+    lines = log.path.read_text().splitlines()
+    log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
+    page = _client(garden).get("/now1?window=hour").text
+    assert re.search(r'<th>work</th>.*?class="heat worst" style="--g:0%"[^>]*>\s*<b>\$4\.00</b><small>n 3 · worst</small>', page, re.S)
+    assert re.search(r'<th>work</th>.*?class="heat best" style="--g:100%"[^>]*>\s*<b>\$1\.00</b><small>n 3 · best</small>', page, re.S)
 
 
 def test_harness_progress_reads_a_partial_stream():
@@ -378,15 +405,15 @@ def test_last_period_reads_the_windows_events(garden):
     assert "profile changed: (none) → steady" in page and 'class="annotation"' in page
     for label in ("cost per accepted task", "first-pass approval", "work-run cost", "revise rounds", "median lead time"):
         assert f"<caption>{label}" in page
-    # the shading: a green ground at the row's best value, a red one at its worst; with one sample
-    # each the cells are thin, so neither is marked best or worst, only faintly shaded and marked thin
-    assert 'class="heat thin" style="--g:100%"' in page and 'class="heat thin" style="--g:0%"' in page
+    # the shading: with one sample each the cells are thin, so the row has no scale to shade on
+    # (fewer than two solid cells) and neither is marked best or worst, only marked thin
+    assert 'class="plain thin"' in page and 'class="heat' not in page
     assert "n 1 · thin" in page and "· best" not in page
     # the runs table reads the same way: a row per mode, a column per harness:model with its total
     # in the head, each cell the mean cost per run shaded within the row and marked
     assert "<caption>cost per run<span class=\"dir\">lower is better · n = runs</span>" in page
     assert '<span class="vendor">claude:</span>opus<span class="tot">$3.00 · 1 run</span>' in page
-    assert re.search(r'<th>work</th>.*?class="heat thin" style="--g:100%"[^>]*>\s*<b>\$1\.00</b>', page, re.S)
+    assert re.search(r'<th>work</th>.*?class="plain thin"[^>]*>\s*<b>\$1\.00</b>', page, re.S)
     for window in ("today", "24h", "phase"):
         assert c.get(f"/now1?window={window}").status_code == 200
 
@@ -553,7 +580,7 @@ def test_walkthrough_captures_now1(garden):
 
     store = Store(garden)
     ph = store.phase("demo", "p1")
-    assert pages_for(store, ph)[0].url == "/now1"
+    assert [p.url for p in pages_for(store, ph)][:2] == ["/", "/now1"]  # right after the first page
     out = Path(garden) / "cap"
     result = capture(store, ph, out, screenshots=False)
     now_page = next(pr for pr in result.pages if pr.spec.slug == "now1")

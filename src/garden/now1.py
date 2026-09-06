@@ -24,7 +24,7 @@ from typing import Any
 from . import operator_spend as ops
 from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
-from .events import THIN_SAMPLES, EventLog, difficulty_by_model, format_cell, metrics, shade_row
+from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .graph import effective_status
 from .inbox import merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
@@ -92,6 +92,27 @@ def ktok(n: int) -> str:
 
 def money(v: float | None) -> str:
     return f"${v:.2f}" if v is not None else "—"
+
+
+def format_cell(unit: str, value: float) -> str:
+    """A shaded table's cell in its unit, the same on the page and in `garden now`, and the
+    same figures `garden metrics` prints for the difficulty-by-model tables."""
+    if unit == "usd":
+        return f"${value:.2f}"
+    if unit == "pct":
+        return f"{value:.0%}"
+    if unit == "hours":
+        return f"{value:.1f} h"
+    return f"{value:.1f}"
+
+
+def shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
+    """Give a row of `{value, n}` cells the shape and the marks `events.difficulty_by_model`
+    gives its own (`thin`, `rank`, `best`, `worst`, by `events._rank_row`), so every shaded
+    table on the page reads by the one rule."""
+    for c in cells.values():
+        c.update(thin=c["n"] < THIN_SAMPLE, rank=None, best=False, worst=False)
+    _rank_row(cells, better)
 
 
 def iso_utc(s: str) -> str:
@@ -398,7 +419,7 @@ def runs_by_model(finished: list[dict[str, Any]]) -> dict[str, Any]:
     per mode that ran in the window, a column per harness and model (the garden's own
     token-free runs under `garden`), each cell the mean cost per run over its n runs, shaded
     within the row from best to worst (lower is better) with the best, worst and thin marks
-    `events.shade_row` decides. Each column's head carries its total cost and run count, the
+    `shade_row` decides. Each column's head carries its total cost and run count, the
     two figures the old flat list gave, so nothing is lost by turning it on its side."""
     samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     totals: dict[str, dict[str, float]] = defaultdict(lambda: {"runs": 0, "cost": 0.0})
@@ -416,8 +437,8 @@ def runs_by_model(finished: list[dict[str, Any]]) -> dict[str, Any]:
         shade_row(cells, "low")
         rows[mode] = cells
     heads = {who: f"{money(t['cost'])} · {int(t['runs'])} run{'s' if t['runs'] != 1 else ''}" for who, t in totals.items()}
-    return {"label": "cost per run", "unit": "usd", "better": "low", "n_word": "runs",
-            "columns": columns, "rows": rows, "heads": heads, "thin": THIN_SAMPLES}
+    return {"label": "cost per run", "unit": "usd", "better": "low", "n_unit": "runs",
+            "columns": columns, "rows": rows, "heads": heads, "thin": THIN_SAMPLE}
 
 
 def rebase_rounds(window: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
