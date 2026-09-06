@@ -36,6 +36,25 @@ that chart is honestly labelled run completions. Accepted-task throughput awaits
 raw acceptance timestamps. Price completeness, next tick and hand-merge attribution
 are not supplied and remain unknown.
 
+### Snapshot fields and build handoff
+
+The export is the source for the four main regions; only the separately labelled
+state atlas and arrival preview invent examples. Its `captured_at` is the clock
+anchor, even though the brief describes an approximate earlier capture time.
+
+| Region | Fields supplied and rendered | Fields the live build must add |
+|---|---|---|
+| Now | `now[]`: task/run identity, title, mode, state, harness, model, difficulty, `started_at`, `said`, `spend_usd`, `typical_s`, `no_process` | authoritative finish times, output/cost freshness, typical-duration sample counts and live run updates |
+| Next | `next.dispatch[]` order, mode and reasons; `next.merge.in_review` and `.waiting`; `garden.worker_busy`, `.max_parallel`, `.review_busy`, `.review_parallel`, `.last_tick` | reconciled scheduler eligibility, explicit next tick time, current pause reasons; `dispatch_paused: null` is unknown, not false |
+| Where we are | `where.primary`, `.others`, `.closed`: phase names, specimen metadata, counts, goals and available retro verdicts | authoritative goal membership and completeness, cancellation breakdown, updates when phase/task files change |
+| The last period | `period.hour`, `.today`, `.24h`, `.phase`: bounds, merged count, recorded cost, reviewed first-pass cohort, run counts, throughput buckets, activity totals, annotations and five exported `tiers.metrics` matrices with model columns and cell n | windowed difficulty-by-model output from the shared `events.metrics` extension below, raw lifecycle history and price completeness needed to verify it; accepted-task throughput timestamps |
+| Live transport | No SSE stream or revision tokens are present in a JSON snapshot | the read-side SSE adapter and invalidation contract below |
+
+The supplied matrices permit a real-data visual comparison, but are not evidence
+that the shared computation already exists. The build must implement that contract
+once for the CLI and page, rather than treating this presentation adapter as a
+second metrics implementation. No simulated measurements replace missing fields.
+
 Three run records say `running` with `no_process=true`; preserve them with an
 explicit “Process not found” label. Review waiting says “no review slot” while
 capacity says 0 of 3 busy; both observations and the conflict remain visible.
@@ -376,26 +395,32 @@ live `/now2` route. The build must add its own route and browser clock tests,
 including 59→60, 3599→3600, offset clock, new run identity, delayed dispatch,
 tab return, missing typical, failure persistence and reduced motion.
 
-Windows Edge produced a [1280px light capture](now-2/captures/light-1280.png)
-of the supplied snapshot. The Now/Next columns remain separate, long run titles
-and queue reasons wrap, clocks and process uncertainty remain readable, and the
-phase/outcomes headings follow the active work. This 2400px-tall viewport does
-not include the matrix or state atlas, so it cannot verify those regions.
+Windows Edge full-page captures were read back in 2000px strips, covering all
+four regions and all nine atlas states, in both themes:
 
-The [390px diagnostic capture](now-2/captures/light-390-diagnostic.png) is clipped
-on the right and is **not passing phone evidence**. Whether Edge laid out a wider
-viewport than its screenshot or the document overflowed could not be established:
-subsequent DOM measurement and dark-mode attempts failed at the WSL interop boundary
-with `UtilAcceptVsock:271: accept4 failed 110`. No dark capture was produced.
-See [capture notes and reproduction](now-2/captures/README.md). The owner's fallback
-allows shipping the mock when Edge fails; it does not establish visual correctness.
-390px light/dark and 1280px dark inspection, the lower regions, table scrolling,
-focus, and reduced-motion interaction still need browser validation. The mock uses
-local plates and fallback fonts and needs no external resources.
+- [1280 light](now-2/captures/light-1280-full.png) and
+  [1280 dark](now-2/captures/dark-1280-full.png): the Now/Next columns separate
+  clearly; phase plates remain subordinate; matrix values, n and rank marks read
+  against their cell grounds; the state atlas keeps its three-column rhythm.
+- [390 light](now-2/captures/light-390-full.png) and
+  [390 dark](now-2/captures/dark-390-full.png): navigation, run metadata, queue
+  reasons and atlas states wrap; all four regions stack; the table alone scrolls
+  horizontally with a visible instruction. Its sticky difficulty column keeps
+  row labels visible in the initial phone view. Full keyboard scrolling remains
+  an interaction check for the build.
+
+The initial command-line phone image clipped. Repeating the capture through
+Edge's debugging protocol with explicit CSS viewport dimensions resolved the
+capture problem without a layout change: `innerWidth` and document `scrollWidth`
+were both 1280 on desktop and both 390 on phone. Theme media queries were measured
+as false/true for light/dark. Full page heights were 4628 and 9742 respectively.
+See [capture notes and reproduction](now-2/captures/README.md). These are inspected
+mock captures, not evidence for a live route or persona approval. Local plates
+and fallback fonts need no external resources.
 
 Designer and usability-expert persona findings belong here with severity, concrete
 change and artifact reference. **Neither review has run:** worker rules prohibit
-`garden` commands and the runner has not yet opened this PR. A self-assessment is
+`garden` commands and no persona reports were supplied for PR #215. A self-assessment is
 not a persona verdict. The runner must perform the requested reviews and return
 findings before this criterion is claimed. In particular, validate the five-second
 reading test, low-n legend, mobile matrix and distinction between finished/merged.
@@ -414,10 +439,10 @@ fill the missing observations without guessing operational facts.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
-1020 passed, 3 skipped (477.46s); `.venv/bin/ruff check src tests` passes. The dedicated
+1020 passed, 3 skipped, 2 dependency deprecation warnings (298.29s); `.venv/bin/ruff check src tests` passes. The dedicated
 mock tests report 3 passed. An HTML inspection finds no
 duplicate IDs, no missing local plate images, and all four window panels.
-These are structural checks; the limited visual evidence is described above and no
+These are structural checks; visual evidence is described above and no
 persona approval is implied. No typecheck
 command is configured in `pyproject.toml` or the repository CI workflow.
 

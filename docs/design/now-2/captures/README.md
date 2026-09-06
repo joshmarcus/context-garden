@@ -1,40 +1,55 @@
 # Now 2 browser evidence
 
-Captured with Windows Edge headless from a copy of the committed mock and local
-plate assets on 2026-09-06 UTC. The HTML still identifies the operational snapshot
-as 2026-09-06T02:34:47+00:00; its elapsed clocks replay from that timestamp.
+Windows Edge rendered a Windows-side copy of the committed HTML and local plate
+assets. All four full-page captures were inspected in consecutive 2000px strips,
+including Now, Next, phase specimens, the default matrix and all nine atlas states.
 
-- `light-1280.png`: 1280 × 2400. Inspected: readable Now and Next columns, wrapping
-  titles/reasons, visible elapsed clocks and explicit missing-process labels.
-  The bottom of this viewport reaches the phase and outcomes headings, not the
-  metric matrix or atlas.
-- `light-390-diagnostic.png`: 390 × 2400 output with right-side clipping. Retained
-  as a diagnostic, not approval of the mobile layout. The actual CSS viewport
-  width could not be measured before WSL interop stopped launching Edge.
-- Dark screenshots and DOM measurements: no output; Windows process launch failed
-  with `WSL ... ERROR: UtilAcceptVsock:271: accept4 failed 110`.
+| Capture | CSS viewport / document width | Full image | Theme media query |
+|---|---|---|---|
+| [Light desktop](light-1280-full.png) | 1280 / 1280 | 1280 × 4628 | light |
+| [Dark desktop](dark-1280-full.png) | 1280 / 1280 | 1280 × 4628 | dark |
+| [Light phone](light-390-full.png) | 390 / 390 | 390 × 9742 | light |
+| [Dark phone](dark-390-full.png) | 390 / 390 | 390 × 9742 | dark |
 
-No persona verdict, full-page inspection, keyboard interaction, or dark-mode
-approval is implied by these images. Capture follow-up belongs to the existing
-CG-315 browser-capture work, not another parallel implementation in this design.
+Desktop: separate Now/Next columns, wrapped titles and reasons, readable clocks
+and process uncertainty. Phase plates and outcomes balance below the work. The
+matrix's best/worst marks, n and faint provisional backgrounds are visible in
+both themes. Atlas treatments distinguish a finish from a merge, and a healthy
+quiet interval from failure or missing data.
+
+Phone: navigation, controls, run metadata and reasons wrap inside the page.
+Phase plates and atlas states stack without clipping. The model matrix extends
+inside its own horizontal scroll region, with a visible scroll instruction;
+values and sample counts remain legible. No document-level horizontal overflow
+was measured. The long page preserves every active run rather than hiding work.
+
+The earlier `light-1280.png` and `light-390-diagnostic.png` are retained historical
+evidence. The latter is clipped and is not phone approval. An additional plain
+`--window-size=390,10000` attempt also clipped. Explicit CSS viewport emulation via
+Edge's debugging protocol produced the inspected, correctly sized images above.
+No layout change was needed. These captures do not establish persona approval,
+all metric/window combinations, or complete keyboard/reduced-motion behavior.
 
 ## Reproduce
 
-From the assigned product worktree, copy the HTML to
-`/mnt/c/Users/joshm/AppData/Local/Temp/now2/mock/now-2.html` and the existing
-`src/garden/web/static/plates/` assets to the sibling `now2/plates/` directory.
-Preserve that relative layout: the mock's image URLs are `../plates/...`.
+Copy `src/garden/web/static/mock/now-2.html` to
+`C:\Users\joshm\AppData\Local\Temp\now2-revision\mock\now-2.html`, and copy the
+existing `static/plates` directory to the sibling `now2-revision\plates` folder.
+The relative image paths must remain `../plates/...`.
 
-```bash
-"/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" \
-  --headless=new --disable-gpu --hide-scrollbars \
-  --window-size=1280,2400 \
-  --screenshot="C:\Users\joshm\AppData\Local\Temp\now2\light-1280.png" \
-  "file:///C:/Users/joshm/AppData/Local/Temp/now2/mock/now-2.html"
+Use the product overview's Windows Edge headless recipe. For reliable viewport
+measurement and below-fold captures, launch through Windows PowerShell:
+
+```powershell
+Start-Process 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList '--headless=new --disable-gpu --hide-scrollbars --remote-debugging-port=9334 --user-data-dir=C:\Users\joshm\AppData\Local\Temp\now2-revision\profile-cdp2 about:blank'
 ```
 
-Repeat with `--window-size=390,2400` and a distinct output filename. For dark,
-add `--force-dark-mode`. Before claiming phone evidence, measure `innerWidth`
-and `document.documentElement.scrollWidth`; screenshot pixel dimensions alone
-do not prove a 390px CSS viewport. Capture below-fold regions separately or use
-a browser full-page screenshot, then inspect the matrix and every atlas state.
+Then run [capture-edge.ps1](capture-edge.ps1) in Windows PowerShell. This artifact
+uses .NET's WebSocket client, with no installed browser library. It sets
+`Emulation.setDeviceMetricsOverride` to 1280/390 × 2400 at scale 1, emulates the
+light/dark preference, prints `innerWidth`, `scrollWidth`, height and theme, then
+calls `Page.captureScreenshot` for the full document and consecutive strips.
+It uses the same Edge engine and Windows-side assets as the overview recipe;
+media emulation replaces the separate `--force-dark-mode` launch. The HTML's
+recorded state stays at 2026-09-06T02:34:47+00:00; clocks replay from that anchor.
+The script is a task-specific evidence recipe, not the CG-315 capture pipeline.
