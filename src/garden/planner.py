@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .brief import brief_gaps
 from .model import Status, Task, estimate_tokens, goals_text
 from .store import Store
 
@@ -156,7 +157,10 @@ def import_plan(
     existing_titles = {t.title.strip().lower(): t.id for t in store.tasks().values()}
     created: list[Task] = []
     title_to_id: dict[str, str] = {}
-    # first pass: allocate ids in order
+    # first pass: allocate ids in order. Every task is created a draft, whatever `status`
+    # resolved to: a generated body is untrusted the same way a hand-typed one is, so it goes
+    # through the same brief gate `approve` uses (see the promotion pass below) rather than
+    # landing straight in "ready" and skipping it.
     pending = []
     for item in items:
         title = str(item["title"]).strip()
@@ -169,7 +173,7 @@ def import_plan(
             priority=int(item.get("priority", 3) or 3),
             estimate=str(item.get("estimate") or ""),
             reading=[str(r) for r in (item.get("reading") or [])],
-            status=status,
+            status="draft",
             difficulty=str(item.get("difficulty") or "medium"),
         )
         title_to_id[title.lower()] = t.id
@@ -203,20 +207,49 @@ def import_plan(
                 sup.status = Status.CANCELLED
                 sup.log(f"superseded by {t.id}")
                 store.save(sup)
+    # fourth pass: promote draft -> ready through the same brief gate `approve` uses
+    # (`brief_gaps`) when the caller asked for ready tasks; a generated brief with
+    # placeholder acceptance criteria or a dangling reading path is left a draft instead of
+    # costing a run, the same as a hand-approved one would be.
+    if status == "ready":
+        for t, _item in pending:
+            gaps = brief_gaps(store, t)
+            if gaps:
+                t.log("left as draft; incomplete brief: " + "; ".join(gaps))
+            else:
+                t.status = Status.READY
+                t.log("approved (planner)")
+            store.save(t)
     store.invalidate()
     return created
 
 
 def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: str = "hard") -> str:
-    """One headless harness call. Returns the raw final text."""
-    import os
+    """One headless harness call, isolated the way a worker's is, not run as the operator in
+    the operator's own checkout. `prompt` inlines goals, specs and docs verbatim
+    (`plan_prompt`/`kickoff_brief`), so a document carrying injected instructions must not be
+    able to turn this call into an edit against the live garden with the operator's
+    credentials: the call runs in a scratch directory (never `store.root`), through the
+    scrubbed worker environment (`runner.base.scrubbed_env` — no operator token, no operator
+    `HOME`), with the live garden denied as a write target and `GARDEN_ROOT` forced to a
+    sentinel so a `garden` command run from inside it refuses. Returns the raw final text."""
+    import shutil
+    import tempfile
+
+    from .config import no_live_garden_root
+    from .runner.base import scrubbed_env
 
     harness = store.config.harness(harness_name or str(store.config.get("harness") or "claude"))
     model = harness.model_for(difficulty)
-    cmd = harness.command(model, None, difficulty)
-    env = dict(os.environ)
-    env.pop("CLAUDECODE", None)
-    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(store.root), check=False)
+    with tempfile.TemporaryDirectory(prefix="garden-plan-") as scratch:
+        scratch_dir = Path(scratch)
+        cmd = harness.command(model, None, difficulty, deny_paths=[str(store.root)], worktree=scratch_dir)
+        resolved = shutil.which(harness.bin) or harness.bin
+        if cmd and cmd[0] == harness.bin and resolved != harness.bin:
+            cmd = [resolved] + cmd[1:]
+        env = scrubbed_env(store.config.data, worktree=scratch_dir)
+        env["GARDEN_ROOT"] = no_live_garden_root(scratch_dir)
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(scratch_dir), check=False)
     parsed = harness.parse(proc.stdout, proc.stderr, None)
     if proc.returncode != 0 and not parsed["final_text"]:
         raise RuntimeError(f"planner failed ({proc.returncode}): {proc.stderr.strip()[-1000:]}")

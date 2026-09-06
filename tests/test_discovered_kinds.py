@@ -262,4 +262,6 @@ def test_dedup_scope_is_this_phase_and_the_next_one(sched, fake_github, monkeypa
 
     filed = [t.title for t in sched.store.tasks().values() if t.discovered_from == "DM-001"]
     assert "Fix the flaky widget test" in filed  # p3's task is out of scope, so this still files
-    assert "also found by" not in sched.store.task("DM-360").body
+    # DM-001's finding is filed, never attached to the far-phase DM-360. (DM-360's own run
+    # deduplicates its matching discovery onto itself, which is in scope and expected.)
+    assert "also found by DM-001" not in sched.store.task("DM-360").body

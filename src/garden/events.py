@@ -242,6 +242,15 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     first_review: dict[str, str] = {}
     first_review_criteria: dict[str, tuple[int, int]] = {}
     cost: dict[str, float] = defaultdict(float)
+    costs_by_dimension: dict[str, dict[str, float]] = {
+        "model": defaultdict(float), "harness": defaultdict(float),
+    }
+    runs_by_dimension: dict[str, dict[str, int]] = {
+        "model": defaultdict(int), "harness": defaultdict(int),
+    }
+    task_dimensions: dict[str, dict[str, set[str]]] = defaultdict(
+        lambda: {"model": set(), "harness": set()}
+    )
     runs: dict[str, int] = defaultdict(int)
     rebases_mechanical = 0
     rebases_agent = 0
@@ -258,6 +267,10 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             runs[t] += 1
             if ev.get("mode") == "revise":
                 revisions[t] += 1
+            if ev.get("mode") in ("work", "revise", "resume"):
+                for dimension in ("model", "harness"):
+                    value = str(ev.get(dimension) or "unknown")
+                    task_dimensions[t][dimension].add(value)
         elif k == "transition" and ev.get("to") == "done":
             done_at[t] = ev["at"]
             merges += 1
@@ -266,7 +279,15 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
                 first_review[t] = str(ev.get("verdict", ""))
                 first_review_criteria[t] = (int(ev.get("criteria_met") or 0), int(ev.get("criteria_total") or 0))
         elif k == "run_finished":
-            cost[t] += float(ev.get("cost_usd") or 0.0)
+            run_cost = float(ev.get("cost_usd") or 0.0)
+            cost[t] += run_cost
+            for dimension in ("model", "harness"):
+                costs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += run_cost
+                runs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += 1
+                # Old event logs did not always retain dispatch metadata. A completed work
+                # run still identifies the model and harness that made the task's first pass.
+                if ev.get("mode") in ("work", "revise", "resume"):
+                    task_dimensions[t][dimension].add(str(ev.get(dimension) or "unknown"))
             if ev.get("mode") == "rebase":
                 rebase_cost += float(ev.get("cost_usd") or 0.0)
                 # A mechanical (git-only) rebase records its run with how="mechanical"; an agent
@@ -289,6 +310,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             "status": getattr(task, "status", ""), "runs": runs[tid], "revisions": revisions[tid],
             "first_review": first_review.get(tid, ""), "cost_usd": round(cost[tid], 4), "lead_hours": lead_h,
             "criteria_met": crit_met, "criteria_total": crit_total,
+            "accepted": tid in done_at,
+            "model": sorted(task_dimensions[tid]["model"]),
+            "harness": sorted(task_dimensions[tid]["harness"]),
         })
     by_diff: dict[str, dict[str, Any]] = {}
     for row in per_task:
@@ -312,6 +336,70 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         d["avg_revisions"] = round(d["revisions"] / d["tasks"], 2) if d["tasks"] else 0
         d["criteria_rate"] = round(d["criteria_met"] / d["criteria_total"], 2) if d["criteria_total"] else None
         del d["lead_hours"]
+    # Costs are recorded per run while acceptance is recorded by the base-branch merge
+    # transition. Keep the two facts separate: a cost-per-accepted-task figure contains
+    # only runs belonging to a task the scheduler observed merge to the base branch.
+    accepted_ids = set(done_at)
+    accepted_cost_by_dimension: dict[str, dict[str, float]] = {
+        "difficulty": defaultdict(float), "model": defaultdict(float), "harness": defaultdict(float),
+    }
+    accepted_tasks_by_dimension: dict[str, dict[str, set[str]]] = {
+        "difficulty": defaultdict(set), "model": defaultdict(set), "harness": defaultdict(set),
+    }
+    for tid in accepted_ids:
+        task = tasks[tid]
+        accepted_tasks_by_dimension["difficulty"][getattr(task, "difficulty", "") or "medium"].add(tid)
+        for dimension in ("model", "harness"):
+            for value in task_dimensions[tid][dimension]:
+                accepted_tasks_by_dimension[dimension][value].add(tid)
+    for tid in accepted_ids:
+        # Review, edit, and check runs do not carry the model and harness of the task's
+        # implementation run. They are nevertheless part of the cost to accept that
+        # task, so attribute its complete cost to every implementation route it used.
+        # This intentionally makes a task which changed routes visible in each route's
+        # comparison, rather than silently losing its supporting-run costs to "unknown".
+        accepted_cost = cost[tid]
+        accepted_cost_by_dimension["difficulty"][getattr(tasks[tid], "difficulty", "") or "medium"] += accepted_cost
+        for dimension in ("model", "harness"):
+            for value in task_dimensions[tid][dimension]:
+                accepted_cost_by_dimension[dimension][value] += accepted_cost
+
+    def outcome_breakdown(dimension: str) -> dict[str, dict[str, Any]]:
+        values = set(accepted_tasks_by_dimension[dimension])
+        if dimension == "difficulty":
+            values.update(by_diff)
+        else:
+            values.update(costs_by_dimension[dimension])
+        rows: dict[str, dict[str, Any]] = {}
+        for value in sorted(values):
+            members = [row for row in per_task if value in (row[dimension] if dimension in ("model", "harness") else [row["difficulty"] or "medium"])]
+            reviewed_members = [row for row in members if row["first_review"]]
+            accepted = accepted_tasks_by_dimension[dimension][value]
+            accepted_cost = accepted_cost_by_dimension[dimension][value]
+            total_cost = (sum(row["cost_usd"] for row in members) if dimension == "difficulty"
+                          else costs_by_dimension[dimension][value])
+            run_count = (sum(row["runs"] for row in members) if dimension == "difficulty"
+                         else runs_by_dimension[dimension][value])
+            rows[value] = {
+                "tasks": len(members),
+                "accepted": len(accepted),
+                "runs": run_count,
+                "cost_usd": round(total_cost, 4),
+                "mean_cost_usd": round(total_cost / run_count, 4) if run_count else None,
+                "accepted_cost_usd": round(accepted_cost, 4),
+                "cost_per_accepted_task": round(accepted_cost / len(accepted), 4) if accepted else None,
+                "reviewed": len(reviewed_members),
+                "first_pass_approve": sum(row["first_review"] == "approve" for row in reviewed_members),
+                "first_pass_rate": round(sum(row["first_review"] == "approve" for row in reviewed_members) / len(reviewed_members), 2) if reviewed_members else None,
+            }
+        return rows
+
+    outcomes = {dimension: outcome_breakdown(dimension) for dimension in ("difficulty", "model", "harness")}
+    # Preserve the established tier metrics while adding the common outcome measures used
+    # for model-routing comparisons.
+    for tier, row in outcomes["difficulty"].items():
+        if tier in by_diff:
+            by_diff[tier].update(row)
     rebases = rebases_mechanical + rebases_agent
     rebase = {
         "rebases": rebases,
@@ -321,7 +409,8 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         "merges": merges,
         "per_merge": round(rebases / merges, 2) if merges else None,
     }
-    return {"tasks": per_task, "by_difficulty": by_diff, "rebase": rebase}
+    return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
+            "by_harness": outcomes["harness"], "rebase": rebase}
 
 
 def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:

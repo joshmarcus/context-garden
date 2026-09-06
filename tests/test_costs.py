@@ -8,6 +8,7 @@ import pytest
 
 from garden.charts import cost_stack_svg
 from garden.costs import cost_series
+from garden.events import metrics
 from garden.model import Status, Task
 
 
@@ -113,6 +114,52 @@ def test_since_and_until_scope_to_a_window():
     assert series["grand_total"]["cost_usd"] == 1.15  # only the 09-05 events (0.5+0.25+0.1+0.3)
     series = cost_series(_events(), _tasks(), until="2026-09-05T00:00:00+00:00")
     assert series["grand_total"]["cost_usd"] == 3.0  # only the 09-04 events
+
+
+def test_outcomes_count_only_base_branch_merges_as_accepted():
+    """CG-251: a completed-looking task is not accepted until the scheduler records its
+    base-branch `done` transition (CG-228); its run cost must not lower the denominator."""
+    tasks = _tasks()
+    events = [
+        {"at": "2026-09-04T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude"},
+        {"at": "2026-09-04T10:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 2.0},
+        {"at": "2026-09-04T10:02:00+00:00", "kind": "review", "task": "DM-001", "verdict": "approve"},
+        {"at": "2026-09-04T10:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        # Its task file can say done, but without the merge transition it was never accepted.
+        {"at": "2026-09-04T11:00:00+00:00", "kind": "dispatch", "task": "DM-002", "mode": "work", "model": "opus", "harness": "codex"},
+        {"at": "2026-09-04T11:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "model": "opus", "harness": "codex", "cost_usd": 9.0},
+        {"at": "2026-09-04T11:02:00+00:00", "kind": "review", "task": "DM-002", "verdict": "request_changes"},
+    ]
+
+    outcome = metrics(events, tasks)
+    sonnet = outcome["by_model"]["sonnet"]
+    assert sonnet["accepted"] == 1
+    assert sonnet["mean_cost_usd"] == 2.0
+    assert sonnet["cost_per_accepted_task"] == 2.0
+    assert sonnet["first_pass_rate"] == 1.0
+    assert outcome["by_model"]["opus"]["accepted"] == 0
+    assert outcome["by_model"]["opus"]["cost_per_accepted_task"] is None
+    assert outcome["by_model"]["opus"]["first_pass_rate"] == 0.0
+    assert outcome["by_difficulty"]["easy"]["cost_per_accepted_task"] == 2.0
+    assert outcome["by_harness"]["claude"]["first_pass_rate"] == 1.0
+
+
+def test_outcomes_attribute_supporting_run_costs_to_the_task_route():
+    """CG-251: a model's accepted-task bill includes untagged review and edit runs."""
+    tasks = _tasks()
+    events = [
+        {"at": "2026-09-04T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude"},
+        {"at": "2026-09-04T10:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 1.0},
+        # These runs support the same task, but their events identify only their mode.
+        {"at": "2026-09-04T10:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "review", "cost_usd": 0.5},
+        {"at": "2026-09-04T10:03:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "edit", "cost_usd": 0.25},
+        {"at": "2026-09-04T10:04:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+    ]
+
+    outcome = metrics(events, tasks)
+    assert outcome["by_model"]["sonnet"]["mean_cost_usd"] == 1.0
+    assert outcome["by_model"]["sonnet"]["cost_per_accepted_task"] == 1.75
+    assert outcome["by_harness"]["claude"]["cost_per_accepted_task"] == 1.75
 
 
 # ---- CLI/web parity, and today's question (CG-214) --------------------------------------

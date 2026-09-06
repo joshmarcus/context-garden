@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
+from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
-from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
+from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
 from ..operator_spend import total_cost as operator_total_cost
@@ -440,18 +441,26 @@ class RetroMixin:
             body = (f"## Goal\n\n{b['body'] or b['title']}\n\n## Context\n\n"
                     f"Filed by the {phase.key} retro `reopen` verdict: it must land before the phase "
                     f"can close. Reason: {reason}\n")
+            if b["acceptance"]:
+                body += "\n## Acceptance criteria\n\n" + "\n".join(
+                    f"- [ ] {criterion}" for criterion in b["acceptance"]
+                ) + "\n"
             t = self.store.create_task(phase.product, phase.name, b["title"], body,
                                        priority=self._retro_priority(b.get("priority")), status="draft",
+                                       reading=b["reading"],
                                        difficulty=b["difficulty"] if b["difficulty"] in ("easy", "medium", "hard") else "medium")
             t.discovered_from = f"retro:{phase.key}"
             t.retro_blocking = True
             t.freeze_exception = True
             t.freeze_exception_reason = reason
             t.log(f"filed by the {phase.key} retro reopen verdict (blocking)")
+            gaps = brief_gaps(self.store, t)
+            if gaps:
+                t.log("brief_gap: " + "; ".join(gaps))
             self.store.save(t)
             self.store.invalidate()
             existing_titles[b["title"].strip().lower()] = t.id
-            filed.append({**b, "task_id": t.id, "status": "draft"})
+            filed.append({**b, "task_id": t.id, "status": "draft", "brief_gaps": gaps})
             self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
         return filed
 
@@ -508,7 +517,7 @@ class RetroMixin:
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         operator_records = read_operator_records(operator_spend_path(self.store.root))
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
-        numbers = numbers_section(summary["cost_usd"], operator_cost)
+        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"])
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,
@@ -583,6 +592,11 @@ class RetroMixin:
             "phase": phase.key, "verdict": verdict, "at": at, "next_phase": next_phase,
             "followup_ids": [f["task_id"] for f in followups if f.get("task_id")],
             "blocking_ids": [b["task_id"] for b in blocking if b.get("task_id")],
+            "brief_gaps": {
+                b["task_id"]: "; ".join(b["brief_gaps"])
+                for b in blocking
+                if b.get("task_id") and b.get("brief_gaps")
+            },
             "pr": pr_url, "note": "", "accepted_by": "", "accepted_at": "", "status": "recorded",
         }
         if verdict in ("close", "close_with_followups"):
@@ -624,25 +638,49 @@ class RetroMixin:
         `close-phase` refuses on."""
         return [t for t in phase.tasks if t.retro_blocking and not t.status.terminal]
 
-    def _approve_retro_blocking(self, phase: Phase, blocking_ids: list[str]) -> list[str]:
-        """Approve (draft -> ready) the phase's still-draft blocking tasks named by the verdict."""
+    def _approve_retro_blocking(self, phase: Phase, blocking_ids: list[str]) -> tuple[list[str], dict[str, str]]:
+        """Run every still-draft reopen blocker through the ordinary approval gate.
+
+        An incomplete item leaves the verdict pending: that task stays draft and its refusal is
+        retained for the phase and Inbox cards, while complete blockers can proceed.
+        """
         approved: list[str] = []
+        refused: dict[str, str] = {}
         tasks = self.store.tasks()
         for tid in blocking_ids:
             t = tasks.get(tid)
             if t is None or t.status != Status.DRAFT:
                 continue
-            refusal = phase_refusal(phase, t)
-            if refusal:
-                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {refusal}")
-                continue
-            t.status = Status.READY
-            t.log("approved by the retro reopen verdict")
-            self.store.save(t)
-            approved.append(tid)
+            try:
+                self.approve(t, by="retro reopen verdict", phase=phase)
+            except RuntimeError as e:
+                refused[tid] = str(e)
+                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {e}")
+            else:
+                approved.append(tid)
         if approved:
             self.store.invalidate()
-        return approved
+        return approved, refused
+
+    def close_accepted_reopens(self, rep: TickReport) -> None:
+        """Close an accepted reopen verdict after all of its named blockers are terminal."""
+        for key, rec in self.state.get("_retro_verdicts").items():
+            if not isinstance(rec, dict) or rec.get("verdict") != "reopen" or rec.get("status") != "accepted":
+                continue
+            try:
+                phase = self.store.phase(*key.split("/", 1))
+            except (KeyError, ValueError):
+                continue
+            if phase.closed or self.retro_blocking_open(phase):
+                continue
+            try:
+                self.close_phase(phase)
+            except RuntimeError as e:
+                rep.errors.append(f"retro {phase.key}: accepted reopen could not close: {e}")
+            else:
+                rec["closed_at"] = now_iso()
+                self.events.emit("retro_reopen_closed", "", phase=phase.key)
+                rep.transitions.append(f"retro {phase.key} blockers complete -> closed")
 
     def retro_decide(self, phase: Phase, choice: str, note: str = "", by: str = "cli") -> dict[str, Any]:
         """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
@@ -665,11 +703,13 @@ class RetroMixin:
             if phase.closed:
                 self.reopen_phase(phase)
                 phase = self.store.phase(phase.product, phase.name)
-            self._approve_retro_blocking(phase, list(rec.get("blocking_ids") or []))
+            _, refused = self._approve_retro_blocking(phase, list(rec.get("blocking_ids") or []))
+            rec["brief_gaps"] = refused
         else:
             self.close_phase(phase)  # raises on open tasks, like close-phase
-        rec.update(verdict=choice, status="accepted", note=note, accepted_by=by, accepted_at=now_iso())
-        self.events.emit("retro_verdict", "", phase=phase.key, verdict=choice, status="accepted", by=by)
+        status = "pending" if choice == "reopen" and rec.get("brief_gaps") else "accepted"
+        rec.update(verdict=choice, status=status, note=note, accepted_by=by, accepted_at=now_iso())
+        self.events.emit("retro_verdict", "", phase=phase.key, verdict=choice, status=status, by=by)
         self.state.save()
         return dict(rec)
 

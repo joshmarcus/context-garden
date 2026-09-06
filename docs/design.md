@@ -96,9 +96,13 @@ token-free scripts; `events` records history; `store` and `model` read and write
    draft tasks in the next phase) or `reopen` (the named items become tasks in *this*
    phase with a freeze exception and `retro_blocking: true`, and `garden close-phase`
    refuses until each is done). A `close` closes without waiting for approval; a
-   `reopen` records a decision that approves the blocking tasks when a person accepts
-   it. `garden retro-decide product/phase close|followups|reopen` accepts or changes
-   the verdict; the phase page and the retro document show it.
+   `reopen` records a decision that sends each blocker through the ordinary approval gate
+   when a person accepts it. The retro supplies each blocker's checklist, reading list and
+   difficulty; an incomplete brief remains a draft and is named on the decision card.
+   Freeze exceptions let approved blockers run in a frozen phase, and the next tick closes
+   the phase once every blocker is terminal. `garden retro-decide product/phase
+   close|followups|reopen` accepts or changes the verdict; the phase page and the retro
+   document show it.
 
 ## Bounded loops, on purpose
 

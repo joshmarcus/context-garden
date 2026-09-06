@@ -96,15 +96,17 @@ retrospective is for:
   next phase. List it under `followups`; each becomes a draft task in the next phase.
 - `reopen` — some work must land in *this* phase before it can close. List it under `blocking`;
   each becomes a task in this phase (with a freeze exception so it still dispatches) and
-  `garden close-phase` refuses until each is done or cancelled. Give the reason each item
-  blocks. Reserve this for real blockers, not nice-to-haves.
+  `garden close-phase` refuses until each is done or cancelled. Each item must include a
+  testable `acceptance` checklist, a `reading` list of existing paths under the product, and
+  a difficulty. Give the reason each item blocks. Reserve this for real blockers, not
+  nice-to-haves.
 
 Do NOT edit any file and do NOT commit: the retro document, the next-goals draft, the verdict
 and the filed tasks are all written for you from your report. Just report it.
 
 End your final message with exactly one line:
 
-  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
+  {marker} {{"reconciliation": [{{"item": "<one friction item, short>", "logged": "<task id that logged it, or empty>", "pr": "<task/PR id that fixed it, or empty>", "verdict": "still_true" | "fixed" | "outdated" | "disputed", "evidence": "<why, one sentence>"}}], "summary": "<what changed this phase, one paragraph>", "personas": "<what the personas said, one paragraph>", "still_open": ["<what is still open, one per item>"], "questions": [{{"question": "<one sentence>", "context": "<why it matters>", "options": ["<option>"], "blocking": true|false}}], "features": [{{"title": "<short, could be a task title>", "body": "<markdown: user value, why now, size, dependencies>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5, 1 highest>, "rationale": "<why this, why now, one sentence>", "duplicate_of": "<existing task id, or empty>"}}], "verdict": "close" | "close_with_followups" | "reopen", "followups": [{{"title": "<short>", "body": "<markdown>", "difficulty": "easy" | "medium" | "hard", "priority": <1-5>}}], "blocking": [{{"title": "<short>", "body": "<markdown>", "acceptance": ["<testable criterion>"], "reading": ["<existing product-relative path>"], "difficulty": "easy" | "medium" | "hard", "priority": <1-5>, "reason": "<why this blocks closing>"}}], "next_goals": "<markdown body for the next phase's goals draft>"}}
 
 The JSON must be on one line.
 """
@@ -213,7 +215,8 @@ def parse_retro(text: str) -> dict[str, Any]:
     return {}
 
 
-def numbers_section(worker_cost_usd: float, operator_cost_usd: float) -> str:
+def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
+                    outcomes: dict[str, Any] | None = None) -> str:
     """The phase's spend, workers against the operator watching them (CG-223): what the
     "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
     loop's most expensive seat is compared against the workers', not guessed at."""
@@ -222,6 +225,24 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float) -> str:
     lines = [f"- workers: ${worker_cost_usd:.2f}",
              f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
              f"- total: ${total:.2f}"]
+    outcomes = outcomes or {}
+    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
+        rows = outcomes.get(dimension) or {}
+        if not rows:
+            continue
+        lines += ["", f"### Outcomes by {label}", "",
+                  f"| {label} | mean/run | cost/accepted task | first-pass approval |",
+                  "|---|---:|---:|---:|"]
+        for value, row in rows.items():
+            mean = row.get("mean_cost_usd")
+            per_accepted = row.get("cost_per_accepted_task")
+            first_pass = row.get("first_pass_rate")
+            lines.append(
+                f"| {value} | "
+                f"{f'${mean:.2f}' if mean is not None else '—'} | "
+                f"{f'${per_accepted:.2f}' if per_accepted is not None else '—'} | "
+                f"{f'{first_pass:.0%}' if first_pass is not None else '—'} |"
+            )
     return "\n".join(lines)
 
 
@@ -458,6 +479,10 @@ def resolve_retro_tasks(items: Any, existing_titles: dict[str, str]) -> list[dic
         out.append({
             "title": title,
             "body": str(it.get("body") or "").strip(),
+            "acceptance": [str(v).strip() for v in (it.get("acceptance") or [])
+                           if isinstance(v, str) and v.strip()],
+            "reading": [str(v).strip() for v in (it.get("reading") or [])
+                        if isinstance(v, str) and v.strip()],
             "difficulty": str(it.get("difficulty") or "medium").strip() or "medium",
             "priority": it.get("priority"),
             "reason": str(it.get("reason") or "").strip(),
