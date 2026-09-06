@@ -41,7 +41,7 @@
 {% endif %}
 
 <div class="actions" style="margin-bottom:14px">
-  {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#suggest-form">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
+  {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
       {% for ph in approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == task.phase %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
