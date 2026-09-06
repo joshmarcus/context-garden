@@ -86,6 +86,14 @@ def test_brief_states_the_pr_body_contract(garden):
     assert '"friction": ["<short friction item>"]' in b.text
 
 
+def test_brief_states_that_headless_runs_must_finish_before_reporting(garden):
+    store = Store(garden)
+    text = build_brief(store, store.task("DM-001"), branch="garden/x", base="main").text
+    assert "The run ends when you stop" in text
+    assert "never background a command" in text
+    assert "only after the checks have returned" in text
+
+
 def test_brief_pre_pr_revision(garden):
     store = Store(garden)
     task = store.task("DM-001")
