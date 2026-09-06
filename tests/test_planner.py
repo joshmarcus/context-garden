@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from garden.model import Status
-from garden.planner import import_plan, parse_plan, plan_prompt, run_planner
+from garden.planner import PLAN_INSTRUCTIONS, import_plan, parse_plan, plan_prompt, run_planner
 from garden.store import Store
 from tests.conftest import write
 
@@ -81,6 +81,53 @@ def test_import_resolves_title_deps(garden):
     store.config.data["plan"] = {"auto_approve": False}
     more = import_plan(store, "demo", "p1", [{"title": "Gamma", "body": "g", "difficulty": "hard"}])
     assert more[0].status.value == "draft" and more[0].difficulty == "hard"
+
+
+def test_import_links_design_assumption_dependency(garden):
+    """A design dependency is ordered even before it becomes a code dependency."""
+    store = Store(garden)
+    criteria = "\n\n## Acceptance criteria\n\n- [ ] It does the thing, proven by a test.\n"
+    created = import_plan(store, "demo", "p1", [
+        {"title": "Define quota convention", "body": "## Goal\n\nDefine it." + criteria},
+        {
+            "title": "Apply quota convention",
+            "body": "## Goal\n\nIts design assumes Define quota convention has merged." + criteria,
+            "depends_on": ["Define quota convention"],
+        },
+    ])
+
+    assert created[1].depends_on == [created[0].id]
+    assert "design assumes the other has merged" in PLAN_INSTRUCTIONS
+
+
+def test_import_plan_inlines_cited_retro_evidence(garden):
+    store = Store(garden)
+    write(garden / "demo" / "p1" / "docs" / "retro.md", """
+        # Retrospective
+
+        ## Finding
+
+        The quota convention must merge before its consumer design.
+    """)
+
+    created = import_plan(store, "demo", "p1", [{
+        "title": "Sequence quota work",
+        "body": "## Goal\n\nAddress the finding in docs/retro.md.",
+    }])
+
+    body = store.task(created[0].id).body
+    assert "## Inlined retro evidence" in body
+    assert "The quota convention must merge before its consumer design." in body
+
+
+def test_plan_prompt_inlines_retro_evidence_cited_by_human_guidance(garden):
+    write(garden / "demo" / "p1" / "docs" / "friction.md", "# Friction\n\nA worker needed quota rules.\n")
+    store = Store(garden)
+
+    prompt = plan_prompt(store, "demo", "p1", extra="Use the finding in docs/friction.md.")
+
+    assert "## Retro evidence cited in additional guidance" in prompt
+    assert "A worker needed quota rules." in prompt
 
 
 def test_import_plan_leaves_incomplete_brief_a_draft_despite_auto_approve(garden):
