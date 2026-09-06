@@ -113,6 +113,8 @@ class ReviewMixin:
                 task.log(f"automated {kind} could not start: {e}")
                 self.store.save(task)
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
+                if kind == "persona" and item.get("required"):
+                    self._required_persona_failed(task, str(item["name"]), f"could not start: {e}", rep)
         if deferred:
             self._queue_pending_reviews(st, deferred)
 
@@ -191,6 +193,8 @@ class ReviewMixin:
             if self.review_slots_free() <= 0:
                 break
             st = self.state.get(task.id)
+            if st.get("needs_human"):
+                continue
             pending = list(st.get("pending_reviews") or [])
             if not pending:
                 continue

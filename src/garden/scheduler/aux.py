@@ -98,7 +98,10 @@ class AuxMixin:
         task = self.store.tasks().get(entry.get("task", ""))
         if kind == "persona" and entry.get("target") == "pr" and task is not None:
             st = self.state.get(task.id)
-            self._queue_pending_reviews(st, [{"kind": "persona", "name": entry.get("persona", "")}])
+            required = bool(entry.get("required_evidence"))
+            if required:
+                st.setdefault("required_evidence", {})[f"persona:{entry.get('persona', '')}"] = "queued"
+            self._queue_pending_reviews(st, [{"kind": "persona", "name": entry.get("persona", ""), "required": required}])
             task.log(note)
             self.store.save(task)
             rep.transitions.append(f"{task.id} persona paused (env_error)")

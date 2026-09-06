@@ -7,6 +7,7 @@ from typing import Any
 from .. import gitops
 from ..github import GitHubError, mark_garden_comment
 from ..model import Phase, Status, Task, ensure_open
+from ..notify import notify
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -137,6 +138,9 @@ class PersonaMixin:
         if not rev:
             self.events.emit("persona", entry["task"], persona=name, status="no_verdict", target=entry.get("target"))
             rep.errors.append(f"persona {name}: no verdict ({run.error[:100] or 'see final.md'})")
+            if entry.get("required_evidence"):
+                task = self.store.task(entry["task"])
+                self._required_persona_failed(task, name, run.error[:120] or "no parseable verdict", rep)
             return
         self.events.emit("persona", entry["task"], persona=name, target=entry.get("target"), score=rev.get("score"),
                          high=sum(1 for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"))
@@ -176,8 +180,11 @@ class PersonaMixin:
         task.log(f"persona {name} review: score {rev.get('score', '–')}/10, {len(rev.get('findings') or [])} finding(s)")
         self.store.save(task)
         if entry.get("required_evidence"):
-            self.state.get(task.id).setdefault("required_evidence", {})[f"persona:{name}"] = "posted" if comment_posted else "failed"
-            self.state.save()
+            if comment_posted:
+                self.state.get(task.id).setdefault("required_evidence", {})[f"persona:{name}"] = "posted"
+                self.state.save()
+            else:
+                self._required_persona_failed(task, name, "could not post the persona comment", rep)
         rep.transitions.append(f"{task.id} persona {name}: {rev.get('score', '–')}/10")
         highs = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"]
         if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.cfg.get("auto_revise", True)):
@@ -187,3 +194,18 @@ class PersonaMixin:
             st.pop("pending_feedback_rebase", None)
             self._transition(task, Status.CHANGES_REQUESTED, f"{name} persona review raised {len(highs)} high finding(s)")
             rep.transitions.append(f"{task.id} -> changes_requested (persona {name})")
+
+    def _required_persona_failed(self, task: Task, name: str, detail: str, rep: TickReport) -> None:
+        """Stop an evidence-gated review when its required persona could not be produced."""
+        st = self.state.get(task.id)
+        st.setdefault("required_evidence", {})[f"persona:{name}"] = "failed"
+        # Keep both this retry and the waiting automated review for an explicit resume.
+        self._queue_pending_reviews(st, [{"kind": "persona", "name": name, "required": True}])
+        reason = f"required persona review `{name}` failed: {detail}"
+        self._set_needs_human(task, "required_evidence", reason)
+        self.events.emit("needs_human", task.id, stop_kind="required_evidence", reason=reason)
+        task.log(reason)
+        self.store.save(task)
+        self.state.save()
+        notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
+        rep.transitions.append(f"{task.id} required persona {name} failed; needs human")
