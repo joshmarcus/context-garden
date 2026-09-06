@@ -218,8 +218,10 @@ def import_plan(
             if gaps:
                 t.log("left as draft; incomplete brief: " + "; ".join(gaps))
             else:
-                t.status = Status.READY
-                t.log("approved (planner)")
+                # The scheduler owns task status changes, including planner approval.
+                from .scheduler import Scheduler
+
+                Scheduler(store)._transition(t, Status.READY, "approved (planner)")
             store.save(t)
     store.invalidate()
     return created

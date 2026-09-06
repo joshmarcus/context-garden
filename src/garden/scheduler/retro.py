@@ -656,6 +656,12 @@ class RetroMixin:
                 refused[tid] = refusal
                 self.log(f"retro {phase.key}: cannot approve blocking {tid}: {refusal}")
                 continue
+            gaps = brief_gaps(self.store, t)
+            if gaps:
+                refusal = f"{t.id} has an incomplete brief; fix it before approving: " + "; ".join(gaps)
+                refused[tid] = refusal
+                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {refusal}")
+                continue
             self._transition(t, Status.READY, "approved by the retro reopen verdict")
             approved.append(tid)
         if approved:
