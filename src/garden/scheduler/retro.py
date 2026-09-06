@@ -11,7 +11,7 @@ from .. import gitops
 from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
-from ..model import Phase, Status, Task, estimate_tokens, now_iso, slugify
+from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
 from ..operator_spend import total_cost as operator_total_cost
@@ -651,13 +651,13 @@ class RetroMixin:
             t = tasks.get(tid)
             if t is None or t.status != Status.DRAFT:
                 continue
-            try:
-                self.approve(t, by="retro reopen verdict", phase=phase)
-            except RuntimeError as e:
-                refused[tid] = str(e)
-                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {e}")
-            else:
-                approved.append(tid)
+            refusal = phase_refusal(phase, t)
+            if refusal:
+                refused[tid] = refusal
+                self.log(f"retro {phase.key}: cannot approve blocking {tid}: {refusal}")
+                continue
+            self._transition(t, Status.READY, "approved by the retro reopen verdict")
+            approved.append(tid)
         if approved:
             self.store.invalidate()
         return approved, refused

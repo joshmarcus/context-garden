@@ -72,7 +72,7 @@ def test_set_rejects_unknown_key(garden):
 
 
 def test_trellis_open_filter(garden):
-    assert run(garden, "set-status", "DM-001", "done").exit_code == 0
+    assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
     r = run(garden, "trellis")
     lines = [line for line in r.output.splitlines() if line.strip()]
     assert any(line.startswith("DM-001") for line in lines)
@@ -129,7 +129,7 @@ def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
     """CG-142: done/cancelled are terminal on the CLI too. `garden set-status` is the only
     escape hatch, and it needs --force to move a task back out of one of them."""
     assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
-    assert run(garden, "set-status", "DM-001", "done").exit_code == 0
+    assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
 
     for args in (("retry", "DM-001"), ("cancel", "DM-001"), ("review", "DM-001"), ("dispatch", "DM-001"),
                  ("resume", "DM-001")):

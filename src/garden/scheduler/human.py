@@ -50,11 +50,10 @@ class HumanMixin:
         warning = ""
         if phase is not None and self._is_phase_start(phase, task) and not self.has_kickoff(phase):
             warning = f"{phase.key} has no kickoff report; run `garden kickoff {phase.key}` before starting work"
-        task.status = Status.READY
-        task.log(f"approved ({by})" if by else "approved")
+        note = f"approved ({by})" if by else "approved"
         if warning:
-            task.log(f"no kickoff report for {phase.key}")
-        self.store.save(task)
+            note += f"; no kickoff report for {phase.key}"
+        self._transition(task, Status.READY, note)
         return warning
 
     def _is_phase_start(self, phase: Phase, task: Task) -> bool:
@@ -231,12 +230,39 @@ class HumanMixin:
         self._queue_leave(task)
         if new_number:
             st["pr_number"] = new_number
+        note = f"PR attached: {url} (pr_number {old_number or 'none'} -> {new_number or 'none'})"
         if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
-            task.status = Status.IN_REVIEW
-        task.log(f"PR attached: {url} (pr_number {old_number or 'none'} -> {new_number or 'none'})")
+            self._transition(task, Status.IN_REVIEW, note)
+        else:
+            task.log(note)
+            self.store.save(task)
         self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
-        self.store.save(task)
         self.state.save()
+
+    def mark_done(self, task: Task, note: str = "", force: bool = False) -> None:
+        """Mark a task done only after its PR's commits reach the final base, unless forced.
+
+        The forced path is the explicit human escape hatch for abandoning an in-review PR.
+        """
+        if not force:
+            ensure_open(task)
+        if task.pr and not force and not self._pr_commits_on_base(task):
+            raise RuntimeError(
+                f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
+            )
+        self._transition(task, Status.DONE, note or "marked done")
+
+    def _pr_commits_on_base(self, task: Task) -> bool:
+        """Whether the recorded PR head is an ancestor of the task's final base branch."""
+        head = str(self.state.get(task.id).get("head_sha") or task.branch or "")
+        if not head:
+            return False
+        try:
+            repo = self.repo_for(task)
+            gitops.fetch(repo)
+            return gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
+        except gitops.GitError:
+            return False
 
     # ---- manual controls -----------------------------------------------------
     def _cancel_active_run(self, task: Task) -> None:

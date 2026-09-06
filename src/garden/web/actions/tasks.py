@@ -58,9 +58,7 @@ def difficulty(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) 
 def unapprove(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     if t.status != Status.READY:
         raise RuntimeError(f"{t.id} is {t.status.value}, not ready; nothing to send back to draft")
-    t.status = Status.DRAFT
-    t.log("back to draft (web)")
-    s.save(t)
+    sched._transition(t, Status.DRAFT, "back to draft (web)")
 
 
 @action("dispatch")
@@ -110,9 +108,7 @@ def resume(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 @action("done")
 def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    t.status = Status.DONE
-    t.log(note or "marked done (web)")
-    s.save(t)
+    sched.mark_done(t, note or "marked done without merging (web)", force=True)
 
 
 @action("review")

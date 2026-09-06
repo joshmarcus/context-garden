@@ -75,7 +75,6 @@
         <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
-        <form method="post" action="/tasks/{{ it.task }}/done"><button class="quiet">Mark done</button></form>
       {% elif it.group == 'attention' and it.get('decision_kind') == 'question' %}
         <form method="post" action="/decisions/{{ it.decision }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="answer" placeholder="Your answer." required></textarea><button class="primary">Answer</button></form>
         <form method="post" action="/decisions/{{ it.decision }}/dismiss"><button class="quiet danger">Dismiss</button></form>

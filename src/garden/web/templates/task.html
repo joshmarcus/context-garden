@@ -88,7 +88,7 @@
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if (task.status.value in ('ready','draft','failed') and not task.pr) or trial_again %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
-  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"><button class="quiet">Mark done</button></form>{% endif %}
+  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
