@@ -435,7 +435,12 @@ def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]])
     for backlog_item, backlog_source in backlog:
         if claimed_source and backlog_source != claimed_source:
             continue
-        scores.append((len(task_words & _provenance_words(backlog_item)), backlog_source))
+        backlog_words = _provenance_words(backlog_item)
+        overlap = len(task_words & backlog_words)
+        # One shared word is too weak for a multi-word item ("endpoint", "docs", etc.).
+        # A genuinely one-word backlog item can still be identified by that one word.
+        if overlap >= min(2, len(backlog_words)):
+            scores.append((overlap, backlog_source))
     best = max((score for score, _ in scores), default=0)
     matches = {candidate for score, candidate in scores if score == best and score > 0}
     if len(matches) == 1:

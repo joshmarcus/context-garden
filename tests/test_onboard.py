@@ -70,6 +70,7 @@ def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, mo
     assert first.trusted_authors == ["maintainer"]
     assert "platform" not in first.trusted_authors
     assert "Formatting: A tiny service. Format JavaScript with Prettier. (source: `README.md`)." in first.conventions
+    assert "Review: Use conventional commits. Pull requests need one approval. (source: `CONTRIBUTING.md`)." in first.conventions
     assert "Commits: Use conventional commits. Pull requests need one approval. (source: `CONTRIBUTING.md`)." in first.conventions
     assert "Review: Respect path ownership recorded in CODEOWNERS (source: `.github/CODEOWNERS`)." in first.conventions
 
@@ -238,6 +239,19 @@ def test_onboard_rejects_unrelated_task_even_when_it_claims_a_known_source(tmp_p
 
     with pytest.raises(ValueError, match="no unambiguous backlog provenance"):
         onboard_project(repo, tmp_path / "garden", planner=false_provenance)
+
+
+def test_onboard_rejects_weak_one_word_provenance_match(tmp_path):
+    repo = _node_repo(tmp_path)
+
+    def weak_match(_store: Store, _prompt: str) -> str:
+        item = json.loads(_valid_plan(_store, _prompt))[0]
+        item["title"] = "Replace the database endpoint"
+        item["body"] = "## Goal\n\nMigrate the database endpoint to a different vendor.\n"
+        return json.dumps([item])
+
+    with pytest.raises(ValueError, match="no unambiguous backlog provenance"):
+        onboard_project(repo, tmp_path / "garden", planner=weak_match)
 
 
 def test_discovery_uses_safe_environment_sources_and_reports_exact_provenance(tmp_path):
