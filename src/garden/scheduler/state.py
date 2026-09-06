@@ -191,3 +191,38 @@ class State:
             # concurrent writer's newer update to a key we already flushed.
             for tid, dirty_keys in dirty_by_tid.items():
                 self.data[tid].flushed(dirty_keys)
+
+    def restore_other_task_keys(self, snapshot: dict[str, Any], task_id: str, task_ids: set[str]) -> None:
+        """Restore worker-tainted keys in other tasks from a dispatch snapshot.
+
+        The active task's entry belongs to reap, so it is deliberately preserved.  This uses
+        the same lock and atomic replacement as ``save`` because a fence violation can race a
+        UI or another scheduler process.
+        """
+        lock_path = self.path.parent / (self.path.name + ".lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                disk = json.loads(self.path.read_text()) if self.path.exists() else {}
+            except json.JSONDecodeError:
+                disk = {}
+            for other_id in task_ids - {task_id}:
+                before = snapshot.get(other_id, {})
+                current = disk.setdefault(other_id, {})
+                live = self.data.get(other_id, {})
+                # ``live`` is this scheduler's view, including work it did while the
+                # worker ran. Restore the dispatch value only when the scheduler did
+                # not change that key; otherwise retain the scheduler's newer value.
+                for key in set(before) | set(current) | set(live):
+                    if key in live and live.get(key) != before.get(key):
+                        current[key] = live[key]
+                    elif key in before:
+                        current[key] = before[key]
+                    else:
+                        current.pop(key, None)
+                if not current:
+                    disk.pop(other_id, None)
+            tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+            tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))
+            os.replace(tmp_path, self.path)

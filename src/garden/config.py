@@ -109,12 +109,10 @@ DEFAULTS: dict[str, Any] = {
                                   # dropped. HOME is not inherited (a worker runs under an isolated
                                   # scratch home); add "HOME" here to restore the operator's, or "*"
                                   # for full inheritance.
-        "config_dirs": {},        # override where a harness's credentials live, keyed by the
-                                  # environment variable it reads: CLAUDE_CONFIG_DIR (claude keeps
-                                  # ~/.claude/.credentials.json there) and CODEX_HOME (~/.codex)
-                                  # default to the operator's own home unless already set in the
-                                  # allowed environment; name any other variable here for a custom
-                                  # harness's own config-dir key (see runner.base.scrubbed_env).
+        "config_dirs": {},        # override credential *sources*, keyed by the environment
+                                  # variable the harness reads. Claude's .credentials.json and
+                                  # Codex's auth.json are copied into a fresh private directory
+                                  # per dispatch; custom variables pass through unchanged.
     },
     "web": {
         "trusted_origins": [],    # origins besides the server's own loopback host whose POSTs

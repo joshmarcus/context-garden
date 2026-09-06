@@ -81,11 +81,8 @@ garden_scrub() {{
   set +f
   unset CLAUDECODE 2>/dev/null || :
   if [ -z "${{HOME:-}}" ]; then mkdir -p "$GARDEN_WORKER_HOME" 2>/dev/null || :; export HOME="$GARDEN_WORKER_HOME"; fi
-  # The isolated HOME above would also hide each harness's own saved login (claude's
-  # ~/.claude/.credentials.json, codex's ~/.codex): default each to the value
-  # runner.base.config_dir_env resolves (the operator's real home, or a worker_env.config_dirs
-  # override), unless the remote login environment already carries it through the CLAUDE_* /
-  # CODEX_* allowlist above.
+  # Build fresh harness homes under the scratch HOME.  The configured locations are sources,
+  # never paths handed to the worker: only each harness's login file crosses the boundary.
 {config_dirs}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
@@ -171,10 +168,17 @@ class SSHRunner(Runner):
         setup_env = "\n".join(
             f"  export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
         )
-        config_dirs = "\n".join(
-            f'  if [ -z "${{{var}:-}}" ]; then export {var}={shlex.quote(val)}; fi'
-            for var, val in config_dir_env(self.config).items()
-        )
+        config_sources = config_dir_env(self.config)
+        config_dirs = "\n".join([
+            '  rm -rf "$GARDEN_WORKER_HOME/.claude" "$GARDEN_WORKER_HOME/.codex"',
+            '  mkdir -p "$GARDEN_WORKER_HOME/.claude" "$GARDEN_WORKER_HOME/.codex"',
+            f'  if [ -f {shlex.quote(config_sources["CLAUDE_CONFIG_DIR"] + "/.credentials.json")} ]; then cp {shlex.quote(config_sources["CLAUDE_CONFIG_DIR"] + "/.credentials.json")} "$GARDEN_WORKER_HOME/.claude/.credentials.json"; fi',
+            f'  if [ -f {shlex.quote(config_sources["CODEX_HOME"] + "/auth.json")} ]; then cp {shlex.quote(config_sources["CODEX_HOME"] + "/auth.json")} "$GARDEN_WORKER_HOME/.codex/auth.json"; fi',
+            '  export CLAUDE_CONFIG_DIR="$GARDEN_WORKER_HOME/.claude" CODEX_HOME="$GARDEN_WORKER_HOME/.codex"',
+            *[f'  export {variable}={shlex.quote(source)}'
+              for variable, source in config_sources.items()
+              if variable not in {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}],
+        ])
         env_allow = shlex.quote(" ".join(pass_env_patterns(self.config)))
         script = REMOTE_SCRIPT.format(
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
