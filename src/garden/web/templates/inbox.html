@@ -41,11 +41,12 @@
     <div class="what decision-content">
       <div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>
       <div class="why">{{ it.why }}</div>
-      {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
-      {% if it.group == 'decision' and it.final %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
+      {% if it.get('decision_card') %}{% set decision_card = it.decision_card %}{% set card_task = it.card_task %}{% include "_decision_card.html" %}{% endif %}
+      {% if it.group == 'question' and not it.get('decision_card') %}<div class="q">{{ it.question }}</div>{% endif %}
+      {% if it.group == 'decision' and it.final and not it.get('decision_card') %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
       {% if it.get('review') %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
       {% if it.group == 'approve' and it.gaps %}<div class="why">Fix the brief before approving — a run would be spent on:</div><ul class="why" style="margin:4px 0 0;padding-left:16px">{% for g in it.gaps %}<li>{{ g }}</li>{% endfor %}</ul>{% endif %}
-      {% if it.group == 'attention' %}
+      {% if it.group == 'attention' and not it.get('decision_card') %}
         {% if it.get('kind_blurb') %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
         {% if it.get('evidence') %}<ul class="decision-evidence">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
         {% if it.get('decision_kind') == 'question' %}
@@ -60,7 +61,8 @@
     </div>
     <div class="card-actions decision-actions">
     <div class="do">
-      {% if it.group == 'tool' %}
+      {% if it.get('decision_card') %}
+      {% elif it.group == 'tool' %}
         <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
       {% elif it.group == 'question' %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>

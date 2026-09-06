@@ -397,6 +397,65 @@ def test_events_page_and_answer_flow(garden, monkeypatch):
     assert "Questions and answers" in page and "SQLite" in page and "Timeline" in page
 
 
+def test_task_page_shares_pending_worker_decision_card_with_inbox(garden):
+    """A notification can safely link here even if the report outlives its transition."""
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.AWAITING_TRIAGE
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["decision"] = {
+        "kind": "no_change", "reason": "The code is already correct.",
+        "final": "I checked the requested path and found no change to make.",
+    }
+    state.save()
+
+    c = client(garden)
+    for page in (c.get("/").text, c.get(f"/tasks/{task.id}").text):
+        assert 'class="panel decision-card"' in page
+        assert "The code is already correct." in page
+        assert "The worker's full message" in page
+        assert f'action="/tasks/{task.id}/accept"' in page
+        assert f'action="/tasks/{task.id}/reject"' in page
+
+
+def test_task_page_shares_waiting_question_card_and_omits_it_without_a_decision(garden, monkeypatch):
+    from garden.model import Status
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+    from tests.conftest import FakeGitHub
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+    sched.tick()
+    sched.tick()
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert 'class="panel decision-card"' in page
+    assert "Postgres or SQLite?" in page
+    assert 'action="/tasks/DM-001/answer"' in page
+
+    state = sched.state
+    task = sched.store.task("DM-001")
+    task.status = Status.READY
+    sched.store.save(task)
+    state.get(task.id).pop("question", None)
+    state.save()
+    assert 'class="panel decision-card"' not in c.get("/tasks/DM-001").text
+
+
+def test_inbox_and_task_page_include_the_same_decision_card_fragment():
+    from pathlib import Path
+
+    templates = Path(__file__).parents[1] / "src" / "garden" / "web" / "templates"
+    for name in ("inbox.html", "task.html"):
+        assert '{% include "_decision_card.html" %}' in (templates / name).read_text()
+
+
 def test_budget_form_and_route(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store
