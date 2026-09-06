@@ -11,11 +11,13 @@ A run directory holds:
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import signal
 import threading
 import time
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -41,7 +43,7 @@ class _RunIndex:
     changes made by another process.
     """
 
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.RLock = field(default_factory=threading.RLock)
     generation: int = 0
     built_generation: int = -1
     built_at: float = 0.0
@@ -50,7 +52,8 @@ class _RunIndex:
     active: tuple[Run, ...] = ()
     totals: dict[str, Any] = field(default_factory=dict)
     task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
-    archive_fingerprint: tuple[int, int] | None = None
+    archive_fingerprint: tuple[int, int, int] | None = None
+    archive_dirty: bool = False
     dirty_tasks: set[str] = field(default_factory=set)
     scans: int = 0
     reads: int = 0
@@ -317,6 +320,31 @@ def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:
                 idx.dirty_tasks.add(task_id)
 
 
+@contextmanager
+def _history_lock(garden_dir: Path, *, exclusive: bool):
+    """Coordinate archive moves and refreshes without writing files on read paths.
+
+    The garden directory's inode is stable across archive ledger replacements. Locking
+    it also avoids a shared temporary index file race between independent CLI writers.
+    """
+    if exclusive:
+        garden_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(garden_dir, os.O_RDONLY)
+    except FileNotFoundError:
+        # A read of a garden with no history has nothing to coordinate yet.
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 class RunStore:
     MAX_INDEX_AGE_SECONDS = 1.0
 
@@ -342,40 +370,65 @@ class RunStore:
         now = time.monotonic()
         with idx.lock:
             if idx.built_generation != idx.generation or now - idx.built_at > self.MAX_INDEX_AGE_SECONDS:
-                task_fingerprints = self._task_fingerprints()
-                archive_fingerprint = self._archive_fingerprint()
-                initial = idx.built_generation < 0
-                changed = (set(task_fingerprints) if initial else {
-                    task for task in set(task_fingerprints) | set(idx.task_fingerprints)
-                    if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
-                }) | idx.dirty_tasks
-                active_by_task: dict[str, list[Run]] = {}
-                for run in idx.runs:
-                    if not str(run.path).startswith(str(self.archive_dir)):
-                        active_by_task.setdefault(run.task_id, []).append(run)
-                for task in changed:
-                    active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
-                found = [run for runs in active_by_task.values() for run in runs]
-                if initial or archive_fingerprint != idx.archive_fingerprint:
-                    archived = self._archived_runs()
-                else:
-                    archived = [r for r in idx.runs if str(r.path).startswith(str(self.archive_dir))]
-                found.extend(archived)
-                found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
-                idx.runs = tuple(found)
-                grouped: dict[str, list[Run]] = {}
-                for run in found:
-                    grouped.setdefault(run.task_id, []).append(run)
-                idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
-                idx.active = tuple(run for run in found if run.status == "running")
-                idx.totals = _totals(found)
-                idx.task_fingerprints = task_fingerprints
-                idx.archive_fingerprint = archive_fingerprint
-                idx.dirty_tasks.clear()
-                idx.built_generation = idx.generation
-                idx.built_at = time.monotonic()
-                idx.scans += 1
-            return idx
+                # A move and its archive ledger replacement form one history mutation.
+                # Cached readers can retain the prior snapshot; refreshes must see the
+                # complete result, including when a separate CLI process is the writer.
+                with _history_lock(self.dir.parent, exclusive=False):
+                    self._refresh_index()
+        return idx
+
+    def _refresh_index(self) -> None:
+        idx = self._index
+        task_fingerprints = self._task_fingerprints()
+        archive_fingerprint = self._archive_fingerprint()
+        initial = idx.built_generation < 0
+        changed = (set(task_fingerprints) if initial else {
+            task for task in set(task_fingerprints) | set(idx.task_fingerprints)
+            if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
+        }) | idx.dirty_tasks
+        previous_archived = [r for r in idx.runs if r.path.is_relative_to(self.archive_dir)]
+        if initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint:
+            archived = self._archived_runs()
+            # A changed ledger also tells an existing reader in another process which
+            # live buckets moved, even if their directory timestamps/size did not change.
+            before = {(r.task_id, r.run_id) for r in previous_archived}
+            after = {(r.task_id, r.run_id) for r in archived}
+            changed |= {task for task, _run_id in before ^ after}
+        else:
+            archived = previous_archived
+        active_by_task: dict[str, list[Run]] = {}
+        for run in idx.runs:
+            if not run.path.is_relative_to(self.archive_dir):
+                active_by_task.setdefault(run.task_id, []).append(run)
+        for task in changed:
+            active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
+        found = [run for runs in active_by_task.values() for run in runs]
+        found.extend(archived)
+        found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
+        idx.runs = tuple(found)
+        grouped: dict[str, list[Run]] = {}
+        for run in found:
+            grouped.setdefault(run.task_id, []).append(run)
+        idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
+        idx.active = tuple(run for run in found if run.status == "running")
+        idx.totals = _totals(found)
+        idx.task_fingerprints = task_fingerprints
+        idx.archive_fingerprint = archive_fingerprint
+        idx.dirty_tasks.clear()
+        idx.archive_dirty = False
+        idx.built_generation = idx.generation
+        idx.built_at = time.monotonic()
+        idx.scans += 1
+
+    @contextmanager
+    def _archive_mutation(self):
+        # Always take the process lock before the filesystem lock, matching refreshes.
+        with self._index.lock, _history_lock(self.dir.parent, exclusive=True):
+            try:
+                yield
+            finally:
+                self._index.archive_dirty = True
+                self._index.generation += 1
 
     def _task_fingerprints(self) -> dict[str, tuple[int, int]]:
         """Cheap freshness signal: writers touch a task directory when run metadata changes."""
@@ -402,11 +455,11 @@ class RunStore:
                 continue
         return found
 
-    def _archive_fingerprint(self) -> tuple[int, int] | None:
+    def _archive_fingerprint(self) -> tuple[int, int, int] | None:
         manifest = self.archive_dir / "index.json"
         try:
             stat = manifest.stat()
-            return stat.st_mtime_ns, stat.st_size
+            return stat.st_mtime_ns, stat.st_size, stat.st_ino
         except FileNotFoundError:
             return None
 
@@ -554,44 +607,51 @@ class RunStore:
         archive itself, so retrying after interruption repairs a move that happened
         before its index write without losing or double-counting the run.
         """
-        protected = protected_run_ids or set()
-        terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
-        moved = 0
-        for run in self._active_disk_runs():
-            if run.status not in terminal or not run.finished_at or run.run_id in protected:
-                continue
-            try:
-                finished = dt.datetime.fromisoformat(run.finished_at)
-            except ValueError:
-                continue
-            if finished >= before:
-                continue
-            target = self.archive_dir / run.task_id / run.run_id
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                continue
-            os.replace(run.path, target)
-            moved += 1
-        self.rebuild_archive_index()
-        self.invalidate()
-        return moved
+        with self._archive_mutation():
+            protected = protected_run_ids or set()
+            terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
+            moved = 0
+            for run in self._active_disk_runs():
+                if run.status not in terminal or not run.finished_at or run.run_id in protected:
+                    continue
+                try:
+                    finished = dt.datetime.fromisoformat(run.finished_at)
+                except ValueError:
+                    continue
+                if finished >= before:
+                    continue
+                target = self.archive_dir / run.task_id / run.run_id
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    continue
+                os.replace(run.path, target)
+                self._index.dirty_tasks.add(run.task_id)
+                moved += 1
+            self._write_archive_index()
+            return moved
 
     def restore_archived(self, task_id: str, run_id: str) -> bool:
         """Restore one archived run atomically for recovery or inspection tooling."""
-        source = self.archive_dir / task_id / run_id
-        if not source.exists():
-            return False
-        target = self.dir / task_id / run_id
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            return False
-        os.replace(source, target)
-        self.rebuild_archive_index()
-        self.invalidate()
-        return True
+        with self._archive_mutation():
+            source = self.archive_dir / task_id / run_id
+            if not source.exists():
+                return False
+            target = self.dir / task_id / run_id
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                return False
+            os.replace(source, target)
+            self._index.dirty_tasks.add(task_id)
+            self._write_archive_index()
+            return True
 
     def rebuild_archive_index(self) -> int:
         """Verify archived metadata and atomically replace its compact index."""
+        with self._archive_mutation():
+            return self._write_archive_index()
+
+    def _write_archive_index(self) -> int:
+        """Rebuild while the caller holds the archive mutation locks."""
         rows: list[dict[str, Any]] = []
         invalid: list[str] = []
         if self.archive_dir.exists():
@@ -609,15 +669,17 @@ class RunStore:
         tmp = self.archive_dir / "index.json.tmp"
         tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
         os.replace(tmp, self.archive_dir / "index.json")
-        self.invalidate()
         return len(rows)
 
     def update_archived(self, run: Run) -> None:
         """Persist an archived metadata correction and atomically refresh its ledger."""
-        if not str(run.path).startswith(str(self.archive_dir)):
+        if not run.path.is_relative_to(self.archive_dir):
             raise ValueError("run is not archived")
-        run.save()
-        self.rebuild_archive_index()
+        with self._archive_mutation():
+            if not (run.path / "run.json").exists():
+                raise FileNotFoundError("archived run moved; reload it before updating metadata")
+            run.save()
+            self._write_archive_index()
 
     def _active_disk_runs(self) -> list[Run]:
         out: list[Run] = []
