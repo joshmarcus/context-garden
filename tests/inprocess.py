@@ -82,6 +82,9 @@ class InProcessRunner(LocalRunner):
         from garden.checkrun import run_check_job
 
         d = run.path
+        env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        if env.get("TMPDIR"):
+            payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
         (d / "stdout.json").write_text("")
         (d / "stderr.log").write_text("")

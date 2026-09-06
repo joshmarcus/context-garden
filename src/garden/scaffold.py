@@ -273,6 +273,7 @@ every gap as a task so the loop needs you less next time. Written from the first
 
 ```bash
 garden observe                     # status line, cards, stuck runs, tracebacks, a digest of the window
+garden doctor                      # confirms free space on the work root and /tmp before a long run
 gh pr list --repo <owner/repo> --state open --json number,title,mergeable,statusCheckRollup
 ```
 

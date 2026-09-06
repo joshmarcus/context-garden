@@ -203,8 +203,13 @@ class RunStore:
         stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
         run_id = f"{stamp}-{mode}"
         d = self.dir / task_id / run_id
+
+        def exists_anywhere(candidate: str) -> bool:
+            return d.exists() or (self.dir.exists() and any(
+                (task_dir / candidate).exists() for task_dir in self.dir.iterdir() if task_dir.is_dir()))
+
         n = 1
-        while d.exists():
+        while exists_anywhere(run_id):
             n += 1
             run_id = f"{stamp}-{mode}-{n}"
             d = self.dir / task_id / run_id

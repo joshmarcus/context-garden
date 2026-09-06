@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
-from .base import Runner, RunnerError, run_setup, scrubbed_env
+from .base import Runner, RunnerError, run_setup, run_temp_dir, scrubbed_env
 
 
 class LocalRunner(Runner):
@@ -54,6 +54,12 @@ class LocalRunner(Runner):
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
         env["GARDEN_ROOT"] = no_live_garden_root(run.path)
+        work_dir = self.config.get("work_dir")
+        if work_dir:
+            temp_dir = run_temp_dir(work_dir, run)
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            env["TMPDIR"] = str(temp_dir)
+            env["PYTEST_DEBUG_TEMPROOT"] = str(temp_dir)
         return env
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
@@ -101,6 +107,9 @@ class LocalRunner(Runner):
         them later instead of running the product's suite in-process (CG-182). Overridden by
         the in-process test runner to run the same job synchronously."""
         d = run.path
+        env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        if env.get("TMPDIR"):
+            payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
         script = (
             f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(d))} "
@@ -108,7 +117,7 @@ class LocalRunner(Runner):
             f"echo $? > {shlex.quote(str(d / 'exit_code'))}"
         )
         proc = subprocess.Popen(
-            ["sh", "-c", script], cwd=str(worktree),
+            ["sh", "-c", script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )

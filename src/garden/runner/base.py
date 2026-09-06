@@ -17,6 +17,11 @@ class RunnerError(Exception):
     pass
 
 
+def run_temp_dir(work_dir: Path | str, run: Run) -> Path:
+    """The disk-backed, private temporary directory for one local run."""
+    return Path(work_dir) / "tmp" / run.run_id
+
+
 # The scheduler's environment variables a worker keeps, and the setup command that prepares
 # its worktree with it. Everything else is dropped: a worker inherits no GitHub token, no
 # cloud credentials, no ssh agent and no `GARDEN_*` of the live garden, because it only

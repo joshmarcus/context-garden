@@ -321,6 +321,7 @@ def test_init_scaffold(tmp_path):
         assert (skills / slug / "SKILL.md").exists()
     operate = (skills / "garden-operate" / "SKILL.md").read_text()
     assert "joshmarcus/context-garden" in operate
+    assert "garden doctor" in operate
 
     import os
 
@@ -363,6 +364,9 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
     import subprocess
     from unittest import mock
 
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("garden.cli.diagnostics.shutil.disk_usage", lambda path: SimpleNamespace(free=1024 * 1024))
     with mock.patch("subprocess.run") as mock_run:
         def side_effect(cmd, *args, **kwargs):
             if isinstance(cmd, list):
@@ -384,6 +388,8 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         r = run(garden, "doctor")
         assert r.exit_code == 0, r.output
         assert "all good" in r.output
+        assert "free space work dir: 1 MB" in r.output
+        assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
 def test_doctor_fails_with_no_gh_login(garden, monkeypatch):

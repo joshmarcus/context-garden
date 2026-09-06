@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +13,19 @@ from ..criteria import apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
-from ..runner.base import Runner
+from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
 from .report import TickReport
 
 
 class ReapMixin:
+    def _cleanup_reaped_temp_dirs(self) -> None:
+        """Remove disk-backed temp directories once their local run is no longer active."""
+        work_dir = self.cfg.work_dir
+        for run in self.runs.all_runs():
+            if run.runner == "local" and run.status != "running":
+                shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
+
     # ---- reap --------------------------------------------------------------
     def reap(self, task: Task, rep: TickReport) -> bool:
         # Only ever the task's own worker-mode run (work/revise/resume/trial/rebase). A review
