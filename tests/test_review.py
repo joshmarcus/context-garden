@@ -41,6 +41,16 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
+    store = Store(garden)
+    shot = tmp_path / "board-390-dark.png"
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
+                        pr_body="B", diff="+x", max_diff_chars=1000, captures=[str(shot)])
+    assert "## Rendered UI captures" in text
+    assert str(shot) in text
+    assert "pages_seen" in text
+
+
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
     """CG-144: dispatching a second review while the first is still `running` (a person
     pressed "one more review", or the poll re-reviewed a fresh push) closes the first as

@@ -79,7 +79,15 @@ class PersonaMixin:
         if latest and latest.result:
             pr_title = str(latest.result.get("pr_title") or task.title)
             pr_body = str(latest.result.get("pr_body") or "")
-        text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff, int(self.cfg.get("review.max_diff_chars", 60000)))
+        captures: list[str] = []
+        for check_run in reversed(self.runs.runs_for(task.id)):
+            captures = [str(path) for result in (check_run.result or {}).get("checks", [])
+                        if result.get("name") == "ui" for path in result.get("captures", [])
+                        if str(path).endswith(".png")]
+            if captures:
+                break
+        text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff,
+                        int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 

@@ -290,7 +290,7 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
 
 
 def pr_brief(store: Store, task: Task, name: str, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
-             max_diff_chars: int) -> str:
+             max_diff_chars: int, captures: list[str] | None = None) -> str:
     tb = build_brief(store, task, include_rules=False)
     body, sections = persona_sections(load_persona(store, name))
     frag, note = _sections_fragment(sections)
@@ -299,6 +299,10 @@ def pr_brief(store: Store, task: Task, name: str, branch: str, base: str, pr_tit
                              sections=frag, sections_note=note),
              "## Task brief (what the author was given)\n\n" + tb.text,
              f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n"]
+    if captures:
+        parts.append("## Rendered UI captures\n\nOpen every image below and judge what a person sees at "
+                     "desktop/mobile widths and in light/dark mode.\n\n" +
+                     "\n".join(f"- `{path}`" for path in captures))
     if diff and len(diff) <= max_diff_chars:
         fence = "````" if "```" in diff else "```"
         parts.append(f"## Diff ({base}...HEAD)\n\n{fence}diff\n{diff.rstrip()}\n{fence}\n")
