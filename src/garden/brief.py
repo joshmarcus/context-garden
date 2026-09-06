@@ -35,6 +35,7 @@ OPERATING_RULES = """\
 - In a supervised local run, launch each potentially heavy validation as
   `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
   within its execution budget. Run ordinary lightweight inspection commands directly.
+ - The run ends when you stop: run long commands in the foreground, never background a command to await a notification, and write your result only after the checks have returned.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
