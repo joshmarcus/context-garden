@@ -380,9 +380,15 @@ does this from inside an interactive Claude Code session. `garden finish WID-003
 `finalize` as a detached run, so the push, checks, PR and review are identical. A manual
 run never times out and never occupies a scheduler slot.
 
-**the planner.** `garden plan` is the one model call that is not detached: it runs the
-harness synchronously from the garden root with the planning prompt on stdin and imports
-the JSON array it prints as task files.
+**the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
+model call that is not detached: it runs the harness synchronously with the planning prompt
+on stdin and imports the JSON array it prints as task files. Goals, specs and docs are
+inlined into that prompt verbatim, so the call itself is isolated like a worker's rather than
+run as the operator: a scratch directory (never the garden root), the scrubbed worker
+environment (no operator token, no operator `HOME`), the live garden denied as a write
+target, and `GARDEN_ROOT` forced to a sentinel (`planner.run_planner`). A generated task's
+brief still goes through the same gate `garden approve` uses (`brief_gaps`) before it can
+reach `ready`, whatever `plan.auto_approve` says.
 
 ## What each side never does
 
