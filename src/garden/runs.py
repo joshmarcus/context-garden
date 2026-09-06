@@ -123,6 +123,10 @@ class Run:
         return max(0.0, (dt.datetime.now(dt.UTC) - last).total_seconds() / 60)
 
     def kill(self) -> None:
+        # The in-process test runner uses the scheduler process as the liveness sentinel.
+        # Never let a corrupt or synthetic run record terminate the process doing the reap.
+        if self.pid == os.getpid():
+            return
         if self.pid and _pid_alive(self.pid):
             try:
                 os.killpg(self.pid, signal.SIGTERM)
