@@ -332,7 +332,7 @@ def pin(
     sha: str = typer.Argument(..., help="git commit to canary, install, and run"),
     url: str = typer.Option("", "--url", help="git URL or local path for the tool product"),
 ):
-    """Canary a commit, then install and restart after one complete scheduler tick."""
+    """Canary a commit, then queue it for the running scheduler's next tick boundary."""
     from ..canary import run_canary
 
     store = _store()
@@ -353,7 +353,7 @@ def pin(
     if not result.get("ok"):
         err.print(f"[red]pin failed: {result.get('reason')}[/red]; the current install is unchanged")
         raise typer.Exit(1)
-    console.print(f"[green]installed {sha[:12]}[/green]; restarting")
+    console.print(f"[green]queued {sha[:12]}[/green]; the scheduler installs and restarts after its current tick")
 
 
 @app.command()

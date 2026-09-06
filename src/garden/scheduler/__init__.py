@@ -14,7 +14,9 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 
 from __future__ import annotations
 
+import fcntl
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -53,6 +55,19 @@ from .review import ReviewMixin
 from .state import State, _TaskState
 from .trials import TrialsMixin
 from .upgrades import UpgradeMixin
+
+_TICK_LOCKS: dict[str, threading.Lock] = {}
+_TICK_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _tick_thread_lock(path: Path) -> Iterator[None]:
+    """Also serialise threads: flock alone is process-scoped on some platforms."""
+    key = str(path.resolve())
+    with _TICK_LOCKS_GUARD:
+        lock = _TICK_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
 
 __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "_TaskState"]
 
@@ -456,6 +471,14 @@ class Scheduler(
         return rep
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
+        """Run one controller-owned pass, serialised across processes for this garden."""
+        lock_path = self.cfg.garden_dir / "tick.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with _tick_thread_lock(lock_path), open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            return self._tick_locked(dispatch)
+
+    def _tick_locked(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
@@ -471,6 +494,10 @@ class Scheduler(
             # its own guard (or a bug in a guard itself) cannot lose a transition an earlier
             # phase already made (CG-203).
             self.state.save()
+        # A `garden pin` command may have written its request while this pass was in
+        # flight.  Its state was not part of this Scheduler instance's snapshot, so reload
+        # at the boundary before deciding whether this controller should consume it.
+        self.state = State(self.state.path)
         self.maybe_auto_upgrade(rep)
         rep.duration_s = time.monotonic() - started
         budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)

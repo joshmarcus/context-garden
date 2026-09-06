@@ -665,7 +665,7 @@ def test_help_groups_commands_into_panels():
 
 
 def test_pin_waits_for_tick_before_restart(garden, monkeypatch):
-    """The explicit pin flow canaries first, then completes a tick before restarting."""
+    """Pin queues after its canary; the controller owns installation and restart."""
     from types import SimpleNamespace
 
     from garden import canary
@@ -678,14 +678,12 @@ def test_pin_waits_for_tick_before_restart(garden, monkeypatch):
     monkeypatch.setattr(diagnostics, "_scheduler", lambda store: sched)
     monkeypatch.setattr(canary, "run_canary", lambda *args, **kwargs: (
         order.append("canary") or SimpleNamespace(ok=True, summary=lambda: "canary: every check passed")))
-    monkeypatch.setattr(sched, "tick", lambda: order.append("tick"))
-    monkeypatch.setattr(sched, "upgrade", lambda restart=False: (
-        order.append("restart") or {"ok": True, "restarted": restart}))
 
     result = run(garden, "pin", "deadbeef", "--url", str(garden.parent / "repo"))
 
     assert result.exit_code == 0, result.output
-    assert order == ["canary", "tick", "restart"]
+    assert order == ["canary"]
+    assert sched.upgrade_available()["pinned"] is True
 
 
 def test_pin_refuses_to_install_when_canary_fails(garden, monkeypatch):

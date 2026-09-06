@@ -281,13 +281,14 @@ class DispatchMixin:
     def redispatch(self, task: Task) -> Run:
         """Replace every active run for ``task`` with one fresh work run.
 
-        A task has one persistent branch and worktree.  Marking old records superseded before
-        dispatching means neither slot accounting nor a later reap can mistake a killed worker
-        for the newly dispatched one.
+        A task has one persistent branch and worktree.  Do not mark an old record superseded,
+        or start the replacement, until its process is confirmed dead.
         """
         superseded = [run for run in self.runs.active() if run.task_id == task.id]
         for run in superseded:
-            run.kill()
+            if not run.stop():
+                raise RuntimeError(f"could not confirm worker {run.run_id} stopped; refusing redispatch")
+        for run in superseded:
             run.status = "superseded"
             run.finished_at = now_iso()
             run.save()

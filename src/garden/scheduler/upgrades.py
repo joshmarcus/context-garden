@@ -83,28 +83,32 @@ class UpgradeMixin:
         return {"ok": True, "sha": sha, "restarted": bool(restart)}
 
     def pin(self, sha: str, url: str, product: str = "") -> dict[str, Any]:
-        """Install ``sha`` only after a complete scheduler tick, then restart.
+        """Queue a canaried pin for the long-lived controller's next tick boundary.
 
-        The caller runs the candidate canary first.  Deferring installation until ``tick``
-        returns keeps the current process from replacing itself while that pass is reaping or
-        dispatching work.  Suppress auto-upgrade for this one pass so it cannot restart early.
+        A one-shot ``garden pin`` process is not the scheduler and must never re-exec itself.
+        The controller consumes this request after its own tick, where its restart callback is
+        the service/watch process rather than the pin command.
         """
-        self.control()["upgrade"] = {"sha": sha, "url": url, "product": product, "at": now_iso()}
+        self.control()["upgrade"] = {"sha": sha, "url": url, "product": product,
+                                      "at": now_iso(), "restart": True, "pinned": True}
         self.state.save()
-        self._pinning_after_tick = True
-        try:
-            self.tick()
-        finally:
-            self._pinning_after_tick = False
-        return self.upgrade(restart=True)
+        return {"ok": True, "sha": sha, "pending": True}
 
     def maybe_auto_upgrade(self, rep: TickReport) -> None:
         """On an idle tick, install a pending tool upgrade if config `upgrade: auto` is set."""
-        if getattr(self, "_pinning_after_tick", False):
+        info = self.upgrade_available()
+        # A pin is an explicit command, not an auto-upgrade.  It is consumed by this
+        # controller only after _tick_body has returned and while tick.lock is still held.
+        if info and info.get("pinned"):
+            result = self.upgrade(restart=True)
+            if result.get("ok"):
+                rep.transitions.append("pinned tool installed")
+            else:
+                rep.errors.append(f"pinned tool install failed: {result.get('reason')}")
             return
         if not self.cfg.upgrade_auto() or self.is_dispatch_paused():
             return
-        if not self.upgrade_available() or self.active_runs():
+        if not info or self.active_runs():
             return
         try:
             result = self.upgrade(restart=True)
