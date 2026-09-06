@@ -190,6 +190,8 @@ class ReviewMixin:
                         break
         if verified is None:
             verified = self._last_worker_verified(task)
+        if pre_flight is None:
+            pre_flight = self._last_worker_preflight(task)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available and not pr_body:
