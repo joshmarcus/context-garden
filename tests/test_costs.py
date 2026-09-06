@@ -144,6 +144,24 @@ def test_outcomes_count_only_base_branch_merges_as_accepted():
     assert outcome["by_harness"]["claude"]["first_pass_rate"] == 1.0
 
 
+def test_outcomes_attribute_supporting_run_costs_to_the_task_route():
+    """CG-251: a model's accepted-task bill includes untagged review and edit runs."""
+    tasks = _tasks()
+    events = [
+        {"at": "2026-09-04T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude"},
+        {"at": "2026-09-04T10:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 1.0},
+        # These runs support the same task, but their events identify only their mode.
+        {"at": "2026-09-04T10:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "review", "cost_usd": 0.5},
+        {"at": "2026-09-04T10:03:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "edit", "cost_usd": 0.25},
+        {"at": "2026-09-04T10:04:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+    ]
+
+    outcome = metrics(events, tasks)
+    assert outcome["by_model"]["sonnet"]["mean_cost_usd"] == 1.0
+    assert outcome["by_model"]["sonnet"]["cost_per_accepted_task"] == 1.75
+    assert outcome["by_harness"]["claude"]["cost_per_accepted_task"] == 1.75
+
+
 # ---- CLI/web parity, and today's question (CG-214) --------------------------------------
 
 

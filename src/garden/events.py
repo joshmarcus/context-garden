@@ -251,7 +251,6 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     task_dimensions: dict[str, dict[str, set[str]]] = defaultdict(
         lambda: {"model": set(), "harness": set()}
     )
-    cost_events: list[dict[str, Any]] = []
     runs: dict[str, int] = defaultdict(int)
     rebases_mechanical = 0
     rebases_agent = 0
@@ -282,7 +281,6 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         elif k == "run_finished":
             run_cost = float(ev.get("cost_usd") or 0.0)
             cost[t] += run_cost
-            cost_events.append(ev)
             for dimension in ("model", "harness"):
                 costs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += run_cost
                 runs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += 1
@@ -354,13 +352,17 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         for dimension in ("model", "harness"):
             for value in task_dimensions[tid][dimension]:
                 accepted_tasks_by_dimension[dimension][value].add(tid)
-    for ev in cost_events:
-        tid = str(ev.get("task") or "")
-        if tid not in accepted_ids:
-            continue
-        accepted_cost_by_dimension["difficulty"][getattr(tasks[tid], "difficulty", "") or "medium"] += float(ev.get("cost_usd") or 0.0)
+    for tid in accepted_ids:
+        # Review, edit, and check runs do not carry the model and harness of the task's
+        # implementation run. They are nevertheless part of the cost to accept that
+        # task, so attribute its complete cost to every implementation route it used.
+        # This intentionally makes a task which changed routes visible in each route's
+        # comparison, rather than silently losing its supporting-run costs to "unknown".
+        accepted_cost = cost[tid]
+        accepted_cost_by_dimension["difficulty"][getattr(tasks[tid], "difficulty", "") or "medium"] += accepted_cost
         for dimension in ("model", "harness"):
-            accepted_cost_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += float(ev.get("cost_usd") or 0.0)
+            for value in task_dimensions[tid][dimension]:
+                accepted_cost_by_dimension[dimension][value] += accepted_cost
 
     def outcome_breakdown(dimension: str) -> dict[str, dict[str, Any]]:
         values = set(accepted_tasks_by_dimension[dimension])
