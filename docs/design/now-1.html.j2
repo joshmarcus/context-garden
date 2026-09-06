@@ -12,11 +12,10 @@
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-{{ '' if no_process else s.dot }}" title="{{ 'no process' if no_process else s.state | replace('_', ' ') }}"></span>{{ stage(s.glyph, 22) }}</div>
   <div class="head">
-    {% if s.task %}<a class="id" href="/tasks/{{ s.task }}">{{ s.task }}</a>{% endif %}
-    <span class="t">{{ s.title }}</span>
+    {% if s.task %}<a class="t" href="/tasks/{{ s.task }}">{{ s.title }}</a><span class="id">{{ s.task }}</span>{% else %}<span class="t">{{ s.title }}</span>{% endif %}
   </div>
   <div class="meta">
-    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}
+    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}{% if s.run %} · <a class="open-run" href="/runs/{{ s.task }}/{{ s.run }}">open run</a>{% endif %}
     {% else %}<span class="stamp">{{ s.state | replace('_', ' ') }}</span>{% endif %}
   </div>
   {% if no_process %}
@@ -84,9 +83,10 @@
 .strip .glyphs { grid-row:1 / span 3; display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:2px; }
 .strip .glyphs .state::before { width:8px; height:8px; }
 .strip .head { display:flex; align-items:baseline; gap:10px; min-width:0; }
-.strip .head .id { flex:none; }
+.strip .head .id { flex:none; color:var(--muted); }
 .strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
+.strip .meta .open-run { color:var(--muted); }
 .strip .bar { grid-column:2 / span 2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
 .strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); }
 .strip .bar .spend.faint { color:var(--faint); }
@@ -119,10 +119,11 @@
 .empty-sheet p { margin:0; color:var(--muted); font:13.5px/1.5 var(--body); }
 /* next */
 .queue { list-style:none; margin:0; padding:0; }
-.queue li { display:grid; grid-template-columns:26px 22px 68px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); }
+.queue li { display:grid; grid-template-columns:26px 22px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); }
 .queue .pos { font:12px/1.4 var(--mono); color:var(--faint); text-align:right; }
-.queue .lt { font:15px/1.35 var(--display); overflow-wrap:anywhere; }
-.queue .why { grid-column:4; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .lt { grid-column:3 / span 2; font:15px/1.35 var(--display); overflow-wrap:anywhere; }
+.queue .why { grid-column:3 / span 2; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .why .id { color:var(--muted); }
 .queue .why .skip { color:var(--warn); font-weight:700; }
 .queue-more { display:block; margin:8px 4px 0; font:12px/1.4 var(--mono); }
 .sub { margin-top:20px; }
@@ -181,16 +182,31 @@
 .tiers { margin-top:26px; }
 .tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
 .tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.tier-tables.wide { grid-template-columns:minmax(0, 1fr); }  /* more than five models: one table per row, so no column is cut */
 .tier-tables .scroll { overflow-x:auto; }
 table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
 table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
 table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
 table.tier th .vendor { display:block; color:var(--faint); }
 table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
-table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; }
+table.tier caption small { font:11px/1.4 var(--mono); color:var(--muted); margin-left:6px; }
+table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; white-space:nowrap; }
 table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
+/* the heat scale (the owner's rule, 2026-09-06 02:45Z): --k is the cell's place on its row, 0 at
+   the best value, 1 at the worst; the ground is mixed between the two cell tokens, which are
+   pale in the light palette and deep in the dark one so the ink stays legible in both. */
+:root { --cell-good:#d9eedd; --cell-bad:#f5d9d4; }
+:root[data-theme="dark"] { --cell-good:#20402c; --cell-bad:#4a2a28; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cell-good:#20402c; --cell-bad:#4a2a28; } }
+table.tier td.scaled { background:color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)); }
+table.tier td.scaled.thin { background:color-mix(in oklab, color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)) 35%, transparent); }
 table.tier td.best b { font-weight:600; }
 table.tier td.thin b { color:var(--muted); font-style:italic; }
+table.tier .mark { font:700 10px/1 var(--mono); margin-right:4px; vertical-align:2px; }
+table.tier .mark.best, .tiers .lead .mark.best { color:var(--good); }
+table.tier .mark.worst, .tiers .lead .mark.worst { color:var(--bad); }
+table.tier .mark.thin, .tiers .lead .mark.thin { color:var(--muted); margin-right:2px; }
+.tiers .lead .mark { font:700 11px/1 var(--mono); }
 table.tier td .faint { color:var(--faint); }
 /* live region for a screen reader */
 .now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
@@ -223,7 +239,6 @@ body.page-now .rail-running { display:none; }
   .strip .said { grid-column:2; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .scale { --track:110px; }
   .queue li { grid-template-columns:22px 20px minmax(0, 1fr); }
-  .queue .id { grid-column:3; }
   .queue .lt, .queue .why { grid-column:3; }
   .sheet.big { padding:18px 12px 18px; min-height:0; }
   .sheet .t1 { top:120px; } .sheet .t2 { display:none; }
@@ -275,7 +290,7 @@ body.page-now .rail-running { display:none; }
 <p class="now-five">
   {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ (g.dispatch_paused.at or '')[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
   <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
-  {%- if next.dispatch %} <a href="#next">Next</a>: {{ next.dispatch[0].task }}{% if next.dispatch | length > 1 %}, then {{ next.dispatch[1].task }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
+  {%- if next.dispatch %} <a href="#next">Next</a>: {{ short(next.dispatch[0].title) }}{% if next.dispatch | length > 1 %}, then {{ short(next.dispatch[1].title) }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
   {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
   <a href="#period">Last hour</a>: {{ hour.merged }} merged, ${{ '%.2f' % hour.cost }}.
 </p>
@@ -287,7 +302,7 @@ body.page-now .rail-running { display:none; }
   {% for s in runs %}{{ strip(s, "new" if loop.first else "") }}{% endfor %}
   {% if not runs %}
   <div class="specimen empty-sheet"><span class="tape"></span><b>Nothing running.</b>
-    {% if next.dispatch %}<p>Next tick in <span data-countdown>{{ g.tick_interval }}</span> s: it will dispatch {{ next.dispatch[0].task }}{% if next.dispatch | length > 1 %} and {{ next.dispatch[1].task }}{% endif %} into {{ free }} free slot{{ 's' if free != 1 }}.</p>
+    {% if next.dispatch %}<p>Next tick in <span data-countdown>{{ g.tick_interval }}</span> s: it will dispatch <a href="/tasks/{{ next.dispatch[0].task }}">{{ short(next.dispatch[0].title) }}</a>{% if next.dispatch | length > 1 %} and <a href="/tasks/{{ next.dispatch[1].task }}">{{ short(next.dispatch[1].title) }}</a>{% endif %} into {{ free }} free slot{{ 's' if free != 1 }}.</p>
     {% else %}<p>The garden is quiet. Nothing is ready: {{ g.drafts }} drafts wait for approval, {{ g.inbox_decisions }} cards wait on you in the Inbox. Next tick in <span data-countdown>{{ g.tick_interval }}</span> s polls PRs only.</p>{% endif %}</div>
   {% endif %}
   {% for s in hands %}{{ strip(s) }}{% endfor %}
@@ -300,8 +315,8 @@ body.page-now .rail-running { display:none; }
   {% if next.dispatch %}
   <ol class="queue">
     {% for q in next.dispatch[:8] %}
-    <li><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="id" href="/tasks/{{ q.task }}">{{ q.task }}</a><span class="lt">{{ q.title }}</span>
-      <span class="why">{{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
+    <li><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="lt" href="/tasks/{{ q.task }}">{{ q.title }}</a>
+      <span class="why"><span class="id">{{ q.task }}</span> · {{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
     {% endfor %}
   </ol>
   {% if next.dispatch | length > 8 %}<a class="queue-more" href="/board?view=backlog">and {{ next.dispatch | length - 8 }} more →</a>{% endif %}
@@ -318,7 +333,7 @@ body.page-now .rail-running { display:none; }
     {% if mq.last_drop %}<p class="muted" style="margin-top:6px;font:12px/1.4 var(--mono)">last to leave the queue: {{ mq.last_drop.task }} · {{ mq.last_drop.reason }} · {{ mq.last_drop.at[11:16] }}Z</p>{% endif %}
   </div>
   {% if mq.waiting %}
-  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }}</span><span class="fact">{{ w.why }}</span></li>{% endfor %}</ul></div>
+  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }} · {{ w.title }}</span><span class="fact {{ 'held' if w.gate == 'overdue' }}">{{ w.why }}{% if w.gate == 'overdue' %} · <a href="/tasks/{{ w.task }}#log">open the log</a>{% endif %}</span></li>{% endfor %}</ul></div>
   {% endif %}
 </section>
 
@@ -363,14 +378,14 @@ body.page-now .rail-running { display:none; }
     <div class="tiers">
       <div class="eyebrow">By difficulty and model</div>
       {% if tiers.models %}
-      <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; the best of a row is bold once it has {{ tiers.thin }} samples, a thinner cell is italic</p>
-      <div class="tier-tables">
+      <p class="lead">the five figures <code>garden metrics</code> reports, each cell with its n. Along a row the ground runs from green at the best value to red at the worst, <span class="mark best">▲</span> and <span class="mark worst">▽</span> mark the two ends; a cell under {{ tiers.thin }} samples is faint and marked <span class="mark thin">~</span>, and is never an end</p>
+      <div class="tier-tables {{ 'wide' if tiers.models | length > 5 }}">
         {% for m in tiers.metrics %}
         <div class="scroll"><table class="tier">
-          <caption>{{ m.label }}</caption>
+          <caption>{{ m.label }} <small>{{ 'higher' if m.better == 'high' else 'lower' }} is better · n = {{ m.n_unit }}</small></caption>
           <tr><th></th>{% for model in tiers.models %}{% set parts = model.split('-', 1) %}<th>{% if parts | length == 2 %}<span class="vendor">{{ parts[0] }}-</span>{{ parts[1] }}{% else %}{{ model }}{% endif %}</th>{% endfor %}</tr>
           {% for d in ("easy", "medium", "hard") %}
-          <tr><th>{{ d }}</th>{% for model in tiers.models %}{% set c = m.rows[d].get(model) %}<td class="{{ 'best' if c and c.best }} {{ 'thin' if c and c.n < tiers.thin }}">{% if c %}<b>{{ cell(m.unit, c.value) }}</b><small>n {{ c.n }}</small>{% else %}<span class="faint">—</span>{% endif %}</td>{% endfor %}</tr>
+          <tr><th>{{ d }}</th>{% for model in tiers.models %}{% set c = m.rows[d].get(model) %}<td class="{{ 'scaled' if c and c.rank is not none }} {{ 'best' if c and c.best }} {{ 'worst' if c and c.worst }} {{ 'thin' if c and c.thin }}"{% if c and c.rank is not none %} style="--k:{{ c.rank }}"{% endif %}>{% if c %}<b>{% if c.best %}<span class="mark best" title="best of the row">▲</span>{% elif c.worst %}<span class="mark worst" title="worst of the row">▽</span>{% endif %}{{ cell(m.unit, c.value) }}</b><small>{% if c.thin %}<span class="mark thin" title="fewer than {{ tiers.thin }} samples">~</span>{% endif %}n {{ c.n }}</small>{% else %}<span class="faint">—</span>{% endif %}</td>{% endfor %}</tr>
           {% endfor %}
         </table></div>
         {% endfor %}
@@ -402,13 +417,23 @@ body.page-now .rail-running { display:none; }
   <div class="g"><h4>quiet: nothing running, nothing to dispatch</h4><div class="specimen empty-sheet"><span class="tape"></span><b>The garden is quiet.</b><p>Nothing is ready: 3 drafts wait for approval, 2 cards wait on you in the Inbox. Next tick in 42 s polls PRs only.</p></div></div>
   <div class="g"><h4>next: lines the tick would skip, and the merge queue with a head, a held candidate and a PR in review</h4>
     <ol class="queue">
-      <li><span class="pos">1</span>{{ stage('ready', 18) }}<a class="id" href="/tasks/CG-215">CG-215</a><span class="lt">Onboarding skill and command</span><span class="why">priority 2 · work · hard → <span class="skip">harness paused</span></span></li>
-      <li><span class="pos">2</span>{{ stage('ready', 18) }}<a class="id" href="/tasks/CG-222">CG-222</a><span class="lt">The evaluation corpus for routing</span><span class="why">priority 3 · work · medium → <span class="skip">phase frozen</span></span></li>
+      <li><span class="pos">1</span>{{ stage('ready', 18) }}<a class="lt" href="/tasks/CG-215">Onboarding skill and command</a><span class="why"><span class="id">CG-215</span> · priority 2 · work · hard → <span class="skip">harness paused</span></span></li>
+      <li><span class="pos">2</span>{{ stage('ready', 18) }}<a class="lt" href="/tasks/CG-222">The evaluation corpus for routing</a><span class="why"><span class="id">CG-222</span> · priority 3 · work · medium → <span class="skip">phase frozen</span></span></li>
     </ol>
     <div class="sub"><h3>Merge queue</h3><ul>
       <li><a class="id" href="/tasks/CG-245">CG-245</a><span>Isolate planner execution from operator state</span><span class="fact">rebased, waiting for its rollup · CI pending</span></li>
       <li><a class="id" href="/tasks/CG-251">CG-251</a><span>Cost per accepted task and first-pass approval per model, tier and harness</span><span class="fact held">held: the automated review verdict is request_changes, not approve</span></li>
       <li><a class="id" href="/tasks/CG-244">CG-244</a><span>Reserve retro task IDs and survive duplicate records</span><span class="fact">round 1 of 4 · CI success · only 1 review round so far, need 2</span></li>
+    </ul></div></div>
+  <div class="g"><h4>reviews waiting: one line per gate the scheduler applies, in its order</h4>
+    <div class="sub"><h3>Reviews waiting</h3><ul>
+      <li><a class="id" href="/tasks/CG-242">CG-242</a><span>review · Hold untrusted config changes before live reload</span><span class="fact">dispatch paused: reviews start again with dispatch</span></li>
+      <li><a class="id" href="/tasks/CG-242">CG-242</a><span>review · Hold untrusted config changes before live reload</span><span class="fact">its revise record has no process; the tick that reaps it starts the review</span></li>
+      <li><a class="id" href="/tasks/CG-250">CG-250</a><span>review · A reopen verdict is a working process</span><span class="fact">waits for its revise run to finish</span></li>
+      <li><a class="id" href="/tasks/CG-244">CG-244</a><span>persona:security · Reserve retro task IDs</span><span class="fact">claude harness paused</span></li>
+      <li><a class="id" href="/tasks/CG-245">CG-245</a><span>review · Isolate planner execution from operator state</span><span class="fact">no review slot (3 of 3 busy)</span></li>
+      <li><a class="id" href="/tasks/CG-236">CG-236</a><span>review · A trial winner's PR enters the review queue</span><span class="fact">queued: the next tick starts it</span></li>
+      <li><a class="id" href="/tasks/CG-237">CG-237</a><span>review · The not-logged-in check reads a worker's prose</span><span class="fact held">still queued after a tick and no gate explains it: see the task's log · <a href="/tasks/CG-237#log">open the log</a></span></li>
     </ul></div></div>
   <div class="g"><h4>dispatch paused (the region header)</h4><div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span><span class="right">3 of 5 worker slots · 0 of 3 review slots <span class="stamp">paused</span> · by cli at 00:31Z · quota on both accounts</span></div></div>
   <div class="g"><h4>no runs in the window</h4><div class="empty">No runs finished in this window.</div></div>

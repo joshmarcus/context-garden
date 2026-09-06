@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO / "src"))
 from garden import operator_spend as ops  # noqa: E402
 from garden.charts import cost_stack_svg, sparkline_svg  # noqa: E402
 from garden.costs import bucket_key, cost_series  # noqa: E402
-from garden.events import EventLog  # noqa: E402
+from garden.events import EventLog, difficulty_by_model  # noqa: E402
 from garden.graph import effective_status, ready  # noqa: E402
 from garden.harness import Harness, _usage_cost  # noqa: E402
 from garden.inbox import merge_queue_view, needs_human_info  # noqa: E402
@@ -50,10 +50,8 @@ BASE_HTML = REPO / "src" / "garden" / "web" / "templates" / "base.html"
 PLATES = REPO / "src" / "garden" / "web" / "static" / "plates"
 
 WORKER_MODES = {"work", "revise", "resume", "trial", "rebase"}
-WORK_MODES = {"work", "revise", "resume", "trial"}  # the runs that write a task's code: what a model is credited for
 CHECK_MODES = {"check"}
 REVIEW_MODES = {"review", "persona", "compare"}
-DIFFICULTIES = ("easy", "medium", "hard")
 # The design's mode -> growth-stage glyph table (docs/design/now-page.md, Visual system).
 MODE_GLYPH = {"work": "running", "revise": "running", "resume": "running", "trial": "running",
               "rebase": "ready", "edit": "ready", "check": "awaiting_triage",
@@ -251,15 +249,57 @@ def dispatch_queue(store: Store, tasks: dict, state: State, control: dict, spent
     return out
 
 
+def review_wait_reason(task_id: str, active: list[dict], gates: dict) -> tuple[str, str]:
+    """Why a queued review has not started, from the gates the scheduler applies, in the order
+    it applies them (what `Scheduler.review_wait_reason` returns in the build), as a state word
+    and a sentence:
+
+    1. `paused`: dispatch is paused, and the tick drains pending reviews only when it dispatches;
+    2. `worker`: a worker run for the task is in flight (a review never runs beside one); when
+       that run is a record without a process, the sentence says the review starts once a tick
+       reaps it, which is the honest version of "waiting for the run";
+    3. `harness`: the review harness is paused;
+    4. `slots`: every review slot is busy, with the count;
+    5. `tick`: no gate holds it: the next tick starts it;
+    6. `overdue`: no gate holds it and a tick has already passed since the task last moved, so
+       something the page cannot see is in the way; the sentence sends the person to the task's
+       log rather than promising a recovery.
+    """
+    if gates["dispatch_paused"]:
+        return "paused", "dispatch paused: reviews start again with dispatch"
+    mine = [s for s in active if s.get("task") == task_id and s.get("mode") in WORKER_MODES]
+    if mine:
+        run = mine[-1]
+        if run.get("no_process"):
+            return "worker", f"its {run['mode']} record has no process; the tick that reaps it starts the review"
+        return "worker", f"waits for its {run['mode']} run to finish"
+    if gates["review_harness"] in gates["paused_harnesses"]:
+        return "harness", f"{gates['review_harness']} harness paused"
+    if gates["review_busy"] >= gates["review_slots"]:
+        return "slots", f"no review slot ({gates['review_busy']} of {gates['review_slots']} busy)"
+    if gates["last_tick"] > gates["last_moved"].get(task_id, ""):
+        return "overdue", "still queued after a tick and no gate explains it: see the task's log"
+    return "tick", "queued: the next tick starts it"
+
+
 def merge_queue(store: Store, tasks: dict, state: State, events: list[dict], active: list[dict], control: dict,
-                review_slots_busy: int, review_slots: int) -> dict:
+                review_slots_busy: int, review_slots: int, last_tick: str) -> dict:
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in active if s.get("mode") in REVIEW_MODES}
     max_rounds = int((store.config.get("review") or {}).get("max_rounds", 4) or 4)
     in_review, waiting = [], []
-    paused = set((control.get("paused_harnesses") or {}).keys())
-    review_harness = str((store.config.get("review") or {}).get("harness") or store.config.get("harness") or "claude")
+    last_moved: dict[str, str] = {}
+    for e in events:
+        if e.get("task"):
+            last_moved[e["task"]] = max(last_moved.get(e["task"], ""), str(e.get("at") or ""))
+    gates = {
+        "dispatch_paused": control.get("dispatch") == "paused",
+        "paused_harnesses": set((control.get("paused_harnesses") or {}).keys()),
+        "review_harness": str((store.config.get("review") or {}).get("harness") or store.config.get("harness") or "claude"),
+        "review_busy": review_slots_busy, "review_slots": review_slots,
+        "last_tick": last_tick, "last_moved": last_moved,
+    }
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
         if t.status == Status.IN_REVIEW and t.id not in queued:
@@ -268,8 +308,8 @@ def merge_queue(store: Store, tasks: dict, state: State, events: list[dict], act
                               "reviewing": t.id in reviewing, "blocked": str(st.get("automerge_blocked") or "")})
         for item in st.get("pending_reviews") or []:
             name = item.get("kind", "review") + (f":{item['name']}" if item.get("name") else "")
-            why = "harness paused" if review_harness in paused else f"no review slot ({review_slots_busy} of {review_slots} busy)"
-            waiting.append({"task": t.id, "title": t.title, "what": name, "why": why})
+            gate, why = review_wait_reason(t.id, active, gates)
+            waiting.append({"task": t.id, "title": t.title, "what": name, "gate": gate, "why": why})
     return {"head": view["head"], "candidates": view["candidates"], "last_drop": view["last_drop"],
             "in_review": in_review, "waiting": waiting}
 
@@ -340,121 +380,6 @@ def phase_sheet(ph: Any, tasks: dict, state: State, active: list[dict], events: 
 
 
 # ---- the last period ------------------------------------------------------------------
-
-# The five difficulty-by-model tables (the owner's ask of 2026-09-06 02:30Z), in the order the
-# page shows them: the phase's two definition-of-done numbers first. `better` says which end of
-# the scale is the good one, so the best cell of a row can be marked without the template
-# deciding; `unit` is what the template formats with.
-TIER_METRICS = (
-    ("cost_per_accepted", "cost per accepted task", "usd", "low"),
-    ("first_pass", "first-pass approval", "pct", "high"),
-    ("work_run_cost", "work-run cost", "usd", "low"),
-    ("revise_rounds", "revise rounds", "rounds", "low"),
-    ("lead_time", "median lead time", "hours", "low"),
-)
-THIN = 3  # a cell with fewer samples is shown faint and never marked best
-
-
-def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
-    """The model credited for a task at the moment of an event: the model of the task's latest
-    work-mode run finished at or before it (`work_runs` is [(finished_at, model)] in order)."""
-    model = ""
-    for finished, m in work_runs:
-        if finished > at:
-            break
-        model = m
-    return model
-
-
-def difficulty_by_model(events: list[dict], tasks: dict, since: str) -> dict:
-    """The difficulty-by-model tables for a window: rows easy, medium, hard; a column per
-    model that did work in the window; each cell a value and its n. The rule for every table
-    is the one `events.metrics` uses for its per-difficulty figures (per-task facts from the
-    event stream, grouped by the task's difficulty), with one addition: a task is credited to
-    the model of its latest work-mode run (work, revise, resume, trial) finished at or before
-    the event the metric hangs on, so a task the loop escalated is counted for the model that
-    got it accepted. This is the reference the build moves into `events.metrics` (CG-251) so
-    `garden metrics` and the page compute it once.
-
-    - cost per accepted task: tasks whose latest `transition` to done is in the window; the
-      task's whole run cost up to that moment (every mode: work, review, rebase, check);
-      mean; n = accepted tasks. Credited at the done transition.
-    - first-pass approval: tasks whose first `review` ever is in the window; the share whose
-      verdict is approve; n = reviewed tasks. Credited at that review.
-    - work-run cost: `run_finished` in the window with a work mode and a model; mean cost;
-      n = runs. The run's own model.
-    - revise rounds: per accepted task, `dispatch` events with mode revise before its done
-      transition; mean; n = accepted tasks.
-    - median lead time: per accepted task, hours from its first dispatch to its done
-      transition; median; n = accepted tasks.
-    """
-    work_runs: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    cost_to: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    revises: dict[str, list[str]] = defaultdict(list)
-    first_dispatch: dict[str, str] = {}
-    first_review: dict[str, dict] = {}
-    done_at: dict[str, str] = {}
-    for e in events:
-        t, k, at = str(e.get("task") or ""), e.get("kind"), str(e.get("at") or "")
-        if not t or t not in tasks:
-            continue
-        if k == "run_finished":
-            cost_to[t].append((at, float(e.get("cost_usd") or 0.0)))
-            if e.get("mode") in WORK_MODES and e.get("model"):
-                work_runs[t].append((at, str(e["model"])))
-        elif k == "dispatch":
-            first_dispatch.setdefault(t, at)
-            if e.get("mode") == "revise":
-                revises[t].append(at)
-        elif k == "review":
-            first_review.setdefault(t, e)
-        elif k == "transition" and e.get("to") == "done":
-            done_at[t] = at
-    samples: dict[str, dict[str, dict[str, list[float]]]] = {
-        key: {d: defaultdict(list) for d in DIFFICULTIES} for key, *_ in TIER_METRICS}
-
-    def add(metric: str, task_id: str, model: str, value: float) -> None:
-        d = getattr(tasks[task_id], "difficulty", "") or "medium"
-        if model and d in samples[metric]:
-            samples[metric][d][model].append(value)
-
-    for t, at in done_at.items():
-        if at < since:
-            continue
-        model = _model_at(work_runs[t], at)
-        add("cost_per_accepted", t, model, sum(c for when, c in cost_to[t] if when <= at))
-        add("revise_rounds", t, model, sum(1 for when in revises[t] if when <= at))
-        if t in first_dispatch:
-            add("lead_time", t, model, (_ts(at) - _ts(first_dispatch[t])).total_seconds() / 3600)
-    for t, e in first_review.items():
-        if e["at"] >= since:
-            add("first_pass", t, _model_at(work_runs[t], e["at"]), 1.0 if e.get("verdict") == "approve" else 0.0)
-    for e in events:
-        if e.get("kind") == "run_finished" and e.get("mode") in WORK_MODES and e.get("model") and str(e.get("at") or "") >= since and e.get("task") in tasks:
-            add("work_run_cost", str(e["task"]), str(e["model"]), float(e.get("cost_usd") or 0.0))
-
-    weight: Counter = Counter()
-    for by_d in samples.values():
-        for cells in by_d.values():
-            for model, vals in cells.items():
-                weight[model] += len(vals)
-    models = sorted(weight, key=lambda m: (-weight[m], m))
-    metrics = []
-    for key, label, unit, better in TIER_METRICS:
-        rows: dict[str, dict[str, dict[str, Any]]] = {}
-        for d in DIFFICULTIES:
-            cells = {}
-            for model, vals in samples[key][d].items():
-                value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
-                cells[model] = {"value": round(value, 3), "n": len(vals), "best": False}
-            solid = [c for c in cells.values() if c["n"] >= THIN]
-            if len(solid) > 1:
-                pick = min if better == "low" else max
-                pick(solid, key=lambda c: c["value"])["best"] = True
-            rows[d] = cells
-        metrics.append({"key": key, "label": label, "unit": unit, "better": better, "rows": rows})
-    return {"models": models, "metrics": metrics, "thin": THIN}
-
 
 def period(events: list[dict], op_events: list[dict], tasks: dict, since: str, bucket: str) -> dict:
     window = [e for e in events if str(e.get("at") or "") >= since]
@@ -541,6 +466,8 @@ def take_snapshot(root: Path) -> dict:
         "24h": ((now - dt.timedelta(hours=24)).replace(microsecond=0).isoformat(), "hour"),
         "phase": ((primary or {}).get("first_dispatch") or (now - dt.timedelta(days=7)).isoformat(), "day"),
     }
+    # The build reads `Hub.last_tick`; the snapshot has only the log, whose newest line is the
+    # last moment the scheduler wrote anything, which is at or after the last tick's start.
     last_tick = max((e["at"] for e in events), default=now.isoformat())
     return {
         "captured_at": now.replace(microsecond=0).isoformat(),
@@ -551,7 +478,7 @@ def take_snapshot(root: Path) -> dict:
                    "drafts": drafts, "inbox_decisions": len(hands)},
         "now": strips + hands,
         "next": {"dispatch": dispatch_queue(store, tasks, state, control, spent),
-                 "merge": merge_queue(store, tasks, state, events, strips, control, review_busy, review_parallel)},
+                 "merge": merge_queue(store, tasks, state, events, strips, control, review_busy, review_parallel, last_tick)},
         "where": {"primary": primary, "others": sheets[1:], "closed": closed},
         "period": {name: period(events, op_events, tasks, since, bucket) for name, (since, bucket) in windows.items()},
     }
@@ -579,12 +506,22 @@ def render(snapshot: dict) -> str:
         "chart": chart,
         "spark": lambda values: _markup(sparkline_svg([float(v) for v in values], width=100, height=26)),
         "minutes": lambda s: ("" if s is None else f"{int(round(s))} s" if s < 90 else f"{int(round(s / 60))} min"),
+        "short": short_title,
         "clock": clock,
         "cell": cell,
         "money": lambda v: f"${v:.2f}" if v is not None else "—",
         "ktok": lambda n: f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1000:.0f}k" if n >= 1000 else str(n),
     })
     return env.get_template(TEMPLATE.name).render(**snapshot)
+
+
+def short_title(title: str, n: int = 56) -> str:
+    """A task title as the five-second sentence says it: whole words up to about `n`
+    characters, then an ellipsis, so the sentence names the work rather than its id."""
+    title = " ".join(str(title or "").split())
+    if len(title) <= n:
+        return title
+    return title[:n].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
 
 
 def clock(seconds: float) -> str:
