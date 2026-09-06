@@ -106,18 +106,44 @@ class FenceMixin:
         manifest: list[dict[str, Any]] = []
         root = self.store.root
         guard_dir = run.path / "fence_guard"
+        cache_dir = self.cfg.garden_dir / "fence-guard-cache"
+        cache = self.state.get("_fence_guard_cache")
         for rel, path, is_config in self._fence_guard_targets(run):
             try:
-                data = path.read_bytes() if path.exists() else b""
+                stat = path.stat() if path.exists() else None
             except OSError:
                 continue
+            cached = cache.get(str(path), {})
+            if (stat is not None and cached.get("mtime_ns") == stat.st_mtime_ns
+                    and cached.get("size") == stat.st_size):
+                sha = str(cached["sha"])
+                data = None
+            else:
+                try:
+                    data = path.read_bytes() if stat is not None else b""
+                except OSError:
+                    continue
+                sha = hashlib.sha256(data).hexdigest()
+                if rel.startswith(".garden/runs/"):
+                    cache[str(path)] = {"mtime_ns": stat.st_mtime_ns if stat else None,
+                                        "size": stat.st_size if stat else 0, "sha": sha}
             snap = ""
-            if is_config or rel == str(self.state.path.relative_to(root)):
+            if rel.startswith(".garden/runs/"):
+                cache_file = cache_dir / sha
+                if not cache_file.exists():
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    if data is None:
+                        data = path.read_bytes() if path.exists() else b""
+                    cache_file.write_bytes(data)
+                snap = f"cache:{sha}"
+            elif is_config or rel == str(self.state.path.relative_to(root)):
                 guard_dir.mkdir(parents=True, exist_ok=True)
                 snap = rel.replace("/", "__")
+                if data is None:
+                    data = path.read_bytes() if path.exists() else b""
                 (guard_dir / snap).write_bytes(data)
             manifest.append({"rel": rel, "abs": str(path), "config": is_config, "snap": snap,
-                             "sha": hashlib.sha256(data).hexdigest()})
+                             "sha": sha})
         if manifest:
             manifest_text = json.dumps(manifest)
             (run.path / "fence_guard.json").write_text(manifest_text)
@@ -172,7 +198,9 @@ class FenceMixin:
                 except (OSError, json.JSONDecodeError, ValueError) as e:
                     self.log(f"fence: could not restore other state keys: {e}")
             elif entry.get("config") and entry.get("snap"):
-                snap_file = run.path / "fence_guard" / str(entry["snap"])
+                snap = str(entry["snap"])
+                snap_file = (self.cfg.garden_dir / "fence-guard-cache" / snap.removeprefix("cache:")
+                             if snap.startswith("cache:") else run.path / "fence_guard" / snap)
                 try:
                     if snap_file.exists():
                         path.write_bytes(snap_file.read_bytes())

@@ -278,6 +278,26 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
+def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_github, tmp_path, monkeypatch):
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg.setdefault("worker_env", {})["config_dirs"] = {"CUSTOM_HARNESS_HOME": "/srv/custom-creds"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    dump = tmp_path / "worker-env.txt"
+    monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(dump))
+    task = sc.store.task("DM-001")
+    task.runner = "ssh"
+    sc.store.save(task)
+    sc.tick()
+    _wait_for_child(sc.runs.latest("DM-001"))
+
+    seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+    assert seen["CUSTOM_HARNESS_HOME"] == "/srv/custom-creds"
+
+
 def test_ssh_host_capacity(sched):
     for tid in ("DM-001", "DM-002"):
         t = sched.store.task(tid)

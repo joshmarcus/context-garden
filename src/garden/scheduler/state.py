@@ -193,7 +193,7 @@ class State:
                 self.data[tid].flushed(dirty_keys)
 
     def restore_other_task_keys(self, snapshot: dict[str, Any], task_id: str, task_ids: set[str]) -> None:
-        """Restore every other task's state entry from a dispatch snapshot.
+        """Restore worker-tainted keys in other tasks from a dispatch snapshot.
 
         The active task's entry belongs to reap, so it is deliberately preserved.  This uses
         the same lock and atomic replacement as ``save`` because a fence violation can race a
@@ -208,9 +208,20 @@ class State:
             except json.JSONDecodeError:
                 disk = {}
             for other_id in task_ids - {task_id}:
-                if other_id in snapshot:
-                    disk[other_id] = snapshot[other_id]
-                else:
+                before = snapshot.get(other_id, {})
+                current = disk.setdefault(other_id, {})
+                live = self.data.get(other_id, {})
+                # ``live`` is this scheduler's view, including work it did while the
+                # worker ran. Restore the dispatch value only when the scheduler did
+                # not change that key; otherwise retain the scheduler's newer value.
+                for key in set(before) | set(current) | set(live):
+                    if key in live and live.get(key) != before.get(key):
+                        current[key] = live[key]
+                    elif key in before:
+                        current[key] = before[key]
+                    else:
+                        current.pop(key, None)
+                if not current:
                     disk.pop(other_id, None)
             tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))

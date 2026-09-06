@@ -173,6 +173,26 @@ def test_state_fence_restores_foreign_task_keys_from_dispatch_snapshot(sched):
     assert json.loads(sched.state.path.read_text())["DM-002"]["foreign"] == "before"
 
 
+def test_state_fence_preserves_foreign_scheduler_updates_after_dispatch(sched):
+    task = sched.store.task("DM-001")
+    sched.state.get("DM-002")["foreign"] = "before"
+    sched.state.save()
+    run = _run_naming(sched, "DM-001", str(sched.state.path))
+    sched._fence_snapshot(task, run)
+    # A scheduler update after dispatch is legitimate and must survive repairing the
+    # worker's write to a different key in this task's state entry.
+    sched.state.get("DM-002")["scheduler"] = "live"
+    sched.state.save()
+    state = json.loads(sched.state.path.read_text())
+    state["DM-002"]["foreign"] = "worker changed this"
+    sched.state.path.write_text(json.dumps(state))
+
+    sched._fence_guard_check(task, run)
+
+    restored = json.loads(sched.state.path.read_text())["DM-002"]
+    assert restored == {"foreign": "before", "scheduler": "live"}
+
+
 def test_fence_attributes_a_worker_edit_to_a_live_task_file(sched, garden):
     _init_repo(garden)
     task = sched.store.task("DM-001")
@@ -209,6 +229,27 @@ def test_fence_restores_attributed_sibling_run_output_and_audit_manifest(sched):
     violations = sched._fence_guard_check(task, run)
     assert violations and str(manifest.relative_to(sched.store.root)) in violations[0]["files"]
     assert manifest.read_text() == before
+
+
+def test_fence_reuses_sibling_output_backup_across_dispatches(sched):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_text("sibling output\n")
+    first = _run_naming(sched, "DM-001", str(output))
+    sched._fence_snapshot(task, first)
+    first_entry = next(entry for entry in json.loads((first.path / "fence_guard.json").read_text())
+                       if entry["abs"] == str(output))
+    cache_file = sched.cfg.garden_dir / "fence-guard-cache" / first_entry["snap"].removeprefix("cache:")
+    before = cache_file.stat()
+
+    second = _run_naming(sched, "DM-001", str(output))
+    sched._fence_snapshot(task, second)
+
+    second_entry = next(entry for entry in json.loads((second.path / "fence_guard.json").read_text())
+                        if entry["abs"] == str(output))
+    assert second_entry["snap"] == first_entry["snap"]
+    assert cache_file.stat().st_mtime_ns == before.st_mtime_ns
 
 
 def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):
