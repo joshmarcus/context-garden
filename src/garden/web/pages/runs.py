@@ -57,8 +57,11 @@ def register(app: FastAPI, site: Site) -> None:
             final_text = str((res or {}).get("result") or "")
         brief_path = run.path / "brief.md"
         brief_text = brief_path.read_text() if brief_path.exists() else ""
-        captures = [Path(str(p)).name for ch in (run.result or {}).get("checks", [])
-                    if ch.get("name") == "ui" for p in ch.get("captures", [])]
+        captures = [{"name": p.relative_to(run.path).as_posix(),
+                     "href": f"/runs/{task_id}/{run_id}/captures/{p.relative_to(run.path).as_posix()}"}
+                    for p in sorted(run.path.rglob("*")) if p.is_file() and p.name not in {
+                        "run.json", "brief.md", "stdout.json", "stderr.log", "final.md", "exit_code",
+                        "command.txt", "remote.sh", "result.json", "checks_input.json"}]
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,

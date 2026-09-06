@@ -109,6 +109,14 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
                  "The phase page: goals, the task table, budget and cost, persona reviews.",
                  "Is the important thing (what needs you) above the fold?"),
     ]
+    design_root = _design_root(store, phase)
+    if design_root.is_dir():
+        first = next((p for p in sorted(design_root.rglob("*")) if p.is_file()), None)
+        if first:
+            rel = first.relative_to(design_root).as_posix()
+            specs.append(PageSpec("design", f"/design/{rel}", "Design",
+                                  "A product design document or mock served by the garden.",
+                                  "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
     if task_id:
         specs.append(PageSpec("task", f"/tasks/{task_id}", "Task",
@@ -139,6 +147,13 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
                           "The event timeline.",
                           "Can you reconstruct what happened from the timeline alone?"))
     return specs
+
+
+def _design_root(store: Store, phase: Phase) -> Path:
+    """Locate the product checkout's design directory, including the self-product checkout."""
+    configured = store.config.product_repo(phase.product)
+    candidate = Path(configured) if not isinstance(configured, str) or "://" not in configured else phase.path.parent
+    return candidate / "docs" / "design"
 
 
 # --------------------------------------------------------------------------- html -> text

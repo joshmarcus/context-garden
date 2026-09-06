@@ -1,0 +1,86 @@
+"""Read-only product design documents and run captures."""
+
+from __future__ import annotations
+
+import html
+import mimetypes
+import subprocess
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
+
+from ...store import Store
+from ..common import Site, render_md
+from ..trust import safe_relative_path
+
+
+def _design_root(store: Store) -> Path:
+    """The checkout for the garden's first product (the self-product in normal use)."""
+    product = store.products()[0]
+    configured = store.config.product_repo(product.name)
+    candidate = Path(configured) if not isinstance(configured, str) or "://" not in configured else product.path
+    return candidate if candidate.exists() else product.path
+
+
+def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
+    try:
+        return subprocess.run(["git", "show", f"{ref}:docs/design/{relative}"], cwd=repo,
+                              capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _media(path: str) -> str:
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def register(app: FastAPI, site: Site) -> None:
+    hub, templates, ctx = site.hub, site.templates, site.ctx
+
+    @app.get("/design/{path:path}")
+    def design_file(request: Request, path: str, ref: str = ""):
+        relative = safe_relative_path(path)
+        if not relative:
+            store = hub.fresh()
+            root = _design_root(store) / "docs" / "design"
+            files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
+            links = "<h1>Design</h1><ul>" + "".join(
+                f'<li><a href="/design/{html.escape(f, quote=True)}">{html.escape(f)}</a></li>' for f in files
+            ) + "</ul>"
+            return templates.TemplateResponse(request, "design.html", ctx(request, page="design", name="Design", content=links, ref=ref))
+        store = hub.fresh()
+        root = _design_root(store)
+        if ref.startswith("-"):
+            raise HTTPException(404)
+        if ref:
+            data = _git_file(root, ref, relative)
+            if data is None:
+                raise HTTPException(404)
+        else:
+            target = (root / "docs" / "design" / relative).resolve()
+            design_root = (root / "docs" / "design").resolve()
+            if design_root not in target.parents or not target.is_file():
+                raise HTTPException(404)
+            data = target.read_bytes()
+        media = _media(relative)
+        if media == "text/markdown" or relative.lower().endswith((".md", ".markdown")):
+            return templates.TemplateResponse(request, "design.html", ctx(
+                request, page="design", name=relative, content=render_md(data.decode("utf-8")), ref=ref))
+        return Response(data, media_type=media, headers={"Content-Security-Policy": "sandbox"}
+                        if media == "text/html" else {})
+
+    @app.get("/runs/{task_id}/{run_id}/captures/{path:path}")
+    def capture_file(task_id: str, run_id: str, path: str):
+        relative = safe_relative_path(path)
+        if not relative:
+            raise HTTPException(404)
+        from ...runs import RunStore
+        run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
+                    if r.run_id == run_id), None)
+        if not run:
+            raise HTTPException(404)
+        target = (run.path / relative).resolve()
+        if run.path.resolve() not in target.parents or not target.is_file():
+            raise HTTPException(404)
+        return Response(target.read_bytes(), media_type=_media(relative))

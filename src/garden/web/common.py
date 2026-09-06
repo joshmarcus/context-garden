@@ -166,6 +166,7 @@ class Site:
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "products": s.products(),
+            "has_design": any((p.path / "docs" / "design").is_dir() for p in s.products()),
             "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},
             "inbox_count": len(decisions(items)),
             "env": s.config.env,

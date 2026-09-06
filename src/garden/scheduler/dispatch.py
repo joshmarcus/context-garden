@@ -327,6 +327,8 @@ class DispatchMixin:
         wt: Path | None = None
         if worktree and not runner.remote:
             wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+            from .snapshot import write_snapshot
+            write_snapshot(self, task, wt)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
