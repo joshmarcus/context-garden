@@ -16,7 +16,6 @@ class AuxMixin:
         return self.state.get("_aux").setdefault("runs", [])
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
-                     harness_name: str = "", difficulty: str = "") -> Run:
                      harness_name: str = "", difficulty: str = "", model_override: str | None = None,
                      pool_member: str = "") -> Run:
         self.require_maintenance_running()
