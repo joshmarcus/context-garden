@@ -317,6 +317,7 @@ def test_failed_rebase_retries_then_parks_without_restarting_work(sched, monkeyp
     st.update({"rebase_pending": True, "rebase_base": "main", "rebase_files": ["widget.py"]})
     sched.state.save()
     sched.dispatch(task, mode="rebase")
+    branch = task.branch
 
     rep = sched.tick()
     assert "DM-001(rebase)" in rep.dispatched
@@ -329,6 +330,7 @@ def test_failed_rebase_retries_then_parks_without_restarting_work(sched, monkeyp
     stop = sched.state.get(task.id)["needs_human"]
     assert task.status == Status.IN_REVIEW and task.pr.endswith("/7")
     assert task.attempts == 0
+    assert task.branch == branch
     assert stop["kind"] == "rebase_failed" and "rebase conflict" in stop["reason"]
     assert not any(item.startswith("DM-001(work)") for item in rep.dispatched)
     assert "rebase run" in task.body and "will retry" in task.body
