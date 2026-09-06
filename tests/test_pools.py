@@ -17,8 +17,8 @@ def test_weighted_tier_pool_spreads_ten_choices_and_skips_a_paused_harness(sched
     _configure_pool(sched)
     task.difficulty = "medium"
 
-    choices = [sched.select_pool_member(task, "medium") for _ in range(10)]
-    labels = [choice["label"] for choice in choices]
+    runs = [sched.dispatch(task) for _ in range(10)]
+    labels = [run.pool_member for run in runs]
     assert labels.count("claude:sonnet") == 7
     assert labels.count("codex:gpt-std") == 3
 
