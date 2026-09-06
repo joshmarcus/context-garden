@@ -276,6 +276,39 @@ def _individual_codeowners(codeowners: str) -> list[str]:
     return sorted(authors)
 
 
+def _documented_conventions(repo: Path, rels: dict[str, Path]) -> list[str]:
+    """Extract explicit working agreements from the project's contributor-facing docs."""
+    categories = {
+        "Formatting": ("format", "style", "indent", "prett", "black", "ruff", "eslint", "gofmt"),
+        "Review": ("review", "pull request", "merge", "approval", "approve"),
+        "Commits": ("commit", "changeset", "signed-off", "conventional commit"),
+    }
+    candidates = [
+        rel for rel in rels
+        if Path(rel).name.lower() in {"readme.md", "contributing.md", "agents.md", "codeowners"}
+        or rel.lower().startswith(".github/pull_request_template/")
+        or rel.lower().startswith(".github/issue_template/")
+        or rel.lower() == ".github/pull_request_template.md"
+    ]
+    found: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for rel in sorted(candidates):
+        for raw_line in _text(rels[rel]).splitlines():
+            line = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+|#+\s+|>\s*)", "", raw_line).strip()
+            line = re.sub(r"\s+", " ", line)
+            if not line or line.startswith("<!--") or len(line) > 300:
+                continue
+            lower = line.lower()
+            for label, keywords in categories.items():
+                if any(keyword in lower for keyword in keywords) and (label, line) not in seen:
+                    found.append(f"{label}: {line} (source: `{rel}`).")
+                    seen.add((label, line))
+    codeowners = next((rel for rel in candidates if Path(rel).name.lower() == "codeowners"), "")
+    if codeowners:
+        found.append(f"Review: Respect path ownership recorded in CODEOWNERS (source: `{codeowners}`).")
+    return found
+
+
 def discover_project(repo: Path) -> ProjectDiscovery:
     """Inspect a local checkout without network or model calls."""
     repo = repo.resolve()
@@ -346,7 +379,7 @@ def discover_project(repo: Path) -> ProjectDiscovery:
         p.name + ("/" if p.is_dir() else "") for p in repo.iterdir()
         if p.name not in _SKIP_DIRS and not p.name.startswith(".")
     )[:40]
-    result.conventions = [
+    result.conventions = _documented_conventions(repo, rels) + [
         f"Use the project's discovered test command: `{test}`." if test else "Choose and document a test command.",
         f"Use the project's discovered lint command: `{lint}`." if lint else "Choose and document a lint command.",
         f"Target the `{base}` branch for changes.",
@@ -377,28 +410,39 @@ def _prefix(name: str) -> str:
     return (letters or re.sub(r"[^A-Za-z]", "", name))[:4].upper() or "PRJ"
 
 
-def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]], index: int) -> str:
-    """Return an exact discovered source, repairing only an unambiguous planner omission."""
-    provenance = str(item.get("discovered_from") or "")
-    known_sources = {source for _, source in backlog}
-    source = provenance.removeprefix("onboard:") if provenance.startswith("onboard:") else ""
-    if source in known_sources:
-        return provenance
+_PROVENANCE_STOP_WORDS = {
+    "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of",
+    "on", "or", "the", "this", "to", "with", "goal", "context", "acceptance", "criteria",
+    "out", "scope", "task", "add", "implement", "create", "update", "project",
+}
 
-    task_words = set(re.findall(r"[a-z0-9]+", f"{item.get('title', '')} {item.get('body', '')}".lower()))
-    scores = []
+
+def _provenance_words(text: object) -> set[str]:
+    return {
+        word for word in re.findall(r"[a-z0-9]+", str(text).lower())
+        if len(word) > 1 and word not in _PROVENANCE_STOP_WORDS
+    }
+
+
+def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]]) -> str:
+    """Accept or repair provenance only when task text identifies one backlog source."""
+    provenance = str(item.get("discovered_from") or "")
+    source = provenance.removeprefix("onboard:") if provenance.startswith("onboard:") else ""
+    known_sources = {backlog_source for _, backlog_source in backlog}
+    claimed_source = source if source in known_sources else ""
+    task_words = _provenance_words(f"{item.get('title', '')} {item.get('body', '')}")
+    scores: list[tuple[int, str]] = []
     for backlog_item, backlog_source in backlog:
-        words = set(re.findall(r"[a-z0-9]+", backlog_item.lower()))
-        scores.append((len(task_words & words), backlog_source))
+        if claimed_source and backlog_source != claimed_source:
+            continue
+        scores.append((len(task_words & _provenance_words(backlog_item)), backlog_source))
     best = max((score for score, _ in scores), default=0)
     matches = {candidate for score, candidate in scores if score == best and score > 0}
     if len(matches) == 1:
         return f"onboard:{matches.pop()}"
-    if index < len(backlog):
-        return f"onboard:{backlog[index][1]}"
     raise ValueError(
         f"planner task {item.get('title')!r} has no unambiguous backlog provenance; "
-        "it must return discovered_from as onboard:<source> from the phase goals"
+        "its title or body must identify one backlog item and discovered_from must name that source"
     )
 
 
@@ -481,7 +525,7 @@ def onboard_project(
         "For each item add discovered_from as onboard:<source>, using its stated source."
     )
     items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
-    provenances = [_backlog_provenance(item, backlog, index) for index, item in enumerate(items)]
+    provenances = [_backlog_provenance(item, backlog) for item in items]
     tasks = import_plan(store, product, "phase-01", items, status="draft")
     for task, provenance in zip(tasks, provenances, strict=False):
         task.discovered_from = provenance

@@ -16,7 +16,8 @@ def _node_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "sample-web"
     repo.mkdir()
     git("init", "-q", "-b", "trunk", cwd=repo)
-    write(repo / "README.md", "# Sample web\n\nA tiny service.\n")
+    write(repo / "README.md", "# Sample web\n\nA tiny service. Format JavaScript with Prettier.\n")
+    write(repo / "CONTRIBUTING.md", "Use conventional commits. Pull requests need one approval.\n")
     write(repo / "package.json", json.dumps({"scripts": {"test": "node --test", "lint": "eslint ."}}))
     write(repo / "package-lock.json", "{}")
     write(repo / "src" / "index.js", "// TODO(alex): add a health endpoint\n")
@@ -68,6 +69,9 @@ def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, mo
     assert ".env" not in first.read
     assert first.trusted_authors == ["maintainer"]
     assert "platform" not in first.trusted_authors
+    assert "Formatting: A tiny service. Format JavaScript with Prettier. (source: `README.md`)." in first.conventions
+    assert "Commits: Use conventional commits. Pull requests need one approval. (source: `CONTRIBUTING.md`)." in first.conventions
+    assert "Review: Respect path ownership recorded in CODEOWNERS (source: `.github/CODEOWNERS`)." in first.conventions
 
 
 def test_discovery_uses_manifest_name_in_a_worktree_directory(tmp_path):
@@ -142,12 +146,13 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
         config.setdefault("worker_env", {})["pass"] = ["FAKE_CLAUDE_*", "PYTHONPATH"]
         (garden / "garden.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         store.invalidate()
-        return run_planner(store, prompt)
+        run_planner(store, prompt)
+        return _valid_plan(store, prompt)
 
     onboard_project(repo, garden, planner=fake_harness_planner)
 
     tasks = Store(garden).product("sample-web").phases[0].tasks
-    assert [task.title for task in tasks] == ["First planned task", "Second planned task"]
+    assert [task.title for task in tasks] == ["Add health endpoint"]
     assert all(task.status.value == "draft" for task in tasks)
 
 
@@ -155,10 +160,12 @@ def test_onboard_this_repository_uses_documented_development_commands(tmp_path, 
     repo = Path(__file__).parents[1]
     garden = tmp_path / "garden"
     info = discover_project(repo)
-    source = info.backlog[0][1]
+    backlog_item, source = info.backlog[0]
 
     def self_plan(_store: Store, _prompt: str) -> str:
         item = json.loads(_valid_plan(_store, _prompt))[0]
+        item["title"] = backlog_item
+        item["body"] = f"## Goal\n\nComplete this discovered item: {backlog_item}\n"
         item["discovered_from"] = f"onboard:{source}"
         return json.dumps([item])
 
@@ -204,6 +211,33 @@ def test_onboard_repairs_bad_planner_provenance_to_exact_backlog_source(tmp_path
 
     task = Store(garden).product("sample-web").phases[0].tasks[0]
     assert task.discovered_from == "onboard:src/index.js"
+
+
+def test_onboard_rejects_unrelated_task_instead_of_assigning_backlog_by_position(tmp_path):
+    repo = _node_repo(tmp_path)
+
+    def unrelated_plan(_store: Store, _prompt: str) -> str:
+        item = json.loads(_valid_plan(_store, _prompt))[0]
+        item["title"] = "Replace the database engine"
+        item["body"] = "## Goal\n\nMigrate all persistence to a different vendor.\n"
+        item.pop("discovered_from")
+        return json.dumps([item])
+
+    with pytest.raises(ValueError, match="no unambiguous backlog provenance"):
+        onboard_project(repo, tmp_path / "garden", planner=unrelated_plan)
+
+
+def test_onboard_rejects_unrelated_task_even_when_it_claims_a_known_source(tmp_path):
+    repo = _node_repo(tmp_path)
+
+    def false_provenance(_store: Store, _prompt: str) -> str:
+        item = json.loads(_valid_plan(_store, _prompt))[0]
+        item["title"] = "Replace the database engine"
+        item["body"] = "## Goal\n\nMigrate all persistence to a different vendor.\n"
+        return json.dumps([item])
+
+    with pytest.raises(ValueError, match="no unambiguous backlog provenance"):
+        onboard_project(repo, tmp_path / "garden", planner=false_provenance)
 
 
 def test_discovery_uses_safe_environment_sources_and_reports_exact_provenance(tmp_path):
