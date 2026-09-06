@@ -34,8 +34,6 @@ class EditsMixin:
         tasks = self.store.tasks()
         active = {r.task_id for r in self.active_runs()}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
-            if self.slots_free() <= 0:
-                break
             st = self.state.get(t.id)
             if st.get("edit_run") or t.id in active:
                 continue
