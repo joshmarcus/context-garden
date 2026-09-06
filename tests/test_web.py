@@ -1593,6 +1593,24 @@ def test_pages_neutralise_agent_written_html(garden):
     assert "<strong>fine</strong>" in page and "hover" in page and "<em>rename</em>" in page
 
 
+def test_task_page_renders_review_fixes_and_improvements(garden):
+    from garden.scheduler import State
+
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["last_review"] = {
+        "verdict": "request_changes", "summary": "needs a boundary test",
+        "findings": [{"severity": "blocking", "summary": "empty input breaks", "file": "a.py", "line": 2,
+                      "fix": "Return early when the input is empty."}],
+        "improvements": [{"area": "naming", "suggestion": "Rename x to parsed_value.",
+                          "why": "Callers read more clearly.", "effort": "small"}],
+    }
+    state.save()
+
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Return early when the input is empty." in page
+    assert "Improvements" in page and "Rename x to parsed_value." in page
+
+
 def test_posts_from_another_origin_are_refused(garden):
     c = client(garden)
     # A form posted by a page on another site carries its Origin: refused, nothing changes.

@@ -259,8 +259,12 @@ def edit(call: Call) -> None:
 REVIEWS: dict[str, dict] = {
     "review-bad": {"verdict": "request_changes", "summary": "criteria not met", "description_ok": False,
                    "description_feedback": "explain why, drop 'as requested'",
-                   "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test"},
-                                {"severity": "nit", "file": "", "line": None, "summary": "naming"}]},
+                   "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test",
+                                 "fix": "Add a regression test beside the affected behavior."},
+                                {"severity": "nit", "file": "", "line": None, "summary": "naming",
+                                 "fix": "Use the domain term in the helper name."}],
+                   "improvements": [{"area": "tests", "suggestion": "Cover the empty input too.",
+                                     "why": "It documents the boundary.", "effort": "small"}]},
     # description-only feedback, no blocking findings: round after round can repeat this
     # without tripping the "same finding twice" stall, since that check only looks at
     # blocking findings.

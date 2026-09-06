@@ -184,7 +184,8 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
-    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
+    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
+                        reask_missing_fixes: bool = False) -> Run:
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
@@ -224,13 +225,15 @@ class ReviewMixin:
                 break
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment, verified=verified, captures=capture_paths)
+                            pr_comment=pr_comment, verified=verified, captures=capture_paths,
+                            reask_missing_fixes=reask_missing_fixes)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages))}
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+                            "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -402,6 +405,14 @@ class ReviewMixin:
                     self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
+        missing_fixes = self._blocking_findings_without_fix(review)
+        if missing_fixes and not st.get("review_fix_reasked"):
+            st["review_fix_reasked"] = True
+            self.dispatch_review(task, count_round=False, reask_missing_fixes=True)
+            rep.transitions.append(f"{task.id} review re-asked for blocking fixes")
+            return True
+        if not missing_fixes:
+            st.pop("review_fix_reasked", None)
         # repeated blocking findings across rounds = the loop isn't converging
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
@@ -428,6 +439,7 @@ class ReviewMixin:
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
                     st.pop("pending_feedback_rebase", None)
+                    st.pop("review_fix_reasked", None)
                     self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
                     rep.transitions.append(f"{task.id} -> changes_requested (review)")
                     return True
@@ -451,6 +463,13 @@ class ReviewMixin:
                   f"automated review: {verdict} — {review.get('summary', '')}{cost}", task.pr or "")
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    @staticmethod
+    def _blocking_findings_without_fix(review: dict[str, Any]) -> list[dict[str, Any]]:
+        """Blocking findings need actionable advice; older reviewers can omit new fields."""
+        return [finding for finding in review.get("findings") or []
+                if isinstance(finding, dict) and finding.get("severity") == "blocking"
+                and not str(finding.get("fix") or "").strip()]
 
     def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
         """The reviewer found nothing blocking but the description, and returned the corrected

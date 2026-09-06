@@ -97,6 +97,15 @@ def test_brief_pre_pr_revision(garden):
     assert "Review feedback to address" in b.text
 
 
+def test_brief_pr_revision_requests_improvement_decisions(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    b = build_brief(store, task, review_feedback="- **Fix:** add the test")
+    assert "Findings and their fixes are this round's work" in b.text
+    assert "improvements_taken" in b.text and "improvements_declined" in b.text
+
+
 def test_brief_pr_revision(garden):
     store = Store(garden)
     task = store.task("DM-001")
