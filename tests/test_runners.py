@@ -252,6 +252,19 @@ def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
     assert all(run.process_finished() for run in runs)
 
 
+def test_local_worker_env_carries_execution_budget(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    runner = LocalRunner({"resources": {"heavy_test_parallel": 3,
+                                        "execution_cgroup": "/sys/fs/cgroup/example"}},
+                         Harness("tiny", {"command": ["true"]}))
+    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local")
+    env = runner.worker_env(run, {}, tmp_path)
+    assert env["GARDEN_HEAVY_TEST_PARALLEL"] == "3"
+    assert env["GARDEN_EXECUTION_CGROUP"] == "/sys/fs/cgroup/example"
+
+
 def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
     from garden.harness import Harness
     from garden.runs import Run
