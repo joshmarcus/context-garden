@@ -16,7 +16,8 @@ class AuxMixin:
         return self.state.get("_aux").setdefault("runs", [])
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
-                     harness_name: str = "", difficulty: str = "") -> Run:
+                     harness_name: str = "", difficulty: str = "", model_override: str | None = None,
+                     pool_member: str = "") -> Run:
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner = self.runner_for(probe, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
@@ -30,12 +31,18 @@ class AuxMixin:
             override = self.retro_model_for(runner)
             if override:
                 run.model = override
+        if model_override is not None:
+            run.model = model_override
         run.difficulty = difficulty or "hard"
+        run.harness = runner.harness.name if runner.harness else ""
+        run.pool_member = pool_member
         run.brief_tokens = max(1, len(brief_text) // 4)
         run.save()
         runner.start(run, worktree, brief_text)
         self._aux_list().append({"run_id": run.run_id, "task": run.task_id, "kind": kind, **meta})
-        self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model, harness=run.harness, **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
+        self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model,
+                         harness=run.harness, pool_member=run.pool_member,
+                         **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
         self.state.save()
         return run
 

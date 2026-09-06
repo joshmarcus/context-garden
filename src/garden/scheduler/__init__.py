@@ -182,17 +182,21 @@ class Scheduler(
         return members
 
     def select_pool_member(self, task: Task, tier: str, review: bool = False) -> dict[str, Any] | None:
-        """Choose an available pool member, preserving pins and quota-aware weighting."""
+        """Choose an available pool member, preserving work pins and quota-aware weighting.
+
+        A review pool is deliberately independent of the task's worker route: a task pinned
+        to one worker account must still be reviewable by every configured reviewer account.
+        """
         members = self.pool_members(tier, review=review)
         if not members:
             return None
-        if task.harness:
+        if not review and task.harness:
             members = [m for m in members if m["harness"] == task.harness]
-        if task.model:
+        if not review and task.model:
             members = [m for m in members if m["model"] == task.model]
         if not members:
             # A pin is allowed to name a model outside the pool; it remains an explicit route.
-            if task.harness or task.model:
+            if not review and (task.harness or task.model):
                 return {"harness": task.harness or self.cfg.product_harness(task.product),
                         "model": task.model, "weight": 1,
                         "label": f"{task.harness or self.cfg.product_harness(task.product)}:{task.model}"}

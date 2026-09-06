@@ -99,7 +99,7 @@ class ReviewMixin:
                     rep.dispatched.append(f"{task.id}(review)")
                     self.log(f"{task.id}: review run {run.run_id} started")
                 else:
-                    self.dispatch_persona_pr(task, item["name"])
+                    self.dispatch_persona_pr(task, item["name"], member=member)
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
             except Exception as e:  # noqa: BLE001
                 task.log(f"automated {kind} could not start: {e}")
