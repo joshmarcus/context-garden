@@ -170,6 +170,9 @@ class Scheduler(
             return []
         members: list[dict[str, Any]] = []
         for entry in entries:
+            if review and isinstance(entry, str):
+                harness, _, model = entry.partition(":")
+                entry = {"harness": harness, "model": model}
             if not isinstance(entry, dict) or not entry.get("harness"):
                 continue
             harness, model = str(entry["harness"]), str(entry.get("model") or "")

@@ -54,3 +54,11 @@ def test_review_pool_alternates_and_skips_paused_harness(sched):
     assert choices == ["claude:sonnet", "codex:gpt-std", "claude:sonnet", "codex:gpt-std"]
     sched.pause_harness("claude", "quota limit")
     assert sched.select_pool_member(task, "medium", review=True)["label"] == "codex:gpt-std"
+
+
+def test_review_pool_accepts_harness_model_shorthand(sched):
+    task = sched.store.task("DM-001")
+    sched.cfg.data["review"]["pool"] = ["claude:sonnet", "codex:gpt-std"]
+    assert [sched.select_pool_member(task, "medium", review=True)["label"] for _ in range(2)] == [
+        "claude:sonnet", "codex:gpt-std",
+    ]
