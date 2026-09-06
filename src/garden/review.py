@@ -192,10 +192,12 @@ def feedback_from_review(rev: dict[str, Any]) -> str:
     """The revise-brief text for a request_changes verdict."""
     items = []
     for f in rev.get("findings") or []:
-        if isinstance(f, dict) and f.get("severity") == "blocking":
-            fix = str(f.get("fix") or "").strip()
-            line = "- **automated review** blocking" + _where(f) + ": " + str(f.get("summary", ""))
-            items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
+        if not isinstance(f, dict):
+            continue
+        severity = str(f.get("severity") or "nit")
+        fix = str(f.get("fix") or "").strip()
+        line = "- **automated review** " + severity + _where(f) + ": " + str(f.get("summary", ""))
+        items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
     if not rev.get("description_ok", True):
         items.append("- **automated review** PR description: " + str(rev.get("description_feedback") or "rewrite it to give broader context and remove scar tissue") +
                      " (put the new description in `pr_body`; it replaces the current one)")

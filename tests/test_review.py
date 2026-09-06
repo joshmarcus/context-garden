@@ -107,7 +107,7 @@ def test_review_brief_and_parse(garden):
 
 def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     store = Store(garden)
-    review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')
+    review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."},{"severity":"high","file":"b.py","line":3,"summary":"edge case","fix":"Handle the empty collection."},{"severity":"nit","file":"c.py","line":4,"summary":"unclear name","fix":"Rename result to parsed_value."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')
     assert review["findings"][0]["fix"].startswith("Guard")
     assert review["improvements"][0]["effort"] == "small"
     # Older reviewers have neither field and remain parseable.
@@ -118,6 +118,11 @@ def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     assert "**Improvements**" in markdown and "Rename x to parsed_value" in markdown
     feedback = feedback_from_review(review)
     assert "Guard the empty value" in feedback
+    assert "**automated review** blocking (`a.py`:2): bug" in feedback
+    assert "**automated review** high (`b.py`:3): edge case" in feedback
+    assert "**automated review** nit (`c.py`:4): unclear name" in feedback
+    assert "Handle the empty collection." in feedback
+    assert "Rename result to parsed_value." in feedback
     assert "Optional improvements" in feedback and "improvements_declined" in feedback
     task = store.task("DM-001")
     task.pr = "https://example.test/pull/1"
