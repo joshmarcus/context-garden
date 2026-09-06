@@ -352,11 +352,13 @@ class Harness:
         # precedence over the generic error-text check below.
         if out.get("result"):
             return False
-        if out.get("_parsed_agent_message"):
-            return False
         err_text = f"{stderr} {out.get('error') or ''}".lower()
         if any(marker in err_text for marker in AUTH_FAILURE_MARKERS):
             return True
+        # An agent message is worker prose, but a separate Codex error event is the
+        # CLI's own error and must win even when it follows that prose.
+        if out.get("_parsed_agent_message"):
+            return False
         if len(stdout.strip()) >= 2000 or out.get("result") or re.search(r"\bGARDEN_[A-Z0-9_]+:", stdout):
             return False
         blob = stdout.lower()
