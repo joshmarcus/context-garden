@@ -207,8 +207,9 @@ keyed by phase (verdict, status, who accepted it and when, and the ids of the ta
 | `exit_code` | the shell wrapper (or `garden finish`) | the completion signal the scheduler waits for |
 | `result.json` | `garden finish` | the result of a human-driven run |
 
-Pull-based remote run records also carry a unique lease token for the current claim. A
-reclaim replaces it, fencing heartbeat and finish calls from the previous worker generation.
+Pull-based remote run records also carry a unique lease token and staging git ref for the
+current claim. A reclaim replaces both, fencing heartbeat and finish calls from the previous
+worker generation; only the scheduler promotes an accepted staging commit to the task branch.
 Remote check payloads retain the ordinary branch, PR, head, and failed-check context but
 replace scheduler-local checkout paths with the independent host's clone paths.
 

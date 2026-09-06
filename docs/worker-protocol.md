@@ -30,13 +30,19 @@ with the bearer token named by `workers.hosts[].token_env`.
 - `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
   returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from
   an expired claim cannot affect a run after it has been reclaimed, even on the same host.
-- `POST /api/runs/<id>/finish` records the exit code, final message, result, usage, cost,
-  and pushed commit. The scheduler fetches and verifies that head, then uses its ordinary
+- The worker pushes its commit to the claim's lease-specific staging ref, never directly to
+  the task branch. `POST /api/runs/<id>/finish` records the exit code, final message, result,
+  usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
+  the task branch with a git lease, then uses its ordinary
   result, PR, review, check, and accounting paths.
 
-Expired leases are claimable again and do not fail the task. Browser origin checking still
+Expired leases are claimable again and do not fail the task. Each reclaim gets a different
+staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can
+only update its abandoned ref; it cannot overwrite the task branch. Browser origin checking still
 applies; only a correctly token-authenticated runs API request bypasses it. Claim responses
-contain no token or environment value. Git and harness credentials belong to the host.
+contain no token or environment value. Repository URL user-info, query strings, and fragments
+are stripped, and configured harness arguments are not transported because they may contain
+inline credentials. Git and harness credentials belong to the host.
 
 ```yaml
 runner: remote

@@ -118,7 +118,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient) -> None
     if subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip():
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
         subprocess.run(["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost", "commit", "-m", f"{run['task_id']}: remote worker changes"], cwd=repo, check=False)
-    subprocess.run(["git", "push", "--force-with-lease", "-u", "origin", f"HEAD:{branch}"], cwd=repo, check=rc == 0)
+    # Push only to this lease generation's staging ref. The garden promotes it after
+    # accepting finish, so a worker whose lease expires at any point before or during this
+    # push cannot modify the task branch.
+    push_ref = str(run["push_ref"])
+    subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
     client.post(f"/api/runs/{run['id']}/finish", {"lease_token": run["lease_token"],
                 "exit_code": rc, "final_text": final, "result": parsed,

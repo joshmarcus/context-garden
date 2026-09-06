@@ -8,6 +8,7 @@ import os
 import secrets
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -51,6 +52,18 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(409, "run lease has expired")
         return run
 
+    def credential_free_repo_url(value: str) -> str:
+        """Return a clone URL with scheduler-side URL credentials removed."""
+        if "://" not in value:
+            return value
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
     @app.get("/api/tasks")
     def api_tasks():
         s = hub.fresh()
@@ -93,7 +106,7 @@ def register(app: FastAPI, site: Site) -> None:
                 return JSONResponse({}, status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
-                if run.runner != "remote" or run.status != "running":
+                if run.runner != "remote" or run.status != "running" or run.process_finished():
                     continue
                 if run.host and leased(run):
                     continue
@@ -105,7 +118,6 @@ def register(app: FastAPI, site: Site) -> None:
                 run.claimed_at = now.isoformat()
                 run.lease_expires_at = (now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
                 run.lease_token = secrets.token_urlsafe(32)
-                run.save()
                 task = hub.fresh().task(run.task_id)
                 harness = hub.store.config.harness(run.harness) if run.harness else None
                 configured_repo = task.repo or hub.store.config.product_repo(task.product)
@@ -119,18 +131,34 @@ def register(app: FastAPI, site: Site) -> None:
                         repo_value = gitops.git("remote", "get-url", "origin", cwd=repo_path).strip()
                     except gitops.GitError:
                         pass
+                repo_value = credential_free_repo_url(repo_value)
+                # A worker never writes the task branch directly. Each lease owns an
+                # unguessable staging ref; after an authenticated finish the scheduler
+                # promotes that exact commit. An expired generation can therefore push only
+                # to its abandoned ref, never overwrite work from its replacement.
+                run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
+                try:
+                    scheduler_repo = hub.fresh().repo_for(task)
+                    gitops.fetch(scheduler_repo)
+                    run.start_head = gitops.remote_head(scheduler_repo, run.branch)
+                except (AttributeError, gitops.GitError):
+                    run.start_head = ""
+                run.save()
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
                     "lease_token": run.lease_token,
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
+                    "push_ref": run.pushed_ref,
                     "repo": repo_value,
                     "setup": {"command": str((hub.store.config.product_setup(task.product) or {}).get("command") or ""),
                               "timeout_seconds": int((hub.store.config.product_setup(task.product) or {}).get("timeout_seconds") or 600)},
                     "env_allowlist": pass_env_patterns(hub.store.config.data),
                     "harness": run.harness, "model": run.model, "difficulty": run.difficulty,
+                    # Command arguments may contain inline API keys. Remote hosts use the
+                    # built-in harness defaults; only inert executable/output settings cross.
                     "harness_config": {k: v for k, v in ((harness.cfg if harness else {}) or {}).items()
-                                       if k in {"bin", "args", "max_turns", "output_format"}},
+                                       if k in {"bin", "max_turns", "output_format"}},
                     "turn_cap": harness.max_turns_for(run.difficulty) if harness else 0,
                 }
                 checks = run.path / "checks_input.json"
@@ -159,29 +187,33 @@ def register(app: FastAPI, site: Site) -> None:
     async def heartbeat(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
         body = await request.json()
-        run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
-        chunk = str(body.get("transcript") or "")
-        if chunk:
-            with (run.path / "stdout.json").open("a") as f:
-                f.write(chunk)
-        run.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
-        run.save()
+        with hub.action_lock:
+            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            chunk = str(body.get("transcript") or "")
+            if chunk:
+                with (run.path / "stdout.json").open("a") as f:
+                    f.write(chunk)
+            run.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
+            run.save()
         return {"ok": True, "lease_expires_at": run.lease_expires_at}
 
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
         body = await request.json()
-        run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
-        run.pushed_head = str(body.get("pushed_head") or "")
-        final = str(body.get("final_text") or "")
-        (run.path / "final.md").write_text(final)
-        (run.path / "exit_code").write_text(str(int(body.get("exit_code") or 0)))
-        posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
-                  "cost_usd": body.get("cost_usd"), "final_text": final,
-                  "error": str(body.get("error") or ""), "session_id": str(body.get("session_id") or "")}
-        (run.path / "remote_result.json").write_text(json.dumps(posted))
-        if run.mode == "check":
-            (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
-        run.save()
+        with hub.action_lock:
+            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            run.pushed_head = str(body.get("pushed_head") or "")
+            final = str(body.get("final_text") or "")
+            (run.path / "final.md").write_text(final)
+            posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
+                      "cost_usd": body.get("cost_usd"), "final_text": final,
+                      "error": str(body.get("error") or ""), "session_id": str(body.get("session_id") or "")}
+            (run.path / "remote_result.json").write_text(json.dumps(posted))
+            if run.mode == "check":
+                (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
+            run.save()
+            # Completion is written last: once visible, claim skips this run and the accepted
+            # generation remains immutable until reap promotes its staging commit.
+            (run.path / "exit_code").write_text(str(int(body.get("exit_code") or 0)))
         return {"ok": True}

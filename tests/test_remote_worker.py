@@ -47,7 +47,8 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     payload = response.json()
     assert payload["id"] == run.run_id and payload["brief"] == "safe brief"
     assert payload["lease_token"] and "secret-token" not in str(payload)
-    assert set(payload) >= {"repo", "branch", "base", "setup", "turn_cap", "env_allowlist"}
+    assert set(payload) >= {"repo", "branch", "base", "push_ref", "setup", "turn_cap", "env_allowlist"}
+    assert payload["push_ref"].startswith(f"refs/heads/garden-worker/{run.run_id}/")
 
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
                        json={"lease_token": payload["lease_token"], "transcript": "hello\n"}, headers=auth)
@@ -59,6 +60,9 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
     assert saved.process_finished() and saved.stdout_text() == "hello\n"
+    saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    saved.save()
+    assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
 
 
 def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
@@ -72,12 +76,37 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     claim2 = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
 
     assert claim2["lease_token"] != claim1["lease_token"]
+    assert claim2["push_ref"] != claim1["push_ref"]
     stale = client.post(f"/api/runs/{run.run_id}/finish",
                         json={"lease_token": claim1["lease_token"], "exit_code": 0}, headers=auth)
     assert stale.status_code == 409
     fresh = client.post(f"/api/runs/{run.run_id}/heartbeat",
                         json={"lease_token": claim2["lease_token"]}, headers=auth)
     assert fresh.status_code == 200
+
+
+def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    original_git = __import__("garden.gitops", fromlist=["git"]).git
+
+    def credentialed_remote(*args, **kwargs):
+        if args == ("remote", "get-url", "origin"):
+            return "https://scheduler-token@example.test/team/repo.git?access_token=also-secret"
+        return original_git(*args, **kwargs)
+
+    monkeypatch.setattr("garden.web.pages.api.gitops.git", credentialed_remote)
+    store.config.data["harnesses"]["claude"]["args"] = ["--api-key", "harness-secret"]
+    response = client.post("/api/runs/claim", json={"host": "build-1"},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["repo"] == "https://example.test/team/repo.git"
+    assert "args" not in payload["harness_config"]
+    assert "scheduler-token" not in str(payload)
+    assert "also-secret" not in str(payload)
+    assert "harness-secret" not in str(payload)
 
 
 def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
