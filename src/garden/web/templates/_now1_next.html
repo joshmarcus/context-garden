@@ -1,0 +1,28 @@
+{#- The Next region: the dispatch queue as the tick will take it, the merge queue, reviews waiting. -#}
+{% from "_now1_macros.html" import queue_line with context %}
+{%- set g = snap.garden -%}
+{%- set nxt = snap.next -%}
+{%- set mq = nxt.merge -%}
+<div id="next-body">
+  <div class="region-head"><span class="eyebrow">Next</span><span class="lead">the order the tick will take</span>
+    <span class="right"><span class="tick">{% if g.next_tick_at %}next tick in <span data-countdown>{{ g.tick_interval }}</span> s{% else %}scheduler loop off{% endif %}</span><span>{% if g.free %}{{ g.free }} slot{{ 's' if g.free != 1 }} free{% else %}no slot free: the first line waits for a run to finish{% endif %}</span></span></div>
+  {% if nxt.dispatch %}
+  <ol class="queue">
+    {% for q in nxt.dispatch[:8] %}{{ queue_line(q) }}{% endfor %}
+  </ol>
+  {% if nxt.dispatch | length > 8 %}<a class="queue-more" href="/board?view=backlog">and {{ nxt.dispatch | length - 8 }} more →</a>{% endif %}
+  {% else %}<div class="empty">Nothing queued. Approve a draft on the Board to add work.</div>{% endif %}
+  <div class="sub">
+    <h3>Merge queue</h3>
+    <ul>
+      {% if mq.head %}<li><a class="id" href="/tasks/{{ mq.head.task }}">{{ mq.head.task }}</a><span>{{ mq.head.title }}</span><span class="fact">rebased, waiting for its rollup · {% if mq.head.waits_on_ci %}CI {{ mq.head.checks or 'pending' }}{% else %}CI green: merges on the next tick{% endif %}</span></li>{% endif %}
+      {% for c in mq.candidates %}<li><a class="id" href="/tasks/{{ c.task }}">{{ c.task }}</a><span>{{ c.title }}</span><span class="fact {{ 'held' if c.blocked }}">{% if c.blocked %}held: {{ c.blocked }}{% else %}queued since {{ c.ready_at[11:16] }}Z{% endif %}</span></li>{% endfor %}
+      {% for r in mq.in_review %}<li><a class="id" href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.title }}</span><span class="fact">round {{ r.round }} of {{ r.max_rounds }} · CI {{ r.checks }}{% if r.reviewing %} · review running{% endif %}{% if r.blocked %} · {{ r.blocked }}{% endif %}</span></li>{% endfor %}
+      {% if not mq.head and not mq.candidates and not mq.in_review %}<li class="faint">no open PR</li>{% endif %}
+    </ul>
+    {% if mq.last_drop %}<p class="muted" style="margin-top:6px;font:12px/1.4 var(--mono)">last to leave the queue: {{ mq.last_drop.task }} · {{ mq.last_drop.reason }} · {{ mq.last_drop.at[11:16] }}Z</p>{% endif %}
+  </div>
+  {% if mq.waiting %}
+  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }}</span><span class="fact">{{ w.why }}</span></li>{% endfor %}</ul></div>
+  {% endif %}
+</div>

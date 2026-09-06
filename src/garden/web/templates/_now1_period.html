@@ -1,0 +1,37 @@
+{#- The last period: the window links, the four figures, the cost chart, runs by harness and
+    model, hand steps, and the five difficulty-by-model tables. -#}
+{% from "_now1_macros.html" import tier_table with context %}
+{%- set w = snap.period -%}
+<div id="period-body">
+  <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
+    <span class="right filters" style="margin-bottom:0">{% for key, label in snap.windows %}<a href="/now1?window={{ key }}#period" class="{{ 'on' if key == snap.window }}">{{ label }}</a>{% endfor %}</span></div>
+  {% if w.runs or w.merged %}
+  <div class="figures">
+    <div class="fig"><div class="v">{{ w.merged }}</div><div class="l">merged{% if w.merged_ids %} · {{ w.merged_ids[:4] | join(', ') }}{% if w.merged_ids | length > 4 %} and {{ w.merged_ids | length - 4 }} more{% endif %}{% endif %}</div></div>
+    <div class="fig"><div class="v">{% if w.first_pass.reviewed %}{{ (100 * w.first_pass.approved / w.first_pass.reviewed) | round | int }} %<small>{{ w.first_pass.approved }} of {{ w.first_pass.reviewed }}</small>{% else %}—{% endif %}</div><div class="l">first-pass approval</div></div>
+    <div class="fig"><div class="v">${{ '%.2f' % w.cost }}<small>{{ w.runs }} runs {% if w.throughput | length > 1 %}{{ f.spark(w.throughput) }}{% endif %}</small></div><div class="l">cost{% if w.throughput | length > 1 %} · runs finished per {{ w.bucket }}{% endif %}</div></div>
+    <div class="fig"><div class="v">{{ f.money(w.per_accepted) }}</div><div class="l">per accepted task</div></div>
+  </div>
+  <div class="period-grid">
+    <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ f.chart(w, 640) }}</div><div class="chart-narrow">{{ f.chart(w, 360) }}</div>
+      {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}</div>
+    <div>
+      <div class="eyebrow">Runs by harness and model</div>
+      <div class="scroll"><table class="shade"><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+        {% for row in w.by_model %}<tr><td class="mono">{{ row.who }}</td><td>{{ row.runs }}</td><td>${{ '%.2f' % row.cost }}</td><td class="heat" style="--g:{{ f.grown(row.heat) }}" title="mean cost per run; lower is better">${{ '%.2f' % row.mean }}</td></tr>{% endfor %}
+      </table></div>
+      <div class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</div>
+    </div>
+  </div>
+  {% set tiers = w.tiers %}
+  <div class="tiers">
+    <div class="eyebrow">By difficulty and model</div>
+    {% if tiers.models %}
+    <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; each row runs from a green ground at its best value to a red one at its worst, the best and worst cells are marked, and a cell under {{ tiers.thin }} samples is faint and marked thin</p>
+    <div class="tier-tables">
+      {% for m in tiers.metrics %}{{ tier_table(m, tiers) }}{% endfor %}
+    </div>
+    {% else %}<p class="lead">No model did work in this window.</p>{% endif %}
+  </div>
+  {% else %}<div class="empty">No runs finished in this window.</div>{% endif %}
+</div>

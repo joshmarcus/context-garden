@@ -1,0 +1,90 @@
+{#- Now 1's pieces (docs/design/now-1.md): a run strip, a phase sheet, a queue line, a
+    difficulty-by-model table. Imported `with context` so `f` (the formatters) is in scope. -#}
+{%- macro five(snap) -%}
+{#- The five-second sentence: the four answers in one line, each clause a link to its region. -#}
+{%- set g = snap.garden -%}
+{%- set runs = snap.now | selectattr("kind", "equalto", "run") | list -%}
+{%- set hands = snap.now | rejectattr("kind", "equalto", "run") | list -%}
+{%- set p = snap.where.primary -%}
+<p class="now-five" id="now-five">
+  {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
+  <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
+  {%- if snap.next.dispatch %} <a href="#next">Next</a>: {{ snap.next.dispatch[0].task }}{% if snap.next.dispatch | length > 1 %}, then {{ snap.next.dispatch[1].task }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
+  {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
+  <a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a>: {{ snap.period.merged }} merged, ${{ '%.2f' % snap.period.cost }}.
+</p>
+{%- endmacro -%}
+
+{%- macro slots(snap) -%}
+{#- The Now region's right-hand facts: the slots, the pause stamp, the lost-connection words. -#}
+{%- set g = snap.garden -%}
+<span class="right" id="now-slots">{{ g.worker_busy }} of {{ g.max_parallel }} worker slots · {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if g.dispatch_paused %} <span class="stamp">paused</span> · by {{ g.dispatch_paused.by }} at {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %} · {{ g.dispatch_paused.reason }}{% endif %}{% endif %}<span class="lost" data-lost hidden>connection lost · retrying</span></span>
+{%- endmacro -%}
+
+{%- macro strip(s, cls="") -%}
+{%- set no_process = s.no_process | default(false) -%}
+{%- set finished = s.verdict is defined -%}
+<article class="specimen strip {{ cls }} st-{{ 'no_process' if no_process else s.state }}" data-task="{{ s.task }}" data-run="{{ s.run | default('') }}" data-key="{{ s.kind }}:{{ s.task }}:{{ s.run | default(s.title) }}"{% if s.kind == "run" and not no_process %} data-started="{{ s.started_at }}" data-typical="{{ s.typical_s or '' }}"{% if finished %} data-stopped="{{ s.elapsed_s }}"{% endif %}{% endif %}>
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-{{ '' if no_process else s.dot }}" title="{{ 'no process' if no_process else s.state | replace('_', ' ') }}"></span>{{ stage(s.glyph, 22) }}</div>
+  <div class="head">
+    {% if s.task %}<a class="id" href="/tasks/{{ s.task }}">{{ s.task }}</a>{% endif %}
+    <span class="t">{{ s.title }}</span>
+  </div>
+  <div class="meta">
+    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}{% if s.state == "failed" %} <span class="stamp">failed</span>{% endif %}
+    {% else %}<span class="stamp">{{ s.state | replace('_', ' ') }}</span>{% endif %}
+  </div>
+  {% if no_process %}
+  <div class="bar"><span class="faint">no process recorded · started {{ s.started_at[11:16] }}Z · a slot is held until a tick reaps it</span></div>
+  {% elif s.kind == "run" %}
+  {%- set typical = s.typical_s -%}
+  <div class="bar">
+    {% if typical %}
+      {%- set ratio = s.elapsed_s / typical -%}
+      <span class="scale" aria-hidden="true" style="--r:{{ ([ratio, 1.0] | min) | round(3) }};--o:{{ ([([ratio - 1, 0.0] | max), 0.5] | min) | round(3) }}"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>{{ f.clock(s.elapsed_s) }}</span> · typically {{ f.minutes(typical) }}<span class="longer" data-longer{% if ratio <= 1 %} hidden{% endif %}> · longer than usual</span></span>
+    {% else %}
+      <span class="clock"><span data-elapsed>{{ f.clock(s.elapsed_s) }}</span></span>
+    {% endif %}
+    {% if finished %}<span class="verdict">{{ s.verdict }}</span>
+    {% elif s.spend_usd is not none %}<span class="spend" data-spend>{{ f.money(s.spend_usd) }} so far</span>
+    {% elif s.tokens_so_far | default(0) %}<span class="spend" data-spend>{{ f.ktok(s.tokens_so_far) }} tokens so far</span>
+    {% elif not s.harness %}<span class="spend faint" data-spend>token-free</span>
+    {% else %}<span class="spend faint" data-spend>no usage yet</span>{% endif %}
+  </div>
+  <div class="said" data-said>{% if s.said %}“{{ s.said }}”{% else %}<span class="faint">no words yet</span>{% endif %}</div>
+  {% else %}
+  <div class="said reason">{{ s.reason }}</div>
+  {% endif %}
+</article>
+{%- endmacro -%}
+
+{%- macro sheet(ph, big=true) -%}
+{%- set src = plate(ph.plant) -%}
+<div class="specimen sheet {{ 'big' if big else 'small' }}" data-fraction="{{ ph.fraction }}">
+  <span class="tape t1"></span>
+  <div class="mount plate-mount" style="--grown:{{ (ph.fraction * 100) | round(1) }}%">
+    {% if src %}<img class="plate ghost" src="{{ src }}" alt=""><img class="plate inked" src="{{ src }}" alt="{{ ph.latin }}, inked to {{ (ph.fraction * 100) | round | int }} percent">
+    {% else %}<span class="ghost">{{ plant(ph.plant, 200, 300) }}</span><span class="inked">{{ plant(ph.plant, 200, 300) }}</span>{% endif %}
+  </div>
+  {% if big %}<span class="tape t2"></span>{% endif %}
+  <div class="lbl"><b>{{ ph.product }} · plate {{ ph.plate }}</b><br><a href="/phases/{{ ph.key }}">{{ ph.name }}</a><br><i>{{ ph.latin }}</i> — {{ ph.common }}<br><span data-count>{{ ph.done }} of {{ ph.total }} merged</span> · {{ ph.prs_open }} PRs open · {{ ph.running }} running<br>{{ ph.stage_word }}{% if ph.spent %} · spent ${{ '%.2f' % ph.spent }}{% if ph.budget %} of ${{ '%.0f' % ph.budget }}{% endif %}{% endif %}</div>
+  <div class="stamps"><span class="stamp">{{ 'complete' if ph.fraction >= 1 else ('frozen' if ph.frozen else 'open') }}</span>{% if ph.retro %}<span class="stamp">{{ ph.retro.get('verdict', '') }}</span>{% endif %}</div>
+</div>
+{%- endmacro -%}
+
+{%- macro queue_line(q) -%}
+<li data-key="{{ q.task }}"><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="id" href="/tasks/{{ q.task }}">{{ q.task }}</a><span class="lt">{{ q.title }}</span>
+  <span class="why">{{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
+{%- endmacro -%}
+
+{%- macro tier_table(m, tiers) -%}
+<div class="scroll"><table class="tier">
+  <caption>{{ m.label }}<span class="dir">{{ 'lower is better' if m.better == 'low' else 'higher is better' }}</span></caption>
+  <tr><th></th>{% for model in tiers.models %}{% set parts = model.split('-', 1) %}<th>{% if parts | length == 2 %}<span class="vendor">{{ parts[0] }}-</span>{{ parts[1] }}{% else %}{{ model }}{% endif %}</th>{% endfor %}</tr>
+  {% for d in ("easy", "medium", "hard") %}
+  <tr><th>{{ d }}</th>{% for model in tiers.models %}{% set c = m.rows[d].get(model) %}{% if c %}<td class="heat{{ ' best' if c.best }}{{ ' worst' if c.worst }}{{ ' thin' if c.thin }}" style="--g:{{ f.grown(c.heat) }}" title="{{ m.label }}, {{ d }}, {{ model }}: {{ f.cell(m.unit, c.value) }} over {{ c.n }} sample{{ 's' if c.n != 1 }}{% if c.thin %}; fewer than {{ tiers.thin }}, so not a verdict{% elif c.best %}; the best of the row{% elif c.worst %}; the worst of the row{% endif %}"><b>{{ f.cell(m.unit, c.value) }}</b><small>n {{ c.n }}{% if c.thin %} · thin{% elif c.best %} · best{% elif c.worst %} · worst{% endif %}</small></td>{% else %}<td><span class="faint">—</span></td>{% endif %}{% endfor %}</tr>
+  {% endfor %}
+</table></div>
+{%- endmacro -%}

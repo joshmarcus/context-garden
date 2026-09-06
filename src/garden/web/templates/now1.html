@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block title %}Now{% endblock %}
+{% block body_class %}page-now{% endblock %}
+{% block head %}
+<style>
+/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+.now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
+.now-five a { text-decoration-color:var(--line-strong); }
+.now-five .pause { color:var(--stamp); }
+.region { margin-top:30px; scroll-margin-top:16px; }
+.region-head { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.region-head .lead { font:italic 14px/1.4 var(--display); color:var(--muted); }
+.region-head .right { margin-left:auto; font:12px/1.4 var(--mono); color:var(--muted); display:flex; gap:4px 14px; align-items:center; flex-wrap:wrap; }
+.region-head .right .tick { white-space:nowrap; }
+.region-head .right .lost { color:var(--muted); font-style:italic; }
+.region-head .stamp { transform:rotate(-3deg); }
+.now-grid { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(300px, 1fr); gap:28px; align-items:start; }
+/* a run is a mount card on its side */
+.strip { display:grid; grid-template-columns:36px minmax(0, 1fr) auto; gap:5px 14px; padding:14px 18px 13px 14px; margin-bottom:12px; border-left:3px solid var(--line); transition:border-left-color 1.2s, opacity .5s, transform .36s cubic-bezier(.2,.7,.2,1); }
+.strip.new { border-left-color:var(--accent); }
+.strip .tape { left:50%; top:-7px; width:54px; height:14px; transform:translateX(-50%) rotate(-2deg); }
+.strip .glyphs { grid-row:1 / span 3; display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:2px; }
+.strip .glyphs .state::before { width:8px; height:8px; }
+.strip .head { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.strip .head .id { flex:none; }
+.strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
+.strip .bar { grid-column:2 / span 2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
+.strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); transition:opacity .2s; }
+.strip .bar .spend.faint { color:var(--faint); }
+.strip .bar .verdict { font-weight:700; }
+/* the elapsed scale: a plate's scale bar. The track is the typical duration; the fill grows
+   along it; past the end mark a dashed line grows on, to at most half a track more. */
+.scale { --track:160px; position:relative; width:calc(var(--track) * 1.5); height:11px; flex:none; }
+.scale .track { position:absolute; left:0; width:var(--track); top:5px; height:1px; background:var(--line-strong); }
+.scale .track::before { content:""; position:absolute; left:0; top:-4px; width:1px; height:9px; background:var(--ink); }
+.scale .fill { position:absolute; left:0; top:3px; height:5px; width:calc(var(--track) * var(--r)); background:var(--accent); transition:width 1s linear; }
+.scale .end { position:absolute; left:var(--track); top:1px; width:1px; height:9px; background:var(--ink); }
+.scale .over { position:absolute; left:calc(var(--track) + 1px); width:calc(var(--track) * var(--o)); top:5px; height:0; border-top:1px dashed var(--ink); transition:width 1s linear; }
+/* the live clock: the digits change in place; the words past typical are plain, never an alarm */
+.strip .clock { white-space:nowrap; }
+.strip .clock [data-elapsed] { color:var(--ink); }
+.strip .longer { color:var(--muted); }
+/* a run arriving: inserted at the top at no height, grows and fades in; leaving: settles and fades */
+.strip.arriving { max-height:0; opacity:0; margin-bottom:0; padding-top:0; padding-bottom:0; overflow:hidden; }
+.strip.arrive { transition:max-height .36s cubic-bezier(.2,.7,.2,1), opacity .36s cubic-bezier(.2,.7,.2,1), margin .36s, padding .36s, border-left-color 1.2s; max-height:240px; }
+.strip.leaving { transition:max-height .5s cubic-bezier(.2,.7,.2,1), opacity .5s cubic-bezier(.2,.7,.2,1), margin .5s, padding .5s; max-height:0; opacity:0; margin-bottom:0; padding-top:0; padding-bottom:0; overflow:hidden; }
+.strip .said { grid-column:2 / span 2; font:italic 14.5px/1.4 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:opacity .2s; }
+.strip .said.reason { font-style:normal; font:13.5px/1.45 var(--body); white-space:normal; color:var(--ink); }
+.strip.st-held, .strip.st-paused, .strip.st-needs_you, .strip.st-failed { border-left-style:dashed; }
+.strip.st-no_process { border-left-style:dotted; }
+.strip.st-no_process .glyphs svg, .strip.st-no_process .t { opacity:.55; }
+.strip .meta .stamp { font-size:9px; padding:0 5px; margin-left:6px; }
+/* the empty mount sheet */
+.empty-sheet { padding:26px 22px 22px; text-align:center; }
+.empty-sheet .tape { left:50%; top:-7px; transform:translateX(-50%) rotate(-3deg); }
+.empty-sheet b { display:block; font:500 19px/1.3 var(--display); margin-bottom:4px; }
+.empty-sheet p { margin:0; color:var(--muted); font:13.5px/1.5 var(--body); }
+/* next */
+.queue { list-style:none; margin:0; padding:0; }
+.queue li { display:grid; grid-template-columns:26px 22px 68px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); transition:transform .3s cubic-bezier(.2,.7,.2,1), opacity .3s; }
+.queue .pos { font:12px/1.4 var(--mono); color:var(--faint); text-align:right; }
+.queue .lt { font:15px/1.35 var(--display); overflow-wrap:anywhere; }
+.queue .why { grid-column:4; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .why .skip { color:var(--warn); font-weight:700; }
+.queue-more { display:block; margin:8px 4px 0; font:12px/1.4 var(--mono); }
+.sub { margin-top:20px; }
+.sub h3 { margin:0 0 6px; font:500 15px/1.3 var(--display); }
+.sub p, .sub li { margin:0; font:13.5px/1.5 var(--body); }
+.sub ul { list-style:none; padding:0; margin:0; }
+.sub li { padding:6px 4px; border-bottom:1px dashed var(--line); display:grid; grid-template-columns:68px minmax(0, 1fr); gap:2px 10px; align-items:baseline; }
+.sub li .id { padding-top:2px; }
+.sub li .fact { grid-column:2; font:12px/1.4 var(--mono); color:var(--muted); }
+.sub li .fact.held { color:var(--ink); }
+.sub li.faint { display:block; }
+/* where we are: the sheet grows */
+.sheet.big { padding:26px 18px 132px; min-height:520px; }
+.sheet .t1 { left:46%; top:150px; transform:rotate(-8deg); }
+.sheet .t2 { left:18%; top:392px; transform:rotate(11deg); }
+.sheet .mount { position:relative; display:flex; justify-content:center; }
+.sheet .mount .ghost { opacity:.14; filter:grayscale(1); }
+.sheet .mount .inked { position:absolute; inset:12px auto auto 50%; transform:translateX(-50%); clip-path:inset(calc(100% - var(--grown)) 0 0 0); transition:clip-path 1.2s cubic-bezier(.2,.7,.2,1), filter 2s; }
+.sheet .mount .inked.fresh { filter:drop-shadow(0 0 6px var(--accent)); }
+.sheet .mount img { max-height:420px; }
+.sheet .mount span svg { display:block; }
+.sheet .lbl { right:16px; bottom:16px; }
+.sheet .stamps { position:absolute; left:18px; bottom:32px; display:flex; gap:8px; }
+.sheet.small { display:grid; grid-template-columns:52px 1fr; gap:10px; padding:10px 12px; align-items:center; }
+.sheet.small .mount { padding:2px; }
+.sheet.small .mount img { max-height:70px; }
+.sheet.small .mount .inked { inset:2px auto auto 50%; }
+.sheet.small .tape { display:none; }
+.sheet.small .lbl { position:static; width:auto; border:none; padding:0; font-size:11px; }
+.sheet.small .stamps { position:static; margin-top:4px; }
+.sheet.small .stamp { font-size:9px; padding:0 5px; }
+.goals { list-style:none; margin:14px 0 0; padding:0; }
+.goals li { display:grid; grid-template-columns:22px minmax(0, 1fr) auto; gap:10px; align-items:baseline; padding:6px 2px; border-bottom:1px dashed var(--line); font:14px/1.4 var(--body); }
+.goals .n { font:12px/1.4 var(--mono); color:var(--faint); }
+.goals .fr { font:11.5px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.goals .fr.unlinked { color:var(--faint); font-style:italic; }
+.others { display:grid; gap:8px; margin-top:14px; }
+.closed-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:14px; }
+.closed-row a { display:flex; flex-direction:column; align-items:center; gap:4px; width:104px; text-decoration:none; font:11px/1.3 var(--mono); color:var(--muted); text-align:center; }
+.closed-row .thumb { width:44px; height:64px; border:1px solid var(--line); background:#f4efe3; overflow:hidden; display:flex; justify-content:center; }
+.closed-row img { height:64px; }
+.closed-row .stamp { font-size:8.5px; padding:0 4px; border-width:1.5px; }
+/* the last period */
+.figures { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:18px; margin:6px 0 18px; }
+.fig .v { font:500 32px/1.1 var(--display); display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; white-space:nowrap; }
+.fig .v small { font:400 14px/1.4 var(--display); color:var(--muted); padding-bottom:4px; display:inline-flex; gap:8px; align-items:center; }
+.fig .v .spark { margin-left:4px; }
+.fig .l { font:11px/1.4 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-top:4px; }
+.period-grid { display:grid; grid-template-columns:minmax(0, 1.6fr) minmax(280px, 1fr); gap:24px; align-items:start; }
+.period-grid table { font-size:12.5px; }
+.period-grid td, .period-grid th { padding:5px 7px; }
+.period-grid .chart-box { min-width:0; }
+.chart-narrow { display:none; }
+.hand { margin-top:14px; font:12.5px/1.5 var(--mono); color:var(--muted); }
+/* by difficulty and model: five small tables, the same shape each, read as one */
+.tiers { margin-top:26px; }
+.tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
+.tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.tier-tables .scroll { overflow-x:auto; }
+table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
+table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
+table.tier caption .dir { margin-left:8px; font:italic 11.5px/1.3 var(--display); color:var(--faint); }
+table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
+table.tier th .vendor { display:block; color:var(--faint); }
+table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
+table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; }
+table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
+table.tier td.best b { font-weight:600; }
+table.tier td.thin b { color:var(--muted); font-style:italic; }
+table.tier td .faint { color:var(--faint); }
+/* the heat-map ground (the owner's rule, 2026-09-06 02:45Z): within a row, a light green at the
+   best value through a quiet scale to a light red at the worst; --g is the cell's share of green.
+   The tint sits under the ink at a fifth of its strength, so the text reads in both themes; a
+   thin cell gets less than half of that, and the marks in each cell say what the colour says. */
+td.heat { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 22%, transparent); }
+td.heat.thin { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 9%, transparent); }
+table.shade td.heat { font-variant-numeric:tabular-nums; }
+/* live region for a screen reader */
+.now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+/* the rail on this page: the page is the Running now block, so the rail does not repeat it */
+body.page-now .rail-running { display:none; }
+/* the phone: one column, the rail folded to wordmark and nav */
+@media (max-width:1000px) {
+  body.page-now .rail { padding:12px 14px; gap:10px; flex-direction:row; flex-wrap:wrap; align-items:center; height:auto; }
+  body.page-now .rail > :not(.wordmark):not(.nav) { display:none; }
+  body.page-now .nav { flex-direction:row; flex-wrap:wrap; gap:0 2px; }
+  body.page-now .nav a { min-height:32px; padding:0 8px; border-left:none; border-bottom:2px solid transparent; }
+  body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
+  body.page-now main { padding:18px 14px 48px; }
+  .now-five { font-size:17px; }
+  .region-head .right { margin-left:0; width:100%; }
+  .now-grid, .period-grid { grid-template-columns:1fr; }
+  .strip { grid-template-columns:28px minmax(0, 1fr); padding:12px 12px 11px 10px; }
+  .strip .glyphs { grid-row:1 / span 4; }
+  .strip .head { flex-wrap:wrap; gap:4px 10px; }
+  .strip .t { white-space:normal; }
+  .strip .meta { grid-column:2; text-align:left; white-space:normal; }
+  .strip .bar { grid-column:2; }
+  .strip .said { grid-column:2; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .scale { --track:110px; }
+  .queue li { grid-template-columns:22px 20px minmax(0, 1fr); }
+  .queue .id { grid-column:3; }
+  .queue .lt, .queue .why { grid-column:3; }
+  .sheet.big { padding:18px 12px 18px; min-height:0; }
+  .sheet .t1 { top:120px; } .sheet .t2 { display:none; }
+  .sheet .mount img { max-height:300px; }
+  .sheet.big .lbl { position:static; width:auto; margin:14px 0 10px; }
+  .sheet.big .stamps { position:static; }
+  .figures { grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; }
+  .fig .v { font-size:28px; gap:6px; white-space:normal; }
+  .tier-tables { grid-template-columns:minmax(0, 1fr); }
+  .fig .l { letter-spacing:.03em; }
+  .chart-wide { display:none; } .chart-narrow { display:block; }
+}
+</style>
+{% endblock %}
+{% block body %}
+{% from "_now1_macros.html" import five, slots with context %}
+{% set g = snap.garden %}
+<div id="now1" data-window="{{ snap.window }}" data-next-tick="{{ g.next_tick_at }}" data-tick-interval="{{ g.tick_interval }}">
+<div class="page-head"><div><h1>Now</h1></div></div>
+{{ five(snap) }}
+<div class="now-live" aria-live="polite" id="now-live"></div>
+
+<section class="region" id="now">
+  <div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span>{{ slots(snap) }}</div>
+  {% include "_now1_now.html" %}
+</section>
+
+<div class="now-grid">
+<section class="region" id="next">{% include "_now1_next.html" %}</section>
+<section class="region" id="where">{% include "_now1_where.html" %}</section>
+</div>
+
+<section class="region" id="period">{% include "_now1_period.html" %}</section>
+</div>
+<script>
+// The live page (docs/design/now-1.md, "Live updates"). One stream of server-sent events drives
+// everything that moves: a strip arrives on `dispatch`, settles and leaves on `run_finished`, its
+// words and spend follow `progress`; a list region re-fetches its server-rendered partial when an
+// event touches it, so the template stays the one source of markup; the tick resets the countdown.
+// The clocks need none of this: base.html's clock ticks every [data-started] on its own. No polling.
+(function () {
+  var root = document.getElementById("now1");
+  if (!root || !window.EventSource) return;
+  var live = document.getElementById("now-live");
+  var win = root.dataset.window || "hour";
+  function say(text) { if (live) live.textContent = text; }
+  function parse(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
+  async function fetchText(url) {
+    var r = await fetch(url, {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    return await r.text();
+  }
+  // ---- the regions: each re-fetches its partial and swaps the one element that holds it
+  var regions = {
+    head: async function () {
+      var frag = parse(await fetchText("/partials/now1/head?window=" + win));
+      var five = frag.getElementById("now-five"), slots = frag.getElementById("now-slots");
+      var lost = document.querySelector("[data-lost]");
+      if (five) document.getElementById("now-five").replaceWith(five);
+      if (slots) {
+        if (lost && !lost.hidden) slots.querySelector("[data-lost]").hidden = false;
+        document.getElementById("now-slots").replaceWith(slots);
+      }
+    },
+    now: async function () {
+      var frag = parse(await fetchText("/partials/now1/now?window=" + win));
+      document.getElementById("now-body").replaceWith(frag.getElementById("now-body"));
+      countdown();
+    },
+    next: async function () {
+      var frag = parse(await fetchText("/partials/now1/next?window=" + win));
+      var fresh = frag.getElementById("next-body"), old = document.getElementById("next-body");
+      moveLines(old, fresh);
+      old.replaceWith(fresh);
+      countdown();
+    },
+    where: async function () {
+      var frag = parse(await fetchText("/partials/now1/where?window=" + win));
+      var fresh = frag.getElementById("where-body"), old = document.getElementById("where-body");
+      var was = parseFloat(old.dataset.fraction), now = parseFloat(fresh.dataset.fraction);
+      var inked = old.querySelector(".sheet.big .inked"), mount = old.querySelector(".sheet.big .mount");
+      if (mount && inked && now > was) {
+        // growth first, then the label's count: the eye sees the plant rise before the number moves
+        mount.style.setProperty("--grown", (now * 100).toFixed(1) + "%");
+        inked.classList.add("fresh");
+        setTimeout(function () { old.replaceWith(fresh); }, 1200);
+      } else {
+        old.replaceWith(fresh);
+      }
+    },
+    period: async function () {
+      var frag = parse(await fetchText("/partials/now1/period?window=" + win));
+      document.getElementById("period-body").replaceWith(frag.getElementById("period-body"));
+    }
+  };
+  // Queue lines that stay move to their new position by transform; the fresh list arrives in
+  // place, and the lines that were on the page slide from where they were (a FLIP, 300ms).
+  function moveLines(old, fresh) {
+    var before = {};
+    old.querySelectorAll(".queue li[data-key]").forEach(function (li) { before[li.dataset.key] = li.getBoundingClientRect().top; });
+    requestAnimationFrame(function () {
+      fresh.querySelectorAll(".queue li[data-key]").forEach(function (li) {
+        var from = before[li.dataset.key];
+        if (from === undefined) { li.style.opacity = "0"; requestAnimationFrame(function () { li.style.opacity = ""; }); return; }
+        var dy = from - li.getBoundingClientRect().top;
+        if (!dy) return;
+        li.style.transition = "none"; li.style.transform = "translateY(" + dy + "px)";
+        requestAnimationFrame(function () { li.style.transition = ""; li.style.transform = ""; });
+      });
+    });
+  }
+  var periodTimer = null;
+  function periodSoon() {  // at most once a minute
+    if (periodTimer) return;
+    periodTimer = setTimeout(function () { periodTimer = null; regions.period().catch(function () {}); }, 60000);
+  }
+  function refreshAll() { Object.keys(regions).forEach(function (k) { regions[k]().catch(function () {}); }); }
+  // ---- strips: keyed by run id; a strip arrives at no height and grows, leaves by collapsing
+  function strips() { return document.getElementById("now-strips"); }
+  function stripFor(run) { return document.querySelector('.strip[data-run="' + run + '"]'); }
+  async function arrive(ev) {
+    var html = await fetchText("/partials/now1/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run));
+    var strip = parse(html).firstElementChild;
+    if (!strip || stripFor(ev.run)) return;
+    strip.dataset.started = ev.at || strip.dataset.started;  // counts up from the dispatch moment
+    strip.classList.add("arriving", "new");
+    var box = strips();
+    box.insertBefore(strip, box.firstChild);
+    var empty = document.getElementById("now-empty"); if (empty) empty.hidden = true;
+    window.gardenClock && window.gardenClock.tick();
+    requestAnimationFrame(function () { requestAnimationFrame(function () {
+      strip.classList.add("arrive"); strip.classList.remove("arriving");
+      setTimeout(function () { strip.classList.remove("new", "arrive"); }, 3000);
+    }); });
+    say(ev.task + " started a " + (ev.mode || "") + " run");
+  }
+  async function finish(ev) {
+    var old = stripFor(ev.run);
+    var html = await fetchText("/partials/now1/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run)).catch(function () { return ""; });
+    var fresh = html ? parse(html).firstElementChild : null;
+    if (old && fresh) { fade(old.querySelector(".glyphs")); old.replaceWith(fresh); old = fresh; }
+    say(ev.task + " finished: " + (ev.status || ""));
+    if (!old) return;
+    setTimeout(function () { leave(old, function () { if (!strips().children.length) regions.now().catch(function () {}); }); }, 8000);
+  }
+  function leave(el, done) {
+    el.style.maxHeight = el.offsetHeight + "px";
+    requestAnimationFrame(function () { el.classList.add("leaving"); });
+    setTimeout(function () { el.remove(); if (done) done(); }, 520);
+  }
+  function fade(el) { if (!el) return; el.style.opacity = "0"; setTimeout(function () { el.style.opacity = ""; }, 200); }
+  function progress(p) {
+    var strip = stripFor(p.run); if (!strip) return;
+    var said = strip.querySelector("[data-said]");
+    if (said && p.said && said.textContent !== "“" + p.said + "”") {
+      said.style.opacity = "0";
+      setTimeout(function () { said.textContent = "“" + p.said + "”"; said.style.opacity = ""; }, 200);
+    }
+    var spend = strip.querySelector("[data-spend]");
+    if (spend) {
+      if (p.cost_usd !== null && p.cost_usd !== undefined) { spend.textContent = "$" + p.cost_usd.toFixed(2) + " so far"; spend.classList.remove("faint"); }
+      else if (p.tokens) { spend.textContent = ktok(p.tokens) + " tokens so far"; spend.classList.remove("faint"); }
+    }
+  }
+  function ktok(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
+  // ---- the countdown to the next tick, from the server's next_at and the offset clock
+  function countdown() {
+    var at = Date.parse(root.dataset.nextTick || "");
+    var now = window.gardenClock ? window.gardenClock.now() : Date.now();
+    var left = isNaN(at) ? null : Math.max(0, Math.round((at - now) / 1000));
+    document.querySelectorAll("[data-countdown]").forEach(function (el) { if (left !== null) el.textContent = left; });
+  }
+  setInterval(countdown, 1000);
+  countdown();
+  // ---- what each event kind moves (the design's table)
+  var NOW_HANDS = {merge_head: 1, needs_human: 1, harness_paused: 1, dispatch_resumed: 1, resumed: 1, answer: 1, waiting_human: 1};
+  var HEAD = {dispatch: 1, run_finished: 1, dispatch_paused: 1, dispatch_resumed: 1, harness_paused: 1};
+  var NEXT = {dispatch: 1, transition: 1, review: 1, check: 1, merge_head: 1, automerged: 1, rebase: 1, pr_opened: 1, feedback: 1, conflict: 1, harness_paused: 1, dispatch_resumed: 1};
+  var WHERE = {transition: 1, retro_verdict: 1, phase_frozen: 1, phase_closed: 1};
+  var PERIOD = {run_finished: 1, review: 1, automerged: 1, answer: 1, triaged: 1, decision_accepted: 1, decision_resolved: 1, dispatch_paused: 1, dispatch_resumed: 1, resumed: 1, moved: 1, budget_set: 1, config_override: 1, suggestion: 1, profile_changed: 1, config_reloaded: 1};
+  function onEvent(ev) {
+    var k = ev.kind;
+    if (k === "dispatch" && ev.run) arrive(ev).catch(function () {});
+    if (k === "run_finished" && ev.run) finish(ev).catch(function () {});
+    if (NOW_HANDS[k] || (k === "transition" && (ev.to === "changes_requested" || ev.to === "waiting_human" || ev.from === "waiting_human"))) {
+      regions.now().catch(function () {});
+    }
+    if (HEAD[k] || k === "transition") regions.head().catch(function () {});
+    if (NEXT[k]) regions.next().catch(function () {});
+    if (WHERE[k]) regions.where().catch(function () {});
+    if (PERIOD[k] || (k === "transition" && ev.to === "done")) periodSoon();
+  }
+  // ---- the stream
+  var source = new EventSource("/now1/stream");
+  var dropped = null, wasDown = false;
+  var interval = parseInt(root.dataset.tickInterval || "60", 10) * 1000;
+  source.addEventListener("event", function (m) { try { onEvent(JSON.parse(m.data)); } catch (e) {} });
+  source.addEventListener("progress", function (m) { try { progress(JSON.parse(m.data)); } catch (e) {} });
+  source.addEventListener("tick", function (m) {
+    try {
+      var t = JSON.parse(m.data);
+      if (t.next_at) root.dataset.nextTick = t.next_at;
+      var rail = document.querySelector("[data-tick-at]"); if (rail && t.at) rail.textContent = t.at.slice(11, 19) + "Z";
+      countdown();
+    } catch (e) {}
+  });
+  source.addEventListener("open", function () {
+    if (dropped) { clearTimeout(dropped); dropped = null; }
+    var lost = document.querySelector("[data-lost]"); if (lost) lost.hidden = true;
+    if (wasDown) { wasDown = false; refreshAll(); }  // a stream that came back: catch up once
+  });
+  source.addEventListener("error", function () {
+    wasDown = true;
+    if (!dropped) dropped = setTimeout(function () { var lost = document.querySelector("[data-lost]"); if (lost) lost.hidden = false; }, interval);
+  });
+})();
+</script>
+{% endblock %}
