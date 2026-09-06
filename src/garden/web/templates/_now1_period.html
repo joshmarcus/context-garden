@@ -13,15 +13,22 @@
     <div class="fig"><div class="v">{{ f.money(w.per_accepted) }}</div><div class="l">per accepted task</div></div>
   </div>
   <div class="period-grid">
-    <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ f.chart(w, 640) }}</div><div class="chart-narrow">{{ f.chart(w, 360) }}</div>
-      {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}</div>
-    <div>
-      <div class="eyebrow">Runs by harness and model</div>
-      {% set bm = w.by_model %}
-      {% if bm.columns %}<div class="runs-table">{{ heat_table(bm, bm.columns, bm.rows.keys() | list, bm.thin, bm.heads) }}</div>{% endif %}
-      <div class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</div>
+    <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ f.chart(w, 640) }}</div><div class="chart-narrow">{{ f.chart(w, 360) }}</div></div>
+    <div class="hands">
+      <div class="eyebrow">By hand</div>
+      <p class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</p>
+      {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>
+      {% else %}<p class="hand faint">no profile change or config reload in this window</p>{% endif %}
     </div>
   </div>
+  {% set bm = w.by_model %}
+  {% if bm.columns %}
+  <div class="tiers">
+    <div class="eyebrow">Runs by harness and model</div>
+    <p class="lead">a row per mode that ran, a column per harness and model with what it cost in all, each cell the mean cost of one run over its n runs, shaded and marked within the row like every table here</p>
+    <div class="runs-table">{{ heat_table(bm, bm.columns, bm.rows.keys() | list, bm.thin, bm.heads) }}</div>
+  </div>
+  {% endif %}
   {% set tiers = w.tiers %}
   <div class="tiers">
     <div class="eyebrow">By difficulty and model</div>

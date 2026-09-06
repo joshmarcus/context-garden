@@ -340,18 +340,22 @@ phase`), with the Costs page's annotation marks for `profile_changed`, and under
 one mono line listing the window's `profile_changed` and `config_reloaded` events with the
 keys that changed. The chart is rendered twice, at 640 and at 360 wide, and CSS shows one
 per viewport, so the phone gets legible labels rather than a scaled-down projector chart;
-the two SVGs together are a few kilobytes. Right: runs by harness and model, as a table the
-same shape as the difficulty tables below (`now1.runs_by_model`): a row per mode that ran in
-the window, a column per `harness:model` with its total cost and run count under the name
-(the garden's own token-free runs in one `garden` column), and in each cell the mean cost per
-run over its n runs, shaded within the row from the best to the worst and marked the way every
-shaded cell on the page is. It was first a flat list of who, runs, cost and mean; a list has
-no row to shade, and turned on its side it also says which model does reviews cheaply, which
-the list could not. Then hand steps: the count of events in the
+the two SVGs together are a few kilobytes. Right, **By hand**: hand steps, the count of events in the
 window whose kind is a person's action (`answer`, `triaged`, `decision_accepted`,
 `decision_resolved`, `dispatch_paused`, `dispatch_resumed`, `resumed`, `moved`, `budget_set`,
 `config_override`, `suggestion`), by kind, and hand merges from `garden metrics` once CG-253
-lands (`—` until then, and the label says why).
+lands (`—` until then, and the label says why), and the window's `profile_changed` and
+`config_reloaded` events with the keys that changed, the same marks the chart draws.
+
+Then, full width, **Runs by harness and model**, as a table the same shape as the difficulty
+tables below it (`now1.runs_by_model`): a row per mode that ran in the window, a column per
+`harness:model` with its total cost and run count under the name (the garden's own token-free
+runs in one `garden` column), and in each cell the mean cost per run over its n runs, shaded
+within the row from the best to the worst and marked the way every shaded cell on the page
+is. It was first a flat list of who, runs, cost and mean beside the chart; a list has no row
+to shade, and turned on its side it also says which model does reviews cheaply, which the list
+could not. It sits full width because six columns do not fit beside the chart at 1280, and a
+table half of whose columns are scrolled away reads as a row of dashes.
 
 Then, full width, **By difficulty and model** (the owner's ask, 2026-09-06 02:30Z): the
 five figures the phase is measured by, each as its own small table with rows easy, medium

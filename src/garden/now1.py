@@ -285,7 +285,7 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in strips if s.get("mode") in REVIEW_MODES}
-    max_rounds = int((store.config.get("review") or {}).get("max_rounds", 4) or 4)
+    max_rounds = int(store.config.get("review.max_rounds", 2))  # the scheduler's own default
     paused = set((control.get("paused_harnesses") or {}).keys())
     review_harness = str((store.config.get("review") or {}).get("harness") or store.config.get("harness") or "claude")
     in_review, waiting = [], []
