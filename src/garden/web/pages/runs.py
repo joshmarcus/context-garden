@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from ...runs import RunStore
 from ..common import Site
@@ -55,10 +57,22 @@ def register(app: FastAPI, site: Site) -> None:
             final_text = str((res or {}).get("result") or "")
         brief_path = run.path / "brief.md"
         brief_text = brief_path.read_text() if brief_path.exists() else ""
+        captures = [Path(str(p)).name for ch in (run.result or {}).get("checks", [])
+                    if ch.get("name") == "ui" for p in ch.get("captures", [])]
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
-            stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result))
+            stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
+            captures=captures))
+
+    @app.get("/runs/{task_id}/{run_id}/ui/{name}", response_class=FileResponse)
+    def run_capture(task_id: str, run_id: str, name: str):
+        run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
+                    if r.run_id == run_id), None)
+        path = run.path / "ui" / Path(name).name if run else None
+        if path is None or not path.is_file():
+            raise HTTPException(404)
+        return FileResponse(path)
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):

@@ -85,6 +85,17 @@ def doctor():
     else:
         console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            browser.close()
+        console.print("browser: [green]Chromium available[/green]")
+    except Exception as exc:  # noqa: BLE001 - doctor reports missing package, binary, or libs alike
+        console.print("[yellow]browser: unavailable; UI checks will capture HTML only "
+                      "(fix: install context-garden[walkthrough] and run `playwright install chromium`)"
+                      f" [{type(exc).__name__}][/yellow]")
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"
     if gh.available:

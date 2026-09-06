@@ -6,14 +6,18 @@ from typer.testing import CliRunner
 from garden.cli import app
 from garden.personas import phase_brief
 from garden.runs import RunStore
+from garden.scheduler.checkruns import _is_ui_path
 from garden.store import Store
 from garden.walkthrough import (
+    COLOR_SCHEMES,
+    VIEWPORTS,
     _redact_home,
     _scrub_stderr,
     capture,
     html_to_text,
     newest_walkthrough,
     pages_for,
+    ui_check,
 )
 
 
@@ -52,6 +56,27 @@ def test_pages_include_the_phase_and_a_task(garden):
     urls = {s.url for s in specs}
     assert "/phases/demo/p1" in urls
     assert any(s.url.startswith("/tasks/") for s in specs)
+    assert "/" in urls
+
+
+def test_ui_path_detection():
+    assert _is_ui_path("src/garden/web/templates/inbox.html")
+    assert _is_ui_path("assets/site.css")
+    assert not _is_ui_path("src/garden/model.py")
+    assert VIEWPORTS == (1280, 390)
+    assert COLOR_SCHEMES == ("light", "dark")
+
+
+def test_ui_check_produces_run_artifacts(garden, tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._screenshot",
+                        lambda _url, _specs, _out, _log: (set(), "test browser unavailable"))
+    result = ui_check({"product": "demo", "phase": "p1"},
+                      {"garden_root": str(garden), "out_dir": str(tmp_path / "ui")})
+    assert result["status"] == "pass"
+    assert "HTML-only" in result["summary"]
+    assert (tmp_path / "ui" / "now.html").exists()
+    assert (tmp_path / "ui" / "board.html").exists()
+    assert (tmp_path / "ui" / "task.html").exists()
 
 
 def test_html_to_text_strips_tags_and_scripts():
