@@ -1,0 +1,5 @@
+light 1280 {"width":1280,"scroll":1280,"height":3235,"dark":false}
+dark 1280 {"width":1280,"scroll":1280,"height":3235,"dark":true}
+light 390 {"width":390,"scroll":390,"height":5284,"dark":false}
+dark 390 {"width":390,"scroll":390,"height":5284,"dark":true}
+{"status":"Live · connected","clocks":["48:01","29:01","24:01"],"matrices":5,"visible":1}
