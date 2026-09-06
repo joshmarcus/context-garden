@@ -1205,6 +1205,19 @@ def test_config_page_renders(garden):
     assert "Config" in r.text
 
 
+def test_task_page_names_the_review_ladder_rung(garden):
+    """A ladder-routed review makes its writer/reviewer relationship visible on the task."""
+    from garden.runs import RunStore
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", mode="review")
+    run.harness = "codex"
+    run.model = "gpt-5.6-sol"
+    run.env_snapshot = {"writer_model": "gpt-5.6-terra"}
+    run.save()
+
+    assert "reviewed by gpt-5.6-sol, one above gpt-5.6-terra" in client(garden).get("/tasks/DM-001").text
+
+
 def test_config_page_names_live_and_restart_keys(garden):
     """CG-192: the page says config is re-read each tick without a restart, and names the
     keys that still need one (RESTART_KEYS)."""
