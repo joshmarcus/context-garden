@@ -200,16 +200,32 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
 
     store = _store()
     t = _task(store, task_id)
+    sched = _scheduler(store)
     if not force:
         if mode == "work" and t.status not in (Status.READY, Status.DRAFT):
             err.print(f"[red]{t.id} is {t.status.value}; use --force[/red]")
             raise typer.Exit(1) from None
+        if mode == "work" and t.status == Status.DRAFT:
+            # Same approve gate the web dispatch button and `garden take` go through
+            # (CG-238): it refuses a draft with an incomplete brief instead of letting a
+            # placeholder brief burn a run. --force bypasses this, same as it always has.
+            try:
+                ph = store.phase(t.product, t.phase)
+            except KeyError:
+                ph = None
+            try:
+                warning = sched.approve(t, by="cli", phase=ph)
+            except RuntimeError as e:
+                err.print(f"[red]{e}[/red]")
+                raise typer.Exit(1) from None
+            if warning:
+                err.print(f"[yellow]{warning}[/yellow]")
         b = blockers(t, store.tasks())
         if b and mode == "work":
             err.print(f"[red]{t.id} is blocked by {', '.join(b)}; use --force[/red]")
             raise typer.Exit(1) from None
     try:
-        run = _scheduler(store).dispatch(t, mode=mode)
+        run = sched.dispatch(t, mode=mode)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
