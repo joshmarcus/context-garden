@@ -64,7 +64,8 @@ def latest_line(run: Run) -> str:
         if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("text"):
             return str(item["text"])[-2000:]
         if e.get("type") == "assistant":
-            content = (e.get("message") or {}).get("content") or []
+            message = e.get("message") or {}
+            content = message.get("content", []) if isinstance(message, dict) else []
             texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
             if texts:
                 return " ".join(texts)[-2000:]
@@ -87,9 +88,10 @@ def running_rows(runs: list[Run], tasks: dict, now: dt.datetime, store: Store | 
                 if parsed.get("cost_usd") is not None:
                     spend = parsed["cost_usd"]
                     freshness = "latest reported usage"
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, AttributeError):
                 pass
-        rows.append({"spend": spend, "freshness": freshness, "run": r, "title": tasks[r.task_id].title if r.task_id in tasks else f"{r.mode.title()} run",
+        title_url = f"/tasks/{r.task_id}" if r.task_id in tasks else f"/runs/{r.task_id}/{r.run_id}"
+        rows.append({"title_url": title_url, "spend": spend, "freshness": freshness, "run": r, "title": tasks[r.task_id].title if r.task_id in tasks else f"{r.mode.title()} run",
                      "said": latest_line(r), "typical": typical.get((r.mode, r.difficulty), {"seconds": None, "n": 0}),
                      "verdict": str(r.result.get("verdict") or r.result.get("status") or r.status),
                      "missing_process": r.status == "running" and r.pid is not None and r.process_finished()})
@@ -154,7 +156,7 @@ def phase_rows(s: Store, sched: Scheduler) -> list[dict]:
             done = sum(t.status == Status.DONE for t in ph.tasks)
             total = len(ph.tasks)
             fraction = done / total if total else 0
-            growth = ("fruit" if ph.closed and all(t.status.terminal for t in ph.tasks) else
+            growth = ("fruit" if total and ph.closed and all(t.status.terminal for t in ph.tasks) else
                       "flower" if fraction >= .8 else "bud" if fraction >= .5 else
                       "leaf" if fraction >= .2 else "sprout" if done else "seed")
             text = goals_text(ph.goals_path)
@@ -162,6 +164,7 @@ def phase_rows(s: Store, sched: Scheduler) -> list[dict]:
             goal_text = re.split(r"^## ", section[1], maxsplit=1, flags=re.M)[0] if len(section) > 1 else text
             labels = re.findall(r"^\d+\.\s+(.+)|^###\s+(.+)", goal_text, re.M)
             goals = [a or b for a, b in labels]
+            goals = [re.match(r"\*\*(.+?)\*\*", g)[1] if re.match(r"\*\*(.+?)\*\*", g) else g for g in goals]
             out.append({"phase": ph, "done": done, "total": total, "stage": growth, "fraction": fraction,
                         "cancelled": sum(t.status == Status.CANCELLED for t in ph.tasks),
                         "wont_do": sum(t.status == Status.WONT_DO for t in ph.tasks), "goals": goals,

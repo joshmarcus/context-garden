@@ -8,7 +8,7 @@ body:has(#now2) main{max-width:1440px;margin:auto;padding:32px 40px 60px}
 body:has(#now2) .bg-vine{display:none}
 
 #now2{--n2-best:#dcefe4;--n2-worst:#f5e1df;font-size:17px;line-height:1.45;overflow-wrap:anywhere}
-#now2 *{min-width:0}
+#now2 section{min-width:0}
 #now2 p{margin:8px 0 12px}
 #now2 h1{font:500 44px/1.1 var(--display);margin:5px 0}
 #now2 h2{font:500 28px/1.2 var(--display);margin:0 0 12px}
@@ -90,11 +90,9 @@ body:has(#now2) main{padding:24px 20px 40px}
 .n2-numbers dd{margin-bottom:12px}
 }
 
-
 #now2 .n2-table table{table-layout:auto}
 #now2 .n2-table th,#now2 .n2-table td{white-space:normal}
 #now2 .n2-table td small{white-space:nowrap}
-
 
 .n2-throughput{position:relative}
 #now2 .n2-chart-mark{position:absolute;top:0;height:100%;border-left:1px solid var(--ink);font:11px var(--mono);padding-left:3px;text-decoration:none;min-width:8px}
@@ -102,3 +100,5 @@ body:has(#now2) main{padding:24px 20px 40px}
 #now2 .n2-sr{left:0;top:0}
 .n2-table{position:relative}
 
+#now2 .n2-table th:first-child{min-width:105px;white-space:nowrap}
+#now2 .n2-table td{min-width:138px}

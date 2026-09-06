@@ -5,6 +5,7 @@
   let anchor = Date.parse(root.dataset.serverNow), receipt = performance.now();
   let source, revision = 0, generation = 0, metric = 'total_cost', lastReceived = performance.now();
   const finishedSeen = new Map();
+  const pendingRemoval = new Set();
   const serverNow = () => anchor + performance.now() - receipt;
   function duration(seconds) {
     if (seconds < 60) return seconds + 's';
@@ -38,6 +39,13 @@
         if (performance.now()-finishedSeen.get(card.id) >= 8000 && !card.contains(document.activeElement) && !card.querySelector('details[open]')) card.remove();
       }
     });
+    for (const id of pendingRemoval) {
+      const card = document.getElementById(id);
+      if (!card) { pendingRemoval.delete(id); continue; }
+      if (!card.contains(document.activeElement) && !card.querySelector('details[open]') && performance.now()-(finishedSeen.get(id) || 0) >= 8000) { card.remove(); pendingRemoval.delete(id); }
+    }
+    const quiet = document.querySelector('#now2-summary .n2-quiet');
+    if (quiet) quiet.hidden = runs.children.length > 0;
     if (performance.now()-lastReceived > 45000) status.textContent = 'Updates disconnected · elapsed since start';
   }
   // Patch leaves in place. Disclosure state, focus, selection, and live clock nodes survive.
@@ -71,12 +79,15 @@
     const removed = reset ? [...runs.children].filter(el => !payload.fragments[el.id]).map(el => el.id) : payload.removed;
     for (const id of removed) {
       const el = document.getElementById(id);
-      if (!el || el.contains(document.activeElement) || el.querySelector('details[open]')) continue;
+      if (!el) continue;
+      pendingRemoval.add(id);
+      if (el.contains(document.activeElement) || el.querySelector('details[open]')) continue;
       if (el.dataset.status !== 'running' && performance.now()-(finishedSeen.get(id) || 0) < 8000) continue;
       el.remove();
     }
     let arrivals = 0;
     for (const [id, html] of Object.entries(payload.fragments)) {
+      pendingRemoval.delete(id);
       const old = document.getElementById(id);
       const template = document.createElement('template');
       template.innerHTML = html;

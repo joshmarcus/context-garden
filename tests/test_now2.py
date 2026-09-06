@@ -102,6 +102,9 @@ def test_fake_harness_live_output_and_run_record_join(garden):
     assert row['spend'] is not None and row['spend'] >= 0
     assert row['freshness'] == 'latest reported usage'
     run.finished_at, run.status, run.cost_usd = (NOW+dt.timedelta(seconds=180)).isoformat(), 'done', 2
+    run.result = {'verdict': 'approve'}
+    assert running_rows([run], s.tasks(), NOW+dt.timedelta(seconds=184), s)[0]['verdict'] == 'approve'
+    assert running_rows([run], s.tasks(), NOW+dt.timedelta(seconds=189), s) == []
     events = with_run_records([], [run])
     assert {e['kind'] for e in events} == {'dispatch', 'run_finished'}
     assert events[-1]['model'] == run.model
@@ -125,6 +128,8 @@ def test_phase_specimens_goals_attention_and_held_reason(garden):
     ph.meta['closed'] = '2026-09-06'
     s.task('DM-002').status = Status.CANCELLED
     assert phase_rows(s, sched)[0]['stage'] == 'fruit'
+    ph.tasks = []
+    assert phase_rows(s, sched)[0]['stage'] == 'seed'
     sched.state.get('_control')['paused_harnesses'] = {'claude': {'reason': 'Quota limit'}}
     sched.state.get('DM-002')['automerge_blocked'] = 'CI pending'
     sched.state.save()

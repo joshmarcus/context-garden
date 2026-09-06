@@ -82,7 +82,12 @@ def test_rank_direction_ties_zero_and_small_samples():
     assert cells["2"]["shade"] == 0
     cells["1"]["value"] = 0
     rank_row(cells)
-    assert cells["0"]["rank"] == "equal"
+    assert cells["0"]["rank"] == "equal" and cells["0"]["shade"] == 0
+    cells["1"]["value"] = 100
+    for c in cells.values():
+        c["direction"] = "higher"
+    rank_row(cells)
+    assert cells["1"]["rank"] == "best" and cells["0"]["rank"] == "worst"
 
 
 def test_period_operator_annotations_rebases_and_throughput():
