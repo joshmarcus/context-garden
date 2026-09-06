@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
-from ..config import executable_diff
+from ..config import Config, apply_executable_signature, executable_diff, executable_signature
 from ..model import Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
@@ -152,6 +152,60 @@ class FenceMixin:
             # Keep the authoritative copy out of the audit file itself: a worker can name and
             # overwrite that file, but cannot make the in-memory dispatch snapshot agree.
             self.state.get(run.task_id)["fence_guard_manifest"] = manifest_text
+            # This is deliberately separate from the broad file-hash manifest: a scheduler
+            # starting after a worker's write needs the dispatch-time executable values before
+            # it can safely parse and use the changed garden.yaml.
+            (run.path / "executable_config.json").write_text(json.dumps(executable_signature(self.cfg.data)))
+
+    @staticmethod
+    def _fence_executable_signature(run: Run) -> dict[str, Any] | None:
+        try:
+            data = json.loads((run.path / "executable_config.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _hold_startup_config_against_fences(self) -> None:
+        """Do not let a fresh process adopt a worker's changed executable config.
+
+        Store normally has no earlier in-memory config on a process restart.  Active fence
+        signatures fill that gap: restore their dispatch-time executable values in memory and
+        record the same hold that the ordinary per-tick reload path uses.
+        """
+        runs = self._fenced_runs_in_flight()
+        current = executable_signature(self.cfg.data)
+        accepted = self.control().get("config_accept_signature")
+        if accepted == current:
+            return
+        mismatched: list[tuple[Run, dict[str, Any], list[str]]] = []
+        for run in runs:
+            saved = self._fence_executable_signature(run)
+            if saved is None:
+                continue
+            keys = sorted(k for k in set(current) | set(saved) if current.get(k) != saved.get(k))
+            if keys:
+                mismatched.append((run, saved, keys))
+        if not mismatched:
+            return
+        # All normal dispatches share one value until an operator accepts a change.  If old
+        # manifests disagree, the oldest one is the conservative value to keep in memory; the
+        # hold still names every active run whose fence disagrees with the disk.
+        baseline = mismatched[0][1]
+        held_data = apply_executable_signature(self.cfg.data, baseline)
+        self.store.config = Config(root=self.cfg.root, data=held_data, sources=self.cfg.sources, env=self.cfg.env)
+        self.cfg = self.store.config
+        keys = sorted({key for _, _, changed in mismatched for key in changed})
+        run_ids = sorted(run.run_id for run, _, _ in mismatched)
+        ctrl = self.control()
+        existing = ctrl.get("config_hold") or {}
+        if sorted(existing.get("keys") or []) != keys or sorted(existing.get("runs") or []) != run_ids:
+            self.events.emit("config_reload_held", "", keys=keys, runs=run_ids)
+            self.log(f"config reload held: {', '.join(keys)} disagrees with run(s) {', '.join(run_ids)}'s dispatch config")
+        ctrl["config_hold"] = {"keys": keys, "runs": run_ids, "since": existing.get("since") or now_iso()}
+        # tick() reloads State at its start so it sees web/CLI actions from another process.
+        # Persist this bootstrap hold now; otherwise that reload would discard the only record
+        # of the trusted startup baseline before the gate gets a chance to inspect it.
+        self.state.save()
 
     def _fence_guard_check(self, task: Task, run: Run | None) -> list[dict[str, Any]]:
         """Compare garden*.yaml and .garden/state.json against the dispatch hashes. A change
@@ -532,10 +586,10 @@ class FenceMixin:
         reverted or not) or `accept_config_reload` marks the change operator-confirmed. Every
         other key (budgets, review settings, observe cadence, ...) still reloads immediately,
         and a change with no fenced run in flight always applies at once, as before CG-242."""
-        if not self.store.config_changed_on_disk():
+        ctrl = self.control()
+        if not self.store.config_changed_on_disk() and not ctrl.get("config_hold"):
             return
         new_cfg = self.store.load_config_from_disk()
-        ctrl = self.control()
         accepted = bool(ctrl.pop("config_hold_accept", False))
         exec_keys = executable_diff(self.cfg.data, new_cfg.data)
         in_flight = self._fenced_runs_in_flight() if exec_keys and not accepted else []
@@ -550,6 +604,8 @@ class FenceMixin:
         changed = self.store.adopt_config(new_cfg)
         self.cfg = self.store.config
         was_held = ctrl.pop("config_hold", None)
+        if accepted:
+            ctrl["config_accept_signature"] = executable_signature(new_cfg.data)
         if changed:
             keys = ", ".join(sorted(changed))
             note = " (operator-confirmed while runs were in flight)" if accepted and was_held else ""

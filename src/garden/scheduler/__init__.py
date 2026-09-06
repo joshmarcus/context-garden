@@ -102,6 +102,10 @@ class Scheduler(
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
+        self.log = log or (lambda msg: None)
+        # A new CLI process has no old Store instance to compare against.  Check active
+        # dispatch manifests before constructing anything that could use garden.yaml.
+        self._hold_startup_config_against_fences()
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
@@ -114,7 +118,6 @@ class Scheduler(
             trusted_bots=[str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
         )
         self._runner_factory = runner_factory
-        self.log = log or (lambda msg: None)
         if upgrader is None:
             from ..upgrade import Upgrader
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,61 @@ def executable_diff(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """The `executable_signature` keys that differ between two raw config mappings, sorted."""
     a, b = executable_signature(old), executable_signature(new)
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+
+
+def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) -> dict[str, Any]:
+    """Return ``data`` with its executable fields restored from ``signature``.
+
+    A fresh scheduler can load garden.yaml after an in-flight worker has changed it.  Its
+    fence records this small, dispatch-time signature, which lets the scheduler retain the
+    current non-executable settings while it holds the unsafe executable values for reap.
+    """
+    out = deepcopy(data)
+
+    def _set(dotted: str, value: Any) -> None:
+        cur: dict[str, Any] = out
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            child = cur.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                cur[part] = child
+            cur = child
+        cur[parts[-1]] = deepcopy(value)
+
+    for key in EXECUTABLE_KEYS:
+        _set(key, signature.get(key))
+
+    products = out.setdefault("products", {})
+    if isinstance(products, dict):
+        commands = signature.get("setup.command") or {}
+        for name, product in products.items():
+            if not isinstance(product, dict):
+                continue
+            setup = product.get("setup")
+            if not isinstance(setup, dict):
+                setup = {}
+                product["setup"] = setup
+            if name in commands:
+                setup["command"] = deepcopy(commands[name])
+            else:
+                setup.pop("command", None)
+
+    harnesses = out.setdefault("harnesses", {})
+    if isinstance(harnesses, dict):
+        saved = signature.get("harnesses") or {}
+        for name in set(harnesses) | set(saved):
+            harness = harnesses.get(name)
+            if not isinstance(harness, dict):
+                harness = {}
+                harnesses[name] = harness
+            prior = saved.get(name) or {}
+            for key in ("bin", "command"):
+                if prior.get(key) is None:
+                    harness.pop(key, None)
+                else:
+                    harness[key] = deepcopy(prior[key])
+    return out
 
 
 DEFAULTS: dict[str, Any] = {

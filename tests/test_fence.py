@@ -475,6 +475,30 @@ def test_config_reload_with_no_runs_in_flight_applies_within_a_tick(sched, garde
     assert sched.cfg.get("notify.command") == "true"
 
 
+def test_fresh_scheduler_holds_a_worker_config_write_before_reap(sched, garden, monkeypatch):
+    """A standalone ``garden tick`` has to recover the trusted dispatch config from the
+    active run's fence manifest; it cannot rely on the prior process's Store cache."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    marker = garden.parent / "notify-fired"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape-config")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_MARKER", str(marker))
+
+    sched.tick()  # dispatches and lets the fake worker write garden.yaml
+    fresh = Scheduler(Store(garden))
+    assert fresh.cfg.get("notify.command") == ""  # safe before its first tick
+
+    fresh.tick()  # gates before reap, then the fence attributes and restores the write
+    assert not marker.exists()
+    assert "notify.command" in fresh.config_hold()["keys"]
+    assert fresh.cfg.get("notify.command") == ""
+
+    fresh.tick()  # the fenced write is now restored, so the pending reload clears
+    assert not fresh.config_hold()
+
+
 def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monkeypatch):
     """`accept_config_reload` (the CLI's `garden config accept`, or the Config page) lets the
     operator vouch for their own garden.yaml edit even while a run dispatched before it is
@@ -498,3 +522,10 @@ def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monk
     assert not sched.config_hold()
     assert sched.cfg.get("notify.command") == "true"
     assert sched.store.task("DM-001").status.value == "running"  # still in flight, untouched
+
+    # The confirmation is durable: a later standalone tick does not turn the same confirmed
+    # operator edit back into a hold merely because the original run remains active.
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    assert Scheduler(Store(garden)).cfg.get("notify.command") == "true"
