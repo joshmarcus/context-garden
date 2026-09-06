@@ -63,6 +63,7 @@ def register(app: FastAPI, site: Site) -> None:
         approve_phases = approve_phase_options(s, t) if t.status.value == "draft" else []
         trial_log = TrialLog(s.config.garden_dir / "trials.jsonl")
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
+        trial_view = _trial_view(st.get("trial"), runs)
 
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
@@ -81,7 +82,7 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
-            prior_trials=prior_trials,
+            prior_trials=prior_trials, trial_view=trial_view,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -143,3 +144,20 @@ def _edit_diff(runs: list[Any]) -> str:
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile="before", tofile="after"))
     return ""
+
+
+def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:
+    """Return the safe, display-ready subset of a task's current trial state."""
+    if not isinstance(trial, dict):
+        return None
+    runs_by_id = {run.run_id: run for run in runs}
+    contenders = []
+    for contender in trial.get("contenders") or []:
+        if not isinstance(contender, dict):
+            continue
+        row = dict(contender)
+        run = runs_by_id.get(contender.get("run_id"))
+        row["elapsed"] = run.elapsed_minutes() if run else None
+        contenders.append(row)
+    return {"status": trial.get("status", ""), "winner": trial.get("winner"), "kept": trial.get("kept"),
+            "contenders": contenders}

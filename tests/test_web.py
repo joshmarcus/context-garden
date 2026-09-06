@@ -706,6 +706,45 @@ def test_trial_env_failed_contender_renders_on_task_and_trials_pages(sched, fake
     assert trials_page.status_code == 200 and "env failed" in trials_page.text
 
 
+def test_task_page_renders_mid_trial_and_after_trial_again(sched, fake_github):
+    """CG-317: an active or reset trial has no verdict and may have partial contenders."""
+    from garden.model import Status
+
+    task = sched.store.task("DM-001")
+    sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    state = sched.state.get("DM-001")
+    trial = state["trial"]
+    trial.pop("winner", None)
+    trial["contenders"][0].pop("score", None)
+    trial["contenders"][0].pop("pr", None)
+    trial["contenders"][0].pop("cost", None)
+    trial["contenders"][0]["status"] = "running"
+    trial["contenders"][1].pop("score", None)
+    trial["contenders"][1].pop("pr", None)
+    trial["contenders"][1].pop("cost", None)
+    trial["contenders"][1]["status"] = "failed"
+    sched.state.save()
+
+    c = TestClient(create_app(sched.store, watch=False))
+    page = c.get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "no verdict yet" in page.text
+    assert "running" in page.text and "failed" in page.text and "elapsed" in page.text
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/1"
+    sched.store.save(task)
+    trial["status"] = "done"
+    trial["winner"] = "claude:sonnet"
+    sched.state.save()
+    sched.start_trial(task, ["claude:sonnet", "claude:opus"], again=True)
+
+    page = c.get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "no verdict yet" in page.text
+
+
 def test_task_page_shows_trial_history_with_the_closed_pr_marked(sched, fake_github, monkeypatch):
     """CG-232: once a trial concludes, its record stays visible on the task page (beside a
     later --again's) with the losing contender's now-closed PR marked, not shown as if still
