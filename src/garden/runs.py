@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import signal
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -142,6 +143,36 @@ class Run:
                     os.kill(self.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Stop this worker and confirm it has exited before its worktree is reused.
+
+        SIGTERM gives a harness a brief chance to leave its transcript intact.  A worker that
+        ignores it is force-killed; failure to observe its death is deliberately reported to the
+        caller rather than allowing two processes to edit one worktree.
+        """
+        if self.pid is None or self.pid == os.getpid():
+            return False  # No safely identifiable process to terminate.
+        self.kill()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pid_alive(self.pid):
+                return True
+            time.sleep(0.05)
+        if self.pid and _pid_alive(self.pid):
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pid_alive(self.pid):
+                return True
+            time.sleep(0.05)
+        return not _pid_alive(self.pid)
 
     def stdout_text(self) -> str:
         p = self.path / "stdout.json"
@@ -272,7 +303,20 @@ class RunStore:
         return out
 
     def active(self) -> list[Run]:
-        return [r for r in self.all_runs() if r.status == "running"]
+        # Do not materialise every completed Run just to find the handful in flight. Run
+        # history is intentionally durable and can contain thousands of records.
+        if not self.dir.exists():
+            return []
+        active: list[Run] = []
+        for run_json in self.dir.glob("*/*/run.json"):
+            try:
+                data = json.loads(run_json.read_text())
+                if data.get("status") == "running":
+                    active.append(Run(**data))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        active.sort(key=lambda r: (r.started_at, r.run_id))
+        return active
 
     def usage_for(self, task_id: str) -> dict[str, Any]:
         """Tokens and cost across every run of one task, split by run mode."""

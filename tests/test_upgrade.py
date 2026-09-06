@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 
 import yaml
 
@@ -189,6 +190,34 @@ def test_doctor_failure_blocks_restart(garden, fake_github):
     assert sched.upgrade_available()["sha"] == new_sha
 
 
+def test_pin_waits_for_an_inflight_controller_tick_then_restarts_controller(garden, fake_github, monkeypatch):
+    """The pin CLI only records a request; the process holding tick.lock installs it."""
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    up.after_install = new_sha
+    entered = threading.Event()
+    release = threading.Event()
+
+    def held_tick(_rep, _dispatch):
+        entered.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(sched, "_tick_body", held_tick)
+    controller = threading.Thread(target=sched.tick)
+    controller.start()
+    assert entered.wait(2)
+
+    requester = Scheduler(Store(garden), github=fake_github, upgrader=up)
+    assert requester.pin(new_sha, str(garden.parent / "repo"), product="demo")["pending"]
+    assert up.installs == []
+    assert restart.called == 0
+
+    release.set()
+    controller.join(2)
+    assert not controller.is_alive()
+    assert up.installs == [(str(garden.parent / "repo"), new_sha)]
+    assert restart.called == 1
+
+
 # ---- auto upgrade on an idle tick ------------------------------------------
 def test_auto_upgrade_on_idle_tick(garden, fake_github):
     sched, up, restart, new_sha = _armed(garden, fake_github, upgrade="auto", auto_dispatch=False)
@@ -205,3 +234,20 @@ def test_no_auto_upgrade_when_manual(garden, fake_github):
     sched.tick()
     assert restart.called == 0
     assert sched.upgrade_available()["sha"] == new_sha
+
+
+def test_pin_defers_install_until_active_runs_drain(garden, fake_github):
+    from garden.scheduler import TickReport
+
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    up.after_install = new_sha
+    sched.pin(new_sha, str(garden.parent / "repo"), product="demo")
+    active = sched.runs.new_run("DM-001", "local")
+    sched.maybe_auto_upgrade(TickReport())
+    assert up.installs == []
+    assert restart.called == 0
+    assert sched.upgrade_available()["pinned"]
+    active.status = "done"
+    active.save()
+    sched.maybe_auto_upgrade(TickReport())
+    assert restart.called == 1

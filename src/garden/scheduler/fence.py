@@ -87,10 +87,13 @@ class FenceMixin:
         out.append((rel, state_path, False))
         runs = self.cfg.garden_dir / "runs"
         current = run.path.resolve() if run is not None else None
-        if runs.exists():
-            for path in sorted(p for p in runs.rglob("*") if p.is_file()):
-                if current is not None and current in path.resolve().parents:
-                    continue
+        # A run in flight is mutable evidence used by another concurrent reap, so protect
+        # it. Completed run directories are already the durable audit/accounting record;
+        # copying all of them into every new fence made one manifest grow with all history.
+        active_dirs = [active.path for active in self.active_runs()
+                       if current is None or active.path.resolve() != current]
+        for active_dir in active_dirs:
+            for path in sorted(p for p in active_dir.rglob("*") if p.is_file()):
                 # Snapshots of a sibling's snapshots grow recursively if treated as ordinary
                 # run output. Its manifest remains guarded; its private copy is an
                 # implementation detail of that earlier manifest.
@@ -109,26 +112,16 @@ class FenceMixin:
         root = self.store.root
         guard_dir = run.path / "fence_guard"
         cache_dir = self.cfg.garden_dir / "fence-guard-cache"
-        cache = self.state.get("_fence_guard_cache")
         for rel, path, is_config in self._fence_guard_targets(run):
             try:
                 stat = path.stat() if path.exists() else None
             except OSError:
                 continue
-            cached = cache.get(str(path), {})
-            if (stat is not None and cached.get("mtime_ns") == stat.st_mtime_ns
-                    and cached.get("size") == stat.st_size):
-                sha = str(cached["sha"])
-                data = None
-            else:
-                try:
-                    data = path.read_bytes() if stat is not None else b""
-                except OSError:
-                    continue
-                sha = hashlib.sha256(data).hexdigest()
-                if rel.startswith(".garden/runs/"):
-                    cache[str(path)] = {"mtime_ns": stat.st_mtime_ns if stat else None,
-                                        "size": stat.st_size if stat else 0, "sha": sha}
+            try:
+                data = path.read_bytes() if stat is not None else b""
+            except OSError:
+                continue
+            sha = hashlib.sha256(data).hexdigest()
             snap = ""
             if rel.startswith(".garden/runs/"):
                 cache_file = cache_dir / sha
@@ -149,9 +142,18 @@ class FenceMixin:
         if manifest:
             manifest_text = json.dumps(manifest)
             (run.path / "fence_guard.json").write_text(manifest_text)
-            # Keep the authoritative copy out of the audit file itself: a worker can name and
-            # overwrite that file, but cannot make the in-memory dispatch snapshot agree.
-            self.state.get(run.task_id)["fence_guard_manifest"] = manifest_text
+            # Keep a content-addressed authoritative copy outside state.json. The compact
+            # digest in state detects tampering while routine CLI/status loads do not parse a
+            # second copy of every (formerly history-sized) manifest.
+            manifest_sha = hashlib.sha256(manifest_text.encode()).hexdigest()
+            manifest_store = self.cfg.garden_dir / "fence-guard-manifests"
+            manifest_store.mkdir(parents=True, exist_ok=True)
+            manifest_copy = manifest_store / f"{manifest_sha}.json"
+            if not manifest_copy.exists():
+                manifest_copy.write_text(manifest_text)
+            self.state.get(run.task_id)["fence_guard_manifest"] = {
+                "run": run.run_id, "sha256": manifest_sha,
+            }
             # This is deliberately separate from the broad file-hash manifest: a scheduler
             # starting after a worker's write needs the dispatch-time executable values before
             # it can safely parse and use the changed garden.yaml.
@@ -216,22 +218,46 @@ class FenceMixin:
         if run is None:
             return []
         manifest_path = run.path / "fence_guard.json"
-        if not manifest_path.exists():
-            return []
+        saved = self.state.get(task.id).get("fence_guard_manifest")
+        if saved is None and not manifest_path.exists():
+            return []  # Older/unfenced runs have neither a reference nor an audit copy.
         try:
-            saved_manifest = str(self.state.get(task.id).get("fence_guard_manifest") or "")
-            manifest_text = saved_manifest or manifest_path.read_text()
+            if isinstance(saved, str):  # pre-CG-344 state, retained for an in-flight run
+                manifest_text = saved
+                manifest_sha = hashlib.sha256(saved.encode()).hexdigest()
+            elif isinstance(saved, dict) and saved.get("run") == run.run_id:
+                manifest_sha = str(saved.get("sha256") or "")
+                if len(manifest_sha) != 64 or any(c not in "0123456789abcdef" for c in manifest_sha):
+                    raise ValueError("invalid trusted manifest digest")
+                copy_path = self.cfg.garden_dir / "fence-guard-manifests" / f"{manifest_sha}.json"
+                manifest_text = copy_path.read_text()
+                if hashlib.sha256(manifest_text.encode()).hexdigest() != manifest_sha:
+                    raise ValueError("trusted manifest digest mismatch")
+            else:
+                raise ValueError("trusted manifest reference missing or belongs to another run")
             manifest = json.loads(manifest_text)
-        except (OSError, json.JSONDecodeError):
-            return []
+            if not isinstance(manifest, list) or any(
+                not isinstance(entry, dict) or not {"abs", "rel"} <= entry.keys() for entry in manifest
+            ):
+                raise ValueError("invalid trusted manifest structure")
+        except (OSError, ValueError) as exc:
+            # The audit copy is worker-writable: never use it as restoration authority.
+            # Without a trusted baseline we cannot safely restore or accept this run.
+            return [{"label": "the live garden", "path": str(manifest_path), "commits": [],
+                     "files": [], "foreign": [], "reverted": False,
+                     "integrity_error": f"fence manifest unavailable or invalid: {exc}"}]
         transcript = run.stdout_text()
         worktree = self.worktree_for(task)
         root = self.store.root
         violations: list[dict[str, Any]] = []
-        if saved_manifest and manifest_path.read_text() != saved_manifest:
+        try:
+            audit_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        except OSError:
+            audit_sha = ""
+        if audit_sha != manifest_sha:
             rel = str(manifest_path.relative_to(root))
             if self._worker_named(transcript, root, rel, worktree):
-                manifest_path.write_text(saved_manifest)
+                manifest_path.write_text(manifest_text)
                 violations.append({"label": "the live garden", "path": str(manifest_path), "commits": [],
                                    "files": [rel], "foreign": [], "reverted": True})
         for entry in manifest:
@@ -272,6 +298,48 @@ class FenceMixin:
             violations.append({"label": "the live garden", "path": str(path), "commits": [],
                                "files": [rel], "foreign": [], "reverted": reverted})
         return violations
+
+    def _migrate_fence_bookkeeping(self) -> None:
+        """Compact legacy manifests and discard fence data for runs no longer active.
+
+        State.save performs the migration under its normal lock/merge protocol, so a CLI
+        startup cannot rewrite live state concurrently with a tick.
+        """
+        active = {(r.task_id, r.run_id): r for r in self.runs.active()}
+        tasks = self.store.tasks()
+        for task_id, task_state in list(self.state.data.items()):
+            if not isinstance(task_state, dict) or task_id.startswith("_"):
+                continue
+            saved = task_state.get("fence_guard_manifest")
+            matching = next((r for (tid, _), r in active.items() if tid == task_id), None)
+            if matching is None and task_id in tasks and tasks[task_id].status == Status.RUNNING:
+                # A terminal run may still need finalization after an interrupted reap.
+                matching = self.runs.latest(task_id)
+            if matching is None:
+                if "fence_guard_manifest" in task_state:
+                    task_state.pop("fence_guard_manifest")
+                if "fence" in task_state:
+                    task_state.pop("fence")
+            elif isinstance(saved, str):
+                sha = hashlib.sha256(saved.encode()).hexdigest()
+                store = self.cfg.garden_dir / "fence-guard-manifests"
+                store.mkdir(parents=True, exist_ok=True)
+                copy_path = store / f"{sha}.json"
+                if not copy_path.exists():
+                    copy_path.write_text(saved)
+                task_state["fence_guard_manifest"] = {"run": matching.run_id, "sha256": sha}
+        legacy_cache = self.state.data.get("_fence_guard_cache")
+        if isinstance(legacy_cache, dict):
+            for key in list(legacy_cache):
+                legacy_cache.pop(key, None)
+        self.state.save()
+
+    def _release_fence_bookkeeping(self, task: Task) -> None:
+        st = self.state.get(task.id)
+        # Keep the trusted reference through the task transition: a crash after this
+        # check but before push/finalization must be able to check the run again.
+        # The next migration releases it once neither run nor task is in flight.
+        st.pop("fence", None)
 
     # ---- the git-internals guard (CG-239) ----------------------------------
     def _git_guard_targets(self, task: Task) -> list[tuple[str, Path]]:
@@ -536,7 +604,11 @@ class FenceMixin:
                 bits.append("also changed (left in place, not attributed to the worker): "
                             + ", ".join(v["foreign"]))
             parts.append(f"{v['label']}: " + " and ".join(bits) + f" ({v['path']})")
+        integrity_errors = [v["integrity_error"] for v in violations if v.get("integrity_error")]
         card = "worker wrote outside its worktree; the writes it made were reverted. Touched " + " | ".join(parts)
+        if integrity_errors:
+            card = ("Cannot verify this run's worktree fence; inspect protected paths before retrying. "
+                    "Restoration is unverified: " + "; ".join(integrity_errors))
         if kept_seen:
             card += " — some paths the scheduler owns (e.g. .garden/state.json) could not be reverted; inspect them."
         if foreign_seen:
@@ -545,7 +617,8 @@ class FenceMixin:
         self.events.emit("fence_violation", task.id, run=run.run_id, repos=[v["path"] for v in violations],
                          commits=sum(len(v["commits"]) for v in violations), files=sum(len(v["files"]) for v in violations))
         run.status = "failed"
-        run.error = (run.error + " | " if run.error else "") + "wrote outside its worktree (reverted)"
+        error = "fence integrity could not be verified" if integrity_errors else "wrote outside its worktree (reverted)"
+        run.error = (run.error + " | " if run.error else "") + error
         run.save()
         self._transition(task, Status.FAILED, f"fenced: {card}"[:400], needs_human=True)
         rep.transitions.append(f"{task.id} -> failed (wrote outside worktree)")

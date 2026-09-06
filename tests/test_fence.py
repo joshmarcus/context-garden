@@ -253,6 +253,61 @@ def test_fence_reuses_sibling_output_backup_across_dispatches(sched):
     assert cache_file.stat().st_mtime_ns == before.st_mtime_ns
 
 
+def test_fence_manifest_size_does_not_scale_with_completed_run_history(sched):
+    task = sched.store.task("DM-001")
+    baseline = _run_naming(sched, "DM-001", "nothing")
+    sched._fence_snapshot(task, baseline)
+    baseline_size = (baseline.path / "fence_guard.json").stat().st_size
+    baseline.status = "done"
+    baseline.save()
+
+    for n in range(40):
+        old = sched.runs.new_run(f"OLD-{n:03}", "local")
+        (old.path / "stdout.json").write_text("historical audit output\n" * 500)
+        old.status = "done"
+        old.save()
+
+    after_history = _run_naming(sched, "DM-001", "nothing")
+    sched._fence_snapshot(task, after_history)
+
+    assert (after_history.path / "fence_guard.json").stat().st_size == baseline_size
+    ref = sched.state.get(task.id)["fence_guard_manifest"]
+    assert ref == {"run": after_history.run_id, "sha256": ref["sha256"]}
+    assert len(json.dumps(ref)) < 160
+
+
+def test_fence_manifest_still_protects_a_concurrently_active_run(sched):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_text("active evidence before\n")
+    run = _run_naming(sched, "DM-001", str(output))
+
+    sched._fence_snapshot(task, run)
+    output.write_text("worker redirect\n")
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations
+    assert output.read_text() == "active evidence before\n"
+
+
+def test_legacy_completed_fence_state_is_compacted_under_state_save_lock(sched):
+    huge = json.dumps([{"rel": f"old/{n}", "sha": "x" * 64} for n in range(2_000)])
+    sched.state.get("OLD-001")["fence_guard_manifest"] = huge
+    sched.state.get("OLD-001")["fence"] = {"repo": {"status": huge}}
+    sched.state.get("_fence_guard_cache")["old/path"] = {"sha": "x" * 64}
+    sched.state.save()
+    before = sched.state.path.stat().st_size
+
+    sched._migrate_fence_bookkeeping()
+    saved = json.loads(sched.state.path.read_text())
+
+    assert "fence_guard_manifest" not in saved["OLD-001"]
+    assert "fence" not in saved["OLD-001"]
+    assert saved["_fence_guard_cache"] == {}
+    assert sched.state.path.stat().st_size < before / 100
+
+
 def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):
     """A well-behaved worker leaves garden.yaml and state.json alone: no false positive."""
     _init_repo(garden)
@@ -529,3 +584,65 @@ def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monk
     from garden.store import Store
 
     assert Scheduler(Store(garden)).cfg.get("notify.command") == "true"
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt_both", "bad_digest", "wrong_run"])
+def test_untrusted_fence_manifest_fails_run_for_inspection(sched, damage):
+    sched.tick()
+    task = sched.store.task("DM-001")
+    run = sched.runs.latest(task.id)
+    ref = sched.state.get(task.id)["fence_guard_manifest"]
+    trusted = sched.cfg.garden_dir / "fence-guard-manifests" / f"{ref['sha256']}.json"
+    if damage == "missing":
+        trusted.unlink()
+        (run.path / "fence_guard.json").unlink()
+    elif damage == "corrupt_both":
+        trusted.write_text("[]")
+        (run.path / "fence_guard.json").write_text("[]")
+    elif damage == "bad_digest":
+        ref["sha256"] = "../untrusted"
+    else:
+        ref["run"] = "different-run"
+    sched.state.save()
+
+    sched.tick()
+
+    assert sched.store.task(task.id).status.value == "failed"
+    assert not sched.github.created
+    card = _attention_card(sched, task.id)
+    assert "Cannot verify" in card and "inspect protected paths" in card
+    assert "writes it made were reverted" not in card
+
+
+def test_deleted_audit_manifest_does_not_skip_protected_file_restoration(sched):
+    task = sched.store.task("DM-001")
+    config = sched.store.root / "garden.yaml"
+    before = config.read_text()
+    run = _run_naming(sched, task.id, str(config))
+    sched._fence_snapshot(task, run)
+    (run.path / "fence_guard.json").unlink()
+    config.write_text("worker corruption")
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert any(v["path"] == str(config) and v["reverted"] for v in violations)
+    assert config.read_text() == before
+
+
+def test_fence_migration_preserves_interleaved_state_writer(sched):
+    from garden.scheduler import State
+
+    task = sched.store.task("DM-001")
+    run = _run_naming(sched, task.id, "nothing")
+    sched._fence_snapshot(task, run)
+    sched.state.get(task.id)["fence_guard_manifest"] = (run.path / "fence_guard.json").read_text()
+    sched.state.save()
+    other = State(sched.state.path)
+    other.get(task.id)["operator_note"] = "keep concurrent update"
+    other.save()
+
+    sched._migrate_fence_bookkeeping()
+
+    saved = State(sched.state.path).get(task.id)
+    assert saved["operator_note"] == "keep concurrent update"
+    assert saved["fence_guard_manifest"]["run"] == run.run_id

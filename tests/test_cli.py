@@ -660,6 +660,48 @@ def test_help_groups_commands_into_panels():
     # commands read as named groups, not one flat list (CG-156)
     for panel in ("Setting up", "Seeing the board", "Needs you", "Running the loop", "Diagnostics"):
         assert panel in r.output, panel
+    assert "redispatch" in r.output
+    assert "pin" in r.output
+
+
+def test_pin_waits_for_tick_before_restart(garden, monkeypatch):
+    """Pin queues after its canary; the controller owns installation and restart."""
+    from types import SimpleNamespace
+
+    from garden import canary
+    from garden.cli import diagnostics
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    order: list[str] = []
+    sched = Scheduler(Store(garden))
+    monkeypatch.setattr(diagnostics, "_scheduler", lambda store: sched)
+    monkeypatch.setattr(canary, "run_canary", lambda *args, **kwargs: (
+        order.append("canary") or SimpleNamespace(ok=True, summary=lambda: "canary: every check passed")))
+
+    result = run(garden, "pin", "deadbeef", "--url", str(garden.parent / "repo"))
+
+    assert result.exit_code == 0, result.output
+    assert order == ["canary"]
+    assert sched.upgrade_available()["pinned"] is True
+
+
+def test_pin_refuses_to_install_when_canary_fails(garden, monkeypatch):
+    """A failed canary leaves the candidate out of the installer and scheduler."""
+    from types import SimpleNamespace
+
+    from garden import canary
+    from garden.cli import diagnostics
+
+    monkeypatch.setattr(canary, "run_canary", lambda *args, **kwargs: SimpleNamespace(
+        ok=False, summary=lambda: "canary: FAILED"))
+    monkeypatch.setattr(diagnostics, "_scheduler", lambda store: (_ for _ in ()).throw(
+        AssertionError("pin must not reach the scheduler after a failed canary")))
+
+    result = run(garden, "pin", "deadbeef", "--url", str(garden.parent / "repo"))
+
+    assert result.exit_code == 1
+    assert "canary: FAILED" in result.output
 
 
 def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):
