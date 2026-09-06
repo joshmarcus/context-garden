@@ -84,6 +84,7 @@ class Run:
     mode: str = "work"  # work | revise | resume | trial | rebase | review | persona | compare | edit | check
     harness: str = ""
     model: str = ""
+    pool_member: str = ""  # configured harness:model member selected from a tier/review pool
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
     claimed_at: str = ""  # pull-based remote runner lease

@@ -178,6 +178,17 @@ review:
 github:
   draft_pr: true
   automerge: false
+  # Tier pools may spread work across harness/model members.
+models:
+  medium:
+    - {harness: claude, model: claude-sonnet-5, weight: 2}
+    - {harness: codex, model: gpt-5.6-terra, weight: 1}
+dispatch: {spread: quota_aware}   # round_robin | weighted | quota_aware
+harnesses:
+  claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
+  codex:  {models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}}
+checks:
+  pre_pr: [{name: tests, command: "pytest -q -x"}]
 ```
 
 These are suggested first-run settings, not package defaults: planning and blocking discovered work otherwise default to automatic approval. `--draft` overrides that behavior for one planning call. A phase budget is optional: `garden budget widget/phase-01 50` pauses new dispatch at $50; it does not cancel work already running.
@@ -218,6 +229,7 @@ garden metrics widget/phase-01
 ```
 
 Run commands from your garden directory with the installed environment active. Replace `WID-003` and `widget/phase-01` with your task and phase. `garden watch` runs the scheduler on its own; `garden observe --follow` follows progress alongside an existing controller. `garden --help` lists the command groups.
+Difficulty tiers route each task to a model, so cost follows difficulty. A top-level tier can instead be a pool of harness/model members: `round_robin` alternates, `weighted` repeats members by weight, and the default `quota_aware` behavior uses those weights while skipping a harness paused after a quota error. A task's `harness:` or `model:` remains a pin. `review.pool` accepts the same member list for alternating review accounts, and `garden trial -c tier:medium` expands a tier pool into contenders. `garden.<GARDEN_ENV>.yaml` and a gitignored `garden.local.yaml` layer on top for a work or per-machine setting; [examples/garden.work.yaml](examples/garden.work.yaml) shows ssh workers, a Jenkins log analyser and a product whose dependencies and tests are not Python.
 
 The [CLI guide](docs/cli.md) walks through planning and approval, following runs, answering workers, reviewing PRs, recovering tasks, and exporting JSON for scripts.
 
