@@ -26,21 +26,22 @@ products:
     setup:
       worker_push: true
       test: python3 scripts/check_ci.py
-      lint: .venv/bin/ruff check src tests
+      lint: .venv/bin/ruff check src tests scripts
       env:
         GH_CONFIG_DIR: /path/to/explicitly-authorized-gh-config
 checks:
   pre_pr:
     - name: lint
-      command: .venv/bin/ruff check src tests
+      command: .venv/bin/ruff check src tests scripts
 ```
 
 The explicit pre-PR list avoids repeating the full suite locally after the worker has
 validated its commit remotely. Keep full PR CI required by the merge gate; the worker's
 claim alone must not authorize a merge. This repository-specific setup leaves base probes
 and scratch-merge checks focused on local lint, while GitHub tests PR integration.
-Existing UI evidence checks still apply. Gardens with multiple products should define
-appropriate product-specific check overrides rather than copy this global example.
+Existing UI evidence checks still apply. The explicit pre-PR list is garden-wide: do not
+copy this example into a multi-product garden without accounting for every product's
+local checks. Opted-in products cannot automerge while the PR has no CI result.
 
 `worker_push` is a brief permission, not a new credential or sandbox enforcement layer.
 Provide a repository-scoped GitHub credential where available. Workers retain their private
