@@ -10,9 +10,9 @@ this process instead of spawning it. By the time `Scheduler.dispatch()` returns,
 has finished and the next `tick()` reaps it; nothing sleeps and nothing is left running.
 
 Records look exactly like a local run's (`run.runner == "local"`), so reap, the run pages
-and the CLI see no difference. The one thing a process had that this does not is a pid:
-`run.pid` stays None, and a `stall` worker is simply a run with no `exit_code`, which is
-what the idle and timeout checks look for anyway.
+and the CLI see no difference. The current test process stands in for the worker pid, and
+a `stall` worker is simply a run with no `exit_code`, which is what the idle and timeout
+checks look for anyway.
 
 The `in_process_workers` autouse fixture in tests/conftest.py swaps this class into the
 runner registry under `local` for every test. Tests of the real local runner's launch
@@ -22,6 +22,7 @@ mechanics construct `LocalRunner` directly and stub `subprocess.Popen`.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 from collections.abc import Callable, Mapping
@@ -53,7 +54,7 @@ class InProcessRunner(LocalRunner):
         argv = self.harness_argv(run, worktree, d / "final.md")
         # What the shell wrapper records for a real run: the resolved command line.
         (d / "command.txt").write_text(" ".join(shlex.quote(c) for c in argv) + "\n")
-        run.pid = None
+        run.pid = os.getpid()
         run.harness = self.harness.name
         run.save()
         # The shell redirects create both files before the harness prints anything.
@@ -88,7 +89,7 @@ class InProcessRunner(LocalRunner):
         (d / "checks_input.json").write_text(json.dumps(payload))
         (d / "stdout.json").write_text("")
         (d / "stderr.log").write_text("")
-        run.pid = None
+        run.pid = os.getpid()
         run.save()
         results = run_check_job(payload)
         (d / "checks.json").write_text(json.dumps(results))

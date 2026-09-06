@@ -335,6 +335,15 @@ def test_running_card_shows_idle_time(sched, monkeypatch):
     assert row["idle"] is not None and row["idle"] >= 5
 
 
+def test_running_card_omits_a_dead_run(sched):
+    from garden.inbox import running_now
+
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.pid = 999999
+    run.save()
+    assert all(r["task"] != "DM-001" for r in running_now(sched.store))
+
+
 def test_no_github_still_pushes(sched, fake_github):
     fake_github.available = False
     sched.tick()
