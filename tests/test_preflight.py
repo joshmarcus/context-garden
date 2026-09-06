@@ -51,9 +51,29 @@ def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
                         max_diff_chars=1000, criteria_snapshot=frozen,
                         verified=[{"criterion": frozen[0], "evidence": "test_original"}])
     assert "Criteria frozen for this dispatch" in text
+    assert "## Review pre-flight" in text
+    assert "Lint is clean" in text
     assert frozen[0] in text
     assert "## Criteria changed after dispatch" in text
     assert "The later criterion is met." in text
+
+
+def test_static_assets_are_ui_changes():
+    from garden.scheduler.checkruns import _is_ui_path
+
+    assert _is_ui_path("static/site.js")
+
+
+def test_requeued_review_keeps_the_author_preflight(sched):
+    sched.tick()
+    sched.tick()  # reap the worker result; the pre-PR check may still be in flight
+    task = sched.store.task("DM-001")
+
+    review_run = sched.dispatch_review(task)
+
+    text = (review_run.path / "brief.md").read_text()
+    assert "## Author's pre-flight" in text
+    assert "A test or stated reason for every acceptance criterion" in text
 
 
 def test_missing_preflight_is_sent_back_before_a_pr(sched, monkeypatch):

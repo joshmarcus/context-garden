@@ -424,6 +424,19 @@ class ReapMixin:
                     return v
         return None
 
+    def _last_worker_preflight(self, task: Task) -> list[dict[str, Any]] | None:
+        """The most recent complete pre-flight, for reviews re-queued without their worker run.
+
+        A poll or restart can dispatch a review from the PR alone. Keep the same author
+        checklist visible in that path as in the normal work-run handoff.
+        """
+        for r in reversed(self.runs.runs_for(task.id)):
+            if r.mode in ("work", "revise", "resume") and isinstance(r.result, dict):
+                pre_flight = r.result.get("pre_flight")
+                if isinstance(pre_flight, list):
+                    return pre_flight
+        return None
+
     def _reprobe_base_broken(self, task: Task, rep: TickReport) -> bool:
         """A task parked with the `base_broken` stop re-probes its base every tick and continues
         by itself once the base goes green: compare the base branch's tip with the commit that was

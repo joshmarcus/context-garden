@@ -32,7 +32,7 @@ _EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 def _is_ui_path(path: str) -> bool:
     """Files whose rendered result must be inspected before a PR opens."""
-    return (path.startswith(("src/garden/web/", "templates/")) or "/templates/" in path
+    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
             or path.endswith((".css", ".scss")))
 
 
