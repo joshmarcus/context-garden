@@ -207,7 +207,7 @@ class ReviewMixin:
                     else:
                         rep.dispatched.append(f"{task.id}(check:interaction_replay)")
                 else:
-                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
+                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")), member=member)
                     if item.get("required"):
                         evidence[f"persona:{item['name']}"] = "running"
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
@@ -809,9 +809,9 @@ class ReviewMixin:
             run.model = ladder_model
         elif member is not None and "model" in member:
             run.model = str(member["model"])
-        run.pool_member = str((member or {}).get("label") or "")
         elif runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
+        run.pool_member = str((member or {}).get("label") or "")
         if ladder_model and writer:
             run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
                                      "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
