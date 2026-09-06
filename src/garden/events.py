@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
+from .outcomes import difficulty_by_model
 
 
 class Event(dict):
@@ -231,7 +232,7 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
+def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = "", until: str = "") -> dict[str, Any]:
     """Per-task and per-difficulty metrics from the event stream.
 
     tasks: id -> object with .difficulty / .status / .key (Task) — used for grouping.
@@ -411,149 +412,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     }
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "rebase": rebase,
-            "by_difficulty_model": difficulty_by_model(events, tasks)}
-
-
-# The difficulty-by-model tables (the owner's ask, 2026-09-06 02:30Z), in the order they are
-# shown: the phase's two definition-of-done numbers first. `better` says which end of the scale
-# is the good one; `n_unit` says what a cell's n counts, so a caption can say it.
-DIFFICULTY_MODEL_METRICS: tuple[tuple[str, str, str, str, str], ...] = (
-    ("cost_per_accepted", "cost per accepted task", "usd", "low", "accepted tasks"),
-    ("first_pass", "first-pass approval", "pct", "high", "tasks first reviewed"),
-    ("work_run_cost", "work-run cost", "usd", "low", "work runs"),
-    ("revise_rounds", "revise rounds", "rounds", "low", "accepted tasks"),
-    ("lead_time", "median lead time", "hours", "low", "accepted tasks"),
-)
-DIFFICULTIES = ("easy", "medium", "hard")
-WORK_MODES = ("work", "revise", "resume", "trial")  # the runs that write a task's code: what a model is credited for
-THIN_SAMPLE = 3  # a cell with fewer samples is shown faint and never marked best or worst
-
-
-def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
-    """The model credited for a task at the moment of an event: the model of the task's latest
-    work-mode run finished at or before it (`work_runs` is [(finished_at, model)] in order)."""
-    model = ""
-    for finished, m in work_runs:
-        if finished > at:
-            break
-        model = m
-    return model
-
-
-def _rank_row(cells: dict[str, dict[str, Any]], better: str) -> None:
-    """Place a row's cells on a scale from its best value (rank 0) to its worst (rank 1). The
-    scale is set by the solid cells (n at or above THIN_SAMPLE); a comparison needs two of them.
-    A thin cell is placed on that scale, clamped, but is never the best or the worst, so a
-    single lucky run cannot read as a verdict; the page shows it faint and marked."""
-    solid = [c for c in cells.values() if not c["thin"]]
-    if len(solid) < 2:
-        return
-    lo = min(c["value"] for c in solid)
-    hi = max(c["value"] for c in solid)
-    for c in cells.values():
-        if hi == lo:
-            c["rank"] = 0.0
-        else:
-            k = (c["value"] - lo) / (hi - lo)
-            c["rank"] = round(min(1.0, max(0.0, k if better == "low" else 1.0 - k)), 3)
-    pick_best, pick_worst = (min, max) if better == "low" else (max, min)
-    pick_best(solid, key=lambda c: c["value"])["best"] = True
-    pick_worst(solid, key=lambda c: c["value"])["worst"] = True
-
-
-def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = "") -> dict[str, Any]:
-    """The difficulty-by-model tables for a window: rows easy, medium, hard; a column per model
-    that did work in the window; each cell a value, its n and its place on the row's scale.
-
-    Every table uses the rule `metrics` uses for its per-difficulty figures (per-task facts
-    from the event stream, grouped by the task's difficulty), with one addition: a task is
-    credited to the model of its latest work-mode run finished at or before the event the
-    metric hangs on, so a task the loop escalated is counted for the model that got it
-    accepted. `since` is an ISO timestamp; the history before it still counts (a task's first
-    review ever, its cost to date), only the crediting event must fall inside the window.
-
-    - cost per accepted task: tasks whose latest `transition` to done is in the window; the
-      task's whole run cost up to that moment (every mode); mean; n = accepted tasks.
-    - first-pass approval: tasks whose first `review` ever is in the window; the share whose
-      verdict is approve; n = tasks first reviewed.
-    - work-run cost: `run_finished` in the window with a work mode and a model; mean cost;
-      n = runs, each credited to its own model.
-    - revise rounds: per accepted task, `dispatch` events with mode revise before its done
-      transition; mean; n = accepted tasks.
-    - median lead time: per accepted task, hours from its first dispatch to its done
-      transition; median; n = accepted tasks.
-
-    A cell is {value, n, thin, rank, best, worst}: `rank` runs from 0 at the row's best value
-    to 1 at its worst (None when the row has fewer than two solid cells), `best` and `worst`
-    mark the two ends among cells with at least THIN_SAMPLE samples, `thin` marks the rest.
-    """
-    import statistics
-
-    work_runs: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    cost_to: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    revises: dict[str, list[str]] = defaultdict(list)
-    first_dispatch: dict[str, str] = {}
-    first_review: dict[str, dict[str, Any]] = {}
-    done_at: dict[str, str] = {}
-    for e in events:
-        t, k, at = str(e.get("task") or ""), e.get("kind"), str(e.get("at") or "")
-        if not t or t not in tasks:
-            continue
-        if k == "run_finished":
-            cost_to[t].append((at, float(e.get("cost_usd") or 0.0)))
-            if e.get("mode") in WORK_MODES and e.get("model"):
-                work_runs[t].append((at, str(e["model"])))
-        elif k == "dispatch":
-            first_dispatch.setdefault(t, at)
-            if e.get("mode") == "revise":
-                revises[t].append(at)
-        elif k == "review":
-            first_review.setdefault(t, e)
-        elif k == "transition" and e.get("to") == "done":
-            done_at[t] = at
-    samples: dict[str, dict[str, dict[str, list[float]]]] = {
-        key: {d: defaultdict(list) for d in DIFFICULTIES} for key, *_ in DIFFICULTY_MODEL_METRICS}
-
-    def add(metric: str, task_id: str, model: str, value: float) -> None:
-        d = getattr(tasks[task_id], "difficulty", "") or "medium"
-        if model and d in samples[metric]:
-            samples[metric][d][model].append(value)
-
-    for t, at in done_at.items():
-        if at < since:
-            continue
-        model = _model_at(work_runs[t], at)
-        add("cost_per_accepted", t, model, sum(c for when, c in cost_to[t] if when <= at))
-        add("revise_rounds", t, model, sum(1 for when in revises[t] if when <= at))
-        if t in first_dispatch:
-            add("lead_time", t, model, (_ts(at) - _ts(first_dispatch[t])).total_seconds() / 3600)
-    for t, e in first_review.items():
-        if e["at"] >= since:
-            add("first_pass", t, _model_at(work_runs[t], e["at"]), 1.0 if e.get("verdict") == "approve" else 0.0)
-    for e in events:
-        if (e.get("kind") == "run_finished" and e.get("mode") in WORK_MODES and e.get("model")
-                and str(e.get("at") or "") >= since and e.get("task") in tasks):
-            add("work_run_cost", str(e["task"]), str(e["model"]), float(e.get("cost_usd") or 0.0))
-
-    weight: dict[str, int] = defaultdict(int)
-    for by_d in samples.values():
-        for cells in by_d.values():
-            for model, vals in cells.items():
-                weight[model] += len(vals)
-    models = sorted(weight, key=lambda m: (-weight[m], m))
-    tables = []
-    for key, label, unit, better, n_unit in DIFFICULTY_MODEL_METRICS:
-        rows: dict[str, dict[str, dict[str, Any]]] = {}
-        for d in DIFFICULTIES:
-            cells = {}
-            for model, vals in samples[key][d].items():
-                value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
-                cells[model] = {"value": round(value, 3), "n": len(vals), "thin": len(vals) < THIN_SAMPLE,
-                                "rank": None, "best": False, "worst": False}
-            _rank_row(cells, better)
-            rows[d] = cells
-        tables.append({"key": key, "label": label, "unit": unit, "better": better, "n_unit": n_unit, "rows": rows})
-    return {"models": models, "metrics": tables, "thin": THIN_SAMPLE}
+            "difficulty_by_model": difficulty_by_model(events, tasks, since, until)}
 
 
 def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
@@ -591,3 +450,41 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
 
 def _ts(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s)
+
+
+def with_run_records(events: list[dict[str, Any]], runs: list[Any]) -> list[dict[str, Any]]:
+    """Fill old event metadata from run records and include not-yet-reaped completions.
+
+    Event timestamps remain authoritative when present. Run identities deduplicate
+    repeated completion events, while records supply dispatched tier/model and costs.
+    This read-side join is shared by the CLI and Now; it never changes the log.
+    """
+    records = {(r.task_id, r.run_id): r for r in runs}
+    out = []
+    seen = set()
+    for event in events:
+        e = dict(event)
+        key = (e.get("task"), e.get("run"))
+        kind = e.get("kind")
+        if kind in ("dispatch", "run_finished") and key[1]:
+            identity = (kind, *key)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            r = records.get(key)
+            if r:
+                for name in ("mode", "harness", "model", "difficulty"):
+                    if not e.get(name):
+                        e[name] = getattr(r, name)
+                if kind == "run_finished" and r.cost_usd is not None:
+                    e["cost_usd"] = r.cost_usd
+        out.append(e)
+    for r in runs:
+        fields = {"task": r.task_id, "run": r.run_id, "mode": r.mode, "harness": r.harness,
+                  "model": r.model, "difficulty": r.difficulty}
+        if r.started_at and ("dispatch", r.task_id, r.run_id) not in seen:
+            out.append({**fields, "kind": "dispatch", "at": r.started_at})
+        if r.finished_at and ("run_finished", r.task_id, r.run_id) not in seen:
+            out.append({**fields, "kind": "run_finished", "at": r.finished_at, "status": r.status,
+                        "cost_usd": r.cost_usd, "usage": r.usage})
+    return out

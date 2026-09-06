@@ -15,6 +15,7 @@ from ..notify import notify
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
+from .selection import worker_candidates
 
 
 class DispatchMixin:
@@ -58,26 +59,8 @@ class DispatchMixin:
 
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
-        max_rev = int(self.cfg.get("max_revisions", 3))
-        # Rebase rounds go first: they are the cheapest work and they unblock a merge. A rebase
-        # round has its own counter and is not bounded by max_revisions.
-        queue: list[tuple[Task, str]] = [
-            (t, "rebase") for t in tasks.values()
-            if t.status == Status.CHANGES_REQUESTED
-            and self.state.get(t.id).get("rebase_pending")
-            and not self.state.get(t.id).get("needs_human")
-        ]
-        queue += [
-            (t, "revise") for t in tasks.values()
-            if t.status == Status.CHANGES_REQUESTED
-            and self.state.get(t.id).get("pending_feedback")
-            and not self.state.get(t.id).get("rebase_pending")
-            and not self.state.get(t.id).get("needs_human")
-            # a conflict/stale-base rebase round is exempt from the revision cap (CG-139)
-            and (self.state.get(t.id).get("pending_feedback_rebase")
-                 or int(self.state.get(t.id).get("revisions", 0)) < max_rev)
-        ]
-        queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
+        queue = worker_candidates(tasks, self.state, int(self.cfg.get("max_revisions", 3)),
+                                  self.stack_enabled, self._edit_pending)
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
         for task, mode in queue:
             ph = phases.get(task.key)
