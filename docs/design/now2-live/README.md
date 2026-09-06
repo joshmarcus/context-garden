@@ -85,3 +85,5 @@ phone table scrolling, motion off and absence of polling requests.
 The focused tests live in `tests/test_now2.py` and `tests/test_now2_metrics.py`.
 On a host with a large shared pytest temporary tree, use an isolated
 `--basetemp=.pytest_cache/cg309-tests` to avoid unrelated directory cleanup.
+Set `GIT_CEILING_DIRECTORIES="$PWD/.pytest_cache"` for that command so a fixture
+without its own repository cannot inherit this checkout's local Git identity.
