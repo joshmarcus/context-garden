@@ -75,16 +75,14 @@ class ReviewMixin:
                 self.log(f"{task.id}: review deferred while a worker run is in flight")
             return
         st.pop("reviews_deferred_for_worker", None)
-        # review and persona rounds share the same `review.harness` config, so one resolved
-        # name gates both kinds; a paused harness defers the round into pending_reviews
-        # instead of failing it, the same way a full review_parallel does (CG-212).
-        review_harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         deferred: list[dict[str, Any]] = []
         for item in wanted:
             if self.review_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            if self.is_harness_paused(review_harness):
+            harness_name = (self._review_route(task, work_run)[0] if item["kind"] == "review"
+                            else self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")))
+            if self.is_harness_paused(harness_name):
                 deferred.append(item)
                 continue
             kind = item["kind"]
@@ -102,6 +100,28 @@ class ReviewMixin:
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
         if deferred:
             self._queue_pending_reviews(st, deferred)
+
+    def _review_route(self, task: Task, work_run: Run | None = None) -> tuple[str, str, Run | None]:
+        """Resolve a PR reviewer's harness and model from the live review ladder.
+
+        The last work or revise run is the PR's author.  A writer absent from the ladder
+        deliberately retains the existing tier/review_model route.
+        """
+        writer = work_run if work_run and work_run.mode in ("work", "revise") else None
+        if writer is None:
+            writer = next((r for r in reversed(self.runs.runs_for(task.id))
+                           if r.mode in ("work", "revise")), None)
+        writer_key = f"{writer.harness}:{writer.model}" if writer and writer.harness and writer.model else ""
+        ladder = [str(entry).strip() for entry in (self.cfg.get("review.ladder") or [])]
+        try:
+            index = ladder.index(writer_key)
+        except ValueError:
+            return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
+        reviewer_key = ladder[min(index + 1, len(ladder) - 1)]
+        harness, separator, model = reviewer_key.partition(":")
+        if not separator or not harness or not model:
+            return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
+        return harness, model, writer
 
     @staticmethod
     def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
@@ -166,7 +186,7 @@ class ReviewMixin:
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
         ensure_open(task)
-        harness_name = str(self.cfg.get("review.harness") or "")
+        harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
@@ -216,8 +236,13 @@ class ReviewMixin:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
         run.model = self.model_for(task, runner, review_difficulty)
-        if runner.harness and runner.harness.cfg.get("review_model"):
+        if ladder_model:
+            run.model = ladder_model
+        elif runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
+        if ladder_model and writer:
+            run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
+                                     "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
         runner.start(run, wt, text)
@@ -225,6 +250,9 @@ class ReviewMixin:
         st["review_run"] = run.run_id
         if count_round:
             st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
+        if ladder_model and writer:
+            task.log(f"reviewed by {run.model}, one above {writer.model}")
+            self.store.save(task)
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
