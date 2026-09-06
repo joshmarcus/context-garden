@@ -241,7 +241,11 @@ class DispatchMixin:
                                   branch_override, worktree_override, model_override)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
-            if run is not None and run.status == "running":
+            # A runner may have launched the worker and then raised while recording
+            # startup details.  In that case the process owns the run and closing the
+            # record here would leave a live worker behind.  The orphan sweep handles
+            # a process that later disappears without an exit marker.
+            if run is not None and run.status == "running" and run.pid is None:
                 self._close_dispatch_failure(task, run, e)
             raise
         finally:
@@ -361,7 +365,8 @@ class DispatchMixin:
         try:
             runner.start(run, wt or self.store.root, text)
         except Exception as e:  # setup/start failed: mark this run failed so it stops
-            self._close_dispatch_failure(task, run, e)
+            if run.pid is None:
+                self._close_dispatch_failure(task, run, e)
             raise
         if not branch_override:
             task.branch = branch

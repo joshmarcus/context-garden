@@ -437,3 +437,22 @@ def test_dispatch_preparation_failure_closes_created_run(sched, monkeypatch):
     finished = [e for e in sched.events.read(task_id=task.id, kinds=["run_finished"])
                 if e.get("run") == run.run_id]
     assert len(finished) == 1 and finished[0]["status"] == "failed"
+
+
+def test_dispatch_start_failure_after_launch_keeps_run_running(sched, monkeypatch):
+    """A runner that launches a process before reporting a startup error still owns the run."""
+    task = sched.store.task("DM-001")
+    runner = sched.runner_for(task)
+
+    def launched_then_failed(run, _worktree, _brief):
+        run.pid = os.getpid()
+        run.save()
+        raise RuntimeError("failed while recording startup")
+
+    monkeypatch.setattr(runner, "start", launched_then_failed)
+    with pytest.raises(RuntimeError, match="failed while recording startup"):
+        sched.dispatch(task, runner=runner)
+
+    run = sched.runs.latest(task.id)
+    assert run is not None
+    assert run.status == "running" and run.pid == os.getpid()

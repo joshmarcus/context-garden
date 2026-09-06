@@ -748,6 +748,13 @@ class ReapMixin:
             process_dead = not process_missing and run.process_finished()
             if no_exit_code and (process_missing or process_dead):
                 task = tasks.get(run.task_id)
+                # A terminal task can still have a worktree that the terminal sweep
+                # protects with this record (for example while a human finishes a
+                # hand-created run record).  Leave that ownership marker in place so
+                # cleanup does not remove caches from beneath the worktree on this tick.
+                # Non-terminal tasks take the immediate failure path below.
+                if task is not None and task.status.terminal and process_missing:
+                    continue
                 reason = "process never started" if process_missing else "process vanished"
                 run.status = "failed"
                 run.finished_at = now_iso()
