@@ -71,4 +71,21 @@
   <p class="muted" style="margin:10px 0 0;font-size:12.5px">grand total: ${{ '%.2f' % series.grand_total.cost_usd }} over {{ series.grand_total.runs }} run{{ 's' if series.grand_total.runs != 1 else '' }}</p>
   {% else %}<div class="empty">No cost recorded yet for this filter.</div>{% endif %}
 </div>
+<div class="panel" style="margin-top:14px">
+  <div class="eyebrow">Accepted-task outcomes</div>
+  <p class="muted" style="margin:8px 0 0;font-size:12.5px">Only tasks observed merged to the base branch count as accepted. Per-run cost and cost per accepted task make a lower run price directly comparable with the bill per merged task.</p>
+  {% for dimension, label in [('by_difficulty', 'tier'), ('by_model', 'model'), ('by_harness', 'harness')] %}
+  {% set rows = outcomes[dimension] %}
+  {% if rows %}
+  <h3 style="margin:16px 0 0;font-size:14px">By {{ label }}</h3>
+  <table style="margin-top:8px">
+    <tr><th>{{ label }}</th><th>runs</th><th>mean/run</th><th>accepted</th><th>cost/accepted</th><th>first-pass approval</th></tr>
+    {% for value, row in rows.items() %}<tr><td class="mono">{{ value }}</td><td>{{ row.runs }}</td>
+      <td>{% if row.mean_cost_usd is not none %}${{ '%.2f' % row.mean_cost_usd }}{% endif %}</td>
+      <td>{{ row.accepted }}</td><td>{% if row.cost_per_accepted_task is not none %}${{ '%.2f' % row.cost_per_accepted_task }}{% endif %}</td>
+      <td>{% if row.first_pass_rate is not none %}{{ (row.first_pass_rate * 100)|round|int }}%{% endif %}</td></tr>{% endfor %}
+  </table>
+  {% endif %}
+  {% endfor %}
+</div>
 {% endblock %}
