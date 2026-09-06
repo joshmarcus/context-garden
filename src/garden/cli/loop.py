@@ -267,6 +267,20 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
 
 
 @app.command(rich_help_panel=PANEL_LOOP)
+def redispatch(task_id: str = typer.Argument(..., help="The task whose current worker to replace")):
+    """Stop a task's active worker and start a fresh run in its existing worktree."""
+    store = _store()
+    t = _task(store, task_id)
+    sched = _scheduler(store)
+    try:
+        run = sched.redispatch(t)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: run {run.run_id} started (worktree {run.worktree})")
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
 def take(
     task_id: str,
     worktree: bool = typer.Option(False, help="Also create the git worktree and print its path"),

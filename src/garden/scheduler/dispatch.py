@@ -278,6 +278,23 @@ class DispatchMixin:
         finally:
             self._dispatching_run = None
 
+    def redispatch(self, task: Task) -> Run:
+        """Replace every active run for ``task`` with one fresh work run.
+
+        A task has one persistent branch and worktree.  Do not mark an old record superseded,
+        or start the replacement, until its process is confirmed dead.
+        """
+        superseded = [run for run in self.runs.active() if run.task_id == task.id]
+        for run in superseded:
+            if not run.stop():
+                raise RuntimeError(f"could not confirm worker {run.run_id} stopped; refusing redispatch")
+        for run in superseded:
+            run.status = "superseded"
+            run.finished_at = now_iso()
+            run.save()
+            self.events.emit("run_superseded", task.id, run=run.run_id, mode=run.mode)
+        return self.dispatch(task)
+
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None) -> Run:

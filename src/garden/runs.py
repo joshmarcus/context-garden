@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import signal
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -142,6 +143,36 @@ class Run:
                     os.kill(self.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Stop this worker and confirm it has exited before its worktree is reused.
+
+        SIGTERM gives a harness a brief chance to leave its transcript intact.  A worker that
+        ignores it is force-killed; failure to observe its death is deliberately reported to the
+        caller rather than allowing two processes to edit one worktree.
+        """
+        if self.pid is None or self.pid == os.getpid():
+            return False  # No safely identifiable process to terminate.
+        self.kill()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pid_alive(self.pid):
+                return True
+            time.sleep(0.05)
+        if self.pid and _pid_alive(self.pid):
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pid_alive(self.pid):
+                return True
+            time.sleep(0.05)
+        return not _pid_alive(self.pid)
 
     def stdout_text(self) -> str:
         p = self.path / "stdout.json"
