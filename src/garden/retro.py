@@ -247,7 +247,8 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
     timing = outcomes.get("tick_duration") or {}
     if timing.get("count"):
         lines.append(f"- tick duration: mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)")
-    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
+    for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness"),
+                             ("by_pool_member", "pool member")):
         rows = outcomes.get(dimension) or {}
         if not rows:
             continue
