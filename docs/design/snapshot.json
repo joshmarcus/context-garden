@@ -7,193 +7,6 @@
   },
   "events": [
     {
-      "at": "2026-09-05T19:15:18+00:00",
-      "cost_usd": 0.8825316000000001,
-      "kind": "run_finished",
-      "mode": "compare",
-      "run": "20260905T190748Z-compare",
-      "status": "done",
-      "task": "CG-225",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T19:15:21+00:00",
-      "kind": "trial_done",
-      "scores": {
-        "claude:claude-sonnet-5": 6,
-        "codex": 8
-      },
-      "task": "CG-225",
-      "winner": "codex"
-    },
-    {
-      "at": "2026-09-05T19:15:21+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "trial won by codex (scores: claude:claude-sonnet-5=6, codex=8): https:<path>",
-      "task": "CG-225",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T19:15:27+00:00",
-      "kind": "automerged",
-      "method": "merge",
-      "pr": "https:<path>",
-      "review_rounds": 2,
-      "review_run": "20260905T190147Z-review",
-      "task": "CG-228",
-      "verdict": "approve"
-    },
-    {
-      "at": "2026-09-05T19:16:54+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "PR merged by the garden: https:<path>",
-      "task": "CG-228",
-      "to": "done"
-    },
-    {
-      "at": "2026-09-05T19:22:38+00:00",
-      "cost_usd": 1.2701171999999998,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T191117Z-review",
-      "status": "request_changes",
-      "task": "CG-030",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T19:22:38+00:00",
-      "blocking": 1,
-      "criteria_met": 4,
-      "criteria_total": 5,
-      "description_ok": false,
-      "kind": "review",
-      "run": "20260905T191117Z-review",
-      "summary": "Solid, well-verified plate/licensing fix with passing tests and clean scope, but the poppy criterion's spec-file follow-up lives in a separate repo and is unmet, and the PR description narrates a template bug that never existed on main.",
-      "task": "CG-030",
-      "verdict": "request_changes"
-    },
-    {
-      "at": "2026-09-05T19:22:39+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "automated review requested changes: Solid, well-verified plate/licensing fix with passing tests and clean scope, but the poppy criterion's spec-file follow-up lives in a separate repo and is unmet, and the PR description narrates a template bug that never existed on main. cost=$1.27",
-      "task": "CG-030",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T19:25:33+00:00",
-      "cost_usd": 7.6914739999999995,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T185206Z-work",
-      "status": "done",
-      "task": "CG-229",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T19:25:33+00:00",
-      "blocking": false,
-      "kind": "discovered",
-      "new_task": "CG-231",
-      "status": "draft",
-      "task": "CG-229",
-      "title": "garden trial can optionally wait for a trial to conclude"
-    },
-    {
-      "at": "2026-09-05T19:25:35+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T192535Z-check",
-      "stage": "pre_pr",
-      "task": "CG-229"
-    },
-    {
-      "at": "2026-09-05T19:27:03+00:00",
-      "cost_usd": 3.224633999999999,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T191243Z-revise",
-      "status": "done",
-      "task": "CG-212",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T19:27:04+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T192704Z-check",
-      "stage": "pre_pr",
-      "task": "CG-212"
-    },
-    {
       "at": "2026-09-05T19:28:30+00:00",
       "cost_usd": 0.0,
       "kind": "run_finished",
@@ -29616,6 +29429,305 @@
       "note": "dispatched revise run 20260906T191417Z-revise via local [codex model=gpt-5.6-sol] (fresh session, base main, ~9678 tokens)",
       "task": "CG-337",
       "to": "running"
+    },
+    {
+      "at": "2026-09-06T19:14:20+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "resumed": false,
+      "run": "20260906T191418Z-work",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:14:20+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T191418Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~14937 tokens)",
+      "task": "CG-330",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T19:14:37+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-sol",
+      "resumed": false,
+      "run": "20260906T191420Z-work",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T19:14:37+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T191420Z-work via local [codex model=gpt-5.6-sol] (fresh session, base main, ~9054 tokens)",
+      "task": "CG-338",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T19:18:43+00:00",
+      "cost_usd": 0.4123624,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T191417Z-revise",
+      "status": "done",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:18:45+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T191845Z-check",
+      "stage": "pre_pr",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:21:52+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T191845Z-check",
+      "status": "done",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:21:52+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:21:52+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:21:52+00:00",
+      "kind": "check",
+      "name": "ui",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "HTML-only capture; Chromium would not launch after automatic preparation (BrowserType.launch: Target page, context or browser has been closed\nBrowser logs:\n\n<launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n<launched> pid=2797539\n[pid=2797539][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\nCall log:\n  - <launching> <path> --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --user-data-dir=<path> --remote-debugging-pipe --no-startup-window\n  - <launched> pid=2797539\n  - [pid=2797539][err] <path> error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory\n  - [pid=2797539] <gracefully close start>\n  - [pid=2797539] <kill>\n  - [pid=2797539] <will force kill>\n  - [pid=2797539] exception while trying to kill process: Error: kill ESRCH\n  - [pid=2797539] <process did exit: exitCode=127, signal=null>\n  - [pid=2797539] starting temporary directories cleanup\n  - [pid=2797539] finished temporary directories cleanup\n  - [pid=2797539] <gracefully close end>\n); install its system libraries.",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:21:53+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:21:53+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Updated the discovered-decision test to require outcome-oriented labels, restoring the full pre-PR suite. No-change reconciliation, explicit product decisions, and empty-card recovery remain covered by the completed implementation. cost=$0.41",
+      "task": "CG-337",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T19:21:54+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192154Z-review",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:22:30+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "resumed": false,
+      "run": "20260906T192158Z-work",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T19:22:30+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T192158Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~8519 tokens)",
+      "task": "CG-343",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T19:23:31+00:00",
+      "cost_usd": 0.3624016,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T192154Z-review",
+      "status": "request_changes",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:23:31+00:00",
+      "blocking": 4,
+      "criteria_met": 2,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T192154Z-review",
+      "summary": "The no-change flow and outcome-oriented labels are substantially implemented, but operational recovery is incomplete, representative browser renders are missing, and an unrelated runtime snapshot pollutes the diff.",
+      "task": "CG-337",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T19:23:33+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192333Z-review",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:24:36+00:00",
+      "cost_usd": 0.708276,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T191418Z-work",
+      "status": "done",
+      "task": "CG-330",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:24:38+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T192438Z-check",
+      "stage": "pre_pr",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:25:41+00:00",
+      "cost_usd": 0.4764552,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T192333Z-review",
+      "status": "request_changes",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:25:41+00:00",
+      "blocking": 5,
+      "criteria_met": 1,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T192333Z-review",
+      "summary": "The no-change and empty-card recovery paths can discard scheduler evidence or cancel live work instead of reconciling it. Required rendered-card evidence is also absent, and an unrelated generated snapshot rewrite remains in the branch.",
+      "task": "CG-337",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T19:25:42+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "automated review requested changes: The no-change and empty-card recovery paths can discard scheduler evidence or cancel live work instead of reconciling it. Required rendered-card evidence is also absent, and an unrelated generated snapshot rewrite remains in the branch. cost=$0.48",
+      "task": "CG-337",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T19:27:47+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T192438Z-check",
+      "status": "done",
+      "task": "CG-330",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:27:47+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:27:47+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:27:49+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:27:49+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Auxiliary rebase, validation, and edit failures now retry independently once, preserve task context, and park with a human stop after a repeat failure. Work dispatch is blocked for human-stopped tasks. cost=$0.71",
+      "task": "CG-330",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T19:27:49+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192749Z-review",
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:27:55+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/scheduler/dispatch.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-330"
+    },
+    {
+      "at": "2026-09-06T19:27:55+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/scheduler/dispatch.py); a rebase agent will resolve it",
+      "task": "CG-330",
+      "to": "changes_requested"
     }
   ],
   "metrics": {
@@ -29643,39 +29755,39 @@
         "accepted": 16,
         "accepted_cost_usd": 348.7418,
         "avg_lead_hours": 3.65,
-        "avg_revisions": 1.45,
+        "avg_revisions": 1.38,
         "cost_per_accepted_task": 21.7964,
-        "cost_usd": 370.7294,
-        "criteria_met": 42,
-        "criteria_rate": 0.58,
-        "criteria_total": 73,
+        "cost_usd": 371.9807,
+        "criteria_met": 44,
+        "criteria_rate": 0.57,
+        "criteria_total": 77,
         "done": 16,
         "first_pass_approve": 8,
-        "first_pass_rate": 0.47,
-        "mean_cost_usd": 2.3613,
-        "reviewed": 17,
+        "first_pass_rate": 0.44,
+        "mean_cost_usd": 2.3104,
+        "reviewed": 18,
         "revisions": 29,
-        "runs": 157,
-        "tasks": 20
+        "runs": 161,
+        "tasks": 21
       },
       "medium": {
         "accepted": 87,
         "accepted_cost_usd": 718.3504,
         "avg_lead_hours": 2.43,
-        "avg_revisions": 1.01,
+        "avg_revisions": 1.0,
         "cost_per_accepted_task": 8.2569,
-        "cost_usd": 754.6524,
+        "cost_usd": 755.3607,
         "criteria_met": 111,
         "criteria_rate": 0.86,
         "criteria_total": 129,
         "done": 87,
         "first_pass_approve": 58,
         "first_pass_rate": 0.67,
-        "mean_cost_usd": 1.0921,
+        "mean_cost_usd": 1.0868,
         "reviewed": 86,
         "revisions": 101,
-        "runs": 691,
-        "tasks": 100
+        "runs": 695,
+        "tasks": 101
       }
     },
     "by_difficulty_model": {
@@ -29874,7 +29986,7 @@
               },
               "gpt-5.6-sol": {
                 "best": false,
-                "n": 5,
+                "n": 6,
                 "rank": 1.0,
                 "thin": false,
                 "value": 0.0,
@@ -29978,7 +30090,7 @@
               "claude-fable-5-1": {
                 "best": false,
                 "n": 18,
-                "rank": 0.945,
+                "rank": 0.946,
                 "thin": false,
                 "value": 8.355,
                 "worst": false
@@ -29986,7 +30098,7 @@
               "claude-opus-4-8": {
                 "best": false,
                 "n": 2,
-                "rank": 0.641,
+                "rank": 0.644,
                 "thin": true,
                 "value": 6.243,
                 "worst": false
@@ -30009,10 +30121,10 @@
               },
               "gpt-5.6-sol": {
                 "best": true,
-                "n": 21,
+                "n": 22,
                 "rank": 0.0,
                 "thin": false,
-                "value": 1.8,
+                "value": 1.737,
                 "worst": false
               },
               "gpt-6-astra": {
@@ -30026,7 +30138,7 @@
               "sonnet": {
                 "best": false,
                 "n": 1,
-                "rank": 0.214,
+                "rank": 0.221,
                 "thin": true,
                 "value": 3.282,
                 "worst": false
@@ -30059,10 +30171,10 @@
               },
               "gpt-5.6-terra": {
                 "best": true,
-                "n": 64,
+                "n": 65,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.901,
+                "value": 0.898,
                 "worst": false
               },
               "sonnet": {
@@ -30363,13 +30475,13 @@
         "accepted": 28,
         "accepted_cost_usd": 228.2811,
         "cost_per_accepted_task": 8.1529,
-        "cost_usd": 193.7729,
+        "cost_usd": 194.8935,
         "first_pass_approve": 4,
         "first_pass_rate": 0.12,
-        "mean_cost_usd": 1.3093,
-        "reviewed": 32,
-        "runs": 148,
-        "tasks": 43
+        "mean_cost_usd": 1.2993,
+        "reviewed": 33,
+        "runs": 150,
+        "tasks": 45
       },
       "human": {
         "accepted": 9,
@@ -30387,12 +30499,12 @@
         "accepted": 7,
         "accepted_cost_usd": 94.4228,
         "cost_per_accepted_task": 13.489,
-        "cost_usd": 294.7645,
+        "cost_usd": 295.6033,
         "first_pass_approve": 4,
         "first_pass_rate": 0.57,
-        "mean_cost_usd": 0.3194,
+        "mean_cost_usd": 0.3189,
         "reviewed": 7,
-        "runs": 923,
+        "runs": 927,
         "tasks": 7
       }
     },
@@ -30461,25 +30573,25 @@
         "accepted": 4,
         "accepted_cost_usd": 26.3994,
         "cost_per_accepted_task": 6.5998,
-        "cost_usd": 37.8038,
+        "cost_usd": 38.2162,
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
-        "mean_cost_usd": 1.8002,
-        "reviewed": 5,
-        "runs": 21,
-        "tasks": 7
+        "mean_cost_usd": 1.7371,
+        "reviewed": 6,
+        "runs": 22,
+        "tasks": 8
       },
       "gpt-5.6-terra": {
         "accepted": 15,
         "accepted_cost_usd": 91.51,
         "cost_per_accepted_task": 6.1007,
-        "cost_usd": 57.6463,
+        "cost_usd": 58.3546,
         "first_pass_approve": 1,
         "first_pass_rate": 0.06,
-        "mean_cost_usd": 0.9007,
+        "mean_cost_usd": 0.8978,
         "reviewed": 17,
-        "runs": 64,
-        "tasks": 24
+        "runs": 65,
+        "tasks": 25
       },
       "gpt-6-astra": {
         "accepted": 2,
@@ -30521,12 +30633,12 @@
         "accepted": 18,
         "accepted_cost_usd": 104.0721,
         "cost_per_accepted_task": 5.7818,
-        "cost_usd": 294.7645,
+        "cost_usd": 295.6033,
         "first_pass_approve": 12,
         "first_pass_rate": 0.71,
-        "mean_cost_usd": 0.3126,
+        "mean_cost_usd": 0.3121,
         "reviewed": 17,
-        "runs": 943,
+        "runs": 947,
         "tasks": 19
       }
     },
@@ -32124,7 +32236,7 @@
                 "missing": 0,
                 "n": 2,
                 "rank": "",
-                "shade": -0.1171547701765015,
+                "shade": -0.11816831220329765,
                 "unit": "USD",
                 "value": 4.2091255
               },
@@ -32142,7 +32254,7 @@
                 "missing": 0,
                 "n": 16,
                 "rank": "",
-                "shade": -0.07095586282308752,
+                "shade": -0.078044000492979,
                 "unit": "USD",
                 "value": 3.42531620625
               },
@@ -32173,11 +32285,11 @@
               "gpt-5.6-terra": {
                 "direction": "lower",
                 "missing": 5,
-                "n": 19,
+                "n": 20,
                 "rank": "best",
                 "shade": 1.0,
                 "unit": "USD",
-                "value": 1.314421557894737
+                "value": 1.28411428
               },
               "gpt-6-astra": {
                 "direction": "lower",
@@ -32200,7 +32312,7 @@
                 "missing": 0,
                 "n": 18,
                 "rank": "",
-                "shade": 0.599160237483803,
+                "shade": 0.5869594523263337,
                 "unit": "USD",
                 "value": 2.1044919416666668
               },
@@ -36742,7 +36854,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 1.1332,
+        "cost_usd": 1.8415,
         "criteria_met": 0,
         "criteria_total": 0,
         "difficulty": "medium",
@@ -36756,16 +36868,16 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 5,
-        "status": "ready"
+        "runs": 8,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
-        "cost_usd": 3.8497,
-        "criteria_met": 0,
-        "criteria_total": 0,
+        "cost_usd": 5.101,
+        "criteria_met": 2,
+        "criteria_total": 4,
         "difficulty": "hard",
-        "first_review": "",
+        "first_review": "request_changes",
         "harness": [
           "codex"
         ],
@@ -36775,7 +36887,26 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 4,
+        "runs": 7,
+        "status": "changes_requested"
+      },
+      {
+        "accepted": false,
+        "cost_usd": 0.0,
+        "criteria_met": 0,
+        "criteria_total": 0,
+        "difficulty": "hard",
+        "first_review": "",
+        "harness": [
+          "codex"
+        ],
+        "id": "CG-338",
+        "model": [
+          "gpt-5.6-sol"
+        ],
+        "phase": "context-garden/phase-05",
+        "revisions": 0,
+        "runs": 1,
         "status": "running"
       },
       {
@@ -36797,6 +36928,25 @@
         "revisions": 2,
         "runs": 9,
         "status": "done"
+      },
+      {
+        "accepted": false,
+        "cost_usd": 0.0,
+        "criteria_met": 0,
+        "criteria_total": 0,
+        "difficulty": "medium",
+        "first_review": "",
+        "harness": [
+          "codex"
+        ],
+        "id": "CG-343",
+        "model": [
+          "gpt-5.6-terra"
+        ],
+        "phase": "context-garden/phase-05",
+        "revisions": 0,
+        "runs": 1,
+        "status": "running"
       },
       {
         "accepted": true,
@@ -36964,38 +37114,6 @@
   ],
   "queue": {},
   "runs": [
-    {
-      "harness": "claude",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T185206Z-work",
-      "status": "done",
-      "task": "CG-229"
-    },
-    {
-      "harness": "claude",
-      "mode": "compare",
-      "model": "claude-sonnet-5",
-      "run": "20260905T190748Z-compare",
-      "status": "done",
-      "task": "CG-225"
-    },
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T191117Z-review",
-      "status": "done",
-      "task": "CG-030"
-    },
-    {
-      "harness": "claude",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T191243Z-revise",
-      "status": "done",
-      "task": "CG-212"
-    },
     {
       "harness": "",
       "mode": "check",
@@ -42153,14 +42271,78 @@
       "mode": "revise",
       "model": "gpt-5.6-sol",
       "run": "20260906T191417Z-revise",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T191418Z-work",
+      "status": "done",
+      "task": "CG-330"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T191420Z-work",
       "status": "running",
+      "task": "CG-338"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T191845Z-check",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192154Z-review",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T192158Z-work",
+      "status": "running",
+      "task": "CG-343"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192333Z-review",
+      "status": "done",
       "task": "CG-337"
     },
     {
       "harness": "",
-      "mode": "work",
+      "mode": "check",
       "model": "",
-      "run": "20260906T191418Z-work",
+      "run": "20260906T192438Z-check",
+      "status": "done",
+      "task": "CG-330"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T192749Z-review",
+      "status": "running",
+      "task": "CG-330"
+    },
+    {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260906T192755Z-rebase",
       "status": "running",
       "task": "CG-330"
     }
@@ -44739,7 +44921,7 @@
       "id": "CG-330",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "changes_requested",
       "title": "A failed rebase or check run never restarts a task's work from scratch: the PR stays, the rebase or check is retried, and only a failed work or revise run counts as an attempt"
     },
     {
@@ -44795,7 +44977,7 @@
       "id": "CG-337",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "changes_requested",
       "title": "Attention cards ask for product decisions, while no-change reports reconcile automatically"
     },
     {
@@ -44803,7 +44985,7 @@
       "id": "CG-338",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "running",
       "title": "Keep the operator machine responsive under concurrent workers and test suites"
     },
     {
@@ -44843,7 +45025,7 @@
       "id": "CG-343",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "running",
       "title": "Finished reviews are reconciled even after their task leaves review states"
     },
     {
