@@ -271,6 +271,8 @@ class PollMixin:
                 return False, "a run is in flight"
         elif any(r.task_id == task.id for r in self.active_runs()):
             return False, "a run is in flight"
+        if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
+            return False, "worker CI is enabled but the PR has no CI result yet"
         if pr.checks not in ("SUCCESS", ""):
             return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
         if pr.mergeable != "MERGEABLE":

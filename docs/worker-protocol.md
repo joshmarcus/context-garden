@@ -15,12 +15,12 @@ exactly these channels:
 | scheduler to worker | the **working directory** | a git worktree on the task's branch, based on the right base |
 | scheduler to worker | two **environment variables** | `GARDEN_TASK_ID`, `GARDEN_RUN_ID` (informational) |
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
-| worker to scheduler | the **worktree** | commits on the task branch (never pushed by the worker) |
+| worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
-the whole result contract. Everything else the world sees (the pushed branch, the pull
-request, the review comments) is done by the scheduler after the fact, from what it finds
+the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
+(the branch, pull request and review comments) is done by the scheduler from what it finds
 in the run directory and the worktree.
 
 ## Required review evidence
@@ -59,7 +59,7 @@ sequenceDiagram
   S->>W: start, detached: cd into the worktree, run claude -p with brief.md on stdin, capture stdout.json and stderr.log, then write exit_code
   Note over S: the tick ends here and nothing stays open
   W->>D: read brief.md (stdin)
-  W->>T: edit, run checks, commit (never push)
+  W->>T: edit, run checks, commit (optional CI push)
   W->>D: final message ending in the GARDEN_RESULT line, plus usage and cost, into stdout.json
   W->>D: exit_code
   Note over S: a later tick
