@@ -218,6 +218,55 @@ def test_retro_decide_reopen_approves_the_blocking_task_then_close_follows(tmp_p
     assert Store(root).phase("gdn", "p1").closed
 
 
+def test_reopen_uses_the_approval_gate_and_tick_closes_after_the_last_blocker(tmp_path, fake_github, monkeypatch):
+    """A complete blocker proceeds, an incomplete one remains visible for repair, and the
+    recorded reopen closes itself on the next tick after the final blocker lands."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_VERDICT", "reopen")
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_INCOMPLETE", "1")
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = _run_retro(root, store, fake_github)
+    complete, incomplete = sched.retro_verdict("gdn/p1")["blocking_ids"]
+
+    # The decision card identifies the incomplete blocker before anyone attempts to accept
+    # the verdict, so the operator knows which brief needs repair.
+    from garden.inbox import build_inbox
+
+    card = next(item for item in build_inbox(Store(root), sched) if item["group"] == "retro_verdict")
+    assert incomplete in card["why"] and "brief needed" in card["why"]
+
+    result = _cli(root, "retro-decide", "gdn/p1", "reopen")
+    assert result.exit_code == 0, result.output
+    assert Store(root).task(complete).status.value == "ready"
+    held = Store(root).task(incomplete)
+    assert held.status.value == "draft"
+    assert "brief_gap:" in held.path.read_text()
+
+    verdict = Scheduler(Store(root), github=fake_github, log=print).retro_verdict("gdn/p1")
+    assert verdict["status"] == "pending"
+    assert incomplete in verdict["brief_gaps"]
+
+    card = next(item for item in build_inbox(Store(root), Scheduler(Store(root), github=fake_github, log=print))
+                if item["group"] == "retro_verdict")
+    assert incomplete in card["why"] and "brief needed" in card["why"]
+
+    # Repairing the short brief lets the same recorded decision approve it. Once both blockers
+    # are terminal, a normal tick performs the close and emits the usual phase_closed event.
+    held.body += "\n## Acceptance criteria\n\n- [ ] The base failure is documented for operators.\n"
+    Store(root).save(held)
+    assert _cli(root, "retro-decide", "gdn/p1", "reopen").exit_code == 0
+    assert Store(root).task(incomplete).status.value == "ready"
+    assert _cli(root, "set-status", complete, "done").exit_code == 0
+    assert _cli(root, "set-status", incomplete, "done").exit_code == 0
+    rep = Scheduler(Store(root), github=fake_github, log=print).tick(dispatch=False)
+    assert not rep.errors, rep.errors
+    assert Store(root).phase("gdn", "p1").closed
+    assert any(event["kind"] == "phase_closed" and event["phase"] == "gdn/p1"
+               for event in Scheduler(Store(root), github=fake_github, log=print).events.read())
+
+
 def test_retro_questions_use_shared_cards_and_record_web_and_cli_answers(tmp_path, fake_github, monkeypatch):
     """Two fake-harness retro questions share kickoff's cards; answers reach both planning docs."""
     import shutil

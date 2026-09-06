@@ -200,7 +200,13 @@ def retro(call: Call) -> None:
                       "body": "Write up how a retro ends in a verdict."}]
     elif verdict == "reopen":
         blocking = [{"title": "Fix the broken base check", "difficulty": "medium", "priority": 1,
-                     "body": "The pre-PR check fails at the phase's base.", "reason": "the base is red"}]
+                     "body": "The pre-PR check fails at the phase's base.", "reason": "the base is red",
+                     "acceptance": ["The base check passes before a worker is dispatched."],
+                     "reading": ["gdn/product.md"]}]
+        if os.environ.get("FAKE_CLAUDE_RETRO_INCOMPLETE"):
+            blocking.append({"title": "Document the base failure", "difficulty": "easy", "priority": 2,
+                             "body": "Capture the remaining base failure.", "reason": "operators need the cause",
+                             "acceptance": [], "reading": ["gdn/product.md"]})
     questions = []
     if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
         questions = [

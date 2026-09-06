@@ -502,6 +502,8 @@ class Scheduler(
                     self.log(f"{t.id}: base re-probe failed: {e}")
         with self._step(rep, "merge_queue"):
             self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
+        with self._step(rep, "retro_close"):
+            self._guard(rep, "retro close", lambda: self.close_accepted_reopens(rep))
         with self._step(rep, "harness_probe"):
             self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         if dispatch is None:

@@ -433,6 +433,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         names = [f"{bid} ({tasks[bid].title})" if bid in tasks else bid for bid in blocking_ids]
         why = ("reopen: " + ", ".join(names) + " must land before the phase can close") if names \
             else "reopen: the retro named no blocking tasks"
+        gaps = v.get("brief_gaps") or {}
+        if isinstance(gaps, dict) and gaps:
+            why += "; brief needed: " + ", ".join(
+                f"{tid} ({gap})" for tid, gap in sorted(gaps.items())
+            )
         items.append({
             "group": "retro_verdict", "group_title": titles["retro_verdict"], "task": "",
             "title": phase_key, "phase": phase_key, "status": "", "pr": "",
