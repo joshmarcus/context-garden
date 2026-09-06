@@ -1,11 +1,17 @@
+import math
+import os
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from garden.runs import Run
+from garden.runs import Run, RunStore
+from garden.scheduler import Scheduler
 from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
+from garden.web.common import Hub
 from tests.conftest import complete_brief
 
 
@@ -23,6 +29,58 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+@pytest.mark.parametrize("history_size", [1546, 6000])
+def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
+    rs = RunStore(garden / ".garden")
+    for n in range(history_size):
+        run_dir = rs.dir / f"DM-{n % 2 + 1:03d}" / f"20260101T{n:06d}Z-work"
+        Run(task_id=f"DM-{n % 2 + 1:03d}", run_id=run_dir.name, dir=str(run_dir), runner="local",
+            started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
+            status="done", cost_usd=0.01).save()
+    for n in range(3):
+        run_dir = rs.dir / f"LIVE-{n}" / f"20260906T17000{n}Z-work"
+        Run(task_id=f"LIVE-{n}", run_id=run_dir.name, dir=str(run_dir), runner="local", pid=os.getpid(),
+            started_at="2026-09-06T17:00:00+00:00", status="running").save()
+    c = client(garden)
+    timings = []
+    scans = rs.scan_count
+    reads = rs.read_count
+    urls = ("/", "/board", "/partials/board", "/now2", "/now2/period")
+    for interval in range(3):
+        for url in urls * 4:
+            started = time.perf_counter()
+            assert c.get(url).status_code == 200
+            timings.append(time.perf_counter() - started)
+        if interval < 2:
+            time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
+
+    p95 = sorted(timings)[math.ceil(0.95 * len(timings)) - 1]
+    print(f"{history_size + 3} runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
+          f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
+    assert p95 < 2.0
+    assert p95 <= max(timings)
+    assert rs.read_count - reads == history_size + 3
+
+
+def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("read-only page construction ran a scheduler migration")
+
+    monkeypatch.setattr(Scheduler, "_migrate_fence_bookkeeping", unexpected)
+    monkeypatch.setattr(Scheduler, "_hold_startup_config_against_fences", unexpected)
+    reader = Hub(Store(garden), watch=False).reader()
+    assert reader.control() == {}
+
+
+def test_pages_refuse_partial_totals_when_archive_index_is_corrupt(garden):
+    archive = garden / ".garden" / "run-archive"
+    archive.mkdir(parents=True)
+    (archive / "index.json").write_text("not json")
+    response = client(garden).get("/board")
+    assert response.status_code == 503
+    assert "history is temporarily unavailable" in response.text.lower()
 
 
 def test_design_files_are_safe_and_use_the_product_checkout(garden):

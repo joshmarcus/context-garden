@@ -33,6 +33,7 @@ from ..plants import (
     stage_word,
     vine_svg,
 )
+from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
@@ -116,6 +117,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     site = Site(hub, templates, plates)
     pages.register(app, site)
     actions.register(app, site)
+
+    @app.exception_handler(HistoryUnavailable)
+    async def unavailable_history_page(_request: Request, exc: HistoryUnavailable) -> PlainTextResponse:
+        return PlainTextResponse(
+            f"Run history is temporarily unavailable: {exc}. "
+            "Verify or rebuild .garden/run-archive/index.json before relying on totals.",
+            status_code=503,
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_error_page(request: Request, exc: Exception) -> Any:

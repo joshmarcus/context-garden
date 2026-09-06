@@ -91,4 +91,5 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         rs = RunStore(s.config.garden_dir)
         return templates.TemplateResponse(request, "runs.html", ctx(
-            request, page="runs", runs=list(reversed(rs.all_runs())), events=list(reversed(hub.events))[:100]))
+            request, page="runs", runs=list(reversed(rs.all_runs())), archive_warning=rs.archive_health(),
+            events=list(reversed(hub.events))[:100]))

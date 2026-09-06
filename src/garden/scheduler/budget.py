@@ -52,8 +52,20 @@ class BudgetMixin:
         self.log(f"{key}: budget set to {shown} by {by}")
 
     def spent_for(self, key: str) -> float:
-        ids = {t.id for t in self.store.tasks().values() if t.key == key}
-        return round(sum(r.cost_usd or 0.0 for r in self.runs.all_runs() if r.task_id in ids), 4)
+        # Page chrome and queue widgets ask for the same phase repeatedly.  Build every
+        # phase total in one pass over the shared RunStore snapshot per scheduler facade.
+        cached = getattr(self, "_spent_by_phase", None)
+        generation = self.runs.generation
+        if cached is None or getattr(self, "_spent_generation", -1) != generation:
+            task_phases = {t.id: t.key for t in self.store.tasks().values()}
+            cached = {}
+            for task_id, cost in self.runs.costs_by_task().items():
+                phase = task_phases.get(task_id)
+                if phase:
+                    cached[phase] = cached.get(phase, 0.0) + cost
+            self._spent_by_phase = {phase: round(cost, 4) for phase, cost in cached.items()}
+            self._spent_generation = generation
+        return self._spent_by_phase.get(key, 0.0)
 
     def budget_exceeded(self, task: Task) -> bool:
         budget = self.budget_for(task)

@@ -100,8 +100,8 @@ class Hub:
         return Scheduler(self.store, github=self.github, log=self._log)
 
     def reader(self) -> Scheduler:
-        """A scheduler for a page to read through (budgets, inbox, limits); it logs nothing."""
-        return Scheduler(self.store, github=self.github, log=lambda m: None)
+        """A scheduler-shaped read facade for pages; it never runs startup migrations."""
+        return Scheduler(self.store, github=self.github, log=lambda m: None, read_only=True)
 
     def stop(self) -> None:
         """End the watch loop (a test or `garden qa` shutting the server down)."""
@@ -193,6 +193,8 @@ class Site:
         ctrl = sched.control()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
+        run_store = sched.runs
+        totals = run_store.totals()
         return {
             "request": request,
             "page": page,
@@ -211,7 +213,7 @@ class Site:
             "reviews_running": len(sched.review_runs_active()),
             "max_parallel": sched.effective_max_parallel(),
             "review_parallel": sched.review_parallel_limit(),
-            "totals": RunStore(s.config.garden_dir).totals(),
+            "totals": totals,
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,
             "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
@@ -220,7 +222,7 @@ class Site:
             "operating_profile_names": list(stops),
             "operating_profile": active,
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
-            "operating_profile_spend_rate": RunStore(s.config.garden_dir).spend_since(parse_since("1h")),
+            "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
             **kw,
         }
 
