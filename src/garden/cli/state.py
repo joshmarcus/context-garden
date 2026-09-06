@@ -180,6 +180,18 @@ def retry(task_id: str):
         raise typer.Exit(1) from None
 
 
+@app.command("recover-check", rich_help_panel=PANEL_DECIDE)
+def recover_check(task_id: str):
+    """Repair an inconsistent waiting/check state without cancelling live check work."""
+    store = _store()
+    try:
+        outcome = _scheduler(store).recover_waiting_check(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: {outcome}")
+
+
 @app.command(rich_help_panel=PANEL_DECIDE)
 def discuss(task_id: str):
     """Print a ready-made prompt about a stopped task (the task, the reason, the PR, the runs), for a chat session or `garden take`."""

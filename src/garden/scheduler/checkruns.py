@@ -77,12 +77,50 @@ class CheckRunMixin:
         launch_cwd = worktree if worktree.exists() else run.path
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
+        cont.setdefault("task_status", task.status.value)
         st["check_run"] = {"run_id": run.run_id, "stage": stage, "cont": cont,
                            "specs": specs, "retries": retries}
         self.events.emit("dispatch", task.id, run=run.run_id, mode="check", stage=stage)
         self.state.save()
         rep.dispatched.append(f"{task.id}(check:{stage})")
         return run
+
+    def recover_waiting_check(self, task: Task, rep: TickReport | None = None) -> str:
+        """Repair a waiting/check mismatch without cancelling check work or its continuation."""
+        rep = rep or TickReport()
+        st = self.state.get(task.id)
+        info = dict(st.get("check_run") or {})
+        run_id = str(info.get("run_id") or "")
+        run = self._run_by_id(task, run_id) if run_id else None
+        if run is not None and run.status == "running":
+            runner = self.runner_for(task, run.runner, run.harness)
+            if self._finished_or_timed_out(run, runner):
+                self.reap_check(task, rep)
+                self.state.save()
+                return "finished check reaped and its continuation resumed"
+            expected = str(dict(info.get("cont") or {}).get("task_status") or Status.RUNNING.value)
+            try:
+                status = Status(expected)
+            except ValueError:
+                status = Status.RUNNING
+            if task.status != status:
+                self._transition(task, status, f"recovered waiting state for live check {run_id}")
+            self.state.save()
+            return f"live check {run_id} retained; restored {status.value}"
+
+        st.pop("check_run", None)
+        if st.get("question") or st.get("decision"):
+            status = Status.WAITING_HUMAN
+        elif st.get("pending_feedback"):
+            status = Status.CHANGES_REQUESTED
+        elif task.pr:
+            status = Status.AWAITING_TRIAGE if bool(self.cfg.get("github.draft_pr", True)) else Status.IN_REVIEW
+        else:
+            status = Status.READY
+        if task.status != status:
+            self._transition(task, status, "cleared stale check metadata and recovered task state")
+        self.state.save()
+        return f"stale check metadata cleared; restored {status.value}"
 
     def reap_check(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)

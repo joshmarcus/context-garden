@@ -597,7 +597,7 @@ def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garde
     task.status = Status.WAITING_HUMAN
     store.save(task)
     state = State(store.config.garden_dir / "state.json")
-    state.get(task.id)["check_run"] = "live-check"
+    state.get(task.id)["check_run"] = {"run_id": "missing-check", "stage": "pre_pr", "cont": {}}
     state.save()
 
     page = client(garden).get("/").text
@@ -606,6 +606,7 @@ def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garde
     assert "Reconcile state" in page
     assert "no question recorded" not in page.lower()
     assert 'action="/tasks/DM-001/answer"' not in page
+    assert 'action="/tasks/DM-001/recover-check"' in page
 
 
 def test_inbox_and_task_page_include_the_same_decision_card_fragment():

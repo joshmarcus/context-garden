@@ -476,6 +476,12 @@ class ReviewMixin:
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         st["last_findings"] = keys
+        reconciliation = st.get("no_change_reconciliation")
+        if isinstance(reconciliation, dict):
+            reconciled_head = str(reconciliation.get("head") or "")
+            current_head = str(st.get("head_sha") or "")
+            if not reconciled_head or not current_head or reconciled_head == current_head:
+                st.pop("no_change_reconciliation", None)
         if task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             # Only the description is wrong (no blocking finding) and the reviewer supplied the
             # corrected body: apply it directly instead of spending a revise round on wording.

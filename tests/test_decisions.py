@@ -106,16 +106,76 @@ def test_no_change_does_not_erase_an_internal_review_finding(sched, monkeypatch)
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
     seen: list[str] = []
     dispatched: list[str] = []
-    for _ in range(12):
+    original_keys: list[str] = []
+    for _ in range(16):
         rep = sched.tick()
         seen.extend(rep.transitions)
         dispatched.extend(rep.dispatched)
-        if seen.count("DM-001 -> changes_requested (review)") >= 2:
+        keys = list(sched.state.get("DM-001").get("last_findings") or [])
+        if keys and not original_keys:
+            original_keys = keys
+        if sched.state.get("DM-001").get("needs_human", {}).get("kind") == "stall":
             break
     assert "DM-001 no-change -> verification" in seen
-    assert seen.count("DM-001 -> changes_requested (review)") >= 2
-    assert dispatched.count("DM-001(revise)") >= 2
-    assert sched.store.task("DM-001").status == Status.RUNNING
+    assert original_keys
+    assert set(original_keys) <= set(sched.state.get("DM-001").get("last_findings") or [])
+    assert sched.state.get("DM-001")["needs_human"]["kind"] == "stall"
+    assert sched.store.task("DM-001").status == Status.CHANGES_REQUESTED
+
+
+def test_waiting_state_recovery_retains_a_live_check_and_its_continuation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "running"
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "pre_pr", "cont": {"task_status": "in_review"}
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda run, runner: False)
+    monkeypatch.setattr(run, "kill", lambda: (_ for _ in ()).throw(AssertionError("live check killed")))
+
+    result = sched.recover_waiting_check(task)
+
+    assert "retained" in result
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert sched.state.get(task.id)["check_run"]["cont"]["task_status"] == "in_review"
+
+
+def test_waiting_state_recovery_reaps_a_finished_check_normally(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "running"
+    run.save()
+    info = {"run_id": run.run_id, "stage": "pre_pr", "cont": {"task_status": "running"}}
+    sched.state.get(task.id)["check_run"] = info
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda run, runner: True)
+    reaped: list[dict] = []
+    monkeypatch.setattr(sched, "reap_check", lambda task, rep: reaped.append(dict(sched.state.get(task.id)["check_run"])) or True)
+
+    result = sched.recover_waiting_check(task)
+
+    assert "reaped" in result
+    assert reaped == [info]
+
+
+def test_waiting_state_recovery_clears_only_missing_check_metadata(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": "missing", "stage": "pre_pr", "cont": {"task_status": "running"}}
+    st["pending_feedback"] = "still actionable"
+
+    result = sched.recover_waiting_check(task)
+
+    assert "stale check metadata cleared" in result
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.state.get(task.id)["pending_feedback"] == "still actionable"
+    assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
 
 
 # ---- CLI and web agree -------------------------------------------------------

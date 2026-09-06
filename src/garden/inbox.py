@@ -275,7 +275,7 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
                 "blurb": "This is an operational state mismatch. Continue the loop to reconcile the live run and task state.",
                 "final": "", "evidence": evidence,
                 "attention": {"actions": [
-                    {"label": "Reconcile state", "kind": "retry", "command": f"garden retry {t.id}",
+                    {"label": "Reconcile state", "kind": "recover-check", "command": f"garden recover-check {t.id}",
                      "detail": "checks live run state and returns the task to the automated loop"}], "discuss": ""},
             }
         return {

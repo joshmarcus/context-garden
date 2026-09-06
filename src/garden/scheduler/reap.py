@@ -221,10 +221,13 @@ class ReapMixin:
             st = self.state.get(task.id)
             st.pop("decision", None)
             st.pop("needs_human", None)
-            # The next verdict is reconciliation evidence for this unchanged head, not a
-            # repeated-finding stall. If it still finds the issue, the normal bounded revise
-            # loop sends that actionable finding back to a worker.
-            st["last_findings"] = []
+            # Preserve the finding identities from the review that prompted this round. The
+            # fresh review must be able to recognise a rediscovered actionable finding as the
+            # same one, so the ordinary bounded repeat/stall policy still applies.
+            st["no_change_reconciliation"] = {
+                "head": str(st.get("head_sha") or ""),
+                "run": run.run_id,
+            }
             task.log(f"worker found no change to make: {reason}; reconciling with checks and a fresh review")
             self.store.save(task)
             self.events.emit("no_change_reconciled", task.id, reason=reason, run=run.run_id)
