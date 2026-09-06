@@ -272,7 +272,20 @@ class RunStore:
         return out
 
     def active(self) -> list[Run]:
-        return [r for r in self.all_runs() if r.status == "running"]
+        # Do not materialise every completed Run just to find the handful in flight. Run
+        # history is intentionally durable and can contain thousands of records.
+        if not self.dir.exists():
+            return []
+        active: list[Run] = []
+        for run_json in self.dir.glob("*/*/run.json"):
+            try:
+                data = json.loads(run_json.read_text())
+                if data.get("status") == "running":
+                    active.append(Run(**data))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        active.sort(key=lambda r: (r.started_at, r.run_id))
+        return active
 
     def usage_for(self, task_id: str) -> dict[str, Any]:
         """Tokens and cost across every run of one task, split by run mode."""
