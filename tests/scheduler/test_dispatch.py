@@ -236,6 +236,29 @@ def test_review_runs_do_not_consume_worker_slots(sched):
     assert sched.review_slots_free() == 0
 
 
+def test_checks_and_edits_do_not_consume_worker_slots(sched):
+    """The max_parallel count is the same worker-only count shown by the UI and CLI.
+    A check in flight must not prevent a ready task from taking a worker slot."""
+    check_run = sched.runs.new_run("DM-001", "local", mode="check")
+    check_run.status = "running"
+    check_run.save()
+    edit_run = sched.runs.new_run("DM-002", "local", mode="edit")
+    edit_run.status = "running"
+    edit_run.save()
+
+    assert len(sched.check_runs_active()) == 1
+    assert sched.slots_free() == 2
+    from garden.now1 import render_text, snapshot
+
+    snap = snapshot(sched.store, sched)
+    assert snap["garden"]["worker_busy"] == 0
+    assert "0 of 2 worker slots" in render_text(snap)
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
+    assert len(sched.worker_runs_active()) == 1
+    assert sched.slots_free() == 1
+
+
 def test_pause_stops_dispatch(sched, fake_github):
     sched.pause(by="cli", reason="testing")
     assert sched.is_dispatch_paused()

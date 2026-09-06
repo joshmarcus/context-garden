@@ -58,6 +58,7 @@
     <span class="autosave-mark" aria-live="polite"></span>
   </form>
   <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
+  <p class="muted" style="margin:8px 0 0"><strong>Worker slots:</strong> {{ worker_slot_modes }}. Reviews use the separate <span class="mono">reviews</span> cap; checks and edit runs are short machine-bound runs and do not consume worker slots.</p>
 </div>
 
 {% set profile_source = "live override" if operating_profile_override else ("garden.yaml" if operating_profile_file else "") %}

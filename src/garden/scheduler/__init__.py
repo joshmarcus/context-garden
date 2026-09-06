@@ -73,7 +73,7 @@ __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
-CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge check; also holds a slot
+CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
 
 
 class Scheduler(
@@ -269,7 +269,7 @@ class Scheduler(
         return [r for r in self.runs.active() if r.runner != "manual"]
 
     def worker_runs_active(self) -> list[Run]:
-        """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
+        """Active runs that occupy a `max_parallel` slot: worker modes only."""
         return [r for r in self.active_runs() if r.mode in WORKER_MODES]
 
     def worker_run_in_flight(self, task_id: str) -> bool:
@@ -300,12 +300,16 @@ class Scheduler(
         return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
 
     def check_runs_active(self) -> list[Run]:
-        """Active check runs (pre-PR, base probe, pre-merge). Like a worker run, one runs a
-        product's suite, so it holds a `max_parallel` slot until it is reaped (CG-182)."""
+        """Active check runs (pre-PR, base probe, pre-merge).
+
+        Checks are deliberately visible as runs but do not occupy worker slots: they are
+        short, machine-bound work and have no worker-mode concurrency cap.
+        """
         return [r for r in self.active_runs() if r.mode in CHECK_MODES]
 
     def slots_free(self) -> int:
-        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active()))
+        """Worker slots available to dispatch; checks and edit runs are excluded."""
+        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
 
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")

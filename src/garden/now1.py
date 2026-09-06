@@ -33,7 +33,6 @@ from .runs import Run, RunStore
 from .store import Store
 
 WORKER_MODES = {"work", "revise", "resume", "trial", "rebase"}
-CHECK_MODES = {"check"}
 REVIEW_MODES = {"review", "persona", "compare"}
 # The design's mode -> growth-stage glyph table (docs/design/now-1.md, Visual system): the
 # glyph is a task-state name `plants.stage_svg` knows; the dot is the state colour.
@@ -230,8 +229,8 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
     """One Now strip for a run record, running or just finished."""
     t = tasks.get(run.task_id)
     finished = run.status != "running"
-    # A record written at dispatch and never launched holds a slot until a tick reaps it, so
-    # the page shows it as what it is rather than as a run that has said nothing for an hour.
+    # A worker-mode record written at dispatch and never launched holds a slot until a tick
+    # reaps it, so the page shows it as what it is rather than as a run that has said nothing.
     no_process = run.no_process
     p = run_progress(run, store)
     out = {
@@ -564,8 +563,8 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
             spent[tasks[r.task_id].key] += float(r.cost_usd or 0.0)
 
     strips = strips_in_flight(runs, tasks, events, store, now)
-    worker_busy = sum(1 for s in strips if s["mode"] in WORKER_MODES | CHECK_MODES)
-    worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES | CHECK_MODES and s["no_process"])
+    worker_busy = sum(1 for s in strips if s["mode"] in WORKER_MODES)
+    worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES and s["no_process"])
     review_busy = sum(1 for s in strips if s["mode"] in REVIEW_MODES)
     max_parallel = sched.effective_max_parallel()
     review_parallel = sched.review_parallel_limit()
