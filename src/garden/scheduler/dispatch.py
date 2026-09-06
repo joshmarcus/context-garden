@@ -35,6 +35,8 @@ class DispatchMixin:
                 continue
             if age_days >= keep_days:
                 gitops.remove_worktree(self.repo_for(task), worktree)
+                if worktree.exists() and not worktree.is_symlink():
+                    shutil.rmtree(worktree, ignore_errors=True)
                 rep.transitions.append(f"{task.id}: removed terminal worktree")
                 continue
             for cache in [worktree / ".venv", worktree / ".pytest_cache", *worktree.rglob("__pycache__")]:
