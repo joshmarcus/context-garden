@@ -11,6 +11,7 @@ A run directory holds:
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import signal
@@ -60,6 +61,14 @@ class HistoryUnavailable(RuntimeError):
     """Durable history exists but its compact index cannot be trusted."""
 
 
+class RecoveryLaunchConflict(RuntimeError):
+    """The run observed by a recovery client is no longer current."""
+
+    def __init__(self, current_run_id: str):
+        super().__init__("the expected run is stale")
+        self.current_run_id = current_run_id
+
+
 @dataclass
 class Run:
     task_id: str
@@ -91,6 +100,8 @@ class Run:
     cost_usd: float | None = None
     brief_tokens: int = 0
     error: str = ""
+    idempotency_key: str = ""  # recovery API: caller identity persisted with this operation
+    preparer_pid: int | None = None  # server preparing it; never reported as a worker pid
     fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
     # What dispatch() cleared from state to start a revise/rebase round (the feedback text,
     # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
@@ -465,6 +476,39 @@ class RunStore:
         )
         run.save()
         return run
+
+    def reserve_recovery_launch(
+        self, task_id: str, runner: str, idempotency_key: str, expected_run_id: str,
+        preparer_pid: int,
+    ) -> tuple[Run, bool]:
+        """Atomically replay or reserve one recovery launch.
+
+        The per-garden file lock makes the expected-run comparison and run creation one
+        compare-and-act operation across web processes.  The same caller key wins before
+        the precondition check, so a response lost in transit can always be replayed.
+        """
+        lock_path = self.dir.parent / "recovery-launch.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            runs = sorted(self._read_task_runs(task_id), key=lambda run: run.started_at)
+            replay = next((run for run in runs if run.idempotency_key == idempotency_key), None)
+            if replay is not None:
+                return replay, False
+            active = [run for run in runs if run.status in ("requested", "preparing", "running")]
+            current = active[-1].run_id if active else ""
+            if current != expected_run_id:
+                raise RecoveryLaunchConflict(current)
+            if current:
+                # This endpoint starts absent work; replacing a confirmed current worker is
+                # a separate destructive action.  The precondition still protects the common
+                # "I observed no run" recovery race without ever creating two workers.
+                raise RecoveryLaunchConflict(current)
+            run = self.new_run(task_id, runner, initial_status="requested")
+            run.idempotency_key = idempotency_key
+            run.preparer_pid = preparer_pid
+            run.save()
+            return run, True
 
     def runs_for(self, task_id: str) -> list[Run]:
         idx = self._ensure_index()

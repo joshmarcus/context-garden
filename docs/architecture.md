@@ -698,12 +698,20 @@ spending tokens; a failed flow exits non-zero and fails the job.
 
 ## Incident control path
 
-`GET /healthz`, `GET /api/control/status`, and `POST /pause` are the overload-safe
-control path. They touch only `state.json` (plus the pause event append); they do not
-construct a scheduler, discover tasks, or read run history. On the supported
-single-operator deployment each must return within 500 ms even while an ordinary page
-read is slow. Recovery dispatch can take longer, but reserves a durable run identity
-before preparation; `GET /api/operations/<task>/<run>` reads it directly.
+`GET /healthz`, `GET /api/control/status`, `POST /pause`, and
+`POST /api/control/tasks/<task>/launch` are the overload-safe control path. They run
+independently of the ordinary request-worker pool and do not discover the garden or read
+full run history. On the supported single-operator deployment each accepts or answers
+within 500 ms even when ordinary read workers are exhausted.
+
+Recovery launch accepts JSON `idempotency_key` and `expected_run_id` (the empty string
+means the client observed no current run). Under a cross-process compare-and-act lock it
+either reserves one durable requested run, replays the operation already carrying that
+key, or returns 409 with the actual current run. Its 202 JSON and `Location` header name
+`GET /api/operations/<task>/<run>`; only after the response is sent does worktree/setup
+preparation begin. A retry after server restart resumes the same preparing record. Its
+server preparation PID is bookkeeping, not a worker PID and never counts as confirmed
+live work.
 
 ## Rules the code keeps
 

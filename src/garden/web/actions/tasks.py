@@ -3,20 +3,30 @@
 
 from __future__ import annotations
 
+import os
 import re
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ...brief import brief_gaps
 from ...github import GitHubError
 from ...gitops import GitError
 from ...model import Status, Task, ensure_open
+from ...runs import RecoveryLaunchConflict, Run, RunStore
 from ...scheduler import Scheduler
 from ...store import Store
 from ...trials import parse_contender
 from ..common import LOGGER, Site, _flash_url
 from . import ACTIONS, action
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 @action("approve")
@@ -199,6 +209,72 @@ def reset_revisions(s: Store, sched: Scheduler, t: Task, note: str, applies_to: 
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+
+    def prepare_recovery_launch(task_id: str, run: Run) -> None:
+        """Continue a reserved launch after its 202 response has left the server."""
+        try:
+            sched = hub.scheduler()
+            task = sched.store.task(task_id)
+            ensure_open(task)
+            runner = sched.runner_for(task)
+            run.runner = runner.name
+            run.save()
+            sched.dispatch(
+                task,
+                mode="revise" if task.status == Status.CHANGES_REQUESTED else "work",
+                runner=runner,
+                reserved_run=run,
+            )
+        except Exception as exc:  # dispatch persists a terminal operation before re-raising
+            LOGGER.exception("recovery launch %s for %s failed", run.run_id, task_id)
+            hub._log(f"{task_id} recovery launch {run.run_id} failed: {exc}")
+
+    @app.post("/api/control/tasks/{task_id}/launch", status_code=202)
+    async def recovery_launch(
+        task_id: str,
+        background: BackgroundTasks,
+        payload: dict[str, object] = Body(...),
+    ) -> JSONResponse:
+        """Compare-and-reserve a retry-safe launch, then prepare it after responding."""
+        key = payload.get("idempotency_key")
+        expected = payload.get("expected_run_id")
+        if not isinstance(key, str) or not key.strip() or len(key) > 200:
+            raise HTTPException(422, "idempotency_key must be a non-empty string of at most 200 characters")
+        if not isinstance(expected, str):
+            raise HTTPException(422, "expected_run_id must be a string (empty means no current run)")
+        try:
+            task = hub.store.control_task(task_id)
+            ensure_open(task)
+            mode = "revise" if task.status == Status.CHANGES_REQUESTED else "work"
+            runs = RunStore(hub.store.config.garden_dir)
+            run, created = runs.reserve_recovery_launch(
+                task_id, "", key.strip(), expected, os.getpid()
+            )
+            if created:
+                run.mode = mode
+                run.save()
+                background.add_task(prepare_recovery_launch, task_id, run)
+            elif run.status in ("requested", "preparing") and (
+                run.preparer_pid is None or not _process_exists(run.preparer_pid)
+            ):
+                run.preparer_pid = os.getpid()
+                run.save()
+                background.add_task(prepare_recovery_launch, task_id, run)
+        except KeyError:
+            raise HTTPException(404) from None
+        except RecoveryLaunchConflict as exc:
+            return JSONResponse(
+                {"detail": "expected_run_id is stale", "current_run_id": exc.current_run_id},
+                status_code=409,
+            )
+        except (RuntimeError, GitError, GitHubError) as exc:
+            raise HTTPException(409, str(exc)) from None
+        location = f"/api/operations/{task_id}/{run.run_id}"
+        return JSONResponse(
+            {"operation_id": run.run_id, "task_id": task_id, "state": run.lifecycle_state},
+            status_code=202,
+            headers={"Location": location},
+        )
 
     @app.post("/tasks/{task_id}/brief")
     def save_brief(task_id: str, acceptance: str = Form(""), reading: str = Form("")):

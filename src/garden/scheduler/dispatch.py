@@ -80,6 +80,8 @@ class DispatchMixin:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
         for task, mode, _why in self.dispatch_queue():
+            if self.worker_run_in_flight(task.id):
+                continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
@@ -259,13 +261,14 @@ class DispatchMixin:
 
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
-                 worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+                 worktree_override: Path | None = None, model_override: str | None = None,
+                 reserved_run: Run | None = None) -> Run:
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
-                                  branch_override, worktree_override, model_override)
+                                  branch_override, worktree_override, model_override, reserved_run)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
@@ -297,7 +300,8 @@ class DispatchMixin:
 
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
-                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+                  worktree_override: Path | None = None, model_override: str | None = None,
+                  reserved_run: Run | None = None) -> Run:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
@@ -310,8 +314,11 @@ class DispatchMixin:
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
-        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id,
-                                initial_status="requested")
+        run = reserved_run or self.runs.new_run(
+            task.id, runner.name, mode=mode, run_id=run_id, initial_status="requested"
+        )
+        if run.task_id != task.id or run.mode != mode or run.status not in ("requested", "preparing"):
+            raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run
         run.status = "preparing"
         run.save()

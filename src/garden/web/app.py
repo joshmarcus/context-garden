@@ -115,12 +115,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         return Response(favicon_svg(), media_type="image/svg+xml")
 
     @app.get("/healthz", include_in_schema=False)
-    def health() -> PlainTextResponse:
+    async def health() -> PlainTextResponse:
         """Process liveness only: deliberately no Store, Scheduler, or history reads."""
         return PlainTextResponse("ok")
 
     @app.get("/api/control/status", include_in_schema=False)
-    def control_status() -> JSONResponse:
+    async def control_status() -> JSONResponse:
         """Bounded incident status from the small side-store, without task/history reads."""
         from ..scheduler.state import State
 

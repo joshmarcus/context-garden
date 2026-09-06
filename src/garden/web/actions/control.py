@@ -20,7 +20,7 @@ def register(app: FastAPI, site: Site) -> None:
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
 
     @app.post("/pause")
-    def web_pause(request: Request, reason: str = Form("")):
+    async def web_pause(request: Request, reason: str = Form("")):
         back = request.headers.get("referer", "/")
         try:
             with hub.action_lock:
