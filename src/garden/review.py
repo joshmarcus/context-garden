@@ -45,6 +45,10 @@ Check, in this order:
 5. **Principles.** Tests skipped or weakened, scope widened, history rewritten, new
    dependencies without justification.
 
+When a "Rendered UI captures" section is present, open every listed PNG with the image
+reader and inspect layout, overlap, wrapping and empty states. Name every page inspected in
+`pages_seen`. Omitting a listed page makes the verdict mechanically `request_changes`.
+
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
 
@@ -57,7 +61,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
 
 The JSON must be on one line.
 """
@@ -81,7 +85,8 @@ def _verification_brief(task: Task, verified: Any) -> str:
 
 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
-                 max_diff_chars: int, pr_comment: str = "", verified: Any = None) -> str:
+                 max_diff_chars: int, pr_comment: str = "", verified: Any = None,
+                 captures: list[str] | None = None) -> str:
     task_brief = build_brief(store, task, include_rules=False)
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
@@ -92,6 +97,9 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     verification = _verification_brief(task, verified)
     if verification:
         parts.append(verification)
+    if captures:
+        parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
+                     "\n".join(f"- `{path}`" for path in captures) + "\n")
     if pr_comment.strip():
         parts.append(
             "## Author's response to the previous review (posted as a PR comment, not part of the description)\n\n"

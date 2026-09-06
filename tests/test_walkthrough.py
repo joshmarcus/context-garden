@@ -1,4 +1,7 @@
 import os
+import subprocess
+import sys
+import types
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -6,14 +9,21 @@ from typer.testing import CliRunner
 from garden.cli import app
 from garden.personas import phase_brief
 from garden.runs import RunStore
+from garden.scheduler.checkruns import _is_ui_path
+from garden.scheduler.report import TickReport
 from garden.store import Store
 from garden.walkthrough import (
+    COLOR_SCHEMES,
+    VIEWPORTS,
+    _prepare_browser,
     _redact_home,
     _scrub_stderr,
+    _seeded_ui_capture,
     capture,
     html_to_text,
     newest_walkthrough,
     pages_for,
+    ui_check,
 )
 
 
@@ -68,6 +78,106 @@ def test_pages_include_the_phase_and_a_task(garden):
     urls = {s.url for s in specs}
     assert "/phases/demo/p1" in urls
     assert any(s.url.startswith("/tasks/") for s in specs)
+    assert "/" in urls
+
+
+def test_ui_path_detection():
+    assert _is_ui_path("src/garden/web/templates/inbox.html")
+    assert _is_ui_path("assets/site.css")
+    assert not _is_ui_path("src/garden/model.py")
+    assert VIEWPORTS == (1280, 390)
+    assert COLOR_SCHEMES == ("light", "dark")
+
+
+def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: "")
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        return {spec.slug for spec in specs}, ""
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui")
+    assert result["status"] == "pass"
+    assert "1280/390" in result["summary"]
+    assert (tmp_path / "ui" / "now.html").exists()
+    assert (tmp_path / "ui" / "board.html").exists()
+    assert (tmp_path / "ui" / "task.html").exists()
+    for slug in ("now", "inbox", "board", "task"):
+        for width in VIEWPORTS:
+            for scheme in COLOR_SCHEMES:
+                assert (tmp_path / "ui" / f"{slug}-{width}-{scheme}.png").exists()
+
+
+def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"], seen["cwd"], seen["env"] = argv, kwargs["cwd"], kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["now"]}\n', "")
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures")})
+    assert result["status"] == "pass"
+    assert seen["cwd"] == worktree
+    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
+    assert seen["argv"][1:3] == ["-m", "garden.walkthrough"]
+
+
+def test_browser_is_prepared_automatically(monkeypatch):
+    class Chromium:
+        def launch(self):
+            raise RuntimeError("browser executable missing")
+
+    class Playwright:
+        chromium = Chromium()
+
+    class Context:
+        def __enter__(self):
+            return Playwright()
+
+        def __exit__(self, *_args):
+            return False
+
+    calls = []
+    package = types.ModuleType("playwright")
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = Context
+    monkeypatch.setitem(sys.modules, "playwright", package)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **_kwargs: (
+        calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")))
+    assert _prepare_browser() == ""
+    assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
+
+
+def test_scheduler_adds_ui_check_only_for_ui_changes(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    worktree = sched.worktree_for(task)
+    worktree.mkdir(parents=True, exist_ok=True)
+    captured = []
+    runner = sched.runner_for(task, "local")
+    monkeypatch.setattr(runner, "start_checks", lambda _run, _cwd, payload: captured.append(payload))
+    monkeypatch.setattr(sched, "runner_for", lambda *_args, **_kwargs: runner)
+
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
+                        lambda _worktree, _base: ["src/garden/web/templates/inbox.html"])
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
+    assert ui["worktree"] == str(worktree)
+    assert "garden_root" not in ui
+
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
+                        lambda _worktree, _base: ["src/garden/model.py"])
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
 
 
 def test_html_to_text_strips_tags_and_scripts():

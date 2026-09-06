@@ -94,6 +94,17 @@ def doctor():
         except OSError as e:
             console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]")
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            browser.close()
+        console.print("browser: [green]Chromium available[/green]")
+    except Exception as exc:  # noqa: BLE001 - doctor reports missing package, binary, or libs alike
+        console.print("[yellow]browser: unavailable; captures will prepare Chromium automatically, "
+                      "then fall back to HTML only if the machine lacks required system libraries"
+                      f" [{type(exc).__name__}][/yellow]")
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"
     if gh.available:

@@ -29,6 +29,12 @@ from .report import TickReport
 _EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 
+def _is_ui_path(path: str) -> bool:
+    """Files whose rendered result must be inspected before a PR opens."""
+    return (path.startswith(("src/garden/web/", "templates/")) or "/templates/" in path
+            or path.endswith((".css", ".scss")))
+
+
 class CheckRunMixin:
     # ---- dispatch / reap ---------------------------------------------------
     def _run_by_id(self, task: Task, run_id: str) -> Run | None:
@@ -52,6 +58,12 @@ class CheckRunMixin:
         run = self.runs.new_run(task.id, "local", mode="check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
+        if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
+            changed = gitops.diff_names(worktree, base)
+            if any(_is_ui_path(path) for path in changed) and not any(s.get("name") == "ui" for s in specs):
+                specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
+                                  "out_dir": str(run.path / "ui"), "worktree": str(worktree),
+                                  "changed": changed}]
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
