@@ -139,9 +139,13 @@ Every local supervisor also takes one kernel-backed, per-user heavy-execution le
 starting the harness. The default budget of one covers checks, base probes, workers and
 reviewers from every garden on the same account. Extra admitted runs are visible as waiting;
 cancellation works while waiting, and process exit or a crash releases the lease without stale
-cleanup. A worker may start several test processes, but they remain inside its one leased tree
-and aggregate OS budget. Arbitrary terminal commands and remote runners are not intercepted;
-use CI or an equivalent host-side unit for those paths.
+cleanup. Inside a worker, each supported heavy command is launched as
+`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>`; the variable selects the
+garden installation's Python even when the product uses another environment. Concurrent wrappers share a second, owner-scoped
+lease and therefore serialize without trying to reacquire the outer slot. Raw commands that
+bypass this wrapper still remain inside the aggregate cgroup but are not individually serialized.
+Arbitrary operator terminal commands and remote runners are not intercepted; use the wrapper
+from a local supervised run, CI, or an equivalent host-side unit for those paths.
 
 Per-run temporary directories live below `work_dir/tmp`, receive both `TMPDIR` and
 `PYTEST_DEBUG_TEMPROOT`, and are removed only after their run record is terminal. Keep

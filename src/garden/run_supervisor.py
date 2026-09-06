@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -53,10 +54,38 @@ def _execution_slot(run_dir: Path, should_stop: object) -> object:
     """Take one host-wide execution lease, recoverable by kernel lock release."""
     limit = int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1"))
     if os.environ.get("GARDEN_EXECUTION_LEASED") == "1":
-        (run_dir / "execution.json").write_text(json.dumps(
-            {"state": "running", "limit": limit, "inherited": True, "pid": os.getpid()}
-        ))
-        return None
+        owner = os.environ.get("GARDEN_EXECUTION_OWNER", "")
+        if not owner:
+            (run_dir / "execution.json").write_text(json.dumps({
+                "state": "unsupported", "limit": 1, "inherited": True, "pid": os.getpid(),
+                "reason": "inherited execution lease has no owner identity",
+            }))
+            raise RuntimeError("inherited execution lease has no owner identity")
+        # The outer supervisor already owns a host slot, so taking that lock again would
+        # deadlock. Supported validation children instead share this owner-scoped lock:
+        # one expensive child may run while its siblings wait inside the same run budget.
+        lock_root = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+        owner_key = hashlib.sha256(owner.encode()).hexdigest()[:20]
+        lock_path = lock_root / f"garden-heavy-test-{os.getuid()}-owner-{owner_key}.lock"
+        while True:
+            if should_stop():
+                raise InterruptedError
+            handle = lock_path.open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                (run_dir / "execution.json").write_text(json.dumps({
+                    "state": "waiting", "reason": "another validation in this run is active",
+                    "limit": 1, "inherited": True, "owner": owner,
+                }))
+                time.sleep(0.1)
+                continue
+            (run_dir / "execution.json").write_text(json.dumps({
+                "state": "running", "limit": 1, "inherited": True, "owner": owner,
+                "pid": os.getpid(),
+            }))
+            return handle
     if limit <= 0:
         (run_dir / "execution.json").write_text(json.dumps({"state": "disabled", "limit": 0}))
         return None
@@ -75,6 +104,9 @@ def _execution_slot(run_dir: Path, should_stop: object) -> object:
                 {"state": "running", "slot": slot, "limit": limit, "pid": os.getpid()}
             ))
             os.environ["GARDEN_EXECUTION_LEASED"] = "1"
+            os.environ["GARDEN_EXECUTION_OWNER"] = f"{os.getpid()}:{run_dir.resolve()}"
+            os.environ["GARDEN_EXECUTION_RUN_DIR"] = str(run_dir.resolve())
+            os.environ["GARDEN_VALIDATION_RUNNER"] = sys.executable
             return handle
         (run_dir / "execution.json").write_text(json.dumps(
             {"state": "waiting", "reason": f"heavy-test budget full (limit {limit})", "limit": limit}

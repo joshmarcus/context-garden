@@ -315,8 +315,12 @@ name the effective bound and recovery action. Queue-specific `max_parallel` and
 Local supervisors additionally share `resources.heavy_test_parallel` kernel leases across
 every garden owned by the same OS user (one by default). An admitted run waits explicitly at
 that boundary before any harness or check starts; exit, cancellation and crashes release its
-`flock`, so reservations cannot become stale. The lease covers the whole run, avoiding a
-nested-lock deadlock when that run starts tests itself. With `resources.execution_cgroup`, the
+`flock`, so reservations cannot become stale. A supported worker-issued heavy validation uses
+`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` and takes a separate
+owner-scoped lease. The variable names the garden installation's interpreter. Thus two
+validations in one run serialize without trying to reacquire the host slot held by their parent.
+Raw child commands are still contained by the aggregate cgroup but cannot be recognized as
+heavy and are not serialized. With `resources.execution_cgroup`, the
 supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU
 and memory controls and its resulting membership, so all descendants
 share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose

@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -334,17 +335,67 @@ def test_execution_cgroup_requires_finite_limits_and_verified_migration(tmp_path
     assert "migration failed" in status["reason"]
 
 
-def test_nested_supported_launch_inherits_execution_lease(tmp_path, monkeypatch):
+def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch):
     import garden.run_supervisor as supervisor
 
     run_dir = tmp_path / "nested"
     run_dir.mkdir()
     monkeypatch.setenv("GARDEN_EXECUTION_LEASED", "1")
+    monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "outer-run")
     monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
     slot = supervisor._execution_slot(run_dir, lambda: False)
     status = json.loads((run_dir / "execution.json").read_text())
-    assert slot is None
+    assert slot is not None
     assert status["state"] == "running" and status["inherited"] is True
+    assert status["owner"] == "outer-run"
+
+
+def test_two_validations_from_one_worker_are_serialized(tmp_path):
+    """Competing supported validation wrappers cannot multiply one worker's workload."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    workload = tmp_path / "workload.py"
+    workload.write_text(
+        "import fcntl, pathlib, time\n"
+        "state = pathlib.Path('active.txt')\n"
+        "with pathlib.Path('active.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, (state.read_text() if state.exists() else '0 0').split())\n"
+        " active += 1\n"
+        " state.write_text(f'{active} {max(active, peak)}')\n"
+        "time.sleep(0.25)\n"
+        "with pathlib.Path('active.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, state.read_text().split())\n"
+        " state.write_text(f'{active - 1} {peak}')\n"
+    )
+    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {workload}'
+    harness = Harness("nested", {"command": ["sh", "-c", f"{validation} & {validation} & wait"]})
+    runner = LocalRunner({"timeout_minutes": 1}, harness)
+    run_dir = tmp_path / "outer"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="outer", dir=str(run_dir), runner="local")
+    env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+           "GARDEN_EXECUTION_CGROUP": ""}
+    runner.launch(run, tmp_path, brief, env)
+
+    deadline = time.monotonic() + 3
+    saw_waiting = False
+    while time.monotonic() < deadline and not run.process_finished():
+        statuses = list((run_dir / "validations").glob("*/execution.json"))
+        states = [json.loads(path.read_text())["state"] for path in statuses]
+        saw_waiting |= "waiting" in states
+        time.sleep(0.01)
+    os.waitpid(run.pid, 0)
+    assert run.read_exit_code() == 0
+    assert saw_waiting
+    assert (tmp_path / "active.txt").read_text() == "0 1"
+    statuses = list((run_dir / "validations").glob("*/execution.json"))
+    assert len(statuses) == 2
+    assert all(json.loads(path.read_text())["inherited"] is True for path in statuses)
 
 
 def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):

@@ -39,7 +39,9 @@ PASS_ENV: tuple[str, ...] = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "ANTHROPIC_*", "CLAUDE_*",   # the claude harness's own credentials and settings
     "OPENAI_*", "CODEX_*",       # the codex harness's
-    "GARDEN_EXECUTION_LEASED",    # nested supported launches inherit the outer run lease
+    "GARDEN_EXECUTION_LEASED",    # nested supported launches share the outer run budget
+    "GARDEN_EXECUTION_OWNER",
+    "GARDEN_EXECUTION_RUN_DIR",
 )
 
 
