@@ -207,7 +207,9 @@ def retro(call: Call) -> None:
         if os.environ.get("FAKE_CLAUDE_RETRO_INCOMPLETE"):
             blocking.append({"title": "Document the base failure", "difficulty": "easy", "priority": 2,
                              "body": "Capture the remaining base failure.", "reason": "operators need the cause",
-                             "acceptance": [], "reading": ["gdn/product.md"]})
+                             # Criteria may be absent, so use the same placeholder the brief gate
+                             # rejects to keep this fixture's incomplete-blocker path meaningful.
+                             "acceptance": ["..."], "reading": ["gdn/product.md"]})
     questions = []
     if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
         questions = [
