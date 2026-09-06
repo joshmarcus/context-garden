@@ -1,10 +1,11 @@
 {% macro card(run) -%}
-<article class="run {{ run.state }}" data-run-id="{{ run.run_id }}" data-started-at="{{ run.started_at }}" data-finished-at="{{ run.finished_at }}" data-typical-seconds="{{ run.typical }}">
+<article class="run {{ run.state }}" data-run-id="{{ run.run_id }}" data-started-at="{{ run.started_at }}" data-finished-at="{{ run.finished_at }}" data-typical-seconds="{{ run.typical }}" data-typical-n="{{ run.typical_n|default('') }}">
   <div class="run-heading">{{ stage(run.state) }}<span class="mode">{{ run.mode }}</span></div>
+  {% if run.no_process|default(false) %}<p class="metadata">Process not found · run record still running</p>{% endif %}
   <h3>{{ run.title }}</h3>
   <p class="metadata">{{ run.harness }} · {{ run.model }} · {{ run.tier }}</p>
   <details class="transcript"><summary>{{ run.line }}</summary><p>{{ run.line }}</p></details>
-  <div class="timing"><time class="elapsed">{{ run.elapsed }}</time><span class="duration-track" aria-hidden="true"><i></i></span><span class="typical-label">{{ 'typical ' ~ (run.typical // 60) ~ ':00 · n=12' if run.typical else 'duration recorded' }}</span></div>
+  <div class="timing"><time class="elapsed">{{ run.elapsed }}</time><span class="duration-track" aria-hidden="true"><i></i></span><span class="typical-label">{{ 'typical duration from export · sample n not supplied' if run.typical else ('duration recorded' if run.finished_at else 'Typical not established') }}</span></div>
   <p class="metadata spend">{{ run.cost }}</p>
 </article>
 {%- endmacro %}

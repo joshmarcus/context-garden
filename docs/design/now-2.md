@@ -18,13 +18,30 @@ or open the file directly. It needs no server, package installation or network.
 The app currently mounts only the plates directory, so this is a file preview,
 not an assertion that `/static/mock/now-2.html` is a served route.
 
-**The mock is a labelled simulation, not yet a real-state acceptance artifact.**
-Phase identity, plant and goal wording come from the actual phase-05 goals;
-task titles come from the supplied brief. Counts, queue membership, run times,
-transcript excerpts and matrix values are illustrative. No controller state or
-event export was supplied to this worktree. Unknown data must not be represented
-as an empty garden or zero cost. A timestamped, sanitized snapshot is required to
-replace the simulation before the real-state criterion can be claimed.
+**The main mock renders the supplied real snapshot** at
+`docs/design/now-2/snapshot.json`, captured `2026-09-06T02:34:47+00:00`.
+All five run records, 28 dispatch candidates, held PR, three open phases, closed
+specimens and four metric windows come from that export. The state atlas and
+“Preview arriving run” are explicitly simulated. This is a recorded view, not a
+live connection; the browser clock replays from capture time. No controller is run.
+
+The export contains aggregates rather than raw events and does not identify its
+computation version. The renderer preserves exported numbers and cohorts rather
+than recomputing or certifying them as `garden metrics` output. In particular,
+first-pass cells use the export's reviewed cohort, not the accepted cohort chosen
+below for the build. The shared-computation acceptance claim remains unverified.
+Typical durations have no sample n; the mock says so. The supplied throughput
+values count runs (9 + 15 = 24 for the hour), not the eight accepted tasks, so
+that chart is honestly labelled run completions. Accepted-task throughput awaits
+raw acceptance timestamps. Price completeness, next tick and hand-merge attribution
+are not supplied and remain unknown.
+
+Three run records say `running` with `no_process=true`; preserve them with an
+explicit “Process not found” label. Review waiting says “no review slot” while
+capacity says 0 of 3 busy; both observations and the conflict remain visible.
+The phase progress glyph follows this document's threshold rule (10/45 is leaf),
+rather than the export's `seed` label. The other designer's latest assistant
+excerpt is omitted from the display; it is not a design source.
 
 The external reading files were read through GitHub, not another checkout:
 
@@ -36,7 +53,7 @@ The external reading files were read through GitHub, not another checkout:
 | `context-garden/phase-01-bootstrap/specs/botanical-theme.md` | `a6aa23934a83fdb40ae641aaad078549b9d3e21c` |
 
 The product source baseline is `b240f29`. The mock reuses its plant symbols and
-local Thomé plates; credits remain in `static/plates/SOURCES.md`. Rebuild it with
+local Thomé plates; credits remain in `static/plates/SOURCES.md`. The supplied JSON is the data input; the renderer only adapts presentation. Rebuild it with
 `PYTHONPATH=src .venv/bin/python docs/design/now-2/render.py`.
 
 ## Layout and visual system
@@ -145,7 +162,7 @@ sublist without numbered eligible positions. Show all items in a disclosure afte
 the first three per queue, preserving order and total.
 
 Merges put the current `merge_head` first, then candidates ordered by
-`automerge_ready_at` and the scheduler's tie-break; show review round, CI and
+`automerge_ready_at` then task ID, matching `RebaseMixin._drain_automerge`; show review round, CI and
 rebase state from side-store facts. Held PRs removed from the queue remain in
 Now's attention band and the Waiting list. Reviews use the actual pending-review
 drain order and review-slot limit, not worker capacity. No ETAs are guessed.
@@ -346,11 +363,11 @@ Stale/out-of-sequence snapshots trigger another read rather than a guessed state
 
 ## State mock and validation
 
-The file preview includes a primary operational composition and a permanent
+The file preview includes the captured operational composition and a permanent
 state atlas: running, finishing, held, paused, failed, empty, quiet, missing data,
 and disconnected. Its controls demonstrate theme, metric switching, motion off,
-and an arriving clock. All five matrices exist in rendered HTML (all remain
-readable with JavaScript off). Simulation labels remain visible in screenshots.
+and an arriving clock. All five matrices for all four supplied windows exist in rendered HTML (all remain
+readable with JavaScript off). Capture and simulation labels remain visible.
 
 The render test provides a fixed start timestamp to the card macro and asserts
 the exact `data-started-at` read by the clock; it also verifies the completed
@@ -359,7 +376,7 @@ live `/now2` route. The build must add its own route and browser clock tests,
 including 59→60, 3599→3600, offset clock, new run identity, delayed dispatch,
 tab return, missing typical, failure persistence and reduced motion.
 
-Before acceptance, capture 1280px and 390px in light and dark with a real snapshot;
+Before acceptance, capture 1280px and 390px in light and dark from the supplied snapshot;
 check layout, table scrolling, focus and untruncated queue reasons. Browser tooling
 is not installed in the prepared worker environment, so a visual pass cannot be
 claimed from markup inspection. The mock uses existing local plates and fallback
@@ -372,13 +389,26 @@ not a persona verdict. The runner must perform the requested reviews and return
 findings before this criterion is claimed. In particular, validate the five-second
 reading test, low-n legend, mobile matrix and distinction between finished/merged.
 
-## Snapshot handoff
+## Remaining evidence handoff
 
-Provide inside this worktree a sanitized export with `captured_at`, product/phase
+The supplied aggregate snapshot resolves access to operational state. To verify
+computation provenance and fill its missing fields, provide a sanitized export with `captured_at`, product/phase
 metadata and goals, task frontmatter (no task bodies needed except titles), active
 and historical run metadata, current queue/control/attention facts, first/latest
 tick and next scheduled tick, and events with enough preceding history to compute
 the selected windows. Include explicit completeness flags and model price coverage.
 Do not include credentials, full transcripts, host paths or session secrets;
 one sanitized latest assistant line per run is sufficient. The renderer can then
-replace its simulation inputs without guessing operational facts.
+fill the missing observations without guessing operational facts.
+
+
+Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
+1019 passed, 3 skipped; `.venv/bin/ruff check src tests` passes. The dedicated
+mock tests pass after adaptation to the snapshot. An HTML inspection finds no
+duplicate IDs, no missing local plate images, and all four window panels.
+These are structural checks; no visual or persona approval is implied. No typecheck
+command is configured in `pyproject.toml` or the repository CI workflow.
+
+Table values, sample counts and rank marks all use the ink foreground. Endpoint
+contrast calculations give a minimum 13.28:1 in light and 9.10:1 in dark across
+the neutral, best and worst cell grounds; no whole-cell opacity dims low-n text.
