@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status
+from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
 
@@ -257,6 +258,26 @@ def test_checks_and_edits_do_not_consume_worker_slots(sched):
     assert "DM-001(work)" in rep.dispatched
     assert len(sched.worker_runs_active()) == 1
     assert sched.slots_free() == 1
+
+
+def test_edit_dispatch_is_not_blocked_by_full_worker_cap(sched):
+    """An edit is slot-free, so pending suggestions are integrated even when workers are full."""
+    worker = sched.runs.new_run("DM-001", "local", mode="work")
+    worker.status = "running"
+    worker.save()
+    sched.set_override("max_parallel", 1)
+
+    task = sched.store.task("DM-002")
+    record_suggestion(sched.store, task, "cover the empty case", author="josh")
+
+    from garden.scheduler import TickReport
+
+    rep = TickReport()
+    sched.dispatch_edits(rep)
+
+    assert sched.slots_free() == 0
+    assert "DM-002(edit)" in rep.dispatched
+    assert sched.state.get("DM-002").get("edit_run")
 
 
 def test_pause_stops_dispatch(sched, fake_github):
