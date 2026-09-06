@@ -229,7 +229,9 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
                   stage: str = "") -> dict[str, Any]:
     """One Now strip for a run record, running or just finished."""
     t = tasks.get(run.task_id)
-    finished = run.status != "running"
+    # An exit code is the runner's completion signal. A dead pid without one is a
+    # crashed process that the reaper still needs to diagnose, not completed work.
+    finished = run.status != "running" or (run.path / "exit_code").exists()
     # A record written at dispatch and never launched holds a slot until a tick reaps it, so
     # the page shows it as what it is rather than as a run that has said nothing for an hour.
     no_process = run.no_process
@@ -244,7 +246,7 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
         "glyph": MODE_GLYPH.get(run.mode, "running"), "dot": MODE_DOT.get(run.mode, "running"),
     }
     if finished:
-        out["verdict"] = finished_verdict(run)
+        out["verdict"] = "finished; awaiting collection" if run.status == "running" else finished_verdict(run)
         out["glyph"] = FINISHED_GLYPH.get(run.status, "done")
         out["dot"] = "failed" if run.status in ("failed", "timeout") else out["dot"]
         if run.status in ("failed", "timeout"):

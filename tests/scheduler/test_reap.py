@@ -618,6 +618,7 @@ def test_a_review_run_never_sends_a_running_task_back_to_ready(sched, fake_githu
 
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "running"  # the revise is still in flight, not reaped
+    assert sched.state.get("DM-001").get("last_review_run") == review_run.run_id
     assert not any("ready" in tr for tr in rep.transitions)
     assert "no active run found" not in sched.store.task("DM-001").body
 

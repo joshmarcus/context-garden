@@ -1,4 +1,5 @@
 from garden.model import Status
+from garden.now1 import strip_for_run
 from garden.review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -382,10 +383,50 @@ def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == review_run_id)
     assert run.status in ("done", "failed")
     assert run.cost_usd == 0.02  # usage/cost still recorded from the fake worker's output
-    assert any(f"{review_run_id} closed (orphaned)" in t for t in rep.transitions)
+    assert any(f"{review_run_id} closed (obsolete)" in t for t in rep.transitions)
     # no verdict posted and the task's own status is left alone
     assert sched.store.task("DM-001").status == Status.DONE
+    assert not sched.state.get("DM-001").get("review_run")
     assert not any("request_changes" in c or "approve" in c for c in fake_github.comments)
+
+
+def test_finished_review_on_a_ready_task_is_collected_without_reusing_stale_head(sched, fake_github):
+    """A failed rebase can return a task to ready before its review is collected."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched and finished
+    st = sched.state.get("DM-001")
+    run_id = st["review_run"]
+    run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run_id)
+    run.env_snapshot["review_head"] = "head-before-the-failed-rebase"
+    run.save()
+    task = sched.store.task("DM-001")
+    task.status = Status.READY
+    sched.store.save(task)
+    sched.pause(by="test")
+
+    assert run_id in sched.unreaped_run_ids()
+    strip = strip_for_run(run, {task.id: task}, sched.store, {})
+    assert strip["state"] == "finishing"
+    assert strip["verdict"] == "finished; awaiting collection"
+
+    rep = sched.tick()
+
+    closed = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run_id)
+    assert closed.status == "done" and closed.cost_usd == 0.02
+    assert not sched.state.get("DM-001").get("review_run")
+    assert not sched.state.get("DM-001").get("last_review_run")
+    assert sched.store.task("DM-001").status == Status.READY
+    assert any(f"{run_id} closed (obsolete)" in item for item in rep.transitions)
+    finished = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
+                if e.get("run") == run_id]
+    assert len(finished) == 1
+
+    sched.tick()
+    finished_again = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
+                      if e.get("run") == run_id]
+    assert len(finished_again) == 1
 
 
 def test_maybe_review_never_dispatches_for_a_merged_task(sched, fake_github):
