@@ -42,7 +42,7 @@
       <div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>
       <div class="why">{{ it.why }}</div>
       {% if it.get('decision_card') %}{% set decision_card = it.decision_card %}{% set card_task = it.card_task %}{% include "_decision_card.html" %}{% endif %}
-      {% if it.group == 'question' and not it.get('decision_card') %}<div class="q">{{ it.question }}</div>{% endif %}
+      {% if it.group == 'question' and not it.get('decision_card') %}<div class="q">{{ it.question or it.title }}</div>{% if it.question_context %}<div class="why">{{ it.question_context }}</div>{% endif %}{% if it.question_options %}<div class="why">options: {{ it.question_options|join(', ') }}</div>{% endif %}{% endif %}
       {% if it.group == 'decision' and it.final and not it.get('decision_card') %}<details class="q" style="margin-top:6px"><summary>The worker's full message</summary><pre style="white-space:pre-wrap;margin:6px 0 0">{{ it.final }}</pre></details>{% endif %}
       {% if it.get('review') %}<div class="why">automated review: {{ it.review.summary }}</div>{% endif %}
       {% if it.group == 'approve' and it.gaps %}<div class="why">Fix the brief before approving — a run would be spent on:</div><ul class="why" style="margin:4px 0 0;padding-left:16px">{% for g in it.gaps %}<li>{{ g }}</li>{% endfor %}</ul>{% endif %}
@@ -64,8 +64,11 @@
       {% if it.get('decision_card') %}
       {% elif it.group == 'tool' %}
         <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
-      {% elif it.group == 'question' %}
+      {% elif it.group == 'question' and it.task %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
+      {% elif it.group == 'question' %}
+        <form method="post" action="/decisions/{{ it.decision }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="answer" placeholder="Your answer." required></textarea><button class="primary">Answer</button></form>
+        <form method="post" action="/decisions/{{ it.decision }}/dismiss"><button class="quiet danger">Dismiss</button></form>
       {% elif it.group == 'decision' %}
         <form method="post" action="/tasks/{{ it.task }}/accept"><button class="primary">Accept{% if it.decision_kind == 'wont_do' %} (won't do){% else %} (resume){% endif %}</button></form>
         <form method="post" action="/tasks/{{ it.task }}/reject" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Why you disagree. It goes back to the worker in a revise round." required></textarea><button>Reject and send back</button></form>
@@ -101,11 +104,12 @@
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
       {% elif it.group == 'approve' %}
         <form method="post" action="/tasks/{{ it.task }}/approve" style="display:inline-flex;gap:6px;align-items:center">
-          <button class="primary">Approve into <span data-approve-label>{{ it.phase_name }}</span></button>
+          <button{% if not it.gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ it.phase_name }}</span></button>
           <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
             {% for ph in it.approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == it.phase_name %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
           </select>
         </form>
+        {% if it.gaps %}<a class="btn primary" href="/tasks/{{ it.task }}#suggest-form">Fix the brief before approving</a>{% endif %}
         {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
       {% elif it.group == 'budget' %}

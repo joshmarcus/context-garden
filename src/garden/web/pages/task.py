@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from ...brief import build_brief
+from ...brief import brief_gaps, build_brief
 from ...criteria import parse_criteria, reconcile, worker_verified
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
@@ -97,6 +97,7 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
+            brief_gaps=brief_gaps(s, t),
             prior_trials=prior_trials,
             trial_view=trial_view,
             design_files=_design_files(t, s),

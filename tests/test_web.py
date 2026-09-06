@@ -1366,6 +1366,8 @@ def test_config_page_names_live_and_restart_keys(garden):
     assert "within one tick" in text and "no restart" in text
     assert "Needs a restart" in text
     assert "work_dir" in text and "tick_interval" in text
+    live_values = text.split("Live values", 1)[1].split("Read once at startup", 1)[0]
+    assert "tick_interval" not in live_values
 
 
 def test_config_page_and_inbox_show_a_held_reload_and_accept_applies_it(garden, monkeypatch):

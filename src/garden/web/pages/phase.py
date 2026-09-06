@@ -108,6 +108,7 @@ def register(app: FastAPI, site: Site) -> None:
             reviews=[{"rel": s.rel(p), "text": p.read_text(), **_review_head(p)} for p in reviews[:10]],
             budget=sched.budget_for(ph.key), spent=spent, metrics=m,
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
+            has_approved=any(t.status.value != "draft" for t in ph.tasks),
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
             retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
             new_task=_new_task_prefill(request),

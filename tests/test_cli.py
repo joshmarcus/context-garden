@@ -662,6 +662,10 @@ def test_help_groups_commands_into_panels():
         assert panel in r.output, panel
 
 
+def test_every_command_names_a_help_panel():
+    assert all(command.rich_help_panel for command in app.registered_commands)
+
+
 def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):
     monkeypatch.setenv("COLUMNS", "80")
     r = run(garden, "status")

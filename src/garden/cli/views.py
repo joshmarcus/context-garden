@@ -20,6 +20,7 @@ def status(
 ):
     """Overview per phase, plus cost totals."""
     from ..graph import effective_status
+    from ..inbox import build_inbox, needs_you
     from ..runs import RunStore
 
     store = _store()
@@ -39,6 +40,7 @@ def status(
     table.add_column("!", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
+    inbox_items = build_inbox(store, sched)
     stack = bool(store.config.get("stack", True))
     closed_phases = []
     retro_waiting = []
@@ -51,11 +53,9 @@ def status(
                 closed_phases.append(ph)
                 continue
             counts = {s: 0 for s in STATUS_ORDER + ["blocked"]}
-            attn = 0
+            attn = sum(1 for item in inbox_items if item.get("phase") == ph.key and needs_you(item))
             for t in ph.tasks:
                 counts[effective_status(t, tasks, stack)] += 1
-                if not t.status.terminal and sched.state.get(t.id).get("needs_human"):
-                    attn += 1
             budget = sched.budget_for(ph.key)
             spent = sched.spent_for(ph.key)
             money = f"${spent:.2f}" + (f" / ${budget:.2f}" if budget else "")
@@ -68,9 +68,10 @@ def status(
                 retro_waiting.append((ph.key, pending))
             if any(t.status != Status.DRAFT for t in ph.tasks) and not sched.has_kickoff(ph):
                 kickoff_missing.append(ph.key)
-    console.print(table)
-    legend = "  ".join(f"{short[s]} {s}" for s in cols) + "  ! needs you"
-    console.print(f"[dim]{legend}[/dim]")
+    if table.rows:
+        console.print(table)
+        legend = "  ".join(f"{short[s]} {s}" for s in cols) + "  ! needs you"
+        console.print(f"[dim]{legend}[/dim]")
     for key, pending in retro_waiting:
         console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
     for key in kickoff_missing:
@@ -87,7 +88,7 @@ def status(
         mp_line += f" (live override; garden.yaml: {store.config.get('max_parallel')})"
     mp_line += f"  reviews: {len(sched.review_runs_active())}/{sched.review_parallel_limit()}"
     active_profile = sched.operating_profile_name()
-    mp_line += f"  profile: {active_profile or '(none)'}"
+    mp_line += f"  operating profile: {active_profile or '(none)'}"
     console.print(mp_line)
     up = sched.upgrade_available()
     if up:
@@ -246,7 +247,7 @@ def ready():
 
 
 @app.command(rich_help_panel=PANEL_BOARD)
-@app.command("graph", hidden=True)
+@app.command("graph", hidden=True, rich_help_panel=PANEL_BOARD)
 def trellis(
     fmt: str = typer.Option("text", "--format", "-f", help="text|mermaid|json"),
     product: str | None = typer.Option(None, "--product", "-p"),
