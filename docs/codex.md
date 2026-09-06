@@ -153,8 +153,10 @@ cgroup whose `cgroup.procs` is writable, `cpu.max` is finite, and at least one o
 `memory.high` or `memory.max` is finite. The supervisor moves itself before spawning, verifies
 its effective cgroup membership, and
 every child and detached session inherits that budget. The rail and `garden observe` say
-`isolation enforced`, `unavailable`, or `not configured`; the last two are not isolation
-claims. Admission uses the tighter of host `MemAvailable` and the control process's effective
+`isolation enforced` only after a supervisor has recorded verified migration. `available`
+means the controls look finite and writable but no active run has yet proved membership;
+`not configured` and a concrete unbounded/unavailable reason are also shown. None of those
+three states claims isolation. Admission uses the tighter of host `MemAvailable` and the control process's effective
 cgroup `memory.high`/`memory.max` headroom.
 
 Reserve the service independently with sibling systemd slices: for example,
