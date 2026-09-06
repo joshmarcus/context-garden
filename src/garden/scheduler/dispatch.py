@@ -56,19 +56,25 @@ class DispatchMixin:
         if refusal:
             raise RuntimeError(refusal)
 
-    def dispatch_ready(self, rep: TickReport) -> None:
+    def dispatch_queue(self) -> list[tuple[Task, str, str]]:
+        """The order the next pass takes work in, as `(task, mode, why)`: rebase rounds first
+        (the cheapest work, and they unblock a merge; a rebase round has its own counter and is
+        not bounded by max_revisions), then revise rounds under the cap, then ready tasks in
+        `dispatch_sort_key` order. `why` says what put the line where it is. `dispatch_ready`
+        walks this list, and the Now page shows it, so the two cannot disagree; the per-line
+        skips (a frozen phase, a spent budget, a manual runner, a paused harness) are applied
+        by the walker, not here, so the order stays true even for a line the tick passes over."""
         tasks = self.store.tasks()
         max_rev = int(self.cfg.get("max_revisions", 3))
-        # Rebase rounds go first: they are the cheapest work and they unblock a merge. A rebase
-        # round has its own counter and is not bounded by max_revisions.
-        queue: list[tuple[Task, str]] = [
-            (t, "rebase") for t in tasks.values()
+        queue: list[tuple[Task, str, str]] = [
+            (t, "rebase", "rebase round, goes first") for t in tasks.values()
             if t.status == Status.CHANGES_REQUESTED
             and self.state.get(t.id).get("rebase_pending")
             and not self.state.get(t.id).get("needs_human")
         ]
         queue += [
-            (t, "revise") for t in tasks.values()
+            (t, "revise", f"revise round {int(self.state.get(t.id).get('revisions', 0)) + 1} of {max_rev}")
+            for t in tasks.values()
             if t.status == Status.CHANGES_REQUESTED
             and self.state.get(t.id).get("pending_feedback")
             and not self.state.get(t.id).get("rebase_pending")
@@ -77,9 +83,14 @@ class DispatchMixin:
             and (self.state.get(t.id).get("pending_feedback_rebase")
                  or int(self.state.get(t.id).get("revisions", 0)) < max_rev)
         ]
-        queue += [(t, "work") for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
+        queue += [(t, "work", f"priority {t.priority}" + (f" · order {t.order}" if t.order is not None else ""))
+                  for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
+        return queue
+
+    def dispatch_ready(self, rep: TickReport) -> None:
+        tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
-        for task, mode in queue:
+        for task, mode, _why in self.dispatch_queue():
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
