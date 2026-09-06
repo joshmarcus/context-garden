@@ -33,3 +33,7 @@ EDGE="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 ```
 
 Add `--force-dark-mode` for dark, `--window-size=390,2400` for the phone width. For a static mock, copy it under `/mnt/c/...` first and pass a `file:///C:/...` URL, since Edge reads and writes Windows paths only; then copy the PNGs from the Windows temp folder into your worktree (for example `docs/design/captures/`) so they travel with the PR and stay inside the fence. Say in the PR which captures you looked at. CG-315 makes this a check the garden runs itself.
+
+## The run ends when you stop
+
+You run headless: when you finish your turn the process exits and nothing wakes it. Never background the test suite, a build or a capture and wait for a notification; run long commands in the foreground and read their output before writing your result. A run that ends without its `GARDEN_RESULT` line is a failed run, however much it committed.
