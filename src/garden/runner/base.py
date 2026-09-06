@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import fnmatch
 import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
@@ -191,17 +193,28 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         return
     marker = setup_marker(worktree)
     stamp = setup_stamp(command)
-    if marker.exists() and marker.read_text().strip() == stamp:
-        return
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env.setdefault(str(k), str(v))
     timeout = int((setup or {}).get("timeout_seconds") or 600)
-    try:
-        proc = subprocess.run(command, shell=True, cwd=str(worktree), env=env,
-                              capture_output=True, text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as e:
-        raise RunnerError(f"setup command timed out after {timeout}s: {command}") from e
+    lock_path = marker.with_suffix(marker.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as setup_lock:
+        fcntl.flock(setup_lock, fcntl.LOCK_EX)
+        # A prior server may have died while its setup shell continued.  The shell inherits
+        # this lock and writes the success stamp itself, so a replacement waits and then
+        # observes completion instead of launching the command twice.
+        if marker.exists() and marker.read_text().strip() == stamp:
+            return
+        temp_marker = marker.with_suffix(marker.suffix + ".tmp")
+        wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
+                   f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
+        try:
+            proc = subprocess.run(wrapped, shell=True, cwd=str(worktree), env=env,
+                                  capture_output=True, text=True, timeout=timeout, check=False,
+                                  pass_fds=(setup_lock.fileno(),))
+        except subprocess.TimeoutExpired as e:
+            raise RunnerError(f"setup command timed out after {timeout}s: {command}") from e
     out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
     if log_path is not None:
         try:
@@ -211,7 +224,6 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     if proc.returncode != 0:
         tail = "\n".join(out.splitlines()[-40:])
         raise RunnerError(f"setup command failed (exit {proc.returncode}): {command}\n{tail}")
-    marker.write_text(stamp)
 
 
 class Runner(ABC):
