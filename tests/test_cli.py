@@ -753,6 +753,59 @@ def test_take_on_a_good_draft_approves_then_dispatches(garden):
     assert "approved (cli)" in t.body
 
 
+def test_dispatch_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
+    """CG-249: `garden dispatch` used to let mode=work start on a draft directly, skipping
+    the approve gate CG-238 already applies to the web dispatch button and `garden take`.
+    A placeholder acceptance criterion must refuse the dispatch and leave the task a draft,
+    with no run started."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    r = run(garden, "new-task", "demo/p1", "Untested idea")
+    assert r.exit_code == 0 and "DM-003" in r.output  # draft, template's placeholder criteria
+
+    r = run(garden, "dispatch", "DM-003")
+    assert r.exit_code != 0
+    assert "placeholder" in r.output
+    assert Store(garden).task("DM-003").status == Status.DRAFT
+    assert RunStore(garden / ".garden").latest("DM-003") is None
+
+
+def test_dispatch_on_a_good_draft_approves_then_dispatches(garden):
+    """CG-249: once the brief is complete, `garden dispatch` approves the draft (the same
+    gate the web button and `garden take` use) and then dispatches it."""
+    from garden.model import Status
+    from garden.store import Store
+    from tests.conftest import complete_brief
+
+    r = run(garden, "new-task", "demo/p1", "Good idea")
+    assert r.exit_code == 0 and "DM-003" in r.output
+    complete_brief(garden, "DM-003")
+
+    r = run(garden, "dispatch", "DM-003")
+    assert r.exit_code == 0, r.output
+    t = Store(garden).task("DM-003")
+    assert t.status == Status.RUNNING
+    assert "approved (cli)" in t.body
+
+
+def test_dispatch_force_on_a_draft_skips_the_approve_gate(garden):
+    """CG-249: --force preserves the existing override, dispatching a draft with a
+    placeholder brief directly, without going through approve."""
+    from garden.model import Status
+    from garden.store import Store
+
+    r = run(garden, "new-task", "demo/p1", "Untested idea")
+    assert r.exit_code == 0 and "DM-003" in r.output  # draft, template's placeholder criteria
+
+    r = run(garden, "dispatch", "DM-003", "--force")
+    assert r.exit_code == 0, r.output
+    t = Store(garden).task("DM-003")
+    assert t.status == Status.RUNNING
+    assert "approved (cli)" not in t.body
+
+
 def test_init_keeps_claude_default_and_preserves_codex_instructions(tmp_path):
     from garden.config import Config
     from garden.scaffold import init_garden
