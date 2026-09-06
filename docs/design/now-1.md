@@ -22,10 +22,13 @@ period. Nothing on it is a card of equal weight; the order of prominence is the 
 Under the title, one sentence in the page's serif states what the page is for, filled from the
 same data as the regions, each clause a link to its region:
 
-> 8 runs in flight on 5 of 5 worker slots and 3 of 3 review slots. Next: CG-249, then CG-292.
-> phase-05: 3 of 37 merged. Last hour: 3 merged, $28.08.
+> 6 runs in flight on 5 of 5 worker slots and 1 of 3 review slots. Next: Build Now 1 at
+> /now1 from the Fable design: live view of…, then A dispatch that fails before its process
+> starts closes…. phase-05: 13 of 49 merged. Last hour: 4 merged, $65.72.
 
-A visitor who reads nothing else has the four answers. The sentence rewrites itself from the
+A visitor who reads nothing else has the four answers. What comes next is said by title,
+whole words up to about fifty-six characters then an ellipsis, never by id: a first-time
+visitor knows no ids, and the sentence is for them. The sentence rewrites itself from the
 same live updates that move the regions (see Live updates), so it never disagrees with them.
 When dispatch is paused or a harness is paused the sentence says so first ("Dispatch paused by
 cli since 00:31."), because that is the one fact that changes what the rest means. When the
@@ -40,7 +43,7 @@ At 1280 wide (a projector), inside the app's shell with the rail on the left:
 ```
 ┌ rail ┐ ┌──────────────────────────────────────────────────────────────────────┐
 │ Now 1│ │ Now                                                                  │
-│ Now 2│ │ 8 runs in flight … Next: … phase-05: … Last hour: …                  │
+│ Now 2│ │ 6 runs in flight … Next: <title>, then <title>. phase-05: … Last hour: … │
 │ Inbox│ │                                                                      │
 │ …    │ │ NOW                                    5 of 5 slots · 3 of 3 reviews │
 │      │ │ ┌ strip: glyph id title · mode · harness model                   ┐   │
@@ -50,9 +53,9 @@ At 1280 wide (a projector), inside the app's shell with the rail on the left:
 │      │ │ ┌ strip ┐ ┌ strip ┐ … (one per run, stacked, newest first)          │
 │      │ │                                                                      │
 │      │ │ NEXT  next tick in 0:42          │ WHERE WE ARE                      │
-│      │ │ 1. CG-249 title                  │ ┌ specimen sheet ─────────┐       │
-│      │ │    revise round 1 of 3 · easy →  │ │  plant, inked to 8 %    │       │
-│      │ │ 2. CG-292 title                  │ │  label: plate V · 3/37  │       │
+│      │ │ 1. title (the link)              │ ┌ specimen sheet ─────────┐       │
+│      │ │    CG-249 · revise round 1 · … → │ │  plant, inked to 8 %    │       │
+│      │ │ 2. title                         │ │  label: plate V · 3/37  │       │
 │      │ │ …                                │ └─────────────────────────┘       │
 │      │ │ Merge queue: head, candidates    │ goals with a mark each            │
 │      │ │ In review: round, CI, held on    │ other open phases · closed row    │
@@ -143,7 +146,7 @@ side, about 96px tall at 1280:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│ ● [leaf]  CG-307  Design the Now page …      trial · claude claude-fable-5-1     │
+│ ● [leaf]  Design the Now page …  CG-307   trial · claude claude-fable-5-1 · open run │
 │           ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬│╌╌╌╌  31:12 · typically 18 min · longer than usual     │
 │                                                                    $0.42 so far  │
 │           "Found a Windows Chrome reachable from WSL, so screenshots …"           │
@@ -152,11 +155,15 @@ side, about 96px tall at 1280:
 
 Elements, left to right and top to bottom:
 
-1. The state dot and the mode glyph (table above), then the id (`.id`, links to the task
-   page) and the title in serif.
+1. The state dot and the mode glyph (table above), then the title in serif, which is the
+   link to the task page (where the actions are), and after it the id in muted mono. The
+   title leads because a visitor knows the work by its name; the id is there for the person
+   who knows it by number.
 2. On the right of the first line: the mode word, the dispatch stage if the run has one
-   (`revise · rebase`), and the harness and model in mono (a check run shows `check ·
-   pre_pr`; a trial shows `trial` and its contender).
+   (`revise · rebase`), the harness and model in mono (a check run shows `check ·
+   pre_pr`; a trial shows `trial` and its contender), and `open run`, a link to this exact
+   run's page (`/runs/<task>/<run>`), so when two runs share a task (a trial's contenders,
+   a revise beside an older record) the transcript is one click away and the right one.
 3. The live clock and its scale bar (the owner's rule, 2026-09-06 02:35Z). The digits say
    exactly how long the run has been going, ticking in the browser once a second from the
    run's start time: seconds under a minute (`42 s`), then `m:ss` (`14:07`), then `h:mm:ss`
@@ -241,15 +248,15 @@ not a filtered board:
 3. Ready tasks in `dispatch_sort_key` order; "priority 1", "priority 2 · order 3".
 
 Each line has two rows: position, the stage glyph the task has now (sprout for ready,
-pruned for a revise or rebase), id and title on the first; on the second, in mono, why it is
-here, the mode, the tier and the harness and model it would get (from `Scheduler.runner_for`
-and the harness's tier map): `priority 1 · work · easy → claude claude-sonnet-5`. The title
-gets the whole width, so it reads in one line at 1280. A line the tick would skip says so
-in bold amber in place of the harness: `phase frozen`, `over budget`, `harness paused`,
-`manual runner`; it stays in the list because the order is still true. Eight lines, then
-`and 14 more →` to the Board's backlog. Above the list: `next tick in 0:42` counting down
-from the last tick plus `tick_interval`, and `1 slot free` or `no slot free: the first line
-waits for a run to finish`.
+pruned for a revise or rebase) and the title, the link, on the first; on the second, in
+mono, the id, why it is here, the mode, the tier and the harness and model it would get
+(from `Scheduler.runner_for` and the harness's tier map): `CG-249 · priority 1 · work ·
+easy → claude claude-sonnet-5`. The title gets the whole width, so it reads in one line at
+1280. A line the tick would skip says so in bold amber in place of the harness: `phase
+frozen`, `over budget`, `harness paused`, `manual runner`; it stays in the list because the
+order is still true. Eight lines, then `and 14 more →` to the Board's backlog. Above the
+list: `next tick in 0:42` counting down from the last tick plus `tick_interval`, and `1
+slot free` or `no slot free: the first line waits for a run to finish`.
 
 Then the merge queue, from `inbox.merge_queue_view` and state, one row per PR with the id
 on the left and the fact under the title:
@@ -261,7 +268,24 @@ on the left and the fact under the title:
   review round so far, need 2`, so nothing with an open PR is invisible.
 
 Then reviews waiting: each task's `pending_reviews` entries (`review`, `persona:security`)
-with why they wait: `no review slot (3 of 3 busy)` or `harness paused`.
+with the task's title and why the review has not started. The reason is not a guess from
+the slot count: it is the first of the gates the tick applies to a pending review, in the
+tick's own order (`Scheduler.review_wait_reason`, factored from `_drain_pending_reviews`
+and `_dispatch_or_defer_reviews` so the page and the tick cannot disagree):
+
+1. `dispatch paused: reviews start again with dispatch` (the drain runs inside dispatch);
+2. `waits for its revise run to finish` (a review never runs beside a worker run for the
+   same task), or, when that run is a record without a process, `its revise record has no
+   process; the tick that reaps it starts the review`, which is the honest form of "waiting
+   for the run";
+3. `claude harness paused`;
+4. `no review slot (3 of 3 busy)`, only when every slot is busy;
+5. `queued: the next tick starts it`, when nothing holds it;
+6. `still queued after a tick and no gate explains it: see the task's log`, with the link,
+   when nothing holds it and a tick has passed since the task last moved (`Hub.last_tick`
+   against the task's newest event). The page cannot see what is in the way, so it says so
+   and sends the person to the log rather than promising a recovery. This is the one line
+   in the group set in the ink colour.
 
 ### Where we are
 
@@ -327,15 +351,16 @@ lands (`—` until then, and the label says why).
 Then, full width, **By difficulty and model** (the owner's ask, 2026-09-06 02:30Z): the
 five figures the phase is measured by, each as its own small table with rows easy, medium
 and hard, a column per model that did work in the window, and in every cell the value in
-serif over its `n` in faint mono:
+serif over its `n` in faint mono. Each table's caption says which way is good and what its
+n counts, so a reader never has to guess whether `n 7` is runs or tasks:
 
-| table | value | n |
+| table | value | n counts |
 |---|---|---|
-| cost per accepted task | mean of the task's whole run cost (every mode) up to its done transition | accepted tasks |
-| first-pass approval | share of first reviews with verdict approve | tasks first reviewed in the window |
-| work-run cost | mean cost of a work-mode run (work, revise, resume, trial) | runs |
-| revise rounds | mean revise dispatches per accepted task | accepted tasks |
-| median lead time | median hours from first dispatch to done | accepted tasks |
+| cost per accepted task · lower is better | mean of the task's whole run cost (every mode) up to its done transition | accepted tasks |
+| first-pass approval · higher is better | share of first reviews with verdict approve | tasks first reviewed in the window |
+| work-run cost · lower is better | mean cost of a work-mode run (work, revise, resume, trial) | work runs |
+| revise rounds · lower is better | mean revise dispatches per accepted task | accepted tasks |
+| median lead time · lower is better | median hours from first dispatch to done | accepted tasks |
 
 They are five small tables rather than one table with a metric picker because the phase's
 definition of done reads two of them together (cost per accepted easy task under $4, first
@@ -343,27 +368,44 @@ pass at or above 90 %), and a picker would hide one while the other is read; and
 than one tall table with fifteen rows because each table answers one question ("which model
 is cheapest on easy tasks") in three rows, and five such answers side by side is what a
 glance wants. They are ordered by the phase's numbers: cost per accepted task and first
-pass first, then work-run cost, revise rounds, lead time. How a table reads at a glance:
-the best cell of a row (lowest cost, rounds or lead time; highest approval) is bold once it
-has three samples; a cell with fewer than three is italic and muted, so a lucky single run
-never looks like a verdict; a model that did no work at that difficulty shows `—`. Model
-names are split at their first hyphen with the vendor on the line above in the faint
-colour, so `claude-sonnet-5` and `gpt-5.6-terra` each fit an 80px column and the columns
-line up across the five tables. At 1280 the tables sit two abreast; on the phone they
-stack, each scrolling sideways inside its own box if the models outnumber the width.
+pass first, then work-run cost, revise rounds, lead time.
 
-The computation is `garden metrics`' (CG-251 adds the per-model split to `events.metrics`;
-the mock builder's `difficulty_by_model` is the reference the build moves there, and
-`tests/test_now1_design.py` holds its rules). One rule beyond the existing per-difficulty
-figures: a task is credited to the model of its latest work-mode run finished at or before
-the event the metric hangs on (its done transition; its first review), so a task the loop
-escalated from sonnet to opus counts for opus, the model that got it accepted, and a work
-run is always the run's own model. The window is the region's window: the tables change
-with the links above them.
+How a table reads at a glance is the owner's heat-map rule (2026-09-06 02:45Z), decided
+in the data and only styled by the template. Within a row, every cell has a place on a
+scale from the row's best value (0) to its worst (1), the direction per metric as the
+captions say; the cell's ground is mixed in oklab between two tokens, `--cell-good` (a pale
+green, `#d9eedd`, on the paper; a deep one, `#20402c`, in the dark palette) and
+`--cell-bad` (`#f5d9d4`; `#4a2a28`), so the ink stays legible on both and the middle of a
+row is a quiet tan rather than a warning. Colour is never the only signal: the best cell
+carries `▲` in the good colour before its value and the worst `▽` in the bad colour, each
+with its word in a `title`, and the best is set semibold. A cell with fewer than three
+samples sits on the scale at a third of the strength, its value italic and muted, and its
+n marked `~n 2` with "fewer than 3 samples" in the title; it is never the best or the
+worst of a row, so a lucky single run cannot read as a verdict. A row with fewer than two
+solid cells has no scale at all, since one number is not a comparison. A model that did
+no work at that difficulty shows `—`. The line above the tables says the rule in one
+sentence with the three marks drawn in it. `garden metrics` prints the same tables with the
+same marks in text, so the terminal and the page read alike. Model names are split at their
+first hyphen with the vendor on the line above in the faint colour, so `claude-sonnet-5`
+and `gpt-5.6-terra` each fit an 80px column and the columns line up across the five
+tables. At 1280 the tables sit two abreast up to five models; with more, each table takes
+the full width, so no column is ever cut; on the phone they stack, each scrolling sideways
+inside its own box.
+
+The computation is `garden metrics`': `events.difficulty_by_model(events, tasks, since)`,
+called by `metrics()` for the CLI (its `by_difficulty_model` key) and by the page for the
+window, and `tests/test_now1_design.py` holds its rules. One rule beyond the existing
+per-difficulty figures: a task is credited to the model of its latest work-mode run
+finished at or before the event the metric hangs on (its done transition; its first
+review), so a task the loop escalated from sonnet to opus counts for opus, the model that
+got it accepted, and a work run is always the run's own model. The window is the region's
+window: the tables change with the links above them, and the history before the window
+still counts (a task's first review ever, its cost to date); only the crediting event must
+fall inside it.
 
 Every number here is a function in `events`, `costs`, `charts` or `operator_spend` called
-on the window's events. The template formats; it never computes: the best cell and the
-thin-sample mark are decided in the data, the template only styles them.
+on the window's events. The template formats; it never computes: a cell's rank, its best,
+worst and thin marks are decided in the data, the template only styles them.
 
 ## Motion
 
@@ -439,6 +481,7 @@ and the words leave when the stream is back.
 | typical | run records | `now1.typical_seconds(runs)`: median elapsed per (mode, harness or token-free, difficulty) over the last seven days, falling back to (mode, harness or token-free) all-time, at least three samples, counting only runs that reached an outcome (done, failed, timeout, blocked): a cancelled, superseded or env_error run says nothing about how long the work takes, and a mechanical rebase must not share a median with an agent one |
 | last words, spend or tokens so far | the run's `stdout.json` | `Harness.progress` (new) |
 | held merges, in-review facts | `state.json` per task: `automerge_blocked`, `automerge_candidate`, `automerge_ready_at`, `merge_head`, `checks`, `review_rounds`, `pending_reviews`, `needs_human`, `question` | `State.get`, `inbox.merge_queue_view`, `inbox.needs_human_info` |
+| why a queued review waits | `_control`, active runs, `review.harness`, review slots, `Hub.last_tick`, the task's newest event | `Scheduler.review_wait_reason(task)` (new), the gates in the tick's order under Next |
 | paused harness, dispatch pause | `state.json` `_control` | `Scheduler.control`, `paused_harnesses` |
 | dispatch order | task files and state | the queue `dispatch_ready` builds, factored into `Scheduler.dispatch_queue()` (new, returns `[(task, mode, why, skip_reason)]`) so the page and the tick cannot disagree |
 | harness and model per line | config tier map | `Scheduler.runner_for`, the harness's `models` |
@@ -448,7 +491,7 @@ and the words leave when the stream is back.
 | retro verdict | `state.json` `_retro_verdicts` | `Scheduler.retro_verdict` |
 | spend against budget | run records and config | `Scheduler.spent_for`, `budgets` |
 | merged, first pass | events | `events.metrics` on the window's events |
-| by difficulty and model | events and task difficulty | `events.metrics(...)["by_difficulty_model"]` once CG-251 lands, the rule under The last period; `difficulty_by_model` in the mock builder until then |
+| by difficulty and model | events and task difficulty | `events.difficulty_by_model(events, tasks, since)`, the same call `metrics()` makes for `garden metrics`; the rule and the cell shape under The last period |
 | cost, cost by activity, annotations | events and the operator ledger | `costs.cost_series`, `operator_spend.to_cost_events`, `profile_changed` and `config_reloaded` events |
 | runs by harness and model | events | `run_finished` grouped by `harness`, `model` |
 | hand steps | events | the kinds listed under The last period |
@@ -472,8 +515,10 @@ Every state, where it shows, and what a person sees:
 | held | a held strip with the reason, stamp **held** | the PR's line says `held: <reason>` | | |
 | paused | header stamp **paused** with who, when and why; runs in flight still show; or a paused-harness strip | lines that need that harness say `harness paused` | | |
 | failed | the strip with the wilt glyph and stamp **failed**, then a needs-you strip if a stop was recorded | a task sent to `failed` leaves the queue | | |
-| no process | a dotted strip at half strength, `no process recorded · started 01:01Z · a slot is held until a tick reaps it`; the slot count says `(n without a process)` | `no slot free` names the cause when it is this | | |
-| empty (nothing running, work queued) | one empty mount sheet, tape and a label: `Nothing running. Next tick in 0:42: it will dispatch CG-237 and CG-215 into 5 free slots.` | the queue, unchanged | | |
+| no process | a dotted strip at half strength, `no process recorded · started 01:01Z · a slot is held until a tick reaps it`; the slot count says `(n without a process)` | `no slot free` names the cause when it is this; a review of that task says `its revise record has no process; the tick that reaps it starts the review` | | |
+| review waiting | | one line per pending review with the gate that holds it, in the tick's order (Next); `queued: the next tick starts it` when none does | | |
+| review overdue | | `still queued after a tick and no gate explains it: see the task's log`, in the ink colour, with the link | | |
+| empty (nothing running, work queued) | one empty mount sheet, tape and a label: `Nothing running. Next tick in 0:42: it will dispatch <title> and <title> into 5 free slots.`, the titles linked | the queue, unchanged | | |
 | quiet (nothing running, nothing to dispatch) | the same sheet: `The garden is quiet. Nothing is ready: 3 drafts wait for approval, 2 cards wait on you in the Inbox. Next tick in 0:42 polls PRs only.` | `Nothing queued. Approve a draft on the Board to add work.` | the sheet, stage word as is | the numbers, still true |
 | longer than usual | the clock reads on, the dashed line grows past the end mark, `· longer than usual` after the typical, no colour | | | |
 | stream down | the region head says `connection lost · retrying`; clocks keep ticking | as last fetched | as last fetched | as last fetched |
@@ -501,9 +546,12 @@ Named here so the build makes no design choice:
 - `garden/now1.py`: `snapshot`, `typical_seconds`, `goal_marks`, the window resolution
   (sharing `pages.costs.resolve_since`), and a text renderer for `garden now1`.
 - `Scheduler.dispatch_queue()` factored out of `dispatch_ready` and used by both.
+- `Scheduler.review_wait_reason(task)` factored out of the review gates and used by the
+  page, returning the gate word and the sentence under Next.
 - `Harness.progress(stdout)` beside `parse`.
-- `events.metrics` gaining `by_difficulty_model` with the five tables above (CG-251's
-  per-model split), and the page reading it, never recomputing.
+- The tables are already computed once: `events.difficulty_by_model` (in `metrics()` as
+  `by_difficulty_model`, printed by `garden metrics`); the page calls it for its window and
+  never recomputes. The mock's `.tier` styles carry the cell tokens and the oklab mix.
 - The clock script (the first block of the mock's `<script>`) in `base.html`, so the
   Board's running cards and the task page's run line tick with the same attributes
   (`data-started`, `data-typical`, `data-stopped`, `data-server-now` on `<body>`); a test
@@ -518,87 +566,110 @@ Named here so the build makes no design choice:
 ## The mock
 
 `docs/design/now-1.html` is rendered by `docs/design/now_1_mock.py` from
-`docs/design/now-1-snapshot.json`, a snapshot of this garden taken on 2026-09-06 02:34Z
+`docs/design/now-1-snapshot.json`, a snapshot of this garden taken on 2026-09-06 03:45Z
 through the store, the state file, the run records and the event log (read-only; the script
-never imports the scheduler's writers). The snapshot caught the garden with this design's own
-revise run and a codex work run in flight, three run records without a process holding
-slots, and a day of history behind it: 100 merges and five models at work in the 24-hour
-window, so the difficulty-by-model tables have real columns. The builder inlines
-`base.html`'s stylesheet and `plants.DEFS` so the mock tracks the app's tokens, and adds the
-Now page's own styles and the clock script, which are the ones the build lifts into the
-template and `base.html`. Open it as a file: the clocks tick from the snapshot's moment (the
-page's clock is offset against `captured_at`, as the build's is against the server), add
-`?theme=dark` to see the dark palette, `?window=24h` for another window, and the heading's
-buttons toggle theme, the states gallery (`?gallery=1`) and let a run arrive, which shows
-the slide-in and a clock counting from zero. The gallery at the bottom is not part of the
-page: it shows one strip per state and the empty and quiet sheets, so every state is on one
-screen.
+never imports the scheduler's writers). The snapshot caught the garden with six runs in
+flight on five worker slots and one review slot (this design's own revise run, the Now 2
+design's revise run, a review, two checks and the onboarding revise), eight PRs open, 28
+lines in the dispatch queue, and a day of history behind it: seven models at work in the
+24-hour window, so the difficulty-by-model tables have real columns and real comparisons.
+The builder inlines `base.html`'s stylesheet and `plants.DEFS` so the mock tracks the app's
+tokens, and adds the Now page's own styles and the clock script, which are the ones the
+build lifts into the template and `base.html`. Open it as a file: the clocks tick from the
+snapshot's moment (the page's clock is offset against `captured_at`, as the build's is
+against the server), add `?theme=dark` to see the dark palette, `?window=24h` for another
+window, and the heading's buttons toggle theme, the states gallery (`?gallery=1`) and let a
+run arrive, which shows the slide-in and a clock counting from zero. The gallery at the
+bottom is not part of the page: it shows one strip per state, the empty and quiet sheets
+and one line per review-waiting gate, so every state is on one screen.
 
-The mock was checked at 1280 and 390 wide, light and dark, in Chrome (the 390 view inside a
-390-wide iframe, because a desktop Chrome window will not go that narrow and quietly lays
-out wider than it captures). Three things it showed that the page design now accounts for:
-the Next list needs the title on its own row, or the harness column squeezes every title
-into four lines; this garden has run records without a process holding worker slots, which
-is why the page has a state for them; and a strip past its typical time needs the whole
-strip width for its bar row, or the spend wraps under the clock.
+### Captures
+
+The mock was captured with the Edge recipe from the product overview (headless Edge on
+Windows, reading the file from the Windows temp folder with the plates beside it) and each
+capture was read back before the design was called done:
+
+| capture | what it is | what it showed |
+|---|---|---|
+| `now1-1280-light.png`, `now1-1280-dark.png` | the page at 1280, last hour, both palettes | the hierarchy holds: strips, then Next beside the sheet, then the ledger; the dark palette keeps the plate on paper and the tables legible |
+| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe wrapper (`phone-*.html`), because a desktop Edge window will not open narrower than about 500 and quietly lays out wider than it captures; the recipe's plain 390 window cut the right edge of every line | one column, the rail folded to wordmark and nav, strips on four lines, the sheet's label under the plant, the figures two by two |
+| `now1-1280-24h-light.png`, `now1-1280-24h-dark.png`, `tables-24h-*.png` (a crop through an offset iframe) | the 24-hour window, where the tables have rows with two or more solid cells | the green-to-red grounds, the ▲ ▽ marks and the faint `~n 1` cells read in both palettes; the seven-model rows overflowed the two-abreast layout, which is why more than five models now stack the tables full width |
+| `phone-tables-light.png`, `phone-tables-dark.png` | the tables at 390 | each table scrolls sideways inside its box; the first four columns and the marks are readable without scrolling |
+| `now1-1280-gallery-light.png` | the states gallery | every strip state, the two empty sheets and the seven waiting-reason lines on one screen |
+
+Three earlier findings from the captures are already in the design: the Next list needs
+the title on its own row, or the harness column squeezes every title into four lines; run
+records without a process hold worker slots in this garden, which is why the page has a
+state for them; and a strip past its typical time needs the whole strip width for its bar
+row, or the spend wraps under the clock.
 
 ## Persona review
 
-The designer and usability-expert personas (`personas.DEFAULT_PERSONAS`) review this PR
-through the garden; what follows is the design read against each persona's own checklist,
-so that every finding either changed the design or has its answer here. Where a finding
-changed the design, the section that changed is named.
+The designer and usability-expert personas reviewed this design through the garden
+(`garden persona-review`, runs `20260906T030040Z-persona` and `-persona-2`, 2026-09-06
+03:01Z to 03:04Z). Neither raised a high finding; each scored the design 6 of 10 with three
+medium findings, and every finding changed the design. What each said, and what changed:
 
-**Designer** (coherence across surfaces, hierarchy, empty states, defaults, states you
-cannot leave):
+**Designer**
 
-- *Two names for one page: "Now 1" in the nav, "Now" as the heading.* Answered above: the
-  heading is the page's name; the nav says "Now 1" only while Now 2 exists beside it, per
-  the spec's Two Nows, and the follow-up that retires one removes the number.
-- *Do the strips' words match the other surfaces?* Yes by construction: the mode words are
-  the run record's `mode` as the Runs page prints it, the harness and model are the Runs
-  page's `harness:model` column, the stamp words (held, paused, needs you, failed) are the
-  Inbox's group names, the stage glyphs are the Board's, and the queue's `why` is the
-  scheduler's own reason. No word on the page is coined for it.
-- *Is the important thing first?* The five-second sentence, then Now, then Next; the ledger
-  last. The page has no card grid (see Anticipated questions).
-- *Are the empty and quiet states designed?* Both are mount sheets with a typed label that
-  says what the garden waits for and when the next tick is (States).
+- *The tables use bold and italic but omit the row-relative shading and the best and worst
+  marks.* Changed: the heat-map rule under The last period, with the two cell tokens per
+  palette, the oklab mix, the ▲ and ▽ marks, the faint `~n` treatment for thin cells, and
+  the rule that a thin cell is never an end of a row. Decided in the data
+  (`events.difficulty_by_model`), styled by the template, verified in both palettes
+  (Captures).
+- *The mock says "no review slot (0 of 3 busy)", contradicting its own capacity display.*
+  Changed: a waiting review's reason is the first of the tick's own gates, in the tick's
+  order (Next), and a slot count is only ever named when every slot is busy. The snapshot
+  that showed the contradiction had three reviews held behind run records without a
+  process, and the page now says exactly that.
+- *The five-second sentence says "Next: CG-310, then CG-311", which needs prior knowledge
+  of ids.* Changed: the sentence names what comes next by title (The five-second answer),
+  and titles are the links on the strips and in Next, with the id secondary in mono.
+
+**Usability expert**
+
+- *Running cards link only to the task, so the exact transcript is hard to find when
+  several runs share a task.* Changed: every running strip carries `open run`, the link to
+  its own run page, beside the harness and model (Now, 2); the title keeps the task link
+  for actions.
+- *The mock explains waiting with "no review slot" while zero of three are busy and
+  promises automatic cleanup for records that have waited ninety minutes.* Changed as
+  above, with two more states: `queued: the next tick starts it` when nothing holds a
+  review, and the overdue line, in the ink colour with a link to the task's log, when a
+  tick has passed and no gate explains the wait (States). The page never promises a
+  recovery it cannot see.
+- *The tables' sample counts do not say what the sample unit is, and the shading is
+  missing.* Changed: each table's caption says `lower is better · n = accepted tasks` (or
+  `work runs`, `tasks first reviewed`), from the `n_unit` the computation carries; the
+  shading as above.
+
+Earlier lenses the design was read against, kept because they still hold:
+
+- *Two names for one page: "Now 1" in the nav, "Now" as the heading.* The heading is the
+  page's name; the nav says "Now 1" only while Now 2 exists beside it, per the spec's Two
+  Nows, and the follow-up that retires one removes the number.
+- *Do the strips' words match the other surfaces?* By construction: the mode words are the
+  run record's `mode` as the Runs page prints it, the harness and model are the Runs page's
+  `harness:model` column, the stamp words (held, paused, needs you, failed) are the Inbox's
+  group names, the stage glyphs are the Board's, and the queue's `why` and a waiting
+  review's reason are the scheduler's own. No word on the page is coined for it.
 - *A state the user cannot get out of from this page: a run record without a process holds
   a slot.* The strip says a tick reaps it, and the page is read-only by design; the fix is
-  the scheduler's and is filed as discovered work with this PR.
-- *A single lucky run reads as a verdict in the model tables.* Changed: a cell with fewer
-  than three samples is italic and muted and never bold; the line above the tables says so
-  (The last period).
+  the scheduler's (CG-316, in the queue in the snapshot).
 - *The overrun treatment could read as an alarm.* It does not: no colour, the words are
   "longer than usual" in the muted colour, and the dashed line has its own room (Now, 3).
-
-**Usability expert** (tasks step by step, where a person hesitates):
-
-- *Task: "is anything stuck?"* Open the page; read the sentence. A stop is a stamp on a
-  strip (held, paused, needs you, failed) in the Inbox's words; an overrun says "longer
-  than usual" on its clock. Hesitation found and answered: "5 of 5 slots but I see two
-  runs" — the sentence says "(3 without a process)" and the three strips say why.
-- *Task: "which model should take medium tasks?"* Scroll to By difficulty and model; the
-  medium row of cost per accepted task and of first-pass approval each have one bold cell.
-  Hesitation: which window? The window links sit on the region head and the tables follow
-  them; the default is the last hour, which for this question is usually too thin, and
-  every thin cell says so by its italics rather than by a warning the person must read.
-- *Task: "what happens next, and when?"* Next: `next tick in 42 s`, the first line, and
-  under it why it is there and what it gets; a line the tick will skip says why in bold
-  amber (`harness paused`); `no slot free: the first line waits for a run to finish` when
-  that is the reason. Nothing has to be clicked.
+- *Task: "which model should take medium tasks?"* Scroll to By difficulty and model; in
+  the medium row of cost per accepted task and of first-pass approval the eye lands on the
+  green cell with the ▲. Which window? The window links sit on the region head and the
+  tables follow them; the default is the last hour, which for this question is usually too
+  thin, and every thin cell says so by its faintness and its `~`.
 - *Feedback: does the person know the page is live?* The clocks tick and the countdown
-  counts, which is the signal, and no "live" badge is added. Changed: when the stream has
-  been disconnected for longer than one tick interval the Now region head says
-  `connection lost · retrying` in the muted colour, the clocks keep ticking (they need no
-  stream), and the words leave when the stream is back (Live updates).
+  counts; when the stream has been down for longer than one tick interval the Now region
+  head says `connection lost · retrying` and the clocks keep ticking (Live updates).
 - *Discoverability: the ledger's tables are below the fold at 1280.* Accepted: the ledger
   is read last by design; the sentence's "Last hour" clause links to the region, and the
   window links are the app's `.filters`, the same control as on the Board and Costs pages.
-- *Discoverability: ids are the only links.* Every id, phase name and "and 14 more" is a
-  link to the page where the person acts; the page adds no action of its own, so there is
-  nothing else to find.
 
 ## Anticipated questions
 
