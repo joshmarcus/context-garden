@@ -3,9 +3,2938 @@
     "overrides": {
       "max_parallel": 5
     },
-    "paused_harnesses": {}
+    "paused_harnesses": {
+      "codex": {
+        "at": "2026-09-06T12:52:43+00:00",
+        "reason": "auth limit hit on codex",
+        "run_id": "20260906T124150Z-revise"
+      }
+    }
   },
   "events": [
+    {
+      "at": "2026-09-05T12:56:36+00:00",
+      "cost_usd": 0.565599,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T125423Z-review",
+      "status": "approve",
+      "task": "CG-189",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T12:56:36+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T125423Z-review",
+      "summary": "Retro questions become Inbox/retro-page/CLI decision cards whose answers land in retro.md and the next phase's goals where the planner reads them; acceptance criteria all met with tests, and the fast checks (targeted pytest + ruff) pass.",
+      "task": "CG-189",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T12:56:37+00:00",
+      "cost_usd": 0.533131,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T125250Z-review",
+      "status": "approve",
+      "task": "CG-193",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T12:56:37+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T125250Z-review",
+      "summary": "Approve now refuses placeholder acceptance criteria and unresolved reading-list paths via a shared brief_gaps() check, and the Inbox card surfaces the gap; all criteria are tested, full suite and ruff are green.",
+      "task": "CG-193",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T12:56:53+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T125653Z-review",
+      "task": "CG-193"
+    },
+    {
+      "at": "2026-09-05T12:57:53+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T125536Z-check",
+      "status": "done",
+      "task": "CG-156",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T12:57:53+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-156"
+    },
+    {
+      "at": "2026-09-05T12:57:53+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-156"
+    },
+    {
+      "at": "2026-09-05T12:57:53+00:00",
+      "diff_unchanged": false,
+      "kind": "rebase",
+      "run": "20260905T125535Z-rebase",
+      "task": "CG-156",
+      "verdict_kept": false
+    },
+    {
+      "at": "2026-09-05T12:57:53+00:00",
+      "kind": "needs_human",
+      "reason": "2 automated review round(s) used; this PR is yours",
+      "stop_kind": "review_cap",
+      "task": "CG-156"
+    },
+    {
+      "at": "2026-09-05T12:58:04+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "rebase",
+      "run": "20260905T125803Z-rebase",
+      "status": "done",
+      "task": "CG-179",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T12:58:04+00:00",
+      "base": "main",
+      "files": [],
+      "how": "mechanical",
+      "kind": "rebase",
+      "resolved": true,
+      "run": "20260905T125803Z-rebase",
+      "task": "CG-179"
+    },
+    {
+      "at": "2026-09-05T12:58:04+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T125804Z-check",
+      "stage": "merge_rebase",
+      "task": "CG-179"
+    },
+    {
+      "at": "2026-09-05T12:59:10+00:00",
+      "cost_usd": 1.130179,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T125424Z-review",
+      "status": "approve",
+      "task": "CG-190",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T12:59:10+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T125424Z-review",
+      "summary": "Every editable scalar (tier, priority, max_parallel, budget) applies on change with a saved mark and one-press undo; no Set/Apply/Save button remains, enforced by a grep test. Full suite (626 passed, 3 skipped) and ruff pass; change is localized and well-described.",
+      "task": "CG-190",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T12:59:11+00:00",
+      "cost_usd": 1.364636,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T125005Z-work",
+      "status": "done",
+      "task": "CG-203",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T12:59:12+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T125912Z-check",
+      "stage": "pre_pr",
+      "task": "CG-203"
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T125804Z-check",
+      "status": "done",
+      "task": "CG-179",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-179"
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-179"
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "diff_unchanged": true,
+      "kind": "rebase",
+      "run": "20260905T125803Z-rebase",
+      "task": "CG-179",
+      "verdict_kept": true
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "kind": "merge_head",
+      "reason": "rebased; awaiting rollup",
+      "task": "CG-179",
+      "waiting": true
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "cost_usd": 0.47411749999999997,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T125653Z-review",
+      "status": "approve",
+      "task": "CG-193",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:00:26+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T125653Z-review",
+      "summary": "Approve now refuses placeholder acceptance criteria and unresolved reading-list paths via a shared brief_gaps() check, and the Inbox card surfaces the gap. All three criteria are tested; full suite (632 passed) and ruff are green; description is clean.",
+      "task": "CG-193",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:00:27+00:00",
+      "cost_usd": 2.178839,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T124816Z-work",
+      "status": "done",
+      "task": "CG-199",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:00:28+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130028Z-check",
+      "stage": "pre_pr",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:00:28+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T125912Z-check",
+      "status": "done",
+      "task": "CG-203",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:00:28+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-203"
+    },
+    {
+      "at": "2026-09-05T13:00:28+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-203"
+    },
+    {
+      "at": "2026-09-05T13:00:30+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-203"
+    },
+    {
+      "at": "2026-09-05T13:00:30+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Wrapped dispatch_edits/dispatch_ready in the same tick-phase guard as the rest of the loop, moved state.save() into a finally so an earlier phase's state isn't lost on a later exception, and deduplicated deferred review batches by (kind, name); updated the CG-177 test and added two new tests. cost=$1.36",
+      "task": "CG-203",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:00:30+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130030Z-review",
+      "task": "CG-203"
+    },
+    {
+      "at": "2026-09-05T13:00:44+00:00",
+      "kind": "automerged",
+      "method": "merge",
+      "pr": "https:<path>",
+      "review_rounds": 2,
+      "review_run": "20260905T124325Z-review",
+      "task": "CG-179",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:00:57+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T130057Z-revise",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:00:57+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260905T130057Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~16902 tokens)",
+      "task": "CG-185",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:01:07+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T130057Z-work",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:01:07+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T130057Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~20463 tokens)",
+      "task": "CG-207",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:02:13+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130028Z-check",
+      "status": "done",
+      "task": "CG-199",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:02:13+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:02:13+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:02:15+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:02:15+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Discovered `task` items are now deduplicated against open tasks in the reporting task's phase and the next one, by normalised title or shared file+error, attaching a note instead of filing a near-duplicate draft. cost=$2.18",
+      "task": "CG-199",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:02:16+00:00",
+      "items": 1,
+      "kind": "friction",
+      "phase": "context-garden/phase-04",
+      "run": "20260905T124816Z-work",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:02:17+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130217Z-review",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:02:19+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged by the garden: https:<path>",
+      "task": "CG-179",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:02:47+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T130238Z-work",
+      "task": "CG-210"
+    },
+    {
+      "at": "2026-09-05T13:02:47+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T130238Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~18234 tokens)",
+      "task": "CG-210",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:03:52+00:00",
+      "cost_usd": 0.36575,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130030Z-review",
+      "status": "approve",
+      "task": "CG-203",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:03:52+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T130030Z-review",
+      "summary": "All three acceptance criteria are met with evidence and tests; full suite (627 passed) and ruff are green. Guard applied uniformly, state saved in a finally, deferred reviews deduped by (kind, name).",
+      "task": "CG-203",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:03:54+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-132",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:05:10+00:00",
+      "cost_usd": 0.826906,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130057Z-revise",
+      "status": "done",
+      "task": "CG-185",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:05:11+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130511Z-check",
+      "stage": "pre_pr",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:05:11+00:00",
+      "cost_usd": 0.56159275,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130217Z-review",
+      "status": "approve",
+      "task": "CG-199",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:05:11+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T130217Z-review",
+      "summary": "Dedup of discovered work by normalised title or file+symptom against open tasks in the phase and the next, attaching an 'also found by' note plus a discovered_duplicate event instead of filing a near-duplicate draft. All three acceptance criteria met and tested; full suite and lint green.",
+      "task": "CG-199",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:05:12+00:00",
+      "cost_usd": 3.683902699999998,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T125137Z-work",
+      "status": "done",
+      "task": "CG-205",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:05:12+00:00",
+      "blocking": false,
+      "kind": "discovered",
+      "new_task": "CG-211",
+      "status": "draft",
+      "task": "CG-205",
+      "title": "garden close-phase's CLI message duplicates Scheduler.close_phase's refusal text"
+    },
+    {
+      "at": "2026-09-05T13:05:14+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130514Z-check",
+      "stage": "pre_pr",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:05:19+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-191",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:06:30+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130511Z-check",
+      "status": "done",
+      "task": "CG-185",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:06:30+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:06:30+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:06:32+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "pushed revision to https:<path> Fixed the Inbox template's unguarded kind_blurb/evidence/discuss reads on pending duplicate/cancel decisions (the reviewer's blocking finding), guarding them with it.get(...) like the existing it.get('decision') check, and added a test rendering the Inbox with a pending decision under the strict template env. Full suite (607 passed) and ruff pass. cost=$0.83",
+      "task": "CG-185",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:06:33+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130633Z-review",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:06:33+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130514Z-check",
+      "status": "done",
+      "task": "CG-205",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:06:33+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:06:33+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:06:35+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:06:35+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Fixed all four CG-205 items: new-phase now refuses an unregistered product naming garden.yaml's products block, garden approve exits 1 on a refusal like dispatch, doctor gives every failing line a fix and names failing checks in its closing line, and the Herbarium/closed-phase page omits PRs-merged/cost with a note when a phase has no run records instead of showing a misleading zero. cost=$3.68",
+      "task": "CG-205",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:06:35+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130635Z-review",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:06:36+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-156",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:06:56+00:00",
+      "base": "garden/cg-193-approve-refuses-placeholder-acceptance-criteria",
+      "kind": "stacked",
+      "parent": "CG-193",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:07:06+00:00",
+      "base": "garden/cg-193-approve-refuses-placeholder-acceptance-criteria",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T130656Z-work",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:07:06+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T130656Z-work via local [claude model=claude-sonnet-5] (fresh session, base garden/cg-193-approve-refuses-placeholder-acceptance-criteria stacked on CG-193, ~4492 tokens)",
+      "task": "CG-209",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:07:16+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T130707Z-work",
+      "task": "CG-158"
+    },
+    {
+      "at": "2026-09-05T13:07:16+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T130707Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4380 tokens)",
+      "task": "CG-158",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:08:22+00:00",
+      "cost_usd": 8.14594425,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124807Z-work",
+      "status": "done",
+      "task": "CG-198",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:08:24+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130824Z-check",
+      "stage": "pre_pr",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:08:24+00:00",
+      "cost_usd": 6.984864749999996,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124956Z-work",
+      "status": "done",
+      "task": "CG-200",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:08:25+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130825Z-check",
+      "stage": "pre_pr",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:08:25+00:00",
+      "cost_usd": 1.9578559999999992,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130057Z-work",
+      "status": "done",
+      "task": "CG-207",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:08:26+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T130826Z-check",
+      "stage": "pre_pr",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:08:28+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-183",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:09:40+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130824Z-check",
+      "status": "done",
+      "task": "CG-198",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:09:40+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:09:40+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:09:42+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:09:42+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): A restarted scheduler now reaps finished-but-unreaped runs of every mode before its first tick (recovering a review verdict the old process reaped but never persisted), a dispatch onto a worktree a killed worker left dirty stashes the edits under a named stash and continues, and run_finished is emitted once per run after the finalize outcome is persisted. cost=$8.15",
+      "task": "CG-198",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:09:43+00:00",
+      "items": 1,
+      "kind": "friction",
+      "phase": "context-garden/phase-04",
+      "run": "20260905T124807Z-work",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:09:44+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130944Z-review",
+      "task": "CG-198"
+    },
+    {
+      "at": "2026-09-05T13:09:44+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130825Z-check",
+      "status": "done",
+      "task": "CG-200",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:09:44+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:09:44+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:09:46+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:09:46+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): The web origin check now validates against the bound address plus web.trusted_origins (never the request Host, so DNS rebinding is refused); [bot] PR comments are trusted only when github.trusted_bots names them (default empty); and PRs against self/provides_tool products need two review rounds before automerge (per-product override wins, stricter global still applies). Tests and docs added for each. cost=$6.98",
+      "task": "CG-200",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:09:46+00:00",
+      "items": 2,
+      "kind": "friction",
+      "phase": "context-garden/phase-04",
+      "run": "20260905T124956Z-work",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:09:46+00:00",
+      "cost_usd": 0.6961835,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130635Z-review",
+      "status": "request_changes",
+      "task": "CG-205",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:09:46+00:00",
+      "blocking": 1,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T130635Z-review",
+      "summary": "Three of four criteria are implemented and tested cleanly; the doctor change (criterion 3: every failing line carries a fix, closing line names failing checks) has no test asserting the new fix text or the 'failed:' closing line.",
+      "task": "CG-205",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-05T13:09:47+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "automated review requested changes: Three of four criteria are implemented and tested cleanly; the doctor change (criterion 3: every failing line carries a fix, closing line names failing checks) has no test asserting the new fix text or the 'failed:' closing line. cost=$0.70",
+      "task": "CG-205",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:09:47+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T130826Z-check",
+      "status": "done",
+      "task": "CG-207",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:09:47+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:09:47+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:09:49+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:09:49+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Added retro.difficulty (default hard) so persona reviews (phase and PR) and the retro reconciliation always run on the best tier without editing review.difficulty first; garden retro --dry-run and the retro document now name the tier and model. cost=$1.96",
+      "task": "CG-207",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:09:50+00:00",
+      "items": 1,
+      "kind": "friction",
+      "phase": "context-garden/phase-04",
+      "run": "20260905T130057Z-work",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:09:50+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130950Z-review",
+      "task": "CG-207"
+    },
+    {
+      "at": "2026-09-05T13:09:53+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-186",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:09:59+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/scheduler/poll.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:09:59+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/scheduler/poll.py); a rebase agent will resolve it",
+      "task": "CG-200",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:10:14+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131014Z-rebase",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:10:14+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260905T131014Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~7594 tokens)",
+      "task": "CG-200",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:10:15+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131015Z-revise",
+      "task": "CG-205"
+    },
+    {
+      "at": "2026-09-05T13:10:15+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260905T131015Z-revise via local [claude model=claude-sonnet-5] (fresh session, base main, ~5043 tokens)",
+      "task": "CG-205",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:10:25+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131016Z-work",
+      "task": "CG-163"
+    },
+    {
+      "at": "2026-09-05T13:10:25+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131016Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~14651 tokens)",
+      "task": "CG-163",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:11:25+00:00",
+      "cost_usd": 1.1207479999999999,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130633Z-review",
+      "status": "approve",
+      "task": "CG-185",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:11:25+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T130633Z-review",
+      "summary": "All four acceptance criteria are met and tested: StrictUndefined env for tests+prod, all three tojson sites defaulted, a template-error flash page with traceback+path logging, and the uvicorn access log restored. Prior blocking finding is fixed and covered; full suite (607) and ruff pass.",
+      "task": "CG-185",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:11:26+00:00",
+      "cost_usd": 0.7361695,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130950Z-review",
+      "status": "approve",
+      "task": "CG-207",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:11:26+00:00",
+      "blocking": 0,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260905T130950Z-review",
+      "summary": "retro.difficulty (default hard) cleanly routes persona reviews and the retro reconciliation off review.difficulty; PR reviews untouched, dry-run and retro doc name the tier/model, and all four acceptance criteria are backed by passing tests.",
+      "task": "CG-207",
+      "verdict": "approve"
+    },
+    {
+      "at": "2026-09-05T13:11:27+00:00",
+      "cost_usd": 0.8307095999999999,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130656Z-work",
+      "status": "done",
+      "task": "CG-209",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:11:28+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T131128Z-check",
+      "stage": "pre_pr",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:11:29+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/cli/planning.py",
+        "src/garden/scheduler/retro.py",
+        "src/garden/web/pages/phase.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-178"
+    },
+    {
+      "at": "2026-09-05T13:11:29+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/cli/planning.py, src/garden/scheduler/retro.py, src/garden/web/pages/phase.py); a rebase agent will resolve it",
+      "task": "CG-178",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:11:31+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/web/app.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:11:31+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/web/app.py); a rebase agent will resolve it",
+      "task": "CG-185",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:11:32+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-188",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:11:34+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/inbox.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-193"
+    },
+    {
+      "at": "2026-09-05T13:11:34+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/inbox.py); a rebase agent will resolve it",
+      "task": "CG-193",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:11:40+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "rebase",
+      "run": "20260905T131139Z-rebase",
+      "status": "done",
+      "task": "CG-180",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:11:40+00:00",
+      "base": "main",
+      "files": [],
+      "how": "mechanical",
+      "kind": "rebase",
+      "resolved": true,
+      "run": "20260905T131139Z-rebase",
+      "task": "CG-180"
+    },
+    {
+      "at": "2026-09-05T13:11:40+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T131140Z-check",
+      "stage": "merge_rebase",
+      "task": "CG-180"
+    },
+    {
+      "at": "2026-09-05T13:12:47+00:00",
+      "cost_usd": 1.7829925,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130707Z-work",
+      "status": "error",
+      "task": "CG-158",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:47+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-158",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:12:47+00:00",
+      "cost_usd": 14.822635249999992,
+      "exit_code": 0,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124209Z-work",
+      "status": "done",
+      "task": "CG-194",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T131248Z-check",
+      "stage": "pre_pr",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "cost_usd": 0.8385945,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T130944Z-review",
+      "status": "failed",
+      "task": "CG-198",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "cost_usd": 0.24717500000000003,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131014Z-rebase",
+      "status": "error",
+      "task": "CG-200",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-200",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "cost_usd": 0.4014553000000001,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131015Z-revise",
+      "status": "error",
+      "task": "CG-205",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "revision failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York)",
+      "task": "CG-205",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T131128Z-check",
+      "status": "done",
+      "task": "CG-209",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:12:48+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:12:50+00:00",
+      "base": "garden/cg-193-approve-refuses-placeholder-acceptance-criteria",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "CG-193",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:12:50+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base garden/cg-193-approve-refuses-placeholder-acceptance-criteria): Blocking discovered tasks now run through brief_gaps before going straight to ready: one with placeholder acceptance criteria or an unresolved reading path is filed as a draft with the gap logged, instead of dispatching a run. Added a fake-worker mode and coordination test covering the held-draft path, and completed the acceptance criteria in the existing discover fixture so its unrelated test still exercises the ready path. cost=$0.83",
+      "task": "CG-209",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:12:50+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131250Z-review",
+      "task": "CG-209"
+    },
+    {
+      "at": "2026-09-05T13:12:50+00:00",
+      "cost_usd": 1.8124672,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130238Z-work",
+      "status": "error",
+      "task": "CG-210",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:12:50+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-210",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:13:10+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131310Z-rebase",
+      "task": "CG-178"
+    },
+    {
+      "at": "2026-09-05T13:13:10+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260905T131310Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~19895 tokens)",
+      "task": "CG-178",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:13:11+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131311Z-rebase",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:13:11+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260905T131311Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~2979 tokens)",
+      "task": "CG-185",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:13:11+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131311Z-rebase",
+      "task": "CG-193"
+    },
+    {
+      "at": "2026-09-05T13:13:11+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260905T131311Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~6768 tokens)",
+      "task": "CG-193",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:13:12+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatch failed: git merge --ff-only -q origin/main (in <path> error: Your local changes to the following files would be overwritten by merge:\n\tdocs/architecture.md\n\tsrc/garden/scheduler/checkruns.py\n\ttests/test_rebase.py\nPlease commit your changes or stash them before you merge.\nAborting",
+      "task": "CG-210",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:13:12+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131312Z-work",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:13:12+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131312Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4842 tokens)",
+      "task": "CG-200",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131310Z-rebase",
+      "status": "error",
+      "task": "CG-178",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-178",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T131140Z-check",
+      "status": "done",
+      "task": "CG-180",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-180"
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-180"
+    },
+    {
+      "at": "2026-09-05T13:14:18+00:00",
+      "diff_unchanged": false,
+      "kind": "rebase",
+      "run": "20260905T131139Z-rebase",
+      "task": "CG-180",
+      "verdict_kept": false
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131419Z-review",
+      "task": "CG-180"
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131311Z-rebase",
+      "status": "error",
+      "task": "CG-185",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-185",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131311Z-rebase",
+      "status": "error",
+      "task": "CG-193",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-193",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260905T131248Z-check",
+      "status": "done",
+      "task": "CG-194",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:19+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:21+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:21+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Isolated the worker/check HOME so a branch cannot read the operator's gh token; made retry_command config-only and scrubbed; added a fence hash-check for garden*.yaml and .garden/state.json; held automerge on diffs touching config/tasks/CI/principles; required a loopback Host on POSTs; documented the isolation boundary. 634 tests pass (+10 new), lint clean. cost=$14.82",
+      "task": "CG-194",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-05T13:14:22+00:00",
+      "items": 2,
+      "kind": "friction",
+      "phase": "context-garden/phase-04",
+      "run": "20260905T124209Z-work",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:23+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131423Z-review",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:23+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131312Z-work",
+      "status": "error",
+      "task": "CG-200",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:14:23+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-200",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:14:23+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260905T131250Z-review",
+      "status": "failed",
+      "task": "CG-209",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:14:24+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-180",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:14:25+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-190",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:14:28+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/scheduler/poll.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:28+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/scheduler/poll.py); a rebase agent will resolve it",
+      "task": "CG-194",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-05T13:14:42+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131442Z-rebase",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:14:42+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched rebase run 20260905T131442Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~7672 tokens)",
+      "task": "CG-194",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:42+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131442Z-work",
+      "task": "CG-178"
+    },
+    {
+      "at": "2026-09-05T13:14:42+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131442Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~23709 tokens)",
+      "task": "CG-178",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:43+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131443Z-work",
+      "task": "CG-185"
+    },
+    {
+      "at": "2026-09-05T13:14:43+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131443Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~17056 tokens)",
+      "task": "CG-185",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:44+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131444Z-work",
+      "task": "CG-193"
+    },
+    {
+      "at": "2026-09-05T13:14:44+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131444Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~5054 tokens)",
+      "task": "CG-193",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:44+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131444Z-work",
+      "task": "CG-158"
+    },
+    {
+      "at": "2026-09-05T13:14:44+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131444Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4481 tokens)",
+      "task": "CG-158",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:53+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131445Z-work",
+      "task": "CG-195"
+    },
+    {
+      "at": "2026-09-05T13:14:53+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131445Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~4367 tokens)",
+      "task": "CG-195",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:14:59+00:00",
+      "harness": "claude",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131459Z-review",
+      "task": "CG-200"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131444Z-work",
+      "status": "error",
+      "task": "CG-158",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-158",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 1.0648645,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131016Z-work",
+      "status": "error",
+      "task": "CG-163",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "cache_creation": {},
+            "type": "message"
+          }
+        ],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-163",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131442Z-work",
+      "status": "error",
+      "task": "CG-178",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-178",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131443Z-work",
+      "status": "error",
+      "task": "CG-185",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-185",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131444Z-work",
+      "status": "error",
+      "task": "CG-193",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-193",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131442Z-rebase",
+      "status": "error",
+      "task": "CG-194",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-194",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131445Z-work",
+      "status": "error",
+      "task": "CG-195",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-195",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "review",
+      "orphaned": true,
+      "run": "20260905T131419Z-review",
+      "status": "failed",
+      "task": "CG-180",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:00+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "review",
+      "orphaned": true,
+      "run": "20260905T131459Z-review",
+      "status": "failed",
+      "task": "CG-200",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:16:02+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR merged: https:<path>",
+      "task": "CG-192",
+      "to": "done"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131617Z-work",
+      "task": "CG-194"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131617Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4814 tokens)",
+      "task": "CG-194",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131617Z-work",
+      "task": "CG-163"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131617Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~14752 tokens)",
+      "task": "CG-163",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131617Z-work",
+      "task": "CG-195"
+    },
+    {
+      "at": "2026-09-05T13:16:17+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131617Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~4468 tokens)",
+      "task": "CG-195",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:16:26+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131618Z-work",
+      "task": "CG-196"
+    },
+    {
+      "at": "2026-09-05T13:16:26+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131618Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4368 tokens)",
+      "task": "CG-196",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:16:34+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131626Z-work",
+      "task": "CG-201"
+    },
+    {
+      "at": "2026-09-05T13:16:34+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131626Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~4380 tokens)",
+      "task": "CG-201",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:16:43+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131635Z-work",
+      "task": "CG-204"
+    },
+    {
+      "at": "2026-09-05T13:16:43+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131635Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4502 tokens)",
+      "task": "CG-204",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131617Z-work",
+      "status": "error",
+      "task": "CG-163",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-163",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131617Z-work",
+      "status": "error",
+      "task": "CG-194",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-194",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131617Z-work",
+      "status": "error",
+      "task": "CG-195",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 2 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); giving up",
+      "task": "CG-195",
+      "to": "failed"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131618Z-work",
+      "status": "error",
+      "task": "CG-196",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-196",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131626Z-work",
+      "status": "error",
+      "task": "CG-201",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-201",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:17:48+00:00",
+      "cost_usd": 0.0,
+      "exit_code": 1,
+      "harness": "claude",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131635Z-work",
+      "status": "error",
+      "task": "CG-204",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:49+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "attempt 1 failed: worker exited 1: worker error: success You've hit your monthly spend limit \u00b7 raise it at claude.ai/settings/usage?from=cc_cli_limit_message \u00b7 your session limit resets 10:30am (America/New_York); will retry",
+      "task": "CG-204",
+      "to": "ready"
+    },
+    {
+      "at": "2026-09-05T13:17:49+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "review",
+      "orphaned": true,
+      "run": "20260905T131423Z-review",
+      "status": "failed",
+      "task": "CG-194",
+      "usage": {
+        "cache_creation": {},
+        "inference_geo": "",
+        "iterations": [],
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    },
+    {
+      "at": "2026-09-05T13:17:57+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "rebase",
+      "run": "20260905T131756Z-rebase",
+      "status": "done",
+      "task": "CG-199",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-05T13:17:57+00:00",
+      "base": "main",
+      "files": [],
+      "how": "mechanical",
+      "kind": "rebase",
+      "resolved": true,
+      "run": "20260905T131756Z-rebase",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:17:57+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260905T131757Z-check",
+      "stage": "merge_rebase",
+      "task": "CG-199"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131809Z-work",
+      "task": "CG-196"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131809Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4469 tokens)",
+      "task": "CG-196",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "run": "20260905T131809Z-work",
+      "task": "CG-201"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131809Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~4482 tokens)",
+      "task": "CG-201",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "base": "main",
+      "harness": "claude",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "resumed": false,
+      "run": "20260905T131809Z-work",
+      "task": "CG-204"
+    },
+    {
+      "at": "2026-09-05T13:18:09+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260905T131809Z-work via local [claude model=claude-opus-4-8] (fresh session, base main, ~4603 tokens)",
+      "task": "CG-204",
+      "to": "running"
+    },
     {
       "at": "2026-09-05T13:19:15+00:00",
       "cost_usd": 0.0,
@@ -37964,936 +40893,6 @@
       "by": "cli",
       "kind": "dispatch_resumed",
       "task": ""
-    },
-    {
-      "at": "2026-09-06T12:57:14+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "rebase",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260906T125629Z-rebase",
-      "task": "CG-308"
-    },
-    {
-      "at": "2026-09-06T12:57:14+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched rebase run 20260906T125629Z-rebase via local [claude model=claude-sonnet-5] (fresh session, base main, conflict only; easy tier, ~7205 tokens)",
-      "task": "CG-308",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:03:02+00:00",
-      "cost_usd": 0.5637662,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "rebase",
-      "model": "claude-sonnet-5",
-      "run": "20260906T125629Z-rebase",
-      "status": "done",
-      "task": "CG-308",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-06T13:03:08+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260906T130308Z-check",
-      "stage": "pre_pr",
-      "task": "CG-308"
-    },
-    {
-      "at": "2026-09-06T13:03:46+00:00",
-      "by": "probe",
-      "harness": "codex",
-      "kind": "dispatch_resumed",
-      "task": ""
-    },
-    {
-      "at": "2026-09-06T13:04:33+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "gpt-6-astra",
-      "resumed": false,
-      "run": "20260906T130429Z-revise",
-      "task": "CG-309"
-    },
-    {
-      "at": "2026-09-06T13:04:33+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260906T130429Z-revise via local [codex model=gpt-6-astra] (fresh session, base main, ~27783 tokens)",
-      "task": "CG-309",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:04:37+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T130433Z-revise",
-      "task": "CG-323"
-    },
-    {
-      "at": "2026-09-06T13:04:37+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260906T130433Z-revise via local [codex model=gpt-5.6-terra] (fresh session, base main, rebase round 2 (not counted), ~9403 tokens)",
-      "task": "CG-323",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:04:41+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T130437Z-revise",
-      "task": "CG-330"
-    },
-    {
-      "at": "2026-09-06T13:04:41+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "dispatched revise run 20260906T130437Z-revise via local [codex model=gpt-5.6-terra] (fresh session, base main, ~14537 tokens)",
-      "task": "CG-330",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:04:44+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T130442Z-work",
-      "task": "CG-327"
-    },
-    {
-      "at": "2026-09-06T13:04:44+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260906T130442Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~11698 tokens)",
-      "task": "CG-327",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:06:52+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260906T130308Z-check",
-      "status": "done",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:06:52+00:00",
-      "kind": "check",
-      "name": "checks",
-      "stage": "pre_pr",
-      "status": "error",
-      "summary": "check run produced no results",
-      "task": "CG-308"
-    },
-    {
-      "at": "2026-09-06T13:06:54+00:00",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "gpt-6-astra",
-      "run": "20260906T130429Z-revise",
-      "status": "no_result",
-      "task": "CG-309",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:07:03+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "revision failed: no GARDEN_RESULT in worker output (see final.md)",
-      "task": "CG-309",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:07:03+00:00",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130433Z-revise",
-      "status": "no_result",
-      "task": "CG-323",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:07:04+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "revision failed: no GARDEN_RESULT in worker output (see final.md)",
-      "task": "CG-323",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:07:04+00:00",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130442Z-work",
-      "status": "no_result",
-      "task": "CG-327",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:07:04+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "attempt 2 failed: no GARDEN_RESULT in worker output (see final.md); giving up",
-      "task": "CG-327",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:07:04+00:00",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130437Z-revise",
-      "status": "no_result",
-      "task": "CG-330",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:07:05+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "revision failed: no GARDEN_RESULT in worker output (see final.md)",
-      "task": "CG-330",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:07:05+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T130654Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:07:09+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T130709Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:08:18+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T130818Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:08:22+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T130822Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:12:09+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T131208Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:12:12+00:00",
-      "error": "process never started",
-      "harness": "",
-      "kind": "run_finished",
-      "mode": "check",
-      "model": "",
-      "orphaned": true,
-      "run": "20260906T131212Z-check",
-      "status": "failed",
-      "task": "CG-308",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:12:58+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131255Z-work",
-      "status": "failed",
-      "task": "CG-332",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:12:58+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-332",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:01+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131258Z-work",
-      "status": "failed",
-      "task": "CG-333",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:01+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-333",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:03+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131302Z-work",
-      "status": "failed",
-      "task": "CG-334",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:03+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-334",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:08+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131304Z-work",
-      "status": "failed",
-      "task": "CG-253",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:08+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-253",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:10+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131309Z-work",
-      "status": "failed",
-      "task": "CG-273",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:10+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-273",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:11+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131310Z-work",
-      "status": "failed",
-      "task": "CG-283",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:11+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-283",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:13+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131312Z-work",
-      "status": "failed",
-      "task": "CG-295",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:13+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-295",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:15+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131313Z-work",
-      "status": "failed",
-      "task": "CG-300",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:15+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-300",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:16+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131315Z-work",
-      "status": "failed",
-      "task": "CG-301",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:16+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-301",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:18+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131316Z-work",
-      "status": "failed",
-      "task": "CG-302",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:18+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-302",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:19+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131318Z-work",
-      "status": "failed",
-      "task": "CG-313",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:19+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-313",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:21+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131319Z-work",
-      "status": "failed",
-      "task": "CG-325",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:21+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-325",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:22+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131321Z-work",
-      "status": "failed",
-      "task": "CG-328",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:22+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-328",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:23+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131322Z-work",
-      "status": "failed",
-      "task": "CG-329",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:23+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-329",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:25+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131324Z-work",
-      "status": "failed",
-      "task": "CG-331",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:25+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-331",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:27+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131325Z-work",
-      "status": "failed",
-      "task": "CG-213",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:27+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-213",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:29+00:00",
-      "error": "[Errno 17] File exists: '<path>'",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131327Z-work",
-      "status": "failed",
-      "task": "CG-222",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-06T13:13:29+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatch failed: [Errno 17] File exists: '<path>'",
-      "task": "CG-222",
-      "to": "failed"
-    },
-    {
-      "at": "2026-09-06T13:13:31+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "re-enabled by hand with one more round past the revision cap; revise run will follow",
-      "task": "CG-309",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-06T13:13:31+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-323",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:13:32+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-327",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:22+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-213",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:22+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-222",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:24+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-253",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:25+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-273",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:27+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-283",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:31+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-295",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:32+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-300",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:33+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-301",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:34+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-302",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:35+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-313",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:36+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-325",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:37+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-328",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:38+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-329",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:39+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-331",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:43+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-332",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:45+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-333",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:47+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-334",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:14:52+00:00",
-      "from": "failed",
-      "kind": "transition",
-      "note": "re-enabled by hand with one more round past the revision cap; revise run will follow",
-      "task": "CG-215",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-06T13:15:04+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T131329Z-work",
-      "task": "CG-254"
-    },
-    {
-      "at": "2026-09-06T13:15:04+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260906T131329Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~11607 tokens)",
-      "task": "CG-254",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:15:21+00:00",
-      "from": "draft",
-      "kind": "transition",
-      "note": "approved (cli)",
-      "task": "CG-335",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:15:22+00:00",
-      "from": "draft",
-      "kind": "transition",
-      "note": "approved (cli)",
-      "task": "CG-336",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-06T13:15:32+00:00",
-      "decision": "no_change",
-      "kind": "decision_accepted",
-      "note": "",
-      "task": "CG-324"
-    },
-    {
-      "at": "2026-09-06T13:15:33+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260906T131533Z-check",
-      "stage": "pre_pr",
-      "task": "CG-324"
-    },
-    {
-      "at": "2026-09-06T13:15:34+00:00",
-      "kind": "resumed",
-      "reason": "stuck: 3 revision rounds already used",
-      "stop_kind": "",
-      "task": "CG-216"
-    },
-    {
-      "at": "2026-09-06T13:15:35+00:00",
-      "from": "changes_requested",
-      "kind": "transition",
-      "note": "nothing to fix; resumed to in review by hand",
-      "task": "CG-216",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-06T13:16:31+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T131505Z-work",
-      "task": "CG-256"
-    },
-    {
-      "at": "2026-09-06T13:16:31+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260906T131505Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~7768 tokens)",
-      "task": "CG-256",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-06T13:18:07+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260906T131632Z-work",
-      "task": "CG-294"
-    },
-    {
-      "at": "2026-09-06T13:18:07+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260906T131632Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~22973 tokens)",
-      "task": "CG-294",
-      "to": "running"
     }
   ],
   "metrics": {
@@ -38921,26 +40920,26 @@
         "accepted": 11,
         "accepted_cost_usd": 203.2859,
         "avg_lead_hours": 2.03,
-        "avg_revisions": 1.53,
+        "avg_revisions": 1.47,
         "cost_per_accepted_task": 18.4805,
-        "cost_usd": 356.5263,
+        "cost_usd": 355.9626,
         "criteria_met": 41,
         "criteria_rate": 0.66,
         "criteria_total": 62,
         "done": 11,
         "first_pass_approve": 8,
         "first_pass_rate": 0.53,
-        "mean_cost_usd": 2.6409,
+        "mean_cost_usd": 2.6967,
         "reviewed": 15,
-        "revisions": 26,
-        "runs": 135,
+        "revisions": 25,
+        "runs": 132,
         "tasks": 17
       },
       "medium": {
         "accepted": 83,
         "accepted_cost_usd": 701.0822,
         "avg_lead_hours": 1.81,
-        "avg_revisions": 0.96,
+        "avg_revisions": 0.94,
         "cost_per_accepted_task": 8.4468,
         "cost_usd": 743.7747,
         "criteria_met": 99,
@@ -38949,10 +40948,10 @@
         "done": 83,
         "first_pass_approve": 58,
         "first_pass_rate": 0.7,
-        "mean_cost_usd": 1.1235,
+        "mean_cost_usd": 1.1355,
         "reviewed": 83,
-        "revisions": 96,
-        "runs": 662,
+        "revisions": 94,
+        "runs": 655,
         "tasks": 100
       }
     },
@@ -39224,16 +41223,16 @@
               },
               "gpt-5.6-luna": {
                 "best": true,
-                "n": 30,
+                "n": 20,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.058,
+                "value": 0.088,
                 "worst": false
               },
               "haiku": {
                 "best": false,
                 "n": 16,
-                "rank": 0.179,
+                "rank": 0.168,
                 "thin": false,
                 "value": 0.457,
                 "worst": false
@@ -39241,7 +41240,7 @@
               "sonnet": {
                 "best": false,
                 "n": 13,
-                "rank": 0.449,
+                "rank": 0.441,
                 "thin": false,
                 "value": 1.06,
                 "worst": false
@@ -39251,7 +41250,7 @@
               "claude-fable-5-1": {
                 "best": false,
                 "n": 18,
-                "rank": 0.946,
+                "rank": 0.835,
                 "thin": false,
                 "value": 8.355,
                 "worst": false
@@ -39259,7 +41258,7 @@
               "claude-opus-4-8": {
                 "best": false,
                 "n": 2,
-                "rank": 0.649,
+                "rank": 0.557,
                 "thin": true,
                 "value": 6.243,
                 "worst": false
@@ -39267,7 +41266,7 @@
               "claude-sonnet-5": {
                 "best": false,
                 "n": 2,
-                "rank": 0.013,
+                "rank": 0.0,
                 "thin": true,
                 "value": 1.727,
                 "worst": false
@@ -39282,24 +41281,24 @@
               },
               "gpt-5.6-sol": {
                 "best": true,
-                "n": 16,
+                "n": 13,
                 "rank": 0.0,
                 "thin": false,
-                "value": 1.637,
+                "value": 2.014,
                 "worst": false
               },
               "gpt-6-astra": {
                 "best": false,
-                "n": 11,
+                "n": 10,
                 "rank": 1.0,
                 "thin": false,
-                "value": 8.735,
+                "value": 9.609,
                 "worst": true
               },
               "sonnet": {
                 "best": false,
                 "n": 1,
-                "rank": 0.232,
+                "rank": 0.167,
                 "thin": true,
                 "value": 3.282,
                 "worst": false
@@ -39309,7 +41308,7 @@
               "claude-fable-5-1": {
                 "best": false,
                 "n": 3,
-                "rank": 0.958,
+                "rank": 0.956,
                 "thin": false,
                 "value": 3.829,
                 "worst": false
@@ -39325,23 +41324,23 @@
               "claude-sonnet-5": {
                 "best": false,
                 "n": 41,
-                "rank": 0.463,
+                "rank": 0.439,
                 "thin": false,
                 "value": 2.325,
                 "worst": false
               },
               "gpt-5.6-terra": {
                 "best": true,
-                "n": 56,
+                "n": 49,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.917,
+                "value": 1.048,
                 "worst": false
               },
               "sonnet": {
                 "best": false,
                 "n": 24,
-                "rank": 0.298,
+                "rank": 0.266,
                 "thin": false,
                 "value": 1.823,
                 "worst": false
@@ -39614,12 +41613,12 @@
         "accepted": 172,
         "accepted_cost_usd": 1303.5621,
         "cost_per_accepted_task": 7.5788,
-        "cost_usd": 1135.0126,
+        "cost_usd": 1134.4489,
         "first_pass_approve": 138,
         "first_pass_rate": 0.83,
-        "mean_cost_usd": 2.7219,
+        "mean_cost_usd": 2.727,
         "reviewed": 166,
-        "runs": 417,
+        "runs": 416,
         "tasks": 179
       },
       "codex": {
@@ -39629,10 +41628,10 @@
         "cost_usd": 175.4953,
         "first_pass_approve": 4,
         "first_pass_rate": 0.16,
-        "mean_cost_usd": 1.3711,
+        "mean_cost_usd": 1.6401,
         "reviewed": 25,
-        "runs": 128,
-        "tasks": 37
+        "runs": 107,
+        "tasks": 29
       },
       "human": {
         "accepted": 9,
@@ -39653,9 +41652,9 @@
         "cost_usd": 285.3506,
         "first_pass_approve": 4,
         "first_pass_rate": 0.67,
-        "mean_cost_usd": 0.3287,
+        "mean_cost_usd": 0.3314,
         "reviewed": 6,
-        "runs": 868,
+        "runs": 861,
         "tasks": 6
       }
     },
@@ -39688,12 +41687,12 @@
         "accepted": 96,
         "accepted_cost_usd": 662.4427,
         "cost_per_accepted_task": 6.9004,
-        "cost_usd": 469.9052,
+        "cost_usd": 469.3414,
         "first_pass_approve": 79,
         "first_pass_rate": 0.85,
-        "mean_cost_usd": 1.9661,
+        "mean_cost_usd": 1.972,
         "reviewed": 93,
-        "runs": 239,
+        "runs": 238,
         "tasks": 97
       },
       "fable": {
@@ -39715,10 +41714,10 @@
         "cost_usd": 1.861,
         "first_pass_approve": 1,
         "first_pass_rate": 0.25,
-        "mean_cost_usd": 0.0503,
+        "mean_cost_usd": 0.0689,
         "reviewed": 4,
-        "runs": 37,
-        "tasks": 6
+        "runs": 27,
+        "tasks": 4
       },
       "gpt-5.6-sol": {
         "accepted": 1,
@@ -39727,10 +41726,10 @@
         "cost_usd": 26.1871,
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
-        "mean_cost_usd": 1.6367,
+        "mean_cost_usd": 2.0144,
         "reviewed": 3,
-        "runs": 16,
-        "tasks": 4
+        "runs": 13,
+        "tasks": 3
       },
       "gpt-5.6-terra": {
         "accepted": 11,
@@ -39739,10 +41738,10 @@
         "cost_usd": 51.3576,
         "first_pass_approve": 1,
         "first_pass_rate": 0.07,
-        "mean_cost_usd": 0.9171,
+        "mean_cost_usd": 1.0481,
         "reviewed": 14,
-        "runs": 56,
-        "tasks": 23
+        "runs": 49,
+        "tasks": 18
       },
       "gpt-6-astra": {
         "accepted": 1,
@@ -39751,9 +41750,9 @@
         "cost_usd": 96.0896,
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
-        "mean_cost_usd": 8.7354,
+        "mean_cost_usd": 9.609,
         "reviewed": 2,
-        "runs": 11,
+        "runs": 10,
         "tasks": 2
       },
       "haiku": {
@@ -39787,19 +41786,19 @@
         "cost_usd": 285.3506,
         "first_pass_approve": 12,
         "first_pass_rate": 0.75,
-        "mean_cost_usd": 0.3213,
+        "mean_cost_usd": 0.3239,
         "reviewed": 16,
-        "runs": 888,
+        "runs": 881,
         "tasks": 18
       }
     },
     "rebase": {
-      "agent": 92,
-      "cost_usd": 24.9333,
+      "agent": 91,
+      "cost_usd": 24.3695,
       "mechanical": 62,
       "merges": 198,
-      "per_merge": 0.78,
-      "rebases": 154
+      "per_merge": 0.77,
+      "rebases": 153
     },
     "tasks": [
       {
@@ -43489,7 +45488,7 @@
         "phase": "context-garden/phase-05",
         "revisions": 6,
         "runs": 21,
-        "status": "changes_requested"
+        "status": "failed"
       },
       {
         "accepted": false,
@@ -43508,7 +45507,7 @@
         "phase": "context-garden/phase-05",
         "revisions": 3,
         "runs": 12,
-        "status": "in_review"
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -43715,13 +45714,9 @@
         "criteria_total": 0,
         "difficulty": "easy",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-253",
-        "model": [
-          "gpt-5.6-luna"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
         "runs": 1,
@@ -43734,17 +45729,13 @@
         "criteria_total": 0,
         "difficulty": "medium",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-254",
-        "model": [
-          "gpt-5.6-terra"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 2,
-        "status": "running"
+        "runs": 1,
+        "status": "ready"
       },
       {
         "accepted": false,
@@ -43753,16 +45744,12 @@
         "criteria_total": 0,
         "difficulty": "medium",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-256",
-        "model": [
-          "gpt-5.6-terra"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 2,
+        "runs": 1,
         "status": "ready"
       },
       {
@@ -43772,13 +45759,9 @@
         "criteria_total": 0,
         "difficulty": "medium",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-273",
-        "model": [
-          "gpt-5.6-terra"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
         "runs": 2,
@@ -43791,13 +45774,9 @@
         "criteria_total": 0,
         "difficulty": "medium",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-283",
-        "model": [
-          "gpt-5.6-terra"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
         "runs": 1,
@@ -43869,16 +45848,12 @@
         "criteria_total": 0,
         "difficulty": "medium",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-294",
-        "model": [
-          "gpt-5.6-terra"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 2,
+        "runs": 1,
         "status": "ready"
       },
       {
@@ -43888,13 +45863,9 @@
         "criteria_total": 0,
         "difficulty": "easy",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-295",
-        "model": [
-          "gpt-5.6-luna"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
         "runs": 1,
@@ -43967,13 +45938,9 @@
         "criteria_total": 0,
         "difficulty": "hard",
         "first_review": "",
-        "harness": [
-          "codex"
-        ],
+        "harness": [],
         "id": "CG-302",
-        "model": [
-          "gpt-5.6-sol"
-        ],
+        "model": [],
         "phase": "context-garden/phase-05",
         "revisions": 0,
         "runs": 1,
@@ -44046,7 +46013,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 70.0323,
+        "cost_usd": 69.4686,
         "criteria_met": 8,
         "criteria_total": 10,
         "difficulty": "hard",
@@ -44060,8 +46027,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 4,
-        "runs": 20,
-        "status": "running"
+        "runs": 18,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -44078,8 +46045,8 @@
           "gpt-6-astra"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 3,
-        "runs": 13,
+        "revisions": 2,
+        "runs": 12,
         "status": "changes_requested"
       },
       {
@@ -44297,9 +46264,9 @@
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 4,
-        "runs": 14,
-        "status": "ready"
+        "revisions": 3,
+        "runs": 13,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -44317,7 +46284,7 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 3,
-        "runs": 12,
+        "runs": 11,
         "status": "waiting_human"
       },
       {
@@ -44336,7 +46303,7 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 5,
+        "runs": 4,
         "status": "ready"
       },
       {
@@ -44354,9 +46321,9 @@
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 1,
-        "runs": 5,
-        "status": "failed"
+        "revisions": 0,
+        "runs": 4,
+        "status": "changes_requested"
       }
     ]
   },
@@ -44394,7 +46361,7 @@
       "frozen": "",
       "phase": "phase-05",
       "product": "context-garden",
-      "tasks": 100
+      "tasks": 98
     },
     {
       "closed": "",
@@ -44471,6 +46438,30 @@
       "task": "CG-030"
     },
     {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T125536Z-check",
+      "status": "done",
+      "task": "CG-156"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130707Z-work",
+      "status": "failed",
+      "task": "CG-158"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131444Z-work",
+      "status": "failed",
+      "task": "CG-158"
+    },
+    {
       "harness": "codex",
       "mode": "work",
       "model": "",
@@ -44525,6 +46516,22 @@
       "run": "20260905T163126Z-check",
       "status": "done",
       "task": "CG-158"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131016Z-work",
+      "status": "failed",
+      "task": "CG-163"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131617Z-work",
+      "status": "failed",
+      "task": "CG-163"
     },
     {
       "harness": "claude",
@@ -44714,6 +46721,22 @@
       "harness": "claude",
       "mode": "rebase",
       "model": "claude-sonnet-5",
+      "run": "20260905T131310Z-rebase",
+      "status": "failed",
+      "task": "CG-178"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131442Z-work",
+      "status": "failed",
+      "task": "CG-178"
+    },
+    {
+      "harness": "claude",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
       "run": "20260905T151035Z-rebase",
       "status": "done",
       "task": "CG-178"
@@ -44855,6 +46878,134 @@
       "task": "CG-178"
     },
     {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260905T125803Z-rebase",
+      "status": "done",
+      "task": "CG-179"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T125804Z-check",
+      "status": "done",
+      "task": "CG-179"
+    },
+    {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260905T131139Z-rebase",
+      "status": "done",
+      "task": "CG-180"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T131140Z-check",
+      "status": "done",
+      "task": "CG-180"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131419Z-review",
+      "status": "failed",
+      "task": "CG-180"
+    },
+    {
+      "harness": "claude",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130057Z-revise",
+      "status": "done",
+      "task": "CG-185"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130511Z-check",
+      "status": "done",
+      "task": "CG-185"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130633Z-review",
+      "status": "done",
+      "task": "CG-185"
+    },
+    {
+      "harness": "claude",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131311Z-rebase",
+      "status": "failed",
+      "task": "CG-185"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131443Z-work",
+      "status": "failed",
+      "task": "CG-185"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T125423Z-review",
+      "status": "done",
+      "task": "CG-189"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T125424Z-review",
+      "status": "done",
+      "task": "CG-190"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T125250Z-review",
+      "status": "done",
+      "task": "CG-193"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T125653Z-review",
+      "status": "done",
+      "task": "CG-193"
+    },
+    {
+      "harness": "claude",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131311Z-rebase",
+      "status": "failed",
+      "task": "CG-193"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131444Z-work",
+      "status": "failed",
+      "task": "CG-193"
+    },
+    {
       "harness": "claude",
       "mode": "rebase",
       "model": "claude-sonnet-5",
@@ -44952,6 +47103,46 @@
     },
     {
       "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124209Z-work",
+      "status": "done",
+      "task": "CG-194"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T131248Z-check",
+      "status": "done",
+      "task": "CG-194"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131423Z-review",
+      "status": "failed",
+      "task": "CG-194"
+    },
+    {
+      "harness": "claude",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131442Z-rebase",
+      "status": "failed",
+      "task": "CG-194"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131617Z-work",
+      "status": "failed",
+      "task": "CG-194"
+    },
+    {
+      "harness": "claude",
       "mode": "revise",
       "model": "claude-sonnet-5",
       "run": "20260905T145937Z-revise",
@@ -44989,6 +47180,22 @@
       "run": "20260905T151151Z-check",
       "status": "done",
       "task": "CG-194"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131445Z-work",
+      "status": "failed",
+      "task": "CG-195"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131617Z-work",
+      "status": "failed",
+      "task": "CG-195"
     },
     {
       "harness": "claude",
@@ -45066,6 +47273,14 @@
       "harness": "claude",
       "mode": "work",
       "model": "claude-opus-4-8",
+      "run": "20260905T131618Z-work",
+      "status": "failed",
+      "task": "CG-196"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
       "run": "20260905T131809Z-work",
       "status": "failed",
       "task": "CG-196"
@@ -45117,6 +47332,30 @@
       "run": "20260905T153209Z-check",
       "status": "done",
       "task": "CG-196"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124807Z-work",
+      "status": "done",
+      "task": "CG-198"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130824Z-check",
+      "status": "done",
+      "task": "CG-198"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130944Z-review",
+      "status": "failed",
+      "task": "CG-198"
     },
     {
       "harness": "claude",
@@ -45247,6 +47486,38 @@
       "task": "CG-198"
     },
     {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T124816Z-work",
+      "status": "done",
+      "task": "CG-199"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130028Z-check",
+      "status": "done",
+      "task": "CG-199"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130217Z-review",
+      "status": "done",
+      "task": "CG-199"
+    },
+    {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260905T131756Z-rebase",
+      "status": "done",
+      "task": "CG-199"
+    },
+    {
       "harness": "",
       "mode": "check",
       "model": "",
@@ -45261,6 +47532,46 @@
       "run": "20260905T132037Z-review",
       "status": "failed",
       "task": "CG-199"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T124956Z-work",
+      "status": "done",
+      "task": "CG-200"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130825Z-check",
+      "status": "done",
+      "task": "CG-200"
+    },
+    {
+      "harness": "claude",
+      "mode": "rebase",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131014Z-rebase",
+      "status": "failed",
+      "task": "CG-200"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131312Z-work",
+      "status": "failed",
+      "task": "CG-200"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131459Z-review",
+      "status": "failed",
+      "task": "CG-200"
     },
     {
       "harness": "claude",
@@ -45370,6 +47681,14 @@
       "harness": "claude",
       "mode": "work",
       "model": "claude-sonnet-5",
+      "run": "20260905T131626Z-work",
+      "status": "failed",
+      "task": "CG-201"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
       "run": "20260905T131809Z-work",
       "status": "failed",
       "task": "CG-201"
@@ -45423,6 +47742,30 @@
       "task": "CG-201"
     },
     {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T125005Z-work",
+      "status": "done",
+      "task": "CG-203"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T125912Z-check",
+      "status": "done",
+      "task": "CG-203"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130030Z-review",
+      "status": "done",
+      "task": "CG-203"
+    },
+    {
       "harness": "",
       "mode": "rebase",
       "model": "",
@@ -45461,6 +47804,14 @@
       "run": "20260905T132917Z-check",
       "status": "done",
       "task": "CG-203"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131635Z-work",
+      "status": "failed",
+      "task": "CG-204"
     },
     {
       "harness": "claude",
@@ -45543,6 +47894,62 @@
       "task": "CG-204"
     },
     {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T125137Z-work",
+      "status": "done",
+      "task": "CG-205"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130514Z-check",
+      "status": "done",
+      "task": "CG-205"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130635Z-review",
+      "status": "done",
+      "task": "CG-205"
+    },
+    {
+      "harness": "claude",
+      "mode": "revise",
+      "model": "claude-sonnet-5",
+      "run": "20260905T131015Z-revise",
+      "status": "failed",
+      "task": "CG-205"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130057Z-work",
+      "status": "done",
+      "task": "CG-207"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T130826Z-check",
+      "status": "done",
+      "task": "CG-207"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T130950Z-review",
+      "status": "done",
+      "task": "CG-207"
+    },
+    {
       "harness": "",
       "mode": "rebase",
       "model": "",
@@ -45581,6 +47988,38 @@
       "run": "20260905T133453Z-check",
       "status": "done",
       "task": "CG-207"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130656Z-work",
+      "status": "done",
+      "task": "CG-209"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260905T131128Z-check",
+      "status": "done",
+      "task": "CG-209"
+    },
+    {
+      "harness": "claude",
+      "mode": "review",
+      "model": "claude-opus-4-8",
+      "run": "20260905T131250Z-review",
+      "status": "failed",
+      "task": "CG-209"
+    },
+    {
+      "harness": "claude",
+      "mode": "work",
+      "model": "claude-sonnet-5",
+      "run": "20260905T130238Z-work",
+      "status": "failed",
+      "task": "CG-210"
     },
     {
       "harness": "claude",
@@ -45909,14 +48348,6 @@
       "run": "20260905T214646Z-check",
       "status": "done",
       "task": "CG-212"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131325Z-work",
-      "status": "failed",
-      "task": "CG-213"
     },
     {
       "harness": "claude",
@@ -46613,14 +49044,6 @@
       "run": "20260905T182616Z-check",
       "status": "done",
       "task": "CG-221"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131327Z-work",
-      "status": "failed",
-      "task": "CG-222"
     },
     {
       "harness": "claude",
@@ -48383,14 +50806,6 @@
       "task": "CG-253"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131304Z-work",
-      "status": "failed",
-      "task": "CG-253"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
@@ -48399,27 +50814,11 @@
       "task": "CG-254"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131329Z-work",
-      "status": "running",
-      "task": "CG-254"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
       "run": "20260906T002112Z-edit",
       "status": "done",
-      "task": "CG-256"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131505Z-work",
-      "status": "running",
       "task": "CG-256"
     },
     {
@@ -48439,27 +50838,11 @@
       "task": "CG-273"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131309Z-work",
-      "status": "failed",
-      "task": "CG-273"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
       "run": "20260906T005021Z-edit",
       "status": "done",
-      "task": "CG-283"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131310Z-work",
-      "status": "failed",
       "task": "CG-283"
     },
     {
@@ -48911,14 +51294,6 @@
       "task": "CG-294"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131632Z-work",
-      "status": "running",
-      "task": "CG-294"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
@@ -48927,27 +51302,11 @@
       "task": "CG-295"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131312Z-work",
-      "status": "failed",
-      "task": "CG-295"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
       "run": "20260906T002113Z-edit",
       "status": "done",
-      "task": "CG-296"
-    },
-    {
-      "harness": "",
-      "mode": "work",
-      "model": "",
-      "run": "20260906T131807Z-work",
-      "status": "running",
       "task": "CG-296"
     },
     {
@@ -48975,35 +51334,11 @@
       "task": "CG-299"
     },
     {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131313Z-work",
-      "status": "failed",
-      "task": "CG-300"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131315Z-work",
-      "status": "failed",
-      "task": "CG-301"
-    },
-    {
       "harness": "claude",
       "mode": "edit",
       "model": "claude-sonnet-5",
       "run": "20260906T002119Z-edit",
       "status": "done",
-      "task": "CG-302"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-sol",
-      "run": "20260906T131316Z-work",
-      "status": "failed",
       "task": "CG-302"
     },
     {
@@ -49351,67 +51686,11 @@
       "task": "CG-308"
     },
     {
-      "harness": "claude",
+      "harness": "",
       "mode": "rebase",
-      "model": "claude-sonnet-5",
+      "model": "",
       "run": "20260906T125629Z-rebase",
-      "status": "done",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T130308Z-check",
-      "status": "done",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T130654Z-check",
-      "status": "failed",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T130709Z-check",
-      "status": "failed",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T130818Z-check",
-      "status": "failed",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T130822Z-check",
-      "status": "failed",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T131208Z-check",
-      "status": "failed",
-      "task": "CG-308"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T131212Z-check",
-      "status": "failed",
+      "status": "running",
       "task": "CG-308"
     },
     {
@@ -49524,14 +51803,6 @@
       "model": "",
       "run": "20260906T121809Z-check",
       "status": "done",
-      "task": "CG-309"
-    },
-    {
-      "harness": "codex",
-      "mode": "revise",
-      "model": "gpt-6-astra",
-      "run": "20260906T130429Z-revise",
-      "status": "failed",
       "task": "CG-309"
     },
     {
@@ -49813,14 +52084,6 @@
       "run": "20260906T032139Z-check",
       "status": "done",
       "task": "CG-312"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131318Z-work",
-      "status": "failed",
-      "task": "CG-313"
     },
     {
       "harness": "codex",
@@ -50736,14 +52999,6 @@
     },
     {
       "harness": "codex",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130433Z-revise",
-      "status": "failed",
-      "task": "CG-323"
-    },
-    {
-      "harness": "codex",
       "mode": "work",
       "model": "gpt-5.6-terra",
       "run": "20260906T061704Z-work",
@@ -50839,22 +53094,6 @@
       "task": "CG-324"
     },
     {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260906T131533Z-check",
-      "status": "running",
-      "task": "CG-324"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131319Z-work",
-      "status": "failed",
-      "task": "CG-325"
-    },
-    {
       "harness": "codex",
       "mode": "work",
       "model": "gpt-5.6-terra",
@@ -50885,30 +53124,6 @@
       "run": "20260906T124150Z-revise",
       "status": "env_error",
       "task": "CG-327"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130442Z-work",
-      "status": "failed",
-      "task": "CG-327"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131321Z-work",
-      "status": "failed",
-      "task": "CG-328"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131322Z-work",
-      "status": "failed",
-      "task": "CG-329"
     },
     {
       "harness": "codex",
@@ -50949,46 +53164,6 @@
       "run": "20260906T124356Z-check",
       "status": "done",
       "task": "CG-330"
-    },
-    {
-      "harness": "codex",
-      "mode": "revise",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T130437Z-revise",
-      "status": "failed",
-      "task": "CG-330"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131324Z-work",
-      "status": "failed",
-      "task": "CG-331"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-luna",
-      "run": "20260906T131255Z-work",
-      "status": "failed",
-      "task": "CG-332"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131258Z-work",
-      "status": "failed",
-      "task": "CG-333"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260906T131302Z-work",
-      "status": "failed",
-      "task": "CG-334"
     },
     {
       "harness": "claude",
@@ -52965,7 +55140,7 @@
       "id": "CG-215",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "changes_requested",
+      "status": "failed",
       "title": "Onboarding skill and command: analyse an existing project and its environment to create a garden product, principles, setup config and a first phase"
     },
     {
@@ -52973,7 +55148,7 @@
       "id": "CG-216",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "changes_requested",
       "title": "Workers on independent remote hosts: a worker agent that claims runs from the garden over HTTP, works in its own clone, pushes the branch and posts the result and transcript back"
     },
     {
@@ -53093,7 +55268,7 @@
       "id": "CG-254",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "ready",
       "title": "redispatch kills the superseded worker, and pin runs the canary, installs and restarts after a tick"
     },
     {
@@ -53525,7 +55700,7 @@
       "id": "CG-308",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "changes_requested",
       "title": "Build Now 1 at <path> from the Fable design: live view of what is running, what is next, where the phase is, and the last period"
     },
     {
@@ -53645,7 +55820,7 @@
       "id": "CG-323",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "changes_requested",
       "title": "The worker pre-flights its PR against the review rubric, mechanical review items become pre-PR checks, and criteria are frozen at dispatch"
     },
     {
@@ -53701,7 +55876,7 @@
       "id": "CG-330",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "failed",
+      "status": "changes_requested",
       "title": "A failed rebase or check run never restarts a task's work from scratch: the PR stays, the rebase or check is retried, and only a failed work or revise run counts as an attempt"
     },
     {
@@ -53735,22 +55910,6 @@
       "product": "context-garden",
       "status": "ready",
       "title": "Close the review findings left open by the hand merges of 2026-09-06: ghost records with terminal tasks, the persona replay test, design routes per product, the snapshot's queue data, Now 2's per-goal status marks, Now 1's empty-period gate"
-    },
-    {
-      "difficulty": "medium",
-      "id": "CG-335",
-      "phase": "phase-05",
-      "product": "context-garden",
-      "status": "ready",
-      "title": "Worker temp symlinks recover after a tmpfs restart"
-    },
-    {
-      "difficulty": "medium",
-      "id": "CG-336",
-      "phase": "phase-05",
-      "product": "context-garden",
-      "status": "ready",
-      "title": "Record Codex operator usage in the operator spend ledger"
     },
     {
       "difficulty": "hard",

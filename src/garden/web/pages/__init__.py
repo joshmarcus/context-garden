@@ -17,6 +17,8 @@ def register(app: FastAPI, site: Site) -> None:
         design,
         events,
         inbox,
+        now1,
+        now2,
         phase,
         runs,
         task,
@@ -24,5 +26,5 @@ def register(app: FastAPI, site: Site) -> None:
         trials,
     )
 
-    for module in (inbox, board, task, runs, design, trellis, trials, events, phase, costs, config, api):
+    for module in (now1, now2, inbox, board, task, runs, design, trellis, trials, events, phase, costs, config, api):
         module.register(app, site)

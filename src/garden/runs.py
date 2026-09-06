@@ -72,6 +72,13 @@ class Run:
         return cls(**data)
 
     # ---- process state -----------------------------------------------------
+    @property
+    def no_process(self) -> bool:
+        """A record written at dispatch and never launched: still running, no pid and no
+        output. The scheduler counts it against a slot until a tick reaps it, so the Now page
+        shows it as what it is and a review behind it says what it waits for."""
+        return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
+
     def process_finished(self) -> bool:
         if (self.path / "exit_code").exists():
             return True
@@ -265,7 +272,20 @@ class RunStore:
         return out
 
     def active(self) -> list[Run]:
-        return [r for r in self.all_runs() if r.status == "running"]
+        # Do not materialise every completed Run just to find the handful in flight. Run
+        # history is intentionally durable and can contain thousands of records.
+        if not self.dir.exists():
+            return []
+        active: list[Run] = []
+        for run_json in self.dir.glob("*/*/run.json"):
+            try:
+                data = json.loads(run_json.read_text())
+                if data.get("status") == "running":
+                    active.append(Run(**data))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        active.sort(key=lambda r: (r.started_at, r.run_id))
+        return active
 
     def usage_for(self, task_id: str) -> dict[str, Any]:
         """Tokens and cost across every run of one task, split by run mode."""

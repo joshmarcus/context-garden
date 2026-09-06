@@ -26,6 +26,20 @@
 </div>
 {% endif %}
 
+{% if brief_gaps %}
+<div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--bad)">Fix the brief before approving</div>
+  <p id="brief-card-status" style="margin:6px 0 10px">{% for gap in brief_gaps %}{{ gap }}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+  <form id="brief-editor" method="post" action="/tasks/{{ task.id }}/brief" data-brief-editor>
+    <label for="acceptance">Acceptance criteria</label>
+    <textarea id="acceptance" name="acceptance" rows="5" placeholder="- [ ] A verifiable outcome." required>{{ acceptance_text }}</textarea>
+    <label for="reading" style="display:block;margin-top:8px">Reading list <span class="muted">(one path per line)</span></label>
+    <textarea id="reading" name="reading" rows="3" placeholder="demo/p1/specs/brief.md">{{ task.reading|join('\n') }}</textarea>
+    <div class="actions" style="margin-top:8px"><button class="primary">Save brief</button><span id="brief-editor-message" class="muted" aria-live="polite"></span></div>
+  </form>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#suggest-form">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>

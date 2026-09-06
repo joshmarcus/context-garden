@@ -675,6 +675,51 @@ def test_new_task_approve_now_refusal_keeps_it_draft_and_flashes_the_gap(garden)
     assert Store(garden).task("DM-003").status == Status.DRAFT
 
 
+def test_inline_edit_clears_brief_gate(garden):
+    """A draft with a missing checklist can repair its brief on its task page and approve."""
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DRAFT
+    store.save(task)
+    c = client(garden)
+
+    page = c.get("/tasks/DM-001").text
+    assert 'id="brief-card"' in page
+    assert 'action="/tasks/DM-001/brief"' in page
+
+    saved = c.post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] The task page saves a repaired brief, covered by this test.",
+        "reading": "demo/p1/specs/spec.md",
+    })
+    assert saved.status_code == 200 and saved.json() == {"gaps": []}
+    task = Store(garden).task("DM-001")
+    assert "## Acceptance criteria\n\n- [ ] The task page saves a repaired brief" in task.body
+    assert task.reading == ["demo/p1/specs/spec.md"]
+    assert 'id="brief-card"' not in c.get("/tasks/DM-001").text
+
+    c.post("/tasks/DM-001/approve")
+    assert Store(garden).task("DM-001").status == Status.READY
+
+
+def test_inline_brief_edit_rejects_missing_reading_path(garden):
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DRAFT
+    store.save(task)
+
+    response = client(garden).post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] The saved brief is valid.",
+        "reading": "demo/p1/specs/missing.md",
+    })
+    assert response.status_code == 422
+    assert "reading-list path not found" in response.json()["detail"]
+    assert Store(garden).task("DM-001").reading == ["demo/p1/specs/spec.md"]
+
+
 def test_dispatch_button_is_not_offered_on_a_draft_task(garden):
     """CG-238: dispatching a draft used to skip the approve gate entirely (a placeholder
     brief could be dispatched silently); the only way from draft into the loop now is

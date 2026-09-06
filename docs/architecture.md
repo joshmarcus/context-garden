@@ -96,11 +96,12 @@ of the loop touch different files.
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
+| `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
-| `web/pages/` | one module per page family (`inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes |
+| `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
@@ -122,6 +123,12 @@ Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the tas
 `reservations.json` (durable id reservations, below).
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
+
+Fence manifests protect live config, state and concurrently active run evidence. They are
+stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while
+the run is active; completed run directories remain the durable audit and accounting history
+but are not copied into every later dispatch snapshot. On load, legacy inline manifests for
+completed runs are removed through the ordinary locked state writer.
 
 ### Reserving task ids
 
@@ -182,6 +189,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
+| active fence | `fence`, `fence_guard_manifest` | dispatch snapshot plus a compact run-id/content-hash reference; released after run and task finalization, while the content-addressed manifest and run audit remain on disk |
 | suggestions | `edit_run`, `edit_attempts` | the edit run folding pending suggestions into the task body, and how many edit runs failed (capped) |
 
 Two special entries: `_phase:<product>/<phase>` records when a budget was hit, and `_aux`
@@ -699,3 +707,5 @@ spending tokens; a failed flow exits non-zero and fails the job.
   config, never from a check's own JSON output (code the branch wrote), and runs in the same
   scrubbed environment — so a check cannot smuggle a shell command out through its output.
 - No model runs in the tick. Waiting is a sleeping Python process.
+
+The fence verifies the authoritative manifest against its saved digest. Missing or invalid trusted metadata fails the run for operator inspection; the worker-writable audit copy is never a restoration authority. References survive manual runs and interrupted finalization so a recovered reap can repeat the check safely.

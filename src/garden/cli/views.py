@@ -236,6 +236,14 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(table)
 
 
+def render_now1(window: str) -> None:
+    """Render Now 1 for the shared ``garden now`` command."""
+    store = _store()
+    from ..now1 import render_text, snapshot
+
+    print(render_text(snapshot(store, _scheduler(store), window=window)), end="")
+
+
 @app.command(rich_help_panel=PANEL_BOARD)
 def ready():
     """Tasks that could be dispatched right now."""
