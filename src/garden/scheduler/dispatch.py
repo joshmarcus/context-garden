@@ -107,13 +107,16 @@ class DispatchMixin:
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.budget_exceeded(task):
                 continue
-            runner = self.runner_for(task)
+            member = self.select_pool_member(task, task.difficulty)
+            runner = self.runner_for(task, harness_name=str(member["harness"]) if member else "")
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
             if not runner.remote and self.local_slots_free() <= 0:
                 continue  # remote candidates may still run while the operator host drains
+            if member is None and self.pool_members(task.difficulty):
+                continue  # every configured member is paused
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
@@ -121,7 +124,8 @@ class DispatchMixin:
             if not self.operator_scope_ready(task):
                 continue  # live config is an operator prerequisite, never worker scope
             try:
-                self.dispatch(task, mode=mode, runner=runner)
+                self.dispatch(task, mode=mode, runner=runner, model_override=(member or {}).get("model") or None,
+                              pool_member=(member or {}).get("label") or "")
                 rep.dispatched.append(f"{task.id}({mode})")
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
@@ -298,14 +302,15 @@ class DispatchMixin:
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
-                 external_pr: str = "", external_pr_number: int | None = None) -> Run:
+                 external_pr: str = "", external_pr_number: int | None = None,
+                 pool_member: str = "") -> Run:
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
                                   branch_override, worktree_override, model_override, reserved_run,
-                                  completion_mode, external_pr, external_pr_number)
+                                  completion_mode, external_pr, external_pr_number, pool_member)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
@@ -339,13 +344,21 @@ class DispatchMixin:
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
                   reserved_run: Run | None = None, completion_mode: str = "managed",
-                  external_pr: str = "", external_pr_number: int | None = None) -> Run:
+                  external_pr: str = "", external_pr_number: int | None = None,
+                  pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         if not self.operator_scope_ready(task):
             raise RuntimeError("operator evidence is required before checkout work can dispatch")
-        runner = runner or self.runner_for(task)
+        if runner is None:
+            tier = "easy" if mode == "rebase" else task.difficulty
+            member = self.select_pool_member(task, tier)
+            if self.pool_members(tier) and member is None:
+                raise RuntimeError(f"every {tier} tier pool member is paused")
+            runner = self.runner_for(task, harness_name=str((member or {}).get("harness") or ""))
+            model_override = model_override if model_override is not None else (member or {}).get("model") or None
+            pool_member = pool_member or str((member or {}).get("label") or "")
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -513,6 +526,7 @@ class DispatchMixin:
         run.external_pr = external_pr
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
+        run.pool_member = pool_member
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
@@ -580,7 +594,7 @@ class DispatchMixin:
         how = "resumed session" if session_id else "fresh session"
         stacked = f" stacked on {stack['parent_id']}" if stack else ""
         tier_note = ", description only; easy tier" if revise_easy else (", conflict only; easy tier" if mode == "rebase" else "")
-        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
+        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness, pool_member=run.pool_member,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
         self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}{rebase_note}, ~{run.brief_tokens} tokens)")
         self.state.save()
