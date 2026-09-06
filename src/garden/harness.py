@@ -347,11 +347,16 @@ class Harness:
         message is short and arrives on stderr or as the error text; a worker whose long
         report merely discusses a login outage is not a login failure (four persona reviews
         of phase 04 were discarded that way)."""
+        # A parsed result is evidence that the CLI completed a worker turn. Its error
+        # text can quote the marker as part of the worker's report, so it must take
+        # precedence over the generic error-text check below.
+        if out.get("result"):
+            return False
+        if out.get("_parsed_agent_message"):
+            return False
         err_text = f"{stderr} {out.get('error') or ''}".lower()
         if any(marker in err_text for marker in AUTH_FAILURE_MARKERS):
             return True
-        if out.get("_parsed_agent_message"):
-            return False
         if len(stdout.strip()) >= 2000 or out.get("result") or re.search(r"\bGARDEN_[A-Z0-9_]+:", stdout):
             return False
         blob = stdout.lower()
