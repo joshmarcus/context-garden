@@ -86,6 +86,28 @@ def test_walkthrough_includes_now2(garden):
     assert any(p.url == '/now2' for p in pages_for(s, ph))
 
 
+def test_next_preserves_revision_priority_and_merge_head_state(garden):
+    from garden.model import Status
+
+    s = Store(garden)
+    sched = Scheduler(s)
+    first, second = s.task('DM-001'), s.task('DM-002')
+    first.status = second.status = Status.CHANGES_REQUESTED
+    sched.state.get(first.id).update(pending_feedback='Fix verification', revisions=0,
+                                    automerge_candidate=True, automerge_ready_at='2026-09-01')
+    sched.state.get(second.id).update(rebase_pending=True, merge_head=True,
+                                     automerge_candidate=True, automerge_ready_at='2026-09-02',
+                                     checks='pending', review_rounds=2)
+    queues = next_queues(s, sched)
+    assert [(r['task'].id, r['mode']) for r in queues['workers']] == [
+        (second.id, 'rebase'), (first.id, 'revise')]
+    assert [r['task'].id for r in queues['merges']] == [second.id, first.id]
+    assert queues['merges'][0]['checks'] == 'pending'
+    assert queues['merges'][0]['round'] == 2
+    assert queues['merges'][0]['reason'] == 'Queue head; awaiting rollup'
+    assert all(r['reason'] for r in queues['workers'])
+
+
 def test_fake_harness_live_output_and_run_record_join(garden):
     from garden.events import with_run_records
     from garden.now2 import running_rows
