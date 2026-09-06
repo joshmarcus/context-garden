@@ -749,7 +749,37 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual" or run.run_id in owned or not run.process_finished():
+            if run.runner == "manual":
+                continue
+            no_exit_code = not (run.path / "exit_code").exists()
+            process_missing = run.pid is None
+            process_dead = not process_missing and run.process_finished()
+            if no_exit_code and (process_missing or process_dead):
+                task = tasks.get(run.task_id)
+                # A terminal task can still have a worktree that the terminal sweep
+                # protects with this record (for example while a human finishes a
+                # hand-created run record).  Leave that ownership marker in place so
+                # cleanup does not remove caches from beneath the worktree on this tick.
+                # Non-terminal tasks take the immediate failure path below.
+                if task is not None and task.status.terminal and process_missing:
+                    continue
+                reason = "process never started" if process_missing else "process vanished"
+                run.status = "failed"
+                run.finished_at = now_iso()
+                run.error = reason
+                run.save()
+                self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                                 harness=run.harness, model=run.model, status="failed",
+                                 cost_usd=None, usage={}, error=reason, orphaned=True)
+                rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} failed ({reason})")
+                if (task is not None and task.status == Status.RUNNING
+                        and run.mode in ("work", "revise", "resume", "trial", "rebase")
+                        and self.latest_worker_run(task.id).run_id == run.run_id):
+                    self._retry_or_fail(task, run, rep, reason)
+                continue
+            if run.run_id in owned:
+                continue
+            if not run.process_finished():
                 continue
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()

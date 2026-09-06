@@ -73,8 +73,16 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_dir = Path(argv[0])
-    payload = json.loads((run_dir / "checks_input.json").read_text())
-    results = run_check_job(payload)
+    try:
+        payload = json.loads((run_dir / "checks_input.json").read_text())
+        results = run_check_job(payload)
+    except Exception as e:  # noqa: BLE001
+        # Always leave a structured result for the scheduler to reap.  A detached check
+        # process can fail before run_check_job gets to its normal result handling (for
+        # example, while importing a check plugin); without this record reap reports the
+        # less useful "check run produced no results" and loses the actual exception.
+        results = [{"name": "checks", "status": "error",
+                    "summary": f"check runner failed: {type(e).__name__}: {e}", "details": ""}]
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
     return 0
 

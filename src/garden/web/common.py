@@ -37,6 +37,19 @@ LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed",
 LOGGER = logging.getLogger("garden.web")
 
 
+def product_checkout(store: Store, product: str) -> Path:
+    """Return the configured local checkout, falling back to its garden metadata."""
+    configured = store.config.product_repo(product)
+    if isinstance(configured, str) and "://" in configured:
+        return next((p.path for p in store.products() if p.name == product), store.root)
+    return Path(configured)
+
+
+def product_design_root(store: Store, product: str) -> Path:
+    """The design directory belonging to a product's code checkout."""
+    return product_checkout(store, product) / "docs" / "design"
+
+
 def _flash_url(url: str, message: str, note: str = "", extra: dict[str, str] | None = None) -> str:
     """Append a flash message (and, for the answer form, the typed note) to a redirect target.
     `extra` carries a form's other typed fields back (the new-task form) so they survive a
@@ -69,6 +82,10 @@ class Hub:
         self.action_lock = threading.Lock()
         self.events: list[dict[str, Any]] = []
         self.last_tick = ""
+        # What the last pass was, for a page that keeps a countdown: the Now page's stream reads
+        # this after each tick without the lock (a plain dict swapped whole, never mutated).
+        self.tick_seq = 0
+        self.tick_record: dict[str, Any] = {}
         self.watch = watch
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
@@ -98,7 +115,25 @@ class Hub:
         with self.lock:
             rep = self.scheduler().tick()
             self.last_tick = now_iso()
+            self.tick_seq += 1
+            self.tick_record = {"seq": self.tick_seq, "at": self.last_tick, "duration_s": round(rep.duration_s, 2),
+                                "summary": rep.summary(), "next_at": self.next_tick_at()}
             return rep.summary()
+
+    def tick_interval(self) -> int:
+        return int(self.store.config.get("tick_interval", 60))
+
+    def next_tick_at(self) -> str:
+        """When the watch loop's next pass starts, as ISO UTC, or '' when no loop runs."""
+        if not self.watch or not self.last_tick:
+            return ""
+        import datetime as dt
+
+        return (dt.datetime.fromisoformat(self.last_tick) + dt.timedelta(seconds=self.tick_interval())).isoformat()
+
+    def tick_state(self) -> dict[str, Any]:
+        """The last pass as a message for the Now page's stream (`seq` tells one from the next)."""
+        return {"seq": self.tick_seq, **self.tick_record, "next_at": self.next_tick_at()}
 
     def _loop(self) -> None:
         interval = int(self.store.config.get("tick_interval", 60))
@@ -165,7 +200,9 @@ class Site:
             "root": str(s.root),
             "watch": hub.watch,
             "last_tick": hub.last_tick,
+            "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": s.products(),
+            "has_design": any(product_design_root(s, p.name).is_dir() for p in s.products()),
             "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},
             "inbox_count": len(decisions(items)),
             "env": s.config.env,

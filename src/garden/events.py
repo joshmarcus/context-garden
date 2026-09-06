@@ -449,18 +449,20 @@ def _rank_row(cells: dict[str, dict[str, Any]], better: str) -> None:
     """Place a row's cells on a scale from its best value (rank 0) to its worst (rank 1). The
     scale is set by the solid cells (n at or above THIN_SAMPLE); a comparison needs two of them.
     A thin cell is placed on that scale, clamped, but is never the best or the worst, so a
-    single lucky run cannot read as a verdict; the page shows it faint and marked."""
+    single lucky run cannot read as a verdict; the page shows it faint and marked. A flat row
+    (every solid value the same) sits at rank 0 with no best or worst: there is no end to mark."""
     solid = [c for c in cells.values() if not c["thin"]]
     if len(solid) < 2:
         return
     lo = min(c["value"] for c in solid)
     hi = max(c["value"] for c in solid)
-    for c in cells.values():
-        if hi == lo:
+    if hi == lo:
+        for c in cells.values():
             c["rank"] = 0.0
-        else:
-            k = (c["value"] - lo) / (hi - lo)
-            c["rank"] = round(min(1.0, max(0.0, k if better == "low" else 1.0 - k)), 3)
+        return
+    for c in cells.values():
+        k = (c["value"] - lo) / (hi - lo)
+        c["rank"] = round(min(1.0, max(0.0, k if better == "low" else 1.0 - k)), 3)
     pick_best, pick_worst = (min, max) if better == "low" else (max, min)
     pick_best(solid, key=lambda c: c["value"])["best"] = True
     pick_worst(solid, key=lambda c: c["value"])["worst"] = True

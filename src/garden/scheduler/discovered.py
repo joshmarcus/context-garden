@@ -210,9 +210,14 @@ class DiscoveredMixin:
         """A worker's reported friction (the result's `friction` list): post it as one marked
         PR comment and append it to the phase's friction record. It never goes in the PR body;
         the next planning round harvests it with `garden friction`."""
-        from ..friction import friction_comment, friction_items, record_friction
+        from ..friction import (
+            declined_improvement_items,
+            friction_comment,
+            friction_items,
+            record_friction,
+        )
 
-        items = friction_items(result)
+        items = friction_items(result) + declined_improvement_items(result)
         if not items:
             return
         slug = self.slug_for(task)

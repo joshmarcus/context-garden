@@ -57,12 +57,29 @@ class DispatchMixin:
         if refusal:
             raise RuntimeError(refusal)
 
+    def dispatch_queue(self) -> list[tuple[Task, str, str]]:
+        """The order the next pass takes work in, as `(task, mode, why)`: rebase rounds first
+        (the cheapest work, and they unblock a merge; a rebase round has its own counter and is
+        not bounded by max_revisions), then revise rounds under the cap, then ready tasks in
+        `dispatch_sort_key` order. `why` says what put the line where it is. `dispatch_ready`
+        walks this list, and the Now page shows it, so the two cannot disagree; the per-line
+        skips (a frozen phase, a spent budget, a manual runner, a paused harness) are applied
+        by the walker, not here, so the order stays true even for a line the tick passes over."""
+        tasks = self.store.tasks()
+        max_rev = int(self.cfg.get("max_revisions", 3))
+        candidates = worker_candidates(tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+        queue = [(task, mode, (
+            "rebase round, goes first" if mode == "rebase" else
+            f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
+            if mode == "revise" else
+            f"priority {task.priority}" + (f" · order {task.order}" if task.order is not None else "")
+        )) for task, mode in candidates]
+        return queue
+
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
-        queue = worker_candidates(tasks, self.state, int(self.cfg.get("max_revisions", 3)),
-                                  self.stack_enabled, self._edit_pending)
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
-        for task, mode in queue:
+        for task, mode, _why in self.dispatch_queue():
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
@@ -230,9 +247,40 @@ class DispatchMixin:
         return {"parent_id": p.id, "parent_title": p.title, "parent_pr": p.pr, "parent_branch": p.branch,
                 "final_base": self.final_base_for(task)}
 
+    def _close_dispatch_failure(self, task: Task, run: Run, error: Exception) -> None:
+        """Close a run created by dispatch when preparation or startup raises."""
+        run.status = "failed"
+        run.finished_at = now_iso()
+        run.error = str(error)
+        run.save()
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
+                         harness=run.harness, model=run.model, status="failed",
+                         cost_usd=run.cost_usd, usage=run.usage, error=run.error)
+
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+        # Keep the run created by the inner method visible so every exception after
+        # runs.new_run(), including worktree/brief preparation failures, closes it.
+        self._dispatching_run = None
+        try:
+            return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
+                                  branch_override, worktree_override, model_override)
+        except Exception as e:  # noqa: BLE001
+            run = self._dispatching_run
+            # A runner may have launched the worker and then raised while recording
+            # startup details.  In that case the process owns the run and closing the
+            # record here would leave a live worker behind.  The orphan sweep handles
+            # a process that later disappears without an exit marker.
+            if run is not None and run.status == "running" and run.pid is None:
+                self._close_dispatch_failure(task, run, e)
+            raise
+        finally:
+            self._dispatching_run = None
+
+    def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
+                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
+                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
@@ -246,6 +294,7 @@ class DispatchMixin:
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
         run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
+        self._dispatching_run = run
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
@@ -310,6 +359,8 @@ class DispatchMixin:
         wt: Path | None = None
         if worktree and not runner.remote:
             wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+            from .snapshot import write_snapshot
+            write_snapshot(self, task, wt)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
@@ -343,9 +394,8 @@ class DispatchMixin:
         try:
             runner.start(run, wt or self.store.root, text)
         except Exception as e:  # setup/start failed: mark this run failed so it stops
-            run.status = "failed"    # counting against active() (a leaked slot) and re-raise
-            run.error = str(e)
-            run.save()
+            if run.pid is None:
+                self._close_dispatch_failure(task, run, e)
             raise
         if not branch_override:
             task.branch = branch

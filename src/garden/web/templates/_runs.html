@@ -4,7 +4,7 @@
 {% for r in runs %}
 <tr>
   <td class="mono">{{ r.run_id }}</td><td>{{ r.mode }}</td><td><span class="pill s-{{ 'running' if r.status == 'running' else ('done' if r.status == 'done' else ('waiting_human' if r.status == 'waiting' else 'failed')) }}">{{ r.status }}</span></td>
-  <td class="mono">{{ r.harness }}{% if r.model %}:{{ r.model }}{% endif %}{% if r.host %} @{{ r.host }}{% endif %}{% if r.mode == 'review' and r.env_snapshot.get('writer_model') %}<br><span class="muted">reviewed by {{ r.model }}, one above {{ r.env_snapshot.writer_model }}</span>{% endif %}</td><td>{{ '%.0f' % r.elapsed_minutes() }}</td><td>{{ '{:,}'.format(r.brief_tokens) }}</td>
+  <td class="mono">{{ r.harness }}{% if r.model %}:{{ r.model }}{% endif %}{% if r.host %} @{{ r.host }}{% endif %}{% if r.mode == 'review' and r.env_snapshot.get('writer_model') %}<br><span class="muted">reviewed by {{ r.model }}, one above {{ r.env_snapshot.writer_model }}</span>{% endif %}</td><td>{% if r.status == 'running' %}{{ live_clock(r) }}{% else %}{{ '%.0f' % r.elapsed_minutes() }}{% endif %}</td><td>{{ '{:,}'.format(r.brief_tokens) }}</td>
   <td>{{ r.usage.get('input_tokens', '') }}</td><td>{{ r.usage.get('cache_read_input_tokens', '') }}</td><td>{{ r.usage.get('output_tokens', '') }}</td>
   <td>{% if r.cost_usd is not none %}${{ '%.2f' % r.cost_usd }}{% endif %}</td>
   <td><a href="/runs/{{ task.id }}/{{ r.run_id }}">open run</a>{% if r.error %} · <span class="muted" title="{{ r.error }}">error</span>{% endif %}</td>

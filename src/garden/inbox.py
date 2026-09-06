@@ -539,6 +539,9 @@ def running_now(store: Store) -> list[dict[str, Any]]:
     warn = float(store.config.get("idle_minutes", 0) or 0)
     out = []
     for r in rs.active():
+        has_process = r.pid is not None and not r.process_finished()
+        if not has_process:
+            continue
         t = tasks.get(r.task_id)
         idle = round(r.idle_minutes())
         out.append({"task": r.task_id, "title": t.title if t else "", "mode": r.mode, "model": r.model,

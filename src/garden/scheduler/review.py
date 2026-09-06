@@ -68,7 +68,7 @@ class ReviewMixin:
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
-        if any(r.task_id == task.id for r in self.worker_runs_active()):
+        if self._worker_holding_reviews(task) is not None:
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
@@ -122,6 +122,38 @@ class ReviewMixin:
         if not separator or not harness or not model:
             return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
         return harness, model, writer
+
+    def _worker_holding_reviews(self, task: Task) -> Run | None:
+        """The worker run a review for this task waits behind (a review never runs beside a
+        worker round for the same task, CG-177): the newest one, or None."""
+        mine = [r for r in self.worker_runs_active() if r.task_id == task.id]
+        return mine[-1] if mine else None
+
+    def review_wait_reason(self, task: Task, last_tick: str = "", last_moved: str = "") -> tuple[str, str]:
+        """Why a queued review (`pending_reviews`) has not started: the first of the gates the
+        tick applies, in the tick's own order, as a gate word and a sentence. The Now page
+        shows it, and it reads the predicates `_drain_pending_reviews` and
+        `_dispatch_or_defer_reviews` apply, so the page and the tick cannot disagree: the
+        drain runs inside dispatch (so a pause holds it), then the worker gate, the review
+        harness, the review slots. When none holds it the next tick starts it; when none holds
+        it and a tick (`last_tick`, the hub's) has passed since the task last moved
+        (`last_moved`, its newest event), something this cannot see is in the way, and the
+        sentence sends the person to the task's log rather than promising a recovery."""
+        if self.is_dispatch_paused():
+            return "paused", "dispatch paused: reviews start again with dispatch"
+        run = self._worker_holding_reviews(task)
+        if run is not None:
+            if run.no_process:
+                return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
+            return "worker", f"waits for its {run.mode} run to finish"
+        harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
+        if self.is_harness_paused(harness):
+            return "harness", f"{harness} harness paused"
+        if self.review_slots_free() <= 0:
+            return "slots", f"no review slot ({len(self.review_runs_active())} of {self.review_parallel_limit()} busy)"
+        if last_tick and last_tick > last_moved:
+            return "overdue", "still queued after a tick and no gate explains it: see the task's log"
+        return "tick", "queued: the next tick starts it"
 
     @staticmethod
     def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
@@ -184,7 +216,8 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
-    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
+    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
+                        reask_missing_fixes: bool = False) -> Run:
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
@@ -224,13 +257,15 @@ class ReviewMixin:
                 break
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment, verified=verified, captures=capture_paths)
+                            pr_comment=pr_comment, verified=verified, captures=capture_paths,
+                            reask_missing_fixes=reask_missing_fixes)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages))}
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+                            "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -402,6 +437,18 @@ class ReviewMixin:
                     self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
+        missing_fixes = self._blocking_findings_without_fix(review)
+        # A replay restores a verdict whose worker run had already been reaped before the
+        # scheduler crashed. Older reviews legitimately lack `fix`, and recovery must put
+        # their original changes_requested state back rather than replacing it with a new
+        # review round. Freshly reaped reviews still get the one actionable re-ask.
+        if missing_fixes and not emitted and not st.get("review_fix_reasked"):
+            st["review_fix_reasked"] = True
+            self.dispatch_review(task, count_round=False, reask_missing_fixes=True)
+            rep.transitions.append(f"{task.id} review re-asked for blocking fixes")
+            return True
+        if not missing_fixes:
+            st.pop("review_fix_reasked", None)
         # repeated blocking findings across rounds = the loop isn't converging
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
@@ -428,6 +475,7 @@ class ReviewMixin:
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
                     st.pop("pending_feedback_rebase", None)
+                    st.pop("review_fix_reasked", None)
                     self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
                     rep.transitions.append(f"{task.id} -> changes_requested (review)")
                     return True
@@ -451,6 +499,13 @@ class ReviewMixin:
                   f"automated review: {verdict} — {review.get('summary', '')}{cost}", task.pr or "")
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    @staticmethod
+    def _blocking_findings_without_fix(review: dict[str, Any]) -> list[dict[str, Any]]:
+        """Blocking findings need actionable advice; older reviewers can omit new fields."""
+        return [finding for finding in review.get("findings") or []
+                if isinstance(finding, dict) and finding.get("severity") == "blocking"
+                and not str(finding.get("fix") or "").strip()]
 
     def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
         """The reviewer found nothing blocking but the description, and returned the corrected

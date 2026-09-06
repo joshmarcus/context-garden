@@ -72,6 +72,13 @@ class Run:
         return cls(**data)
 
     # ---- process state -----------------------------------------------------
+    @property
+    def no_process(self) -> bool:
+        """A record written at dispatch and never launched: still running, no pid and no
+        output. The scheduler counts it against a slot until a tick reaps it, so the Now page
+        shows it as what it is and a review behind it says what it waits for."""
+        return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
+
     def process_finished(self) -> bool:
         if (self.path / "exit_code").exists():
             return True
@@ -123,6 +130,10 @@ class Run:
         return max(0.0, (dt.datetime.now(dt.UTC) - last).total_seconds() / 60)
 
     def kill(self) -> None:
+        # The in-process test runner uses the scheduler process as the liveness sentinel.
+        # Never let a corrupt or synthetic run record terminate the process doing the reap.
+        if self.pid == os.getpid():
+            return
         if self.pid and _pid_alive(self.pid):
             try:
                 os.killpg(self.pid, signal.SIGTERM)

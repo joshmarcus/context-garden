@@ -341,6 +341,54 @@ class Harness:
         out.pop("_parsed_agent_message", None)
         return out
 
+    def progress(self, stdout: str, model: str = "") -> dict[str, Any]:
+        """What a run has done so far, read from its partial stream (`parse`'s sibling for a
+        run still in flight): `said`, the newest assistant text; `usage`, the tokens read and
+        written so far (each claude stream-json message's usage summed, since a long run is
+        made of cache reads; codex's `turn.completed` total); `cost_usd`, that usage priced
+        with this harness's table, None when the table has no entry for `model` (a page shows
+        the tokens then, never an estimate); `tokens`, the usage summed. A finished claude-json
+        result line counts too, so the same reader serves a run that has just ended."""
+        said, usage = "", {}
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            kind = ev.get("type")
+            if kind == "assistant":  # claude stream-json
+                msg = ev.get("message") or {}
+                for block in msg.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                        said = str(block["text"])
+                for k, v in (msg.get("usage") or {}).items():
+                    if isinstance(v, (int, float)):
+                        usage[k] = usage.get(k, 0) + int(v)
+            elif kind == "result":  # claude-json: one object at the end
+                if isinstance(ev.get("result"), str) and ev["result"]:
+                    said = str(ev["result"])
+                if ev.get("usage"):
+                    usage = {k: int(v) for k, v in ev["usage"].items() if isinstance(v, (int, float))}
+            elif kind == "item.completed":  # codex jsonl
+                item = ev.get("item") or {}
+                if item.get("type") == "agent_message" and item.get("text"):
+                    said = str(item["text"])
+            elif kind == "turn.completed":
+                u = ev.get("usage") or {}
+                usage = {"input_tokens": max(0, int(u.get("input_tokens", 0)) - int(u.get("cached_input_tokens", 0))),
+                         "output_tokens": int(u.get("output_tokens", 0)) + int(u.get("reasoning_output_tokens", 0)),
+                         "cache_read_input_tokens": int(u.get("cached_input_tokens", 0)),
+                         "cache_creation_input_tokens": int(u.get("cache_write_input_tokens", 0))}
+        cost = _usage_cost(usage, model, self.cfg.get("prices") or {})[0] if usage else None
+        first_line = next((ln.strip() for ln in said.splitlines() if ln.strip()), "")
+        return {"said": first_line, "usage": usage, "cost_usd": cost,
+                "tokens": sum(int(v) for v in usage.values())}
+
     @staticmethod
     def _auth_failure(out: dict[str, Any], stdout: str, stderr: str) -> bool:
         """Whether the run stopped because the harness was not logged in. The CLI's own
@@ -352,11 +400,13 @@ class Harness:
         # precedence over the generic error-text check below.
         if out.get("result"):
             return False
-        if out.get("_parsed_agent_message"):
-            return False
         err_text = f"{stderr} {out.get('error') or ''}".lower()
         if any(marker in err_text for marker in AUTH_FAILURE_MARKERS):
             return True
+        # An agent message is worker prose, but a separate Codex error event is the
+        # CLI's own error and must win even when it follows that prose.
+        if out.get("_parsed_agent_message"):
+            return False
         if len(stdout.strip()) >= 2000 or out.get("result") or re.search(r"\bGARDEN_[A-Z0-9_]+:", stdout):
             return False
         blob = stdout.lower()

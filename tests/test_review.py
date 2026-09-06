@@ -105,6 +105,52 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
+    store = Store(garden)
+    review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."},{"severity":"high","file":"b.py","line":3,"summary":"edge case","fix":"Handle the empty collection."},{"severity":"nit","file":"c.py","line":4,"summary":"unclear name","fix":"Rename result to parsed_value."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')
+    assert review["findings"][0]["fix"].startswith("Guard")
+    assert review["improvements"][0]["effort"] == "small"
+    # Older reviewers have neither field and remain parseable.
+    old = parse_review('GARDEN_REVIEW: {"verdict":"approve","summary":"old","findings":[]}')
+    assert "improvements" not in old
+    markdown = review_to_markdown(review)
+    assert "**Fix:** Guard the empty value" in markdown
+    assert "**Improvements**" in markdown and "Rename x to parsed_value" in markdown
+    feedback = feedback_from_review(review)
+    assert "Guard the empty value" in feedback
+    assert "**automated review** blocking (`a.py`:2): bug" in feedback
+    assert "**automated review** high (`b.py`:3): edge case" in feedback
+    assert "**automated review** nit (`c.py`:4): unclear name" in feedback
+    assert "Handle the empty collection." in feedback
+    assert "Rename result to parsed_value." in feedback
+    assert "Optional improvements" in feedback and "improvements_declined" in feedback
+    task = store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    brief = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
+                         max_diff_chars=100, reask_missing_fixes=True)
+    assert "Follow-up required" in brief and "`fix` for every blocking finding" in brief
+
+
+def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):
+    from tests.fake_claude import REVIEWS
+
+    REVIEWS["review-no-fix"] = {"verdict": "request_changes", "summary": "needs a test",
+                                "description_ok": True,
+                                "findings": [{"severity": "blocking", "file": "a.py", "line": 1,
+                                              "summary": "missing test"}]}
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-no-fix")
+    sched.tick()
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-001 review re-asked for blocking fixes" in rep.transitions
+    rerun = sched.runs.latest("DM-001")
+    assert rerun.mode == "review"
+    assert "Follow-up required" in (rerun.path / "brief.md").read_text()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+
 def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
     store = Store(garden)
     shot = tmp_path / "board-390-dark.png"

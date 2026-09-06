@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from garden.harness import Harness
+from garden.personas import parse_persona
 from garden.runs import Run
 
 
@@ -314,6 +315,13 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
                    'fixed.\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{},"total_cost_usd":0.1}')
     assert done["env_error"] is False
 
+    # Even an error-shaped result is a completed worker result once it carries a
+    # parsed garden block; the marker in the report cannot turn it into auth.
+    error_with_result = h.parse('{"type":"result","subtype":"error_during_execution","is_error":true,'
+                                '"result":"not logged in was discussed; fixed.\\n'
+                                'GARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{}}')
+    assert error_with_result["env_error"] is False and error_with_result["result"]["status"] == "done"
+
     # Codex's agent message is worker prose, even when it is short and contains the marker.
     codex = Harness("codex", {})
     agent_message = json.dumps({"type": "item.completed", "item": {
@@ -322,33 +330,51 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     parsed = codex.parse(agent_message, model="gpt-5.6-luna")
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
+    # A CLI error must win over worker prose regardless of event order.
+    agent_then_error = "\n".join([
+        agent_message,
+        json.dumps({"type": "error", "message": "not authenticated: run codex login"}),
+    ])
+    parsed = codex.parse(agent_then_error, model="gpt-5.6-luna")
+    assert parsed["env_error"] is True and parsed["env_kind"] == "auth"
+    error_then_agent = "\n".join([
+        json.dumps({"type": "error", "message": "not authenticated: run codex login"}),
+        agent_message,
+    ])
+    parsed = codex.parse(error_then_agent, model="gpt-5.6-luna")
+    assert parsed["env_error"] is True and parsed["env_kind"] == "auth"
+
     # A short plain output with another garden result block is worker output too.
     garden_block = "not logged in was discussed\nGARDEN_PERSONA: {}"
     parsed = h.parse(garden_block)
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
-@pytest.mark.parametrize("persona, cost", [
-    ("security", 5.12),
-    ("designer", 5.38),
-    ("product-manager", 5.67),
-    ("user", 5.84),
-])
-def test_replay_discarded_persona_outputs_keeps_done_and_cost(persona, cost):
-    """Replay the four phase-04 persona reports that were discarded by the old guard."""
+def test_recovered_persona_result_texts_replay_done_cost_and_persona():
+    """Replay the four recovered final persona messages inside result events.
+
+    The raw stdout.json files were truncated and are unavailable. The adjacent fixtures
+    preserve the complete marker-bearing result text, while the manifest preserves the
+    recorded result metadata and cost; this is the closest possible replay of the incident.
+    """
     h = Harness("claude", {"output_format": "stream-json"})
-    report = (f"Persona: {persona}. The day's not logged in outage was discussed, "
-              "but the reviewed work completed successfully. " * 30)
-    stdout = json.dumps({
-        "type": "result", "subtype": "error_during_execution", "is_error": True,
-        "result": report + '\nGARDEN_RESULT: {"status":"done"}',
-        "usage": {"input_tokens": 1}, "total_cost_usd": cost,
-    })
+    replay_dir = Path(__file__).parent / "fixtures" / "persona-replay"
+    manifest = json.loads((replay_dir / "manifest.json").read_text())
+    assert len(manifest) == 4
+    for filename, expected in manifest.items():
+        report = (replay_dir / filename).read_text()
+        assert "GARDEN_PERSONA:" in report
+        stdout = json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": report + '\nGARDEN_RESULT: {"status":"done"}',
+            "usage": expected["usage"], "total_cost_usd": expected["cost_usd"],
+        })
 
-    out = h.parse(stdout)
+        out = h.parse(stdout)
 
-    assert out["env_error"] is False and out["env_kind"] == ""
-    assert out["result"]["status"] == "done" and out["cost_usd"] == cost
+        assert out["env_error"] is False and out["env_kind"] == ""
+        assert out["result"]["status"] == "done" and out["cost_usd"] == expected["cost_usd"]
+        assert parse_persona(out["final_text"])["persona"] == expected["persona"]
 
 
 def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():

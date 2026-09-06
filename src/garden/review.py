@@ -52,6 +52,12 @@ reader and inspect layout, overlap, wrapping and empty states. Name every page i
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
 
+Every finding carries a concrete `fix`: say what to change and where; include a short code
+sketch when it makes the change clearer. `fix` is required for `blocking` and `high` findings
+and encouraged for nits. Also return `improvements`: non-blocking suggestions beyond the
+acceptance criteria, such as a simpler design, clearer name, missing test, doc line, or cheaper
+implementation. They are optional work for the author, not reasons to request changes.
+
 If the *only* problem is the description (`description_ok` is false and there is no blocking
 finding), do not send the change back for another round: rewrite the description yourself and
 return the full corrected body in `description_rewrite`. The garden applies it directly. Write
@@ -61,7 +67,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -86,7 +92,7 @@ def _verification_brief(task: Task, verified: Any) -> str:
 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
-                 captures: list[str] | None = None) -> str:
+                 captures: list[str] | None = None, reask_missing_fixes: bool = False) -> str:
     task_brief = build_brief(store, task, include_rules=False)
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
@@ -105,6 +111,10 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
             "## Author's response to the previous review (posted as a PR comment, not part of the description)\n\n"
             + pr_comment.strip() + "\n"
         )
+    if reask_missing_fixes:
+        parts.append("## Follow-up required\n\nYour previous review had blocking findings without concrete fixes. "
+                     "Return the same review with a `fix` for every blocking finding; do not discover new issues "
+                     "unless needed to make those fixes accurate.\n")
     if diff and len(diff) <= max_diff_chars:
         fence = "````" if "```" in diff else "```"
         parts.append(f"## Diff ({base}...HEAD)\n\n{fence}diff\n{diff.rstrip()}\n{fence}\n")
@@ -141,13 +151,28 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     blocking = [f for f in findings if f.get("severity") == "blocking"]
-    nits = [f for f in findings if f.get("severity") != "blocking"]
+    high = [f for f in findings if f.get("severity") == "high"]
+    nits = [f for f in findings if f.get("severity") not in ("blocking", "high")]
     if blocking:
         out.append("\n**Blocking**")
         out += [_finding_line(f) for f in blocking]
+    if high:
+        out.append("\n**High priority**")
+        out += [_finding_line(f) for f in high]
     if nits:
         out.append("\n**Nits**")
         out += [_finding_line(f) for f in nits]
+    improvements = [i for i in (rev.get("improvements") or []) if isinstance(i, dict)]
+    if improvements:
+        out.append("\n**Improvements**")
+        for item in improvements:
+            area = str(item.get("area") or "general")
+            effort = str(item.get("effort") or "")
+            detail = str(item.get("suggestion") or "")
+            why = str(item.get("why") or "")
+            suffix = f" — {why}" if why else ""
+            effort_text = f" · {effort}" if effort else ""
+            out.append(f"- **{area}{effort_text}**: {detail}{suffix}")
     if not rev.get("description_ok", True):
         out.append("\n**PR description**\n\n" + str(rev.get("description_feedback") or "needs work"))
     if run_id:
@@ -167,11 +192,26 @@ def feedback_from_review(rev: dict[str, Any]) -> str:
     """The revise-brief text for a request_changes verdict."""
     items = []
     for f in rev.get("findings") or []:
-        if isinstance(f, dict) and f.get("severity") == "blocking":
-            items.append("- **automated review** blocking" + _where(f) + ": " + str(f.get("summary", "")))
+        if not isinstance(f, dict):
+            continue
+        severity = str(f.get("severity") or "nit")
+        fix = str(f.get("fix") or "").strip()
+        line = "- **automated review** " + severity + _where(f) + ": " + str(f.get("summary", ""))
+        items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
     if not rev.get("description_ok", True):
         items.append("- **automated review** PR description: " + str(rev.get("description_feedback") or "rewrite it to give broader context and remove scar tissue") +
                      " (put the new description in `pr_body`; it replaces the current one)")
+    improvements = [i for i in (rev.get("improvements") or []) if isinstance(i, dict)]
+    if improvements:
+        items.append("\n### Optional improvements\n\nTake or decline each item. In your result, set `improvements_taken` "
+                     "to the suggestions you took and `improvements_declined` to objects with `suggestion` and `reason`; "
+                     "declined items are kept for the retro.")
+        for item in improvements:
+            area = str(item.get("area") or "general")
+            effort = str(item.get("effort") or "")
+            suggestion = str(item.get("suggestion") or "")
+            why = str(item.get("why") or "")
+            items.append(f"- **{area}{f' · {effort}' if effort else ''}**: {suggestion}" + (f" — {why}" if why else ""))
     return "\n".join(items)
 
 
@@ -182,4 +222,5 @@ def _where(f: dict[str, Any]) -> str:
 
 
 def _finding_line(f: dict[str, Any]) -> str:
-    return f"- {f.get('summary', '')}{_where(f)}"
+    fix = str(f.get("fix") or "").strip()
+    return f"- {f.get('summary', '')}{_where(f)}" + (f"\n  - **Fix:** {fix}" if fix else "")
