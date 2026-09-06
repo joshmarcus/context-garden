@@ -9,7 +9,8 @@ Everything on this page is what the code does today (`src/garden/`), not a plan.
 
 ## The shape of it
 
-Three kinds of process, one shared filesystem, one external service.
+Three kinds of process, one local audit filesystem, one external service. Pull-based remote
+workers may share nothing with the scheduler except HTTPS and the product's git remote.
 
 ```mermaid
 flowchart LR
@@ -56,10 +57,14 @@ flowchart LR
   agent CLI (`claude -p`, `codex exec`, or any CLI described under `harnesses:` in
   `garden.yaml`) running on this machine or on a host reached over ssh. They are
   detached: the scheduler keeps no handle to them and they outlive whichever process
-  started them. Local workers leave branches for the scheduler to push; the SSH runner
+ started them. Local workers leave branches for the scheduler to push; the SSH runner
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
-  different brief.
+ different brief.
+- The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
+  claims a leased run over HTTPS, clones the product, uses host-owned credentials, pushes,
+  streams its transcript, and posts its result and usage. Work, reviews, checks, personas,
+  and comparisons use the same run records; an expired lease returns to the queue.
 - **Maintenance pause** is the installation boundary. `garden pause` only blocks new
   dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
   requests a whole-scheduler freeze and the next transaction acknowledges quiescence without
@@ -107,6 +112,8 @@ of the loop touch different files.
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |
 | `runner/manual.py` | the human-driven runner backend |
+| `runner/remote.py` | the pull-based remote worker runner backend |
+| `remote_worker.py` | the independent-host worker agent |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `interaction_replay.py`, `preflight.py` | disposable application replay that records review-journey evidence; shared worker pre-flight rules and token-free mechanical checks |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
