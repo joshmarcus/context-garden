@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from ...runs import RunStore
 from ..common import Site
@@ -68,14 +68,16 @@ def register(app: FastAPI, site: Site) -> None:
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
             captures=captures))
 
-    @app.get("/runs/{task_id}/{run_id}/ui/{name}", response_class=FileResponse)
+    @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):
         run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
                     if r.run_id == run_id), None)
         path = run.path / "ui" / Path(name).name if run else None
         if path is None or not path.is_file():
             raise HTTPException(404)
-        return FileResponse(path)
+        media = "text/html" if path.suffix.lower() in {".html", ".htm"} else None
+        headers = {"Content-Security-Policy": "sandbox"} if media else {}
+        return Response(path.read_bytes(), media_type=media, headers=headers)
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):

@@ -11,16 +11,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 from ...store import Store
-from ..common import Site, render_md
+from ..common import Site, product_checkout, product_design_root, render_md
 from ..trust import safe_relative_path
 
 
 def _design_root(store: Store) -> Path:
     """The checkout for the garden's first product (the self-product in normal use)."""
     product = store.products()[0]
-    configured = store.config.product_repo(product.name)
-    candidate = Path(configured) if not isinstance(configured, str) or "://" not in configured else product.path
-    return candidate if candidate.exists() else product.path
+    return product_checkout(store, product.name)
 
 
 def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
@@ -41,9 +39,11 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/design/{path:path}")
     def design_file(request: Request, path: str, ref: str = ""):
         relative = safe_relative_path(path)
+        if path and not relative:
+            raise HTTPException(404)
         if not relative:
             store = hub.fresh()
-            root = _design_root(store) / "docs" / "design"
+            root = product_design_root(store, store.products()[0].name)
             files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
             links = "<h1>Design</h1><ul>" + "".join(
                 f'<li><a href="/design/{html.escape(f, quote=True)}">{html.escape(f)}</a></li>' for f in files
@@ -83,4 +83,6 @@ def register(app: FastAPI, site: Site) -> None:
         target = (run.path / relative).resolve()
         if run.path.resolve() not in target.parents or not target.is_file():
             raise HTTPException(404)
-        return Response(target.read_bytes(), media_type=_media(relative))
+        media = _media(relative)
+        headers = {"Content-Security-Policy": "sandbox"} if media == "text/html" else {}
+        return Response(target.read_bytes(), media_type=media, headers=headers)
