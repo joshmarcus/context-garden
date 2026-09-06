@@ -690,6 +690,7 @@ def test_new_task_fills_in_the_body_from_the_form(garden):
     r = c.post("/phases/demo/p1/new-task", data={
         "title": "Write the docs", "goal": "Explain the thing.", "context": "Nobody knows how it works.",
         "acceptance": "- [ ] docs exist\n- [ ] \n- [ ] reviewed", "difficulty": "easy", "priority": "1",
+        "reading": "demo/p1/specs/spec.md",
         "ready": "1",
     }, follow_redirects=False)
     assert r.status_code == 303
