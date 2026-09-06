@@ -413,9 +413,18 @@ class GardenTUI(App):
         t = self._current()
         if not t:
             return
+        if t.status == Status.DRAFT:
+            self._msg = f"{t.id} is draft; approve it first (press 'a')"
+            self.call_from_thread(self.action_refresh)
+            return
+        sched = self._sched()
+        if any(r.task_id == t.id for r in sched.runs.active()):
+            self._msg = f"{t.id} already has a run in flight"
+            self.call_from_thread(self.action_refresh)
+            return
         try:
             mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
-            self._sched().dispatch(t, mode=mode)
+            sched.dispatch(t, mode=mode)
         except Exception as e:  # noqa: BLE001
             self._msg = f"dispatch failed: {e}"
         self.call_from_thread(self.action_refresh)

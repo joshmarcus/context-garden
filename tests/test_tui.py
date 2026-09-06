@@ -51,6 +51,59 @@ def test_tui_wires_decision_cards_to_accept_and_reject(sched, fake_github, monke
     assert Scheduler(Store(sched.store.root)).pending_decisions() == []  # both cards resolved
 
 
+def test_tui_dispatch_refuses_a_draft_task(sched, fake_github):
+    """CG-248: the 'd' key must not bypass the approve gate the way it used to -- a draft
+    task's placeholder brief stays undispatched, same as the web's hidden button."""
+    sched.store.create_task("demo", "p1", "Third task", "## Goal\n\nOld.\n",
+                            status="draft", task_id="DM-003")
+
+    async def run():
+        app = GardenTUI(Store(sched.store.root))
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.press("i")  # switch to the Tasks tab
+            await pilot.pause()
+            table = app.query_one("#table", DataTable)
+            table.move_cursor(row=table.get_row_index("DM-003"))
+            await pilot.pause()
+            await pilot.press("d")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "draft" in app._msg
+
+    asyncio.run(run())
+    sched.store.invalidate()
+    assert sched.store.task("DM-003").status == Status.DRAFT
+    from garden.runs import RunStore
+
+    assert RunStore(sched.store.root / ".garden").runs_for("DM-003") == []
+
+
+def test_tui_dispatch_refuses_a_run_already_in_flight(sched, fake_github):
+    """CG-248: pressing 'd' twice in quick succession must not start a second run."""
+    from garden.runner.manual import ManualRunner
+
+    sched.dispatch(sched.store.task("DM-001"), runner=ManualRunner({}), worktree=False)
+
+    async def run():
+        app = GardenTUI(Store(sched.store.root))
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.press("i")  # switch to the Tasks tab
+            await pilot.pause()
+            table = app.query_one("#table", DataTable)
+            table.move_cursor(row=table.get_row_index("DM-001"))
+            await pilot.pause()
+            await pilot.press("d")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "already has a run in flight" in app._msg
+
+    asyncio.run(run())
+    sched.store.invalidate()
+    from garden.runs import RunStore
+
+    assert len(RunStore(sched.store.root / ".garden").runs_for("DM-001")) == 1
+
+
 def test_tui_inbox_decisions_count_excludes_retrying(garden):
     """A retrying (notice) task doesn't inflate the 'need you' figure in the status bar,
     but still shows up (dimmed) in the Inbox tab."""
