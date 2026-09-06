@@ -25,7 +25,6 @@ def register(app: FastAPI, site: Site) -> None:
             "review_parallel": sched.review_parallel_limit(),
             "auto_dispatch": cfg.get("auto_dispatch"),
             "auto_revise": cfg.get("auto_revise"),
-            "tick_interval": cfg.get("tick_interval"),
             "review.enabled": cfg.get("review.enabled"),
             "review.max_rounds": cfg.get("review.max_rounds"),
             "review.difficulty": sched.effective("review.difficulty") or "(task tier)",

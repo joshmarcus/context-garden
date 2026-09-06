@@ -1429,6 +1429,8 @@ def test_config_page_names_live_and_restart_keys(garden):
     assert "within one tick" in text and "no restart" in text
     assert "Needs a restart" in text
     assert "work_dir" in text and "tick_interval" in text
+    live_values = text.split("Live values", 1)[1].split("Read once at startup", 1)[0]
+    assert "tick_interval" not in live_values
 
 
 def test_config_page_and_inbox_show_a_held_reload_and_accept_applies_it(garden, monkeypatch):
@@ -1816,3 +1818,21 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     assert post_s < 1.0, f"POST waited {post_s:.2f}s for the tick"
     assert get_s < 0.5, f"GET waited {get_s:.2f}s for the tick"
     done.wait(timeout=10)
+
+
+def test_inbox_renders_taskless_question_once(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+
+    question = "Which independent project should we onboard?"
+    monkeypatch.setattr(Scheduler, "pending_decisions", lambda self: [
+        {"id": "question-test", "kind": "question", "question": question,
+         "phase": "demo/p1", "source": "kickoff:demo/p1"}
+    ])
+    html = client(garden).get("/inbox").text
+    assert html.count(question) == 1
+    assert "Questions to answer" in html
+
+
+def test_phase_kickoff_follows_tasks_after_approval(garden):
+    html = client(garden).get("/phases/demo/p1").text
+    assert html.index('id="kickoff"') > html.index('DM-001')
