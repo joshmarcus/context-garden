@@ -75,8 +75,9 @@ def recorded_captures(run: Run) -> list[Path]:
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
 
+    @app.get("/design")
     @app.get("/design/{path:path}")
-    def design_file(request: Request, path: str, ref: str = ""):
+    def design_file(request: Request, path: str = "", ref: str = ""):
         relative = safe_relative_path(path)
         if path and not relative:
             raise HTTPException(404)
