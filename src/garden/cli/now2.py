@@ -11,7 +11,7 @@ from .views import render_now1
 @app.command(name="now", rich_help_panel=PANEL_BOARD)
 def now(page: int = typer.Option(1, help="Now page (1 or 2)"), window: str = typer.Option("hour"),
         phase: str = typer.Option("")) -> None:
-    """What is running, what is next, where the phase is and the last period, as text."""
+    """Print either available Now page as text."""
     if window not in WINDOWS:
         raise typer.BadParameter("window must be hour, today, 24h or phase")
     if page == 1:

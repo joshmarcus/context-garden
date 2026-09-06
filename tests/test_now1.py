@@ -685,6 +685,16 @@ def test_garden_now_page_2_prints_the_four_regions(garden):
         assert title in r.output
 
 
+def test_garden_now_rejects_an_unknown_page(garden):
+    cwd = os.getcwd()
+    os.chdir(garden)
+    try:
+        r = CliRunner().invoke(app, ["now", "--page", "3"])
+    finally:
+        os.chdir(cwd)
+    assert r.exit_code == 2 and "page must be 1 or 2" in r.output
+
+
 def test_walkthrough_captures_now1(garden):
     from garden.walkthrough import capture, pages_for
 

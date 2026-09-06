@@ -510,6 +510,27 @@ document.querySelectorAll("form[data-autosave]").forEach(form => {
     post(new URLSearchParams(current), form.dataset.saved);
   });
 });
+// ---- brief repair: validate the proposed criteria and reading list through the same gate as
+// approval, then update the repair card in place so an owner can continue straight to Approve.
+document.querySelectorAll("form[data-brief-editor]").forEach(form => {
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const message = document.getElementById("brief-editor-message");
+    const status = document.getElementById("brief-card-status");
+    try {
+      const res = await fetch(form.action, {method: "POST", body: new FormData(form)});
+      const data = await res.json();
+      if (!res.ok) {
+        if (message) { message.className = "autosave-mark err"; message.textContent = data.detail || "save failed"; }
+        return;
+      }
+      if (status) status.textContent = "Brief complete. You can approve it now.";
+      form.hidden = true;
+    } catch (err) {
+      if (message) { message.className = "autosave-mark err"; message.textContent = "save failed (offline?)"; }
+    }
+  });
+});
 document.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", e => {
   e.preventDefault(); const t = document.getElementById(b.dataset.toggle); if (t) { t.hidden = !t.hidden; if (!t.hidden) { const f = t.querySelector("textarea,input"); if (f) f.focus(); } }
 }));
