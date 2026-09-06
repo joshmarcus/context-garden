@@ -1,0 +1,14 @@
+{#- The Now region's body: the strips, the empty or quiet sheet, the cards that need a hand. -#}
+{% from "_now1_macros.html" import strip with context %}
+{%- set g = snap.garden -%}
+{%- set runs = snap.now | selectattr("kind", "equalto", "run") | list -%}
+{%- set hands = snap.now | rejectattr("kind", "equalto", "run") | list -%}
+<div id="now-body">
+  <div id="now-strips">{% for s in runs %}{{ strip(s, "new" if loop.first else "") }}{% endfor %}</div>
+  <div id="now-empty"{% if runs %} hidden{% endif %}>
+    <div class="specimen empty-sheet"><span class="tape"></span>
+    {% if snap.next.dispatch %}<b>Nothing running.</b><p>Next tick in <span data-countdown>{{ g.tick_interval }}</span> s: it will dispatch <a href="/tasks/{{ snap.next.dispatch[0].task }}">{{ f.short(snap.next.dispatch[0].title) }}</a>{% if snap.next.dispatch | length > 1 %} and <a href="/tasks/{{ snap.next.dispatch[1].task }}">{{ f.short(snap.next.dispatch[1].title) }}</a>{% endif %} into {{ g.free }} free slot{{ 's' if g.free != 1 }}.</p>
+    {% else %}<b>The garden is quiet.</b><p>Nothing is ready: {{ g.drafts }} draft{{ 's' if g.drafts != 1 }} wait{{ 's' if g.drafts == 1 }} for approval, {{ g.inbox_decisions }} card{{ 's' if g.inbox_decisions != 1 }} wait{{ 's' if g.inbox_decisions == 1 }} on you in the Inbox. Next tick in <span data-countdown>{{ g.tick_interval }}</span> s polls PRs only.</p>{% endif %}</div>
+  </div>
+  <div id="now-hands">{% for s in hands %}{{ strip(s) }}{% endfor %}</div>
+</div>

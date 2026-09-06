@@ -72,6 +72,13 @@ class Run:
         return cls(**data)
 
     # ---- process state -----------------------------------------------------
+    @property
+    def no_process(self) -> bool:
+        """A record written at dispatch and never launched: still running, no pid and no
+        output. The scheduler counts it against a slot until a tick reaps it, so the Now page
+        shows it as what it is and a review behind it says what it waits for."""
+        return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
+
     def process_finished(self) -> bool:
         if (self.path / "exit_code").exists():
             return True

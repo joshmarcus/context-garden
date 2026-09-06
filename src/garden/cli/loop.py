@@ -467,14 +467,11 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
 
 
 def _tier_cell(cell: dict | None, unit: str) -> str:
-    """One difficulty-by-model cell as text: the value in its unit, its n, and the marks the
-    page uses (▲ best, ▽ worst, ~ thin) so the terminal reads like the Now page."""
-    if not cell:
-        return "—"
-    v = cell["value"]
-    text = f"${v:.2f}" if unit == "usd" else f"{v:.0%}" if unit == "pct" else f"{v:.1f} h" if unit == "hours" else f"{v:.1f}"
-    mark = "▲ " if cell["best"] else "▽ " if cell["worst"] else ""
-    return f"{mark}{text} ({'~' if cell['thin'] else ''}n {cell['n']})"
+    """One difficulty-by-model cell as text, the way the Now page and `garden now` write it
+    (▲ best, ▽ worst, ~ thin), so the terminal reads like the page."""
+    from ..now1 import cell_text
+
+    return cell_text(cell, unit)
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
