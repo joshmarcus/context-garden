@@ -29,6 +29,19 @@ def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
     assert failed == {"conflict markers", "syntax", "UI captures", "PR description"}
 
 
+def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
+    worktree = garden / "clean"
+    worktree.mkdir()
+    (worktree / "good.py").write_text("VALUE = 1\n")
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "diff", lambda *_args: "+VALUE = 1\n")
+    monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["good.py"])
+    results = mechanical_results(worktree, "main", "A useful description", require_description=True,
+                                ui_changed=False, captures=[])
+    assert {row["status"] for row in results} == {"pass"}
+
+
 def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
     store = Store(garden)
     task = store.task("DM-001")
