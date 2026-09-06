@@ -69,7 +69,7 @@
     {% else %}<span class="ghost">{{ plant(ph.plant, 200, 300) }}</span><span class="inked">{{ plant(ph.plant, 200, 300) }}</span>{% endif %}
   </div>
   {% if big %}<span class="tape t2"></span>{% endif %}
-  <div class="lbl"><b>{{ ph.product }} · plate {{ ph.plate }}</b><br><a href="/phases/{{ ph.key }}">{{ ph.name }}</a><br><i>{{ ph.latin }}</i> — {{ ph.common }}<br><span data-count>{{ ph.done }} of {{ ph.total }} merged</span> · {{ ph.prs_open }} PRs open · {{ ph.running }} running<br>{{ ph.stage_word }}{% if ph.spent %} · spent ${{ '%.2f' % ph.spent }}{% if ph.budget %} of ${{ '%.0f' % ph.budget }}{% endif %}{% endif %}</div>
+  <div class="lbl"><b>{{ ph.product }} · plate {{ ph.plate }}</b><br><a href="/phases/{{ ph.key }}">{{ ph.name }}</a><br><i>{{ ph.latin }}</i> — {{ ph.common }}<br><span data-count>{{ ph.done }} of {{ ph.total }} merged</span> · {{ ph.prs_open }} PR{{ 's' if ph.prs_open != 1 }} open · {{ ph.running }} running<br>{{ ph.stage_word }}{% if ph.spent %} · spent ${{ '%.2f' % ph.spent }}{% if ph.budget %} of ${{ '%.0f' % ph.budget }}{% endif %}{% endif %}</div>
   <div class="stamps"><span class="stamp">{{ 'complete' if ph.fraction >= 1 else ('frozen' if ph.frozen else 'open') }}</span>{% if ph.retro %}<span class="stamp">{{ ph.retro.get('verdict', '') }}</span>{% endif %}</div>
 </div>
 {%- endmacro -%}

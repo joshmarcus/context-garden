@@ -241,12 +241,10 @@ def test_running_card_carries_the_start_time_the_clock_reads(garden):
 def test_typical_and_longer_than_usual_on_the_strip(garden):
     rs = RunStore(Store(garden).config.garden_dir)
     for i in range(3):
-        r = rs.new_run("DM-002", "local", "work")
+        r = rs.new_run("DM-002", "local", "work")  # ids stay distinct within a second (-2, -3)
         r.harness, r.difficulty, r.status = "claude", "easy", "done"
         r.started_at = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=30 + i)).isoformat()
         r.finished_at = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20)).isoformat()
-        r.run_id = f"{r.run_id}-{i}"
-        r.dir = str(Path(r.dir).parent / r.run_id)
         r.save()
     _record_running(garden, started_minutes_ago=20)  # twice the typical ten minutes
     page = _client(garden).get("/now1").text
