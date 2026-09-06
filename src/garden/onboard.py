@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,6 +134,25 @@ def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
     return "", "", "", []
 
 
+def _project_name(repo: Path, rels: dict[str, Path]) -> str:
+    """Prefer a manifest's stable project name over a checkout/worktree directory name."""
+    if "pyproject.toml" in rels:
+        try:
+            project = tomllib.loads(_text(rels["pyproject.toml"])).get("project", {})
+            if isinstance(project, dict) and project.get("name"):
+                return str(project["name"])
+        except tomllib.TOMLDecodeError:
+            pass
+    if "package.json" in rels:
+        try:
+            package = json.loads(_text(rels["package.json"]))
+            if isinstance(package, dict) and package.get("name"):
+                return str(package["name"])
+        except json.JSONDecodeError:
+            pass
+    return repo.name
+
+
 def discover_project(repo: Path) -> ProjectDiscovery:
     """Inspect a local checkout without network or model calls."""
     repo = repo.resolve()
@@ -150,7 +170,7 @@ def discover_project(repo: Path) -> ProjectDiscovery:
     except OSError:
         base = "main"
     setup, test, lint, command_sources = _commands(repo, files)
-    result = ProjectDiscovery(repo.name, base, setup, test, lint)
+    result = ProjectDiscovery(_project_name(repo, rels), base, setup, test, lint)
     result.read.extend(command_sources)
     result.inferred.extend(
         f"{label} command from {', '.join(command_sources)} and CI metadata: {value or 'not determined'}"
@@ -330,7 +350,9 @@ def onboard_source(source: str, garden: Path, planner: Callable[[Store, str], st
     if local.exists():
         return onboard_project(local, garden, planner=planner)
     with tempfile.TemporaryDirectory(prefix="garden-onboard-") as tmp:
-        proc = subprocess.run(["git", "clone", "--quiet", source, tmp], capture_output=True, text=True, check=False)
+        repo_name = re.sub(r"\.git$", "", source.rstrip("/").rsplit("/", 1)[-1]) or "product"
+        checkout = Path(tmp) / repo_name
+        proc = subprocess.run(["git", "clone", "--quiet", source, str(checkout)], capture_output=True, text=True, check=False)
         if proc.returncode:
             raise ValueError(f"could not clone {source}: {proc.stderr.strip()}")
-        return onboard_project(Path(tmp), garden, repo_value=source, planner=planner)
+        return onboard_project(checkout, garden, repo_value=source, planner=planner)

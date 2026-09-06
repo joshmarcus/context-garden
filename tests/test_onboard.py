@@ -62,6 +62,14 @@ def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, mo
     assert any("file not read" in item for item in first.configure_by_hand)
 
 
+def test_discovery_uses_manifest_name_in_a_worktree_directory(tmp_path):
+    repo = tmp_path / "CG-215"
+    repo.mkdir()
+    write(repo / "pyproject.toml", '[project]\nname = "context-garden"\n')
+
+    assert discover_project(repo).name == "context-garden"
+
+
 def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkeypatch):
     repo = _node_repo(tmp_path)
     garden = tmp_path / "garden"
