@@ -223,6 +223,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
+                "pre_flight": [{"item", "status", "evidence"}],
                 "friction": ["short item"], "notes": "...",
                 "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
 ```
@@ -240,6 +241,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   automated review is shown the same list to check each claim against the diff, and
   `garden metrics` reports criteria met on the first review per tier. A criterion with no
   evidence is a finding, not a pass.
+- `pre_flight` has one row for every item in the review rubric the brief gives the worker:
+  criterion evidence, lint, conflict markers, UI captures where relevant, PR description, and
+  criteria-by-name. Each row says `pass`, `not_applicable`, or `fail` and gives short evidence.
+  A missing row is mechanically sent back before a PR opens; conflict markers, Python syntax,
+  missing UI PNGs for a UI diff, and an empty initial description are token-free pre-PR failures.
 - `friction` is a list of short items (missing context, a confusing spec, tooling pain). The
   scheduler posts them as one marked PR comment and appends them to the phase's friction
   record; `garden friction` harvests them for the next planning round. Friction never goes in
