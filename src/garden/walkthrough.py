@@ -16,9 +16,12 @@ HTML and text.
 from __future__ import annotations
 
 import html
+import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -212,7 +215,7 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return set(), "Playwright is not installed (pip install 'context-garden[walkthrough]' && playwright install chromium)."
+        return set(), "Playwright is not installed; capture contains HTML and text only."
     shot: set[str] = set()
     try:
         with sync_playwright() as p:
@@ -234,8 +237,34 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                     shot.add(s.slug)
             browser.close()
     except Exception as e:  # noqa: BLE001 - a browser that will not launch (missing system libs)
-        return shot, f"Chromium would not launch ({e}); run `playwright install chromium` or install its system libraries."
+        return shot, f"Chromium would not launch after automatic preparation ({e}); install its system libraries."
     return shot, ""
+
+
+def _prepare_browser() -> str:
+    """Install Playwright's Chromium when its package is present but the browser is not.
+
+    The browser is machine-local rather than a wheel payload. Both walkthroughs and PR UI
+    checks come through this helper, so a prepared product environment needs no separate
+    operator step. Return the installer's diagnostic when preparation fails.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return "Playwright is not installed; capture will contain HTML and text only."
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            browser.close()
+        return ""
+    except Exception:  # noqa: BLE001 - a missing executable is the expected first-run case
+        proc = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+        if proc.returncode:
+            return (proc.stderr or proc.stdout or "Chromium installation failed").strip()[-1000:]
+        return ""
 
 
 def _serve(store: Store) -> tuple[str, Callable[[], None]]:
@@ -286,11 +315,8 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     shot: set[str] = set()
     browser_note = ""
     if screenshots:
-        try:
-            import playwright.sync_api  # noqa: F401
-        except ImportError:
-            browser_note = "Playwright is not installed (pip install 'context-garden[walkthrough]' && playwright install chromium)."
-        else:
+        browser_note = _prepare_browser()
+        if not browser_note:
             if base_url:
                 shot, browser_note = _screenshot(base_url, specs, out_dir, log)
             else:
@@ -363,26 +389,57 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, object]:
-    """Built-in pre-PR visual check. Capture into the check run, with an explicit warning
-    and HTML/text artifacts when Chromium is unavailable."""
-    garden_root = Path(str(spec["garden_root"]))
-    out_dir = Path(str(spec["out_dir"]))
-    store = Store(garden_root)
-    phase = store.phase(str(ctx["product"]), str(ctx["phase"]))
-    result = capture(store, phase, out_dir, screenshots=True)
-    if not result.screenshots and "not installed" not in result.browser_note.lower():
-        # Playwright's Python package is part of context-garden, while its Chromium binary is
-        # machine-local. Prepare that binary on first use so a fresh worker needs no hand step.
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
-                       capture_output=True, text=True, timeout=300, check=False)
-        result = capture(store, phase, out_dir, screenshots=True)
-    captures = [str(p) for p in sorted(out_dir.iterdir()) if p.suffix in {".png", ".html", ".txt", ".md"}]
+def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
+    """Render the stable QA garden using the code imported from the proposed worktree."""
+    from .qa.sandbox import make_garden
+
+    with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
+        garden_root = make_garden(Path(scratch))
+        store = Store(garden_root)
+        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
+    captures = [str(p) for p in sorted(out_dir.iterdir())
+                if p.suffix in {".png", ".html", ".txt", ".md"}]
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
     if not result.screenshots:
         summary = f"HTML-only capture; {result.browser_note or 'browser unavailable'}"
     return {"status": "pass", "summary": summary, "details": result.browser_note,
             "captures": captures, "pages": [p.spec.slug for p in result.pages]}
+
+
+def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, object]:
+    """Run the visual check with the proposed worktree's package and templates.
+
+    Python checks normally execute inside the scheduler process. An isolated subprocess with
+    the worktree's ``src`` first on PYTHONPATH prevents an installed scheduler version from
+    rendering its own templates, while the disposable QA garden makes page data deterministic.
+    """
+    out_dir = Path(str(spec["out_dir"]))
+    worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
+    source = worktree / "src"
+    if not source.is_dir():
+        return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    proc = subprocess.run(
+        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)],
+        cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
+    )
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return {"status": "error", "summary": "UI renderer did not return a result",
+                "details": (proc.stderr or proc.stdout)[-2000:]}
+    if proc.returncode:
+        result["status"] = "error"
+        result["details"] = (str(result.get("details") or "") + "\n" + proc.stderr).strip()[-2000:]
+    return result
+
+
+def _main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--ui-check":
+        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]))))
+        return 0
+    return 2
 
 
 # --------------------------------------------------------------------------- persona reading
@@ -412,3 +469,7 @@ def walkthrough_section(phase: Phase) -> str:
             "browser was available). Read the index below, then open the page files there before "
             "you judge the UI; quote what a person would actually see, not what a template could "
             "show.\n\n" + index)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

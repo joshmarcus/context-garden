@@ -585,7 +585,7 @@ def walkthrough(
     """Render the live web app's pages to screenshots, HTML and text, with an index.md that
     says what each page is for and what to look at — a persona review can then judge the real
     UI and a person can follow it as a QA script. Needs Playwright's Chromium for screenshots
-    (pip install 'context-garden[walkthrough]' && playwright install chromium); with no
+    (the first capture prepares Chromium automatically); with no
     browser it captures HTML and text only and notes it in the index. Absolute home-directory
     paths are redacted and the run page's stderr is omitted unless --include-stderr is given,
     since this capture is committed to the garden repo."""

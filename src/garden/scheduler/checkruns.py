@@ -62,8 +62,8 @@ class CheckRunMixin:
             changed = gitops.diff_names(worktree, base)
             if any(_is_ui_path(path) for path in changed) and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
-                                  "garden_root": str(self.store.root),
-                                  "out_dir": str(run.path / "ui"), "changed": changed}]
+                                  "out_dir": str(run.path / "ui"), "worktree": str(worktree),
+                                  "changed": changed}]
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,

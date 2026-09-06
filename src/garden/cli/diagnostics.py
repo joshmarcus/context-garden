@@ -93,8 +93,8 @@ def doctor():
             browser.close()
         console.print("browser: [green]Chromium available[/green]")
     except Exception as exc:  # noqa: BLE001 - doctor reports missing package, binary, or libs alike
-        console.print("[yellow]browser: unavailable; UI checks will capture HTML only "
-                      "(fix: install context-garden[walkthrough] and run `playwright install chromium`)"
+        console.print("[yellow]browser: unavailable; captures will prepare Chromium automatically, "
+                      "then fall back to HTML only if the machine lacks required system libraries"
                       f" [{type(exc).__name__}][/yellow]")
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"
