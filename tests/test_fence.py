@@ -136,8 +136,7 @@ def test_worker_writing_garden_yaml_is_caught_by_hash_check_without_git(sched, g
 
 
 def test_worker_writing_state_json_is_caught_and_fails(sched, garden, monkeypatch):
-    """A worker that forges into .garden/state.json is detected (the scheduler owns the file,
-    so it is not reverted, but the run fails and the card names it for a person)."""
+    """A worker state.json write is detected, attributed and restored at reap."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", ".garden/state.json")
@@ -149,8 +148,62 @@ def test_worker_writing_state_json_is_caught_and_fails(sched, garden, monkeypatc
     assert sched.store.task("DM-001").status.value == "failed"
     assert "state.json" in _attention_card(sched, "DM-001")
     full = sched.state.get("DM-001")["needs_human"]
-    assert "state.json" in full and "inspect" in full.lower()
+    assert "state.json" in full and "reverted" in full.lower()
     assert not sched.github.created
+
+
+def test_state_fence_restores_foreign_task_keys_from_dispatch_snapshot(sched):
+    task = sched.store.task("DM-001")
+    sched.state.get("DM-002")["foreign"] = "before"
+    sched.state.save()
+    run = _run_naming(sched, "DM-001", str(sched.state.path))
+    sched._fence_snapshot(task, run)
+    state = json.loads(sched.state.path.read_text())
+    state["DM-002"]["foreign"] = "worker changed this"
+    sched.state.path.write_text(json.dumps(state))
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations and ".garden/state.json" in violations[0]["files"]
+    assert json.loads(sched.state.path.read_text())["DM-002"]["foreign"] == "before"
+
+
+def test_fence_attributes_a_worker_edit_to_a_live_task_file(sched, garden):
+    _init_repo(garden)
+    task = sched.store.task("DM-001")
+    task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"
+    before = task_path.read_text()
+    run = _run_naming(sched, "DM-001", str(task_path))
+    sched._fence_snapshot(task, run)
+    task_path.write_text("worker edit\n")
+
+    violations = sched._fence_check(task, run)
+
+    assert violations and "demo/p1/tasks/DM-001-first.md" in violations[0]["files"]
+    assert task_path.read_text() == before
+
+
+def test_fence_restores_attributed_sibling_run_output_and_audit_manifest(sched):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_text("sibling before\n")
+    run = _run_naming(sched, "DM-001", str(output))
+    sched._fence_snapshot(task, run)
+    output.write_text("worker redirect\n")
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations and str(output.relative_to(sched.store.root)) in violations[0]["files"]
+    assert output.read_text() == "sibling before\n"
+
+    manifest = run.path / "fence_guard.json"
+    before = manifest.read_text()
+    (run.path / "stdout.json").write_text(json.dumps({"result": f"redirect {manifest}"}))
+    manifest.write_text("worker redirect\n")
+    violations = sched._fence_guard_check(task, run)
+    assert violations and str(manifest.relative_to(sched.store.root)) in violations[0]["files"]
+    assert manifest.read_text() == before
 
 
 def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):

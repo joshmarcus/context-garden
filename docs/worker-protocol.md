@@ -118,10 +118,10 @@ filled in.
 
 An isolated `HOME` would also hide each harness's own saved login: claude keeps
 `.credentials.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`) and codex keeps its
-whole state under `CODEX_HOME` (default `~/.codex`). `scrubbed_env` sets both to the
-*operator's* real home by default — unless the operator already passed one through (they
-ride the `CLAUDE_*`/`CODEX_*` allowlist), or `worker_env.config_dirs` in `garden.yaml`
-overrides it, keyed by the variable name (e.g. `{CLAUDE_CONFIG_DIR: /srv/claude-creds}`).
+login in `CODEX_HOME` (default `~/.codex`). Each dispatch builds fresh directories below
+the scratch home, copying only those credential files from the operator's default locations
+or `worker_env.config_dirs` sources in `garden.yaml` (e.g.
+`{CLAUDE_CONFIG_DIR: /srv/claude-creds}`). Settings and instructions never carry over.
 A custom harness reads whatever variable its own CLI defines; name that variable under
 `worker_env.config_dirs` too. `garden doctor` checks each configured harness is actually
 logged in through this exact scrubbed environment (`Harness.check_login`): a trivial

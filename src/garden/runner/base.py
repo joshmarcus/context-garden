@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -79,6 +80,13 @@ DEFAULT_CONFIG_DIRS: dict[str, str] = {
     "CODEX_HOME": ".codex",
 }
 
+# A harness gets its login token, not its whole mutable configuration.  In particular,
+# settings files can contain permission policy or instructions that a worker must not inherit.
+CONFIG_CREDENTIAL_FILES: dict[str, str] = {
+    "CLAUDE_CONFIG_DIR": ".credentials.json",
+    "CODEX_HOME": "auth.json",
+}
+
 
 def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     """The `CLAUDE_CONFIG_DIR` / `CODEX_HOME` defaults `scrubbed_env` applies — each built-in
@@ -94,6 +102,35 @@ def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     for var, val in overrides.items():  # a custom harness's own key, named explicitly
         env.setdefault(var, val)
     return env
+
+
+def private_config_dir_env(config: dict[str, Any] | None, scratch_home: Path | str) -> dict[str, str]:
+    """Build fresh harness homes below ``scratch_home`` and copy only each login file.
+
+    ``config_dir_env`` identifies the operator-side source.  The returned paths are always
+    private destinations, including when a caller explicitly passes HOME through.  Rebuilding
+    them for every dispatch prevents settings written by one worker from reaching the next.
+    """
+    sources = config_dir_env(config)
+    home = Path(scratch_home)
+    destinations: dict[str, str] = {}
+    for variable, credential in CONFIG_CREDENTIAL_FILES.items():
+        destination = home / DEFAULT_CONFIG_DIRS[variable]
+        try:
+            if destination.exists():
+                shutil.rmtree(destination)
+            destination.mkdir(parents=True, exist_ok=True)
+            source = Path(sources[variable]) / credential
+            if source.is_file():
+                shutil.copyfile(source, destination / credential)
+        except OSError:
+            # The harness will report a normal authentication failure if its credential cannot
+            # be read; a scrubbed environment must still be available for runners and checks.
+            pass
+        destinations[variable] = str(destination)
+    for variable, source in sources.items():
+        destinations.setdefault(variable, source)
+    return destinations
 
 
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
@@ -117,8 +154,10 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     env.pop("CLAUDECODE", None)
     if "HOME" not in env:  # dropped from PASS_ENV; give an isolated scratch home, not the operator's
         env["HOME"] = worker_home(worktree)
-    for var, val in config_dir_env(config).items():
-        env.setdefault(var, val)  # not already passed through by the operator's own environment
+    # Do not let the CLAUDE_* / CODEX_* allowlist turn into a whole-home capability: replace
+    # those source paths with fresh, credential-only directories for this dispatch.
+    scratch_home = worker_home(worktree)
+    env.update(private_config_dir_env(config, scratch_home))
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env

@@ -247,31 +247,43 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
     assert env["HOME"] == os.environ["HOME"]
 
 
-def test_scrubbed_env_carries_each_harness_config_dir_by_default(monkeypatch):
-    """CG-217: an isolated worker HOME must not also hide a harness's saved login. Each
-    harness's own config-dir variable is set to the *operator's* real home by default, even
-    though HOME itself points at the isolated scratch home."""
+def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkeypatch):
+    """A dispatch gets private harness homes, containing only its copied login files."""
     from garden.runner.base import scrubbed_env
 
+    source = tmp_path / "operator"
+    (source / ".claude").mkdir(parents=True)
+    (source / ".claude" / ".credentials.json").write_text("claude-login")
+    (source / ".claude" / "settings.json").write_text("must not copy")
+    (source / ".codex").mkdir()
+    (source / ".codex" / "auth.json").write_text("codex-login")
+    (source / ".codex" / "config.toml").write_text("must not copy")
+    monkeypatch.setenv("HOME", str(source))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
-    env = scrubbed_env({}, worktree="/wt/T-1")
+    worktree = tmp_path / "worktrees" / "T-1"
+    env = scrubbed_env({}, worktree=worktree)
     assert env["HOME"] != os.environ["HOME"]  # the isolated scratch home, not the operator's
-    assert env["CLAUDE_CONFIG_DIR"] == str(Path(os.environ["HOME"]) / ".claude")
-    assert env["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")
+    assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["HOME"])
+    assert Path(env["CODEX_HOME"]).parent == Path(env["HOME"])
+    assert {p.name for p in Path(env["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
+    assert {p.name for p in Path(env["CODEX_HOME"]).iterdir()} == {"auth.json"}
+    (Path(env["CLAUDE_CONFIG_DIR"]) / "worker-settings.json").write_text("do not retain")
+    refreshed = scrubbed_env({}, worktree=worktree)
+    assert {p.name for p in Path(refreshed["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
 
-    # an operator-set value passes straight through (the CLAUDE_* / CODEX_* allowlist)
+    # An operator-set value is a source, not a worker capability.
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/srv/claude-creds")
-    env = scrubbed_env({}, worktree="/wt/T-1")
-    assert env["CLAUDE_CONFIG_DIR"] == "/srv/claude-creds"
+    env = scrubbed_env({}, worktree=worktree)
+    assert env["CLAUDE_CONFIG_DIR"] != "/srv/claude-creds"
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
-    # worker_env.config_dirs overrides the default, keyed by the variable name
+    # A custom harness path still passes through; its credential file is not known to garden.
     env = scrubbed_env({"worker_env": {"config_dirs": {"CLAUDE_CONFIG_DIR": "/opt/claude-creds",
                                                         "MY_HARNESS_HOME": "/opt/my-harness"}}},
-                       worktree="/wt/T-1")
-    assert env["CLAUDE_CONFIG_DIR"] == "/opt/claude-creds"
-    assert env["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")  # untouched default
+                       worktree=worktree)
+    assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["HOME"])
+    assert Path(env["CODEX_HOME"]).parent == Path(env["HOME"])
     assert env["MY_HARNESS_HOME"] == "/opt/my-harness"  # a custom harness's own documented key
 
 

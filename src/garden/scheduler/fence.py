@@ -37,10 +37,13 @@ class FenceMixin:
 
     @staticmethod
     def _fence_owned(rel: str) -> bool:
-        """Paths the scheduler itself may change in the live garden, so a worker touching
-        them is not counted as an escape: task files and the .garden/ state dir."""
-        parts = rel.split("/")
-        return "tasks" in parts or (bool(parts) and parts[0] == ".garden")
+        """No live-garden path is exempt from attribution.
+
+        The scheduler can edit task files and state while a run is active, but those edits are
+        left alone because they are absent from the worker transcript.  Exempting them here
+        made a worker's named write invisible.
+        """
+        return False
 
     @staticmethod
     def _porcelain_path(line: str) -> str:
@@ -63,19 +66,35 @@ class FenceMixin:
             st.pop("fence", None)
         self._fence_guard_snapshot(run)
 
-    def _fence_guard_targets(self) -> list[tuple[str, Path, bool]]:
+    def _fence_guard_targets(self, run: Run | None = None) -> list[tuple[str, Path, bool]]:
         """(relative path, absolute path, is_config) for the live garden files a worker must
         never write: every garden*.yaml at the root and .garden/state.json. Config files are
         snapshotted with their content so a write can be reverted; state.json (which the
         scheduler rewrites every tick) is hash-checked for a worker write but not reverted."""
         root = self.store.root
         out: list[tuple[str, Path, bool]] = [(p.name, p, True) for p in sorted(root.glob("garden*.yaml"))]
+        # These are common harness policy/instruction files.  They are guarded even when they
+        # do not yet exist, so a worker cannot create one for the next dispatch.
+        out.extend((name, root / name, True) for name in
+                   ("settings.json", "settings.local.json", "CLAUDE.md", "config.toml"))
         state_path = self.state.path
         try:
             rel = str(state_path.relative_to(root))
         except ValueError:
             rel = state_path.name
         out.append((rel, state_path, False))
+        runs = self.cfg.garden_dir / "runs"
+        current = run.path.resolve() if run is not None else None
+        if runs.exists():
+            for path in sorted(p for p in runs.rglob("*") if p.is_file()):
+                if current is not None and current in path.resolve().parents:
+                    continue
+                # Snapshots of a sibling's snapshots grow recursively if treated as ordinary
+                # run output. Its manifest remains guarded; its private copy is an
+                # implementation detail of that earlier manifest.
+                if "fence_guard" in path.relative_to(runs).parts:
+                    continue
+                out.append((str(path.relative_to(root)), path, True))
         return out
 
     def _fence_guard_snapshot(self, run: Run | None) -> None:
@@ -85,23 +104,26 @@ class FenceMixin:
         if run is None:
             return
         manifest: list[dict[str, Any]] = []
+        root = self.store.root
         guard_dir = run.path / "fence_guard"
-        for rel, path, is_config in self._fence_guard_targets():
-            if not path.exists():
-                continue
+        for rel, path, is_config in self._fence_guard_targets(run):
             try:
-                data = path.read_bytes()
+                data = path.read_bytes() if path.exists() else b""
             except OSError:
                 continue
             snap = ""
-            if is_config:
+            if is_config or rel == str(self.state.path.relative_to(root)):
                 guard_dir.mkdir(parents=True, exist_ok=True)
                 snap = rel.replace("/", "__")
                 (guard_dir / snap).write_bytes(data)
             manifest.append({"rel": rel, "abs": str(path), "config": is_config, "snap": snap,
                              "sha": hashlib.sha256(data).hexdigest()})
         if manifest:
-            (run.path / "fence_guard.json").write_text(json.dumps(manifest))
+            manifest_text = json.dumps(manifest)
+            (run.path / "fence_guard.json").write_text(manifest_text)
+            # Keep the authoritative copy out of the audit file itself: a worker can name and
+            # overwrite that file, but cannot make the in-memory dispatch snapshot agree.
+            self.state.get(run.task_id)["fence_guard_manifest"] = manifest_text
 
     def _fence_guard_check(self, task: Task, run: Run | None) -> list[dict[str, Any]]:
         """Compare garden*.yaml and .garden/state.json against the dispatch hashes. A change
@@ -115,13 +137,21 @@ class FenceMixin:
         if not manifest_path.exists():
             return []
         try:
-            manifest = json.loads(manifest_path.read_text())
+            saved_manifest = str(self.state.get(task.id).get("fence_guard_manifest") or "")
+            manifest_text = saved_manifest or manifest_path.read_text()
+            manifest = json.loads(manifest_text)
         except (OSError, json.JSONDecodeError):
             return []
         transcript = run.stdout_text()
         worktree = self.worktree_for(task)
         root = self.store.root
         violations: list[dict[str, Any]] = []
+        if saved_manifest and manifest_path.read_text() != saved_manifest:
+            rel = str(manifest_path.relative_to(root))
+            if self._worker_named(transcript, root, rel, worktree):
+                manifest_path.write_text(saved_manifest)
+                violations.append({"label": "the live garden", "path": str(manifest_path), "commits": [],
+                                   "files": [rel], "foreign": [], "reverted": True})
         for entry in manifest:
             path = Path(entry["abs"])
             rel = str(entry["rel"])
@@ -134,7 +164,14 @@ class FenceMixin:
             if not self._worker_named(transcript, root, rel, worktree):
                 continue  # the scheduler's own state.json write, or a person's config edit
             reverted = False
-            if entry.get("config") and entry.get("snap"):
+            if rel == str(self.state.path.relative_to(root)):
+                try:
+                    snapshot = json.loads((run.path / "fence_guard" / str(entry["snap"])).read_text())
+                    self.state.restore_other_task_keys(snapshot, task.id, set(self.store.tasks()))
+                    reverted = True
+                except (OSError, json.JSONDecodeError, ValueError) as e:
+                    self.log(f"fence: could not restore other state keys: {e}")
+            elif entry.get("config") and entry.get("snap"):
                 snap_file = run.path / "fence_guard" / str(entry["snap"])
                 try:
                     if snap_file.exists():
@@ -142,6 +179,12 @@ class FenceMixin:
                         reverted = True
                 except OSError as e:  # noqa: BLE001
                     self.log(f"fence: could not restore {rel}: {e}")
+            elif entry.get("config"):
+                try:
+                    path.unlink(missing_ok=True)
+                    reverted = True
+                except OSError as e:  # noqa: BLE001
+                    self.log(f"fence: could not remove {rel}: {e}")
             violations.append({"label": "the live garden", "path": str(path), "commits": [],
                                "files": [rel], "foreign": [], "reverted": reverted})
         return violations

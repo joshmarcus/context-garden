@@ -191,3 +191,27 @@ class State:
             # concurrent writer's newer update to a key we already flushed.
             for tid, dirty_keys in dirty_by_tid.items():
                 self.data[tid].flushed(dirty_keys)
+
+    def restore_other_task_keys(self, snapshot: dict[str, Any], task_id: str, task_ids: set[str]) -> None:
+        """Restore every other task's state entry from a dispatch snapshot.
+
+        The active task's entry belongs to reap, so it is deliberately preserved.  This uses
+        the same lock and atomic replacement as ``save`` because a fence violation can race a
+        UI or another scheduler process.
+        """
+        lock_path = self.path.parent / (self.path.name + ".lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                disk = json.loads(self.path.read_text()) if self.path.exists() else {}
+            except json.JSONDecodeError:
+                disk = {}
+            for other_id in task_ids - {task_id}:
+                if other_id in snapshot:
+                    disk[other_id] = snapshot[other_id]
+                else:
+                    disk.pop(other_id, None)
+            tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+            tmp_path.write_text(json.dumps(disk, indent=2, sort_keys=True))
+            os.replace(tmp_path, self.path)

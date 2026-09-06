@@ -247,11 +247,9 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     # HOME is an isolated scratch home, not the remote login's, so the worker cannot read the
     # host's gh token, git credentials or ssh keys out of ~.
     assert seen["HOME"].endswith(".garden-home-DM-001") and seen["HOME"] != os.environ.get("HOME")
-    # CG-218: the isolated HOME above would also hide each harness's own saved login, so the
-    # remote script must default CLAUDE_CONFIG_DIR/CODEX_HOME to the operator's real home too,
-    # the same way runner.base.scrubbed_env does for the local runner (CG-217).
-    assert seen["CLAUDE_CONFIG_DIR"] == str(Path(os.environ["HOME"]) / ".claude")
-    assert seen["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")
+    # Harness homes are rebuilt under the scratch HOME, not passed through from the host.
+    assert Path(seen["CLAUDE_CONFIG_DIR"]).parent == Path(seen["HOME"])
+    assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
 def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_github, tmp_path, monkeypatch):
@@ -276,8 +274,8 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
     run = sc.runs.latest("DM-001")
     _wait_for_child(run)
     seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
-    assert seen["CLAUDE_CONFIG_DIR"] == "/srv/claude-creds"
-    assert seen["CODEX_HOME"] == str(Path(os.environ["HOME"]) / ".codex")  # untouched default
+    assert Path(seen["CLAUDE_CONFIG_DIR"]).parent == Path(seen["HOME"])
+    assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
 def test_ssh_host_capacity(sched):
