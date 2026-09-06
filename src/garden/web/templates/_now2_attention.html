@@ -1,0 +1,1 @@
+{% for a in d.attention %}<div class="n2-attention" data-key="attention-{{ loop.index }}"><strong>{{ a.title }}</strong><p>{{ a.why }}</p><a href="{{ '/tasks/' ~ a.task if a.task else '/inbox' }}">View decision</a> · <a href="/inbox">Open Inbox</a></div>{% endfor %}

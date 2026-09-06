@@ -18,6 +18,10 @@ from typing import Any
 
 from .model import now_iso
 
+# Keep the established table API for existing callers. Now 2's acceptance cohorts
+# have different attribution, units and cell shapes, so expose them separately.
+from .outcomes import difficulty_by_model as windowed_difficulty_by_model
+
 
 class Event(dict):
     """A parsed event JSONL line: only the fields relevant to its `kind` were ever recorded,
@@ -231,7 +235,7 @@ def digest(events: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
+def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = "", until: str = "") -> dict[str, Any]:
     """Per-task and per-difficulty metrics from the event stream.
 
     tasks: id -> object with .difficulty / .status / .key (Task) — used for grouping.
@@ -411,7 +415,8 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     }
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "rebase": rebase,
-            "by_difficulty_model": difficulty_by_model(events, tasks)}
+            "by_difficulty_model": difficulty_by_model(events, tasks),
+            "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 
 
 # The difficulty-by-model tables (the owner's ask, 2026-09-06 02:30Z), in the order they are
@@ -593,3 +598,41 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
 
 def _ts(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s)
+
+
+def with_run_records(events: list[dict[str, Any]], runs: list[Any]) -> list[dict[str, Any]]:
+    """Fill old event metadata from run records and include not-yet-reaped completions.
+
+    Event timestamps remain authoritative when present. Run identities deduplicate
+    repeated completion events, while records supply dispatched tier/model and costs.
+    This read-side join is shared by the CLI and Now; it never changes the log.
+    """
+    records = {(r.task_id, r.run_id): r for r in runs}
+    out = []
+    seen = set()
+    for event in events:
+        e = dict(event)
+        key = (e.get("task"), e.get("run"))
+        kind = e.get("kind")
+        if kind in ("dispatch", "run_finished") and key[1]:
+            identity = (kind, *key)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            r = records.get(key)
+            if r:
+                for name in ("mode", "harness", "model", "difficulty"):
+                    if not e.get(name):
+                        e[name] = getattr(r, name)
+                if kind == "run_finished" and r.cost_usd is not None:
+                    e["cost_usd"] = r.cost_usd
+        out.append(e)
+    for r in runs:
+        fields = {"task": r.task_id, "run": r.run_id, "mode": r.mode, "harness": r.harness,
+                  "model": r.model, "difficulty": r.difficulty}
+        if r.started_at and ("dispatch", r.task_id, r.run_id) not in seen:
+            out.append({**fields, "kind": "dispatch", "at": r.started_at})
+        if r.finished_at and ("run_finished", r.task_id, r.run_id) not in seen:
+            out.append({**fields, "kind": "run_finished", "at": r.finished_at, "status": r.status,
+                        "cost_usd": r.cost_usd, "usage": r.usage})
+    return out

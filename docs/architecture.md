@@ -124,6 +124,12 @@ Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the tas
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
+Fence manifests protect live config, state and concurrently active run evidence. They are
+stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while
+the run is active; completed run directories remain the durable audit and accounting history
+but are not copied into every later dispatch snapshot. On load, legacy inline manifests for
+completed runs are removed through the ordinary locked state writer.
+
 ### Reserving task ids
 
 `store.next_id` counts up from the highest existing id. That is safe when the file is written
@@ -183,6 +189,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
+| active fence | `fence`, `fence_guard_manifest` | dispatch snapshot plus a compact run-id/content-hash reference; released after run and task finalization, while the content-addressed manifest and run audit remain on disk |
 | suggestions | `edit_run`, `edit_attempts` | the edit run folding pending suggestions into the task body, and how many edit runs failed (capped) |
 
 Two special entries: `_phase:<product>/<phase>` records when a budget was hit, and `_aux`
@@ -700,3 +707,5 @@ spending tokens; a failed flow exits non-zero and fails the job.
   config, never from a check's own JSON output (code the branch wrote), and runs in the same
   scrubbed environment — so a check cannot smuggle a shell command out through its output.
 - No model runs in the tick. Waiting is a sleeping Python process.
+
+The fence verifies the authoritative manifest against its saved digest. Missing or invalid trusted metadata fails the run for operator inspection; the worker-writable audit copy is never a restoration authority. References survive manual runs and interrupted finalization so a recovered reap can repeat the check safely.

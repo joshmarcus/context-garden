@@ -329,6 +329,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/now1" class="{{ 'on' if page == 'now1' else '' }}">Now 1</a>
     <a href="/now2" class="{{ 'on' if page == 'now2' else '' }}">Now 2</a>
     <a href="/" class="{{ 'on' if page == 'inbox' else '' }}">Inbox <span class="count {{ 'hot' if inbox_count else '' }}">{{ inbox_count }}</span></a>
+    <a href="/now2" class="{{ 'on' if page == 'now2' else '' }}">Now 2</a>
     <a href="/board" class="{{ 'on' if page == 'board' else '' }}">Board</a>
     <a href="/trellis" class="{{ 'on' if page == 'trellis' else '' }}">Trellis</a>
     <a href="/events" class="{{ 'on' if page == 'events' else '' }}">Timeline</a>
@@ -509,6 +510,27 @@ document.querySelectorAll("form[data-autosave]").forEach(form => {
     post(new URLSearchParams(current), form.dataset.saved);
   });
 });
+// ---- brief repair: validate the proposed criteria and reading list through the same gate as
+// approval, then update the repair card in place so an owner can continue straight to Approve.
+document.querySelectorAll("form[data-brief-editor]").forEach(form => {
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const message = document.getElementById("brief-editor-message");
+    const status = document.getElementById("brief-card-status");
+    try {
+      const res = await fetch(form.action, {method: "POST", body: new FormData(form)});
+      const data = await res.json();
+      if (!res.ok) {
+        if (message) { message.className = "autosave-mark err"; message.textContent = data.detail || "save failed"; }
+        return;
+      }
+      if (status) status.textContent = "Brief complete. You can approve it now.";
+      form.hidden = true;
+    } catch (err) {
+      if (message) { message.className = "autosave-mark err"; message.textContent = "save failed (offline?)"; }
+    }
+  });
+});
 document.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", e => {
   e.preventDefault(); const t = document.getElementById(b.dataset.toggle); if (t) { t.hidden = !t.hidden; if (!t.hidden) { const f = t.querySelector("textarea,input"); if (f) f.focus(); } }
 }));
@@ -603,7 +625,7 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
   const box = document.getElementById("notify");
   const toggle = document.getElementById("notify-toggle");
   const state = document.getElementById("notify-state");
-  if (!box || !toggle) return;
+  if (!box || !toggle || document.getElementById("now2")) return;
   const ON = "garden.notify.on", SEEN = "garden.notify.seen", SEEN_KEYS = "garden.notify.seenKeys";
   const supported = "Notification" in window;
 

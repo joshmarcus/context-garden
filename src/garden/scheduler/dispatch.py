@@ -15,6 +15,7 @@ from ..notify import notify
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
+from .selection import worker_candidates
 
 
 class DispatchMixin:
@@ -66,25 +67,13 @@ class DispatchMixin:
         by the walker, not here, so the order stays true even for a line the tick passes over."""
         tasks = self.store.tasks()
         max_rev = int(self.cfg.get("max_revisions", 3))
-        queue: list[tuple[Task, str, str]] = [
-            (t, "rebase", "rebase round, goes first") for t in tasks.values()
-            if t.status == Status.CHANGES_REQUESTED
-            and self.state.get(t.id).get("rebase_pending")
-            and not self.state.get(t.id).get("needs_human")
-        ]
-        queue += [
-            (t, "revise", f"revise round {int(self.state.get(t.id).get('revisions', 0)) + 1} of {max_rev}")
-            for t in tasks.values()
-            if t.status == Status.CHANGES_REQUESTED
-            and self.state.get(t.id).get("pending_feedback")
-            and not self.state.get(t.id).get("rebase_pending")
-            and not self.state.get(t.id).get("needs_human")
-            # a conflict/stale-base rebase round is exempt from the revision cap (CG-139)
-            and (self.state.get(t.id).get("pending_feedback_rebase")
-                 or int(self.state.get(t.id).get("revisions", 0)) < max_rev)
-        ]
-        queue += [(t, "work", f"priority {t.priority}" + (f" · order {t.order}" if t.order is not None else ""))
-                  for t in ready(tasks, stack=self.stack_enabled) if not self._edit_pending(t)]
+        candidates = worker_candidates(tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+        queue = [(task, mode, (
+            "rebase round, goes first" if mode == "rebase" else
+            f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
+            if mode == "revise" else
+            f"priority {task.priority}" + (f" · order {task.order}" if task.order is not None else "")
+        )) for task, mode in candidates]
         return queue
 
     def dispatch_ready(self, rep: TickReport) -> None:
@@ -288,6 +277,23 @@ class DispatchMixin:
             raise
         finally:
             self._dispatching_run = None
+
+    def redispatch(self, task: Task) -> Run:
+        """Replace every active run for ``task`` with one fresh work run.
+
+        A task has one persistent branch and worktree.  Do not mark an old record superseded,
+        or start the replacement, until its process is confirmed dead.
+        """
+        superseded = [run for run in self.runs.active() if run.task_id == task.id]
+        for run in superseded:
+            if not run.stop():
+                raise RuntimeError(f"could not confirm worker {run.run_id} stopped; refusing redispatch")
+        for run in superseded:
+            run.status = "superseded"
+            run.finished_at = now_iso()
+            run.save()
+            self.events.emit("run_superseded", task.id, run=run.run_id, mode=run.mode)
+        return self.dispatch(task)
 
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",

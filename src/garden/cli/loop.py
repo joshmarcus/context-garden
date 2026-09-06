@@ -267,6 +267,20 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
 
 
 @app.command(rich_help_panel=PANEL_LOOP)
+def redispatch(task_id: str = typer.Argument(..., help="The task whose current worker to replace")):
+    """Stop a task's active worker and start a fresh run in its existing worktree."""
+    store = _store()
+    t = _task(store, task_id)
+    sched = _scheduler(store)
+    try:
+        run = sched.redispatch(t)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: run {run.run_id} started (worktree {run.worktree})")
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
 def take(
     task_id: str,
     worktree: bool = typer.Option(False, help="Also create the git worktree and print its path"),
@@ -475,10 +489,13 @@ def _tier_cell(cell: dict | None, unit: str) -> str:
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
-def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
+def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)"),
+            since: str = typer.Option("", help="Window for difficulty/model matrices, e.g. 1h"),
+            until: str = typer.Option("", help="Exclusive ISO end for the matrices")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
-    from ..events import EventLog
+    from ..events import EventLog, parse_since, with_run_records
     from ..events import metrics as _metrics
+    from ..runs import RunStore
 
     store = _store()
     tasks = store.tasks()
@@ -486,7 +503,19 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         product, phase = _split_target(target)
         tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
-    m = _metrics(events, tasks)
+    events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
+    m = _metrics(events, tasks, parse_since(since) if since else "", until)
+    from ..outcomes import format_cell
+
+    for matrix in m["difficulty_by_model"]["metrics"].values():
+        comparison = Table(title=matrix["label"] + " · " + matrix["direction"] + " is better")
+        comparison.add_column("Difficulty")
+        for model in m["difficulty_by_model"]["models"]:
+            comparison.add_column(model)
+        for tier, row in matrix["rows"].items():
+            comparison.add_row(tier, *(f"{format_cell(c)} (n={c['n']}; missing={c['missing']})" for c in row.values()))
+        console.print(comparison)
+    console.print("A task using several models appears in each. Columns do not add up.")
     table = Table(title="per task")
     for c in ("id", "difficulty", "status", "runs", "revisions", "first review", "cost", "lead h"):
         table.add_column(c)

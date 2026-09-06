@@ -146,6 +146,7 @@ class ReapMixin:
         # longer be trustworthy (CG-239).
         git_guard_violations = self._git_guard_check(task, run)
         if git_guard_violations:
+            self._release_fence_bookkeeping(task)
             self._git_guard_fail(task, run, git_guard_violations, rep)
             return
 
@@ -153,6 +154,7 @@ class ReapMixin:
         # live garden or the product clone is reverted here and the run fails (see the
         # permission deny rules in Harness.fence_settings for the first line of defence).
         violations = self._fence_check(task, run)
+        self._release_fence_bookkeeping(task)
         if violations:
             self._fence_fail(task, run, violations, rep)
             return
