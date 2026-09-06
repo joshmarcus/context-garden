@@ -352,12 +352,14 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert "DM-001(check:merge_rebase)" in rep.dispatched
     assert sched.state.get(task.id).get("revisions", 0) == 0
     assert not sched.state.get(task.id).get("pending_feedback")
+    assert "SIGTERM" in sched.store.task("DM-001").body
 
     sched.tick(dispatch=False)
     task = sched.store.task("DM-001")
     stop = sched.state.get(task.id)["needs_human"]
     assert task.status == Status.IN_REVIEW
     assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
+    assert "SIGTERM" in stop["reason"]
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 

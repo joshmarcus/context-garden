@@ -149,7 +149,7 @@ class CheckRunMixin:
     def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
                              specs: list[dict[str, Any]], retries: int, rep: TickReport) -> None:
         """Retry an interrupted detached check once, without creating revision feedback."""
-        cause = run.error or ("timed out" if run.status == "timeout" else "no check result")
+        cause = self._check_failure_cause(run, results=run.result.get("checks") or [])
         if retries < 1 and specs:
             note = f"check did not run ({run.run_id}): {cause}; will retry"
             task.log(note)
@@ -166,6 +166,19 @@ class CheckRunMixin:
         self.state.save()
         self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
         rep.transitions.append(f"{task.id} -> {'in_review' if task.pr else 'changes_requested'} (check needs human)")
+
+    @staticmethod
+    def _check_failure_cause(run: Run, results: list[dict[str, Any]]) -> str:
+        """Return the runner error or the interrupted check's own diagnostic."""
+        if run.error:
+            return run.error
+        if run.status == "timeout":
+            return "timed out"
+        for result in results:
+            summary = str(result.get("summary") or "")
+            if "check did not finish" in summary or "check run produced no results" in summary:
+                return summary
+        return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:
         path = run.path / "checks.json"
