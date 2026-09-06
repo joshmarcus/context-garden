@@ -58,6 +58,10 @@ def make_garden(root: Path) -> Path:
     (garden / "garden.yaml").write_text(yaml.safe_dump({
         "name": "qa",
         "max_parallel": 4,
+        # Fake workers exercise scheduler interleavings and never invoke a product test
+        # suite; do not serialize this deterministic QA fixture behind the production
+        # heavy-execution default.
+        "resources": {"heavy_test_parallel": 64},
         "max_attempts": 2,
         "max_revisions": 3,
         "timeout_minutes": 2,

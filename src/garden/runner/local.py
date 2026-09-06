@@ -60,6 +60,12 @@ class LocalRunner(Runner):
             temp_dir.mkdir(parents=True, exist_ok=True)
             env["TMPDIR"] = str(temp_dir)
             env["PYTEST_DEBUG_TEMPROOT"] = str(temp_dir)
+        env["GARDEN_HEAVY_TEST_PARALLEL"] = str(
+            max(1, int(self.config.get("resources", {}).get("heavy_test_parallel", 1)))
+        )
+        env["GARDEN_EXECUTION_CGROUP"] = str(
+            self.config.get("resources", {}).get("execution_cgroup", "") or ""
+        )
         return env
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:

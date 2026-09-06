@@ -142,8 +142,10 @@ DEFAULTS: dict[str, Any] = {
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
         "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "heavy_test_parallel": 1, # host-wide execution leases; every local run holds one
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
+        "execution_cgroup": "",   # delegated cgroup directory for local run descendants
     },
     "max_attempts": 2,
     "max_revisions": 3,

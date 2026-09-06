@@ -216,6 +216,67 @@ def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
     assert not run.process_finished()
     os.waitpid(run.pid, 0)
     assert run.process_finished()
+    isolation = __import__("json").loads((d / "isolation.json").read_text())
+    assert isolation == {"configured": False, "enforced": False,
+                         "reason": "execution cgroup is not configured"}
+
+
+def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
+    """Independent launchers queue on the host lease; exit releases it without cleanup."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 0.35"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    runs = []
+    for number in (1, 2):
+        d = tmp_path / f"run{number}"
+        d.mkdir()
+        brief = d / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"r{number}", dir=str(d), runner="local")
+        env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path)}
+        runner.launch(run, tmp_path, brief, env)
+        runs.append(run)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        states = [(r.path / "execution.json").read_text() for r in runs if (r.path / "execution.json").exists()]
+        if any('"state": "running"' in s for s in states) and any('"state": "waiting"' in s for s in states):
+            break
+        time.sleep(0.01)
+    assert sum('"state": "running"' in (r.path / "execution.json").read_text() for r in runs) == 1
+    assert sum('"state": "waiting"' in (r.path / "execution.json").read_text() for r in runs) == 1
+    for run in runs:
+        os.waitpid(run.pid, 0)
+    assert all(run.process_finished() for run in runs)
+
+
+def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 1"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    runs = []
+    for number in (1, 2):
+        d = tmp_path / f"cancel{number}"
+        d.mkdir()
+        brief = d / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"c{number}", dir=str(d), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path)})
+        runs.append(run)
+    deadline = time.monotonic() + 2
+    while not all((r.path / "execution.json").exists() for r in runs) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    waiting = next(r for r in runs if '"state": "waiting"' in (r.path / "execution.json").read_text())
+    assert waiting.stop(timeout=2)
+    assert waiting.read_exit_code() == 143
+    for run in runs:
+        if run is not waiting:
+            run.stop(timeout=2)
 
 
 def test_ssh_runner_uses_bare_bin(sched, fake_github):

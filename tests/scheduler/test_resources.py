@@ -85,6 +85,18 @@ def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, mo
     assert any(e["kind"] == "resource_recovered" for e in sched.events.read())
 
 
+def test_effective_memory_uses_tighter_cgroup_headroom(sched, monkeypatch):
+    import garden.scheduler.resources as resources
+
+    _set_resource_limit(sched, "min_memory_available_mb", 1500)
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 900)
+    status = sched.resource_status()
+    assert status.memory_available_mb == 900
+    assert status.cgroup_available_mb == 900
+    assert "available memory 900 MiB is below 1500 MiB" in status.reasons
+
+
 def test_operator_feed_names_effective_limit_pressure_and_recovery(sched, monkeypatch):
     import garden.scheduler.resources as resources
 

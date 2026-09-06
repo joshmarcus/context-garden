@@ -3,12 +3,53 @@
 from __future__ import annotations
 
 import ctypes
+import fcntl
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+def _execution_slot(run_dir: Path, should_stop: object) -> object:
+    """Take one host-wide execution lease, recoverable by kernel lock release."""
+    limit = max(1, int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1")))
+    lock_root = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+    while True:
+        if should_stop():
+            raise InterruptedError
+        for slot in range(limit):
+            handle = (lock_root / f"garden-heavy-test-{os.getuid()}-{slot}.lock").open("a+")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                continue
+            (run_dir / "execution.json").write_text(json.dumps(
+                {"state": "running", "slot": slot, "limit": limit, "pid": os.getpid()}
+            ))
+            return handle
+        (run_dir / "execution.json").write_text(json.dumps(
+            {"state": "waiting", "reason": f"heavy-test budget full (limit {limit})", "limit": limit}
+        ))
+        time.sleep(0.1)
+
+
+def _enter_execution_cgroup(run_dir: Path) -> None:
+    configured = os.environ.get("GARDEN_EXECUTION_CGROUP", "")
+    status = {"configured": bool(configured), "enforced": False}
+    if configured:
+        try:
+            target = Path(configured)
+            (target / "cgroup.procs").write_text(str(os.getpid()))
+            status.update({"enforced": True, "path": str(target)})
+        except OSError as exc:
+            status["reason"] = f"execution cgroup unavailable: {exc}"
+    else:
+        status["reason"] = "execution cgroup is not configured"
+    (run_dir / "isolation.json").write_text(json.dumps(status))
 
 
 def _become_subreaper() -> None:
@@ -48,6 +89,7 @@ def main() -> int:
         return 2
     run_dir, script = Path(sys.argv[1]), sys.argv[2]
     _become_subreaper()
+    _enter_execution_cgroup(run_dir)
     stopping = False
 
     def stop(_signum: int, _frame: object) -> None:
@@ -56,6 +98,11 @@ def main() -> int:
         _signal_descendants(signal.SIGTERM)
 
     signal.signal(signal.SIGTERM, stop)
+    try:
+        slot = _execution_slot(run_dir, lambda: stopping)
+    except InterruptedError:
+        (run_dir / "exit_code").write_text("143")
+        return 143
     child = subprocess.Popen(["sh", "-c", script])
     code = child.wait()
     deadline = time.monotonic() + 5.0 if stopping else None
@@ -69,6 +116,7 @@ def main() -> int:
                 _signal_descendants(signal.SIGKILL)
             time.sleep(0.05)
     (run_dir / "exit_code").write_text(str(code))
+    del slot  # keep the flock alive until every adopted descendant has exited
     return code
 
 
