@@ -1,7 +1,11 @@
 <div data-window="{{ window.key }}">
 <p class="metadata">{{ window.label }} · {{ window.data.since }} → {{ snapshot.captured_at }}</p>
-<p class="outcomes"><strong>{{ window.data.merged }} merged</strong> · {% if window.data.first_pass.reviewed %}{{ '%.0f' % (100 * window.data.first_pass.approved / window.data.first_pass.reviewed) }}% first-pass approval{% else %}first-pass approval not recorded{% endif %}<br><strong>${{ '%.2f' % window.data.cost }}</strong> recorded · ${{ '%.2f' % window.data.per_accepted }} / accepted task</p>
-<p class="metadata">First-pass n={{ window.data.first_pass.reviewed }} · {{ window.data.runs }} completed runs<br>Unknown-price coverage not supplied.</p>
+<p class="outcomes"><strong>{{ window.data.merged }} merged in this window</strong></p>
+<p class="outcomes"><strong>${{ '%.2f' % window.data.cost }}</strong> recorded window spend</p>
+<p class="metadata">All recorded activities in the selected window; price completeness unknown.</p>
+<details><summary class="metadata recovery">Accepted-task cost · separate lifetime measure</summary><p>${{ '%.2f' % window.data.per_accepted }} / accepted task, as exported.</p><p class="metadata">Intended measure: mean lifetime cost of tasks accepted in this window. Exported merged cohort: {{ window.data.merged_ids|length }} tasks. Priced denominator and lifetime-cost coverage not supplied; this figure is unverified. It is not window spend divided by merges.</p></details>
+<p>{% if window.data.first_pass.reviewed %}{{ '%.0f' % (100 * window.data.first_pass.approved / window.data.first_pass.reviewed) }}% first-pass approval{% else %}First-pass approval not recorded{% endif %}</p>
+<p class="metadata">n={{ window.data.first_pass.reviewed }} reviewed tasks (export cohort) · {{ window.data.runs }} completed runs</p>
 <div role="img" aria-label="Run completions by exported time bucket: {{ window.data.throughput|join(', ') }}" style="margin:18px 0;color:var(--accent);--viz-1:var(--accent)">{{ window.spark }}</div>
 <p class="metadata">Run completions by exported {{ window.data.bucket }} bucket: {{ window.data.throughput|join(', ') }}.<br>Accepted-task throughput timestamps not supplied.</p>
 {% if window.data.annotations %}<details><summary class="metadata" style="min-height:44px;padding:12px 0">{{ window.data.annotations|length }} recorded configuration annotations</summary>{% for annotation in window.data.annotations %}<p class="metadata">{{ annotation.at }} · {{ annotation.kind }} · {{ annotation.changed|default([])|join(', ') }}</p>{% endfor %}</details>{% else %}<p class="metadata">No configuration annotations in this export window.</p>{% endif %}

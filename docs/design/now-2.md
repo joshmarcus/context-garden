@@ -66,9 +66,9 @@ The external reading files were read through GitHub, not another checkout:
 
 | Source in `joshmarcus/garden` | Read blob SHA |
 |---|---|
-| `context-garden/product.md` | `ced451f332bbd457c7cfc5e8ce87f3cd74d02fb8` |
+| `context-garden/product.md` | `2f2c63aabed6355b1ad6b7fa9ed28884c37b11fa` |
 | `context-garden/phase-05/goals.md` | `905c49714517be40365261bf9db8e337ba56657f` |
-| `context-garden/phase-05/specs/now-page.md` | `1ebb67987f03c21e64a719ee9dce1defa3538323` |
+| `context-garden/phase-05/specs/now-page.md` | `6824a463c9ed9b4d96addd9bc2443da4b8784c7b` |
 | `context-garden/phase-01-bootstrap/specs/botanical-theme.md` | `a6aa23934a83fdb40ae641aaad078549b9d3e21c` |
 
 The product source baseline is `b240f29`. The mock reuses its plant symbols and
@@ -396,7 +396,7 @@ including 59→60, 3599→3600, offset clock, new run identity, delayed dispatch
 tab return, missing typical, failure persistence and reduced motion.
 
 Windows Edge full-page captures were read back in 2000px strips, covering all
-four regions and all nine atlas states, in both themes:
+four regions and all ten atlas states, in both themes:
 
 - [1280 light](now-2/captures/light-1280-full.png) and
   [1280 dark](now-2/captures/dark-1280-full.png): the Now/Next columns separate
@@ -409,33 +409,54 @@ four regions and all nine atlas states, in both themes:
   row labels visible in the initial phone view. Full keyboard scrolling remains
   an interaction check for the build.
 
-The initial command-line phone image clipped. Repeating the capture through
-Edge's debugging protocol with explicit CSS viewport dimensions resolved the
-capture problem without a layout change: `innerWidth` and document `scrollWidth`
-were both 1280 on desktop and both 390 on phone. Theme media queries were measured
-as false/true for light/dark. Full page heights were 4628 and 9742 respectively.
-See [capture notes and reproduction](now-2/captures/README.md). These are inspected
-mock captures, not evidence for a live route or persona approval. Local plates
-and fallback fonts need no external resources.
+The capture recipe uses Edge's debugging protocol to set CSS viewport dimensions
+and light/dark media preferences explicitly. See [capture reproduction](now-2/captures/README.md).
+These are mock captures, not evidence for a live route. Local plates and fallback
+fonts need no external resources.
 
-Designer and usability-expert persona findings belong here with severity, concrete
-change and artifact reference. **Neither review has run:** worker rules prohibit
-`garden` commands and no persona reports were supplied for PR #215. A self-assessment is
-not a persona verdict. The runner must perform the requested reviews and return
-findings before this criterion is claimed. In particular, validate the five-second
-reading test, low-n legend, mobile matrix and distinction between finished/merged.
+## Persona findings and design responses
 
-## Remaining evidence handoff
+The [designer report](https://github.com/joshmarcus/context-garden/pull/215#issuecomment-5556755991)
+(run `20260906T035541Z-persona`) and
+[usability-expert report](https://github.com/joshmarcus/context-garden/pull/215#issuecomment-5556756045)
+(run `20260906T035544Z-persona`) each score this design **7/10 with no high findings**.
+These verdicts apply to the reviewed snapshot of the PR. The six medium findings
+and their concrete design responses are:
 
-The supplied aggregate snapshot resolves access to operational state. To verify
-computation provenance and fill its missing fields, provide a sanitized export with `captured_at`, product/phase
+| Persona / medium finding | Response in the design and mock |
+|---|---|
+| Designer: Now status hierarchy | Now separates processes present from missing processes. Missing rows use a question mark and amber “Process missing” label, a neutral duration fill, and “Elapsed since start · activity unconfirmed”. A process present at capture is not a fresh liveness claim. |
+| Designer: Navigation and recovery | Recorded run titles link to task detail; “Open run” links to the exact run; held work offers “View decision” and “Open in Inbox”. Links have visible focus and recovery links have 44px targets. File previews disclose that these are live-app destinations. |
+| Designer: Outcome metrics | Window spend has its own label. The exported accepted-task figure is inside a separate lifetime-measure disclosure, alongside the exported merged cohort and the explicitly unknown priced denominator and completeness. |
+| Usability: Recovery guidance | Missing-process rows offer “Open run”; conflicting review capacity offers “View decision”. Without timing evidence both say reconciliation timing unknown, avoiding a false promise that the scheduler is about to fix them. The live reconciliation rules below distinguish pending from overdue. |
+| Usability: First use | The atlas separates “No tasks yet” with phase planning/task creation destinations from “Drafts awaiting approval” with a link to the backlog. Empty does not ask someone to approve nonexistent work. |
+| Usability: Cost interpretation | Window spend is not presented as the numerator of lifetime accepted-task cost. The disclosure states that the exported ratio is unverified and cannot be reproduced by dividing the adjacent spend by merges. |
+
+For the live build, record `observed_missing_at` and read the scheduler's
+`next_tick_at` and latest completed reconciliation timestamp. With a known future
+pass and no completed reconciliation since the observation, say “Awaiting the
+next scheduler pass · [time]”. Once that scheduled pass is overdue, or a completed
+pass after the observation leaves the conflict unresolved, say “Reconciliation
+overdue · open run for details” (or “view decision” for queue conflicts). If
+scheduling evidence is absent, say “Reconciliation timing unknown”. A clock alone
+never escalates a missing process into a failure or requests a retry. Keep the
+underlying reason and detail link visible in all three cases; Inbox is offered
+for an authoritative needs-you decision, not inferred solely from elapsed time.
+
+## Metrics evidence required
+
+The aggregate snapshot contains no raw lifecycle history or generator identity.
+A reproducible metrics source needs the export generator and a sanitized input
+with `captured_at`, product/phase
 metadata and goals, task frontmatter (no task bodies needed except titles), active
 and historical run metadata, current queue/control/attention facts, first/latest
 tick and next scheduled tick, and events with enough preceding history to compute
 the selected windows. Include explicit completeness flags and model price coverage.
 Do not include credentials, full transcripts, host paths or session secrets;
-one sanitized latest assistant line per run is sufficient. The renderer can then
-fill the missing observations without guessing operational facts.
+one sanitized latest assistant line per run is sufficient. The shared computation
+must reproduce the cell values, n, cohort membership and window boundaries; a
+comparison against copied aggregates or invented events would not establish
+provenance. Missing source data is the outstanding acceptance blocker.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
@@ -443,7 +464,7 @@ Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` report
 mock tests report 3 passed. An HTML inspection finds no
 duplicate IDs, no missing local plate images, and all four window panels.
 These are structural checks; visual evidence is described above and no
-persona approval is implied. No typecheck
+new persona approval is implied. No typecheck
 command is configured in `pyproject.toml` or the repository CI workflow.
 
 Table values, sample counts and rank marks all use the ink foreground. Endpoint

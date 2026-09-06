@@ -131,6 +131,8 @@ def context() -> dict:
             "line": ("Other design's excerpt omitted to preserve independent design." if run["task"] == "CG-307"
                      else run["said"] or "No assistant text recorded."),
             "cost": cost, "no_process": run["no_process"],
+            "task_url": f"/tasks/{run['task']}",
+            "run_url": f"/runs/{run['task']}/{run['run']}",
         })
     return ctx
 
