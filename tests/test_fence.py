@@ -584,3 +584,65 @@ def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monk
     from garden.store import Store
 
     assert Scheduler(Store(garden)).cfg.get("notify.command") == "true"
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt_both", "bad_digest", "wrong_run"])
+def test_untrusted_fence_manifest_fails_run_for_inspection(sched, damage):
+    sched.tick()
+    task = sched.store.task("DM-001")
+    run = sched.runs.latest(task.id)
+    ref = sched.state.get(task.id)["fence_guard_manifest"]
+    trusted = sched.cfg.garden_dir / "fence-guard-manifests" / f"{ref['sha256']}.json"
+    if damage == "missing":
+        trusted.unlink()
+        (run.path / "fence_guard.json").unlink()
+    elif damage == "corrupt_both":
+        trusted.write_text("[]")
+        (run.path / "fence_guard.json").write_text("[]")
+    elif damage == "bad_digest":
+        ref["sha256"] = "../untrusted"
+    else:
+        ref["run"] = "different-run"
+    sched.state.save()
+
+    sched.tick()
+
+    assert sched.store.task(task.id).status.value == "failed"
+    assert not sched.github.created
+    card = _attention_card(sched, task.id)
+    assert "Cannot verify" in card and "inspect protected paths" in card
+    assert "writes it made were reverted" not in card
+
+
+def test_deleted_audit_manifest_does_not_skip_protected_file_restoration(sched):
+    task = sched.store.task("DM-001")
+    config = sched.store.root / "garden.yaml"
+    before = config.read_text()
+    run = _run_naming(sched, task.id, str(config))
+    sched._fence_snapshot(task, run)
+    (run.path / "fence_guard.json").unlink()
+    config.write_text("worker corruption")
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert any(v["path"] == str(config) and v["reverted"] for v in violations)
+    assert config.read_text() == before
+
+
+def test_fence_migration_preserves_interleaved_state_writer(sched):
+    from garden.scheduler import State
+
+    task = sched.store.task("DM-001")
+    run = _run_naming(sched, task.id, "nothing")
+    sched._fence_snapshot(task, run)
+    sched.state.get(task.id)["fence_guard_manifest"] = (run.path / "fence_guard.json").read_text()
+    sched.state.save()
+    other = State(sched.state.path)
+    other.get(task.id)["operator_note"] = "keep concurrent update"
+    other.save()
+
+    sched._migrate_fence_bookkeeping()
+
+    saved = State(sched.state.path).get(task.id)
+    assert saved["operator_note"] == "keep concurrent update"
+    assert saved["fence_guard_manifest"]["run"] == run.run_id
