@@ -115,7 +115,6 @@ def register(app: FastAPI, site: Site) -> None:
                 "evidence": [],
                 "attention": {"actions": [], "discuss": ""},
             }
-
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
@@ -139,6 +138,8 @@ def register(app: FastAPI, site: Site) -> None:
             manual_runner=manual_runner, manual_take_reason=manual_take_reason,
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
+            trial_view=trial_view,
+            design_files=_design_files(t, s),
             trial_view=trial_view,
             design_files=_design_files(t, s),
         ))
@@ -216,8 +217,6 @@ def _edit_diff(runs: list[Any]) -> str:
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile="before", tofile="after"))
     return ""
-
-
 def _acceptance_text(body: str) -> str:
     """The editable contents of the acceptance-criteria section, without its heading."""
     import re
