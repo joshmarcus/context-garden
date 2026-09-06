@@ -116,6 +116,11 @@ def test_scheduler_task_file_edits_do_not_trip_the_fence(sched, garden, monkeypa
 
 # ---- the config/state hash-check (CG-194) ---------------------------------
 
+def test_fence_guard_targets_include_harness_config_files(sched):
+    targets = {rel for rel, _, _ in sched._fence_guard_targets()}
+    assert {"settings.json", "settings.local.json", "CLAUDE.md", "config.toml"} <= targets
+
+
 def test_worker_writing_garden_yaml_is_caught_by_hash_check_without_git(sched, garden, monkeypatch):
     """The live garden is not a git repo here, so the git-based fence guards nothing; the
     hash-check still catches (and reverts) a worker write to garden.yaml."""
