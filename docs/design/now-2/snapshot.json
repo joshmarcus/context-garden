@@ -1,0 +1,3685 @@
+{
+ "captured_at": "2026-09-06T02:34:47+00:00",
+ "garden": {
+  "dispatch_paused": null,
+  "drafts": 4,
+  "inbox_decisions": 0,
+  "last_tick": "2026-09-06T02:33:04+00:00",
+  "max_parallel": 5,
+  "name": "context-garden",
+  "review_busy": 0,
+  "review_parallel": 3,
+  "tick_interval": 60,
+  "worker_busy": 5,
+  "worker_without_process": 3
+ },
+ "next": {
+  "dispatch": [
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 1,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-310",
+    "title": "Worker temp files live on disk and are pruned: TMPDIR under the work root, per-run cleanup at reap, and a sweep of finished tasks' worktree venvs and caches",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 2,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-311",
+    "title": "The task page shows the decision a worker's no-change or question report needs: the same card and actions as the Inbox, right where the notification sends you",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 3,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-312",
+    "title": "Inbox decision cards lay out at full width: the text column no longer collapses to one word per line and the action buttons no longer overlap the evidence list",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "hard",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-6-astra",
+    "pos": 4,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-314",
+    "title": "Design Now 2: astra's take on the Now page, information architecture, visual system, motion, and a static mock of every state",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "hard",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-sol",
+    "pos": 5,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-315",
+    "title": "UI changes are reviewed against rendered pages: a template or style change captures the affected pages as screenshots at two widths, the reviewer and the personas read them, and the walkthrough uses the same capture",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 6,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-316",
+    "title": "A dispatch that fails before its process starts closes the run record at once, and the orphan sweep closes any running record with no live process",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 7,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-317",
+    "title": "The task page renders a trial in progress: the trial panel treats winner, scores and PRs as optional, and a test renders a task mid-trial with a failed contender",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 8,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-318",
+    "title": "The web app serves design documents, mocks and run captures: /design/<file> for the product's docs/design and a run page link to each capture",
+    "why": "priority 1"
+   },
+   {
+    "difficulty": "hard",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-sol",
+    "pos": 9,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-215",
+    "title": "Onboarding skill and command: analyse an existing project and its environment to create a garden product, principles, setup config and a first phase",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 10,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-253",
+    "title": "The retro captures its own walkthrough, and hand merges and tick duration are in garden metrics and the rail",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 11,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-273",
+    "title": "CG-217 merged with a criterion marked 'no evidence given' and CG-158 with a plac",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 12,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-283",
+    "title": "The built-in economy, balanced and fast stops hardcode Claude model ids and mode",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 13,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-293",
+    "title": "A brief never ships with an empty or unresolved reading list, and a revise brief restates the criteria and the concrete blocker",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 14,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-295",
+    "title": "Docs match the mechanism: the scaffolded operate skill, design.md and roadmap.md non-goals, and the architecture module map",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 15,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-300",
+    "title": "The retro's Numbers section reads the operator ledger where the owner keeps it, and reports spend and share",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 16,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-301",
+    "title": "Retro questions are deduplicated across reconcile runs, and a second judge can run with task filing off",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "hard",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-sol",
+    "pos": 17,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-302",
+    "title": "Spike: OpenRouter harness shape and adapter CLI",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 18,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-313",
+    "title": "parse_result accepts the GARDEN_RESULT marker wrapped in markdown emphasis or code and a JSON payload that spans lines",
+    "why": "priority 2"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 19,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-254",
+    "title": "redispatch kills the superseded worker, and pin runs the canary, installs and restarts after a tick",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 20,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-256",
+    "title": "A draft's acceptance criteria and reading list can be edited inline on the task page",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 21,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-294",
+    "title": "Planning sequences dependent tasks and inlines retro evidence into the brief",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 22,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-296",
+    "title": "One vocabulary and one place for each fact across rail, Config, CLI and Inbox",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 23,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-297",
+    "title": "The walkthrough renderer skips hidden elements and attributes, and check runs retry once on a signal exit",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 24,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-304",
+    "title": "Update docs: docs/architecture.md",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 25,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-305",
+    "title": "Update docs: docs/worker-protocol.md",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 26,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-306",
+    "title": "Update docs: docs/design.md",
+    "why": "priority 3"
+   },
+   {
+    "difficulty": "medium",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-terra",
+    "pos": 27,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-298",
+    "title": "Persona runs are recorded per phase and the retro validates the run id it reads",
+    "why": "priority 4"
+   },
+   {
+    "difficulty": "easy",
+    "harness": "codex",
+    "mode": "work",
+    "model": "gpt-5.6-luna",
+    "pos": 28,
+    "product": "context-garden",
+    "skip": "",
+    "status": "ready",
+    "task": "CG-299",
+    "title": "Small follow-ups: retro_question kind, backlog noscript, CI flake, ambient config dir in tests, a second opinion for self products",
+    "why": "priority 4"
+   }
+  ],
+  "merge": {
+   "candidates": [],
+   "head": null,
+   "in_review": [
+    {
+     "blocked": "the automated review verdict is request_changes, not approve",
+     "checks": "pending",
+     "max_rounds": 4,
+     "pr": "https://github.com/joshmarcus/context-garden/pull/199",
+     "reviewing": false,
+     "round": 2,
+     "task": "CG-242",
+     "title": "Hold untrusted config changes before live reload"
+    }
+   ],
+   "last_drop": null,
+   "waiting": [
+    {
+     "task": "CG-242",
+     "title": "Hold untrusted config changes before live reload",
+     "what": "review",
+     "why": "no review slot (0 of 3 busy)"
+    }
+   ]
+  }
+ },
+ "now": [
+  {
+   "difficulty": "easy",
+   "dot": "running",
+   "elapsed_s": 362,
+   "glyph": "running",
+   "harness": "codex",
+   "kind": "run",
+   "mode": "work",
+   "model": "gpt-5.6-luna",
+   "no_process": false,
+   "run": "20260906T022845Z-work",
+   "said": "Implemented and committed as `43b5228`.",
+   "spend_usd": 0.045015839999999994,
+   "stage": "",
+   "started_at": "2026-09-06T02:28:45+00:00",
+   "state": "running",
+   "task": "CG-237",
+   "title": "The not-logged-in check reads a worker's prose as an auth failure: match the CLI's own error, not the report text",
+   "tokens_so_far": 1274688,
+   "typical_s": 558.880917
+  },
+  {
+   "difficulty": "hard",
+   "dot": "running",
+   "elapsed_s": 363,
+   "glyph": "running",
+   "harness": "claude",
+   "kind": "run",
+   "mode": "revise",
+   "model": "claude-fable-5-1",
+   "no_process": false,
+   "run": "20260906T022844Z-revise",
+   "said": "Now re-taking the snapshot from the live garden and rendering, and checking whether a Chrome is reachable for the width\u2026",
+   "spend_usd": null,
+   "stage": "",
+   "started_at": "2026-09-06T02:28:44+00:00",
+   "state": "running",
+   "task": "CG-307",
+   "title": "Design the Now page: information architecture, visual system, motion, and a static mock of every state",
+   "tokens_so_far": 7728431,
+   "typical_s": 226.41850850000003
+  },
+  {
+   "difficulty": "",
+   "dot": "running",
+   "elapsed_s": 5370,
+   "glyph": "running",
+   "harness": "",
+   "kind": "run",
+   "mode": "revise",
+   "model": "",
+   "no_process": true,
+   "run": "20260906T010518Z-revise",
+   "said": "",
+   "spend_usd": null,
+   "stage": "",
+   "started_at": "2026-09-06T01:05:18+00:00",
+   "state": "running",
+   "task": "CG-249",
+   "title": "`garden dispatch <id>` (CLI) allows dispatching a draft directly",
+   "tokens_so_far": 0,
+   "typical_s": null
+  },
+  {
+   "difficulty": "",
+   "dot": "running",
+   "elapsed_s": 5626,
+   "glyph": "running",
+   "harness": "",
+   "kind": "run",
+   "mode": "revise",
+   "model": "",
+   "no_process": true,
+   "run": "20260906T010102Z-revise",
+   "said": "",
+   "spend_usd": null,
+   "stage": "",
+   "started_at": "2026-09-06T01:01:02+00:00",
+   "state": "running",
+   "task": "CG-242",
+   "title": "Hold untrusted config changes before live reload",
+   "tokens_so_far": 0,
+   "typical_s": null
+  },
+  {
+   "difficulty": "",
+   "dot": "running",
+   "elapsed_s": 5626,
+   "glyph": "running",
+   "harness": "",
+   "kind": "run",
+   "mode": "revise",
+   "model": "",
+   "no_process": true,
+   "run": "20260906T010102Z-revise",
+   "said": "",
+   "spend_usd": null,
+   "stage": "",
+   "started_at": "2026-09-06T01:01:02+00:00",
+   "state": "running",
+   "task": "CG-245",
+   "title": "Isolate planner execution from operator state",
+   "tokens_so_far": 0,
+   "typical_s": null
+  }
+ ],
+ "period": {
+  "24h": {
+   "annotations": [
+    {
+     "at": "2026-09-05T14:36:12+00:00",
+     "changed": [
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T14:59:18+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T17:11:04+00:00",
+     "changed": [
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T18:50:25+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T19:45:01+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T20:37:55+00:00",
+     "changed": [
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T20:39:26+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T20:45:41+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T22:32:01+00:00",
+     "changed": [
+      "harnesses"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T23:07:24+00:00",
+     "changed": [
+      "harnesses",
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-05T23:08:51+00:00",
+     "changed": [
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    },
+    {
+     "at": "2026-09-06T02:01:11+00:00",
+     "changed": [
+      "harness",
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    }
+   ],
+   "bucket": "hour",
+   "by_model": [
+    {
+     "cost": 279.87,
+     "runs": 156,
+     "who": "claude:claude-sonnet-5"
+    },
+    {
+     "cost": 235.98,
+     "runs": 51,
+     "who": "claude:claude-opus-4-8"
+    },
+    {
+     "cost": 153.77,
+     "runs": 200,
+     "who": "garden:review"
+    },
+    {
+     "cost": 119.36,
+     "runs": 24,
+     "who": "garden:persona"
+    },
+    {
+     "cost": 77.28,
+     "runs": 12,
+     "who": "claude:claude-fable-5-1"
+    },
+    {
+     "cost": 11.72,
+     "runs": 6,
+     "who": "garden:retro"
+    },
+    {
+     "cost": 7.21,
+     "runs": 12,
+     "who": "codex:gpt-5.6-terra"
+    },
+    {
+     "cost": 5.98,
+     "runs": 1,
+     "who": "codex:gpt-6-astra"
+    },
+    {
+     "cost": 2.68,
+     "runs": 21,
+     "who": "garden:edit"
+    },
+    {
+     "cost": 1.42,
+     "runs": 1,
+     "who": "garden:kickoff"
+    },
+    {
+     "cost": 0.88,
+     "runs": 2,
+     "who": "garden:compare"
+    },
+    {
+     "cost": 0.01,
+     "runs": 1,
+     "who": "codex:gpt-5.6-luna"
+    },
+    {
+     "cost": 0.0,
+     "runs": 78,
+     "who": "garden:rebase"
+    },
+    {
+     "cost": 0.0,
+     "runs": 202,
+     "who": "garden:check"
+    },
+    {
+     "cost": 0.0,
+     "runs": 2,
+     "who": "codex:work"
+    },
+    {
+     "cost": 0.0,
+     "runs": 1,
+     "who": "garden:trial"
+    },
+    {
+     "cost": 0.0,
+     "runs": 6,
+     "who": "codex:trial"
+    },
+    {
+     "cost": 0.0,
+     "runs": 1,
+     "who": "garden:work"
+    }
+   ],
+   "cost": 896.16,
+   "first_pass": {
+    "approved": 79,
+    "reviewed": 102
+   },
+   "hand_kinds": {
+    "budget_set": 3,
+    "config_override": 2,
+    "decision_accepted": 5,
+    "decision_resolved": 21,
+    "dispatch_paused": 5,
+    "dispatch_resumed": 8,
+    "moved": 10,
+    "resumed": 12,
+    "suggestion": 21,
+    "triaged": 4
+   },
+   "hand_steps": 91,
+   "merged": 100,
+   "merged_ids": [
+    "CG-030",
+    "CG-125",
+    "CG-132",
+    "CG-134",
+    "CG-135",
+    "CG-137",
+    "CG-139",
+    "CG-141",
+    "CG-142",
+    "CG-143",
+    "CG-144",
+    "CG-145",
+    "CG-146",
+    "CG-147",
+    "CG-148",
+    "CG-149",
+    "CG-150",
+    "CG-152",
+    "CG-153",
+    "CG-154",
+    "CG-155",
+    "CG-156",
+    "CG-157",
+    "CG-158",
+    "CG-160",
+    "CG-161",
+    "CG-162",
+    "CG-163",
+    "CG-164",
+    "CG-165",
+    "CG-169",
+    "CG-170",
+    "CG-173",
+    "CG-174",
+    "CG-175",
+    "CG-176",
+    "CG-177",
+    "CG-178",
+    "CG-179",
+    "CG-180",
+    "CG-181",
+    "CG-182",
+    "CG-183",
+    "CG-184",
+    "CG-185",
+    "CG-186",
+    "CG-187",
+    "CG-188",
+    "CG-189",
+    "CG-190",
+    "CG-191",
+    "CG-192",
+    "CG-193",
+    "CG-194",
+    "CG-195",
+    "CG-196",
+    "CG-197",
+    "CG-198",
+    "CG-199",
+    "CG-200",
+    "CG-201",
+    "CG-202",
+    "CG-203",
+    "CG-204",
+    "CG-205",
+    "CG-207",
+    "CG-208",
+    "CG-209",
+    "CG-210",
+    "CG-211",
+    "CG-212",
+    "CG-214",
+    "CG-217",
+    "CG-218",
+    "CG-219",
+    "CG-220",
+    "CG-221",
+    "CG-223",
+    "CG-224",
+    "CG-225",
+    "CG-226",
+    "CG-227",
+    "CG-228",
+    "CG-229",
+    "CG-231",
+    "CG-232",
+    "CG-233",
+    "CG-234",
+    "CG-235",
+    "CG-236",
+    "CG-238",
+    "CG-239",
+    "CG-243",
+    "CG-244",
+    "CG-245",
+    "CG-248",
+    "CG-249",
+    "CG-250",
+    "CG-291",
+    "CG-292"
+   ],
+   "per_accepted": 7.15,
+   "runs": 777,
+   "series": {
+    "bucket": "hour",
+    "buckets": [
+     {
+      "bucket": "2026-09-05T02:00",
+      "groups": {
+       "persona": {
+        "cache_read_tokens": 13268657,
+        "cache_write_tokens": 1088595,
+        "cost_usd": 31.7662,
+        "runs": 6
+       },
+       "retro": {
+        "cache_read_tokens": 577847,
+        "cache_write_tokens": 95862,
+        "cost_usd": 3.6753,
+        "runs": 2
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T03:00",
+      "groups": {
+       "persona": {
+        "cache_read_tokens": 4408988,
+        "cache_write_tokens": 504357,
+        "cost_usd": 13.8851,
+        "runs": 3
+       },
+       "retro": {
+        "cache_read_tokens": 694680,
+        "cache_write_tokens": 67783,
+        "cost_usd": 2.6275,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 2729002,
+        "cache_write_tokens": 228955,
+        "cost_usd": 4.5369,
+        "runs": 5
+       },
+       "work": {
+        "cache_read_tokens": 40676156,
+        "cache_write_tokens": 891175,
+        "cost_usd": 29.9976,
+        "runs": 5
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T04:00",
+      "groups": {
+       "review": {
+        "cache_read_tokens": 9547347,
+        "cache_write_tokens": 809856,
+        "cost_usd": 16.1082,
+        "runs": 17
+       },
+       "revise": {
+        "cache_read_tokens": 29401856,
+        "cache_write_tokens": 689648,
+        "cost_usd": 15.4056,
+        "runs": 11
+       },
+       "work": {
+        "cache_read_tokens": 112578287,
+        "cache_write_tokens": 1984170,
+        "cost_usd": 68.9644,
+        "runs": 15
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T05:00",
+      "groups": {
+       "rebase": {
+        "cache_read_tokens": 3814987,
+        "cache_write_tokens": 114763,
+        "cost_usd": 1.3524,
+        "runs": 19
+       },
+       "review": {
+        "cache_read_tokens": 8205719,
+        "cache_write_tokens": 759491,
+        "cost_usd": 14.6467,
+        "runs": 19
+       },
+       "work": {
+        "cache_read_tokens": 51331347,
+        "cache_write_tokens": 803068,
+        "cost_usd": 20.3254,
+        "runs": 8
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T09:00",
+      "groups": {
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 2
+       },
+       "review": {
+        "cache_read_tokens": 454995,
+        "cache_write_tokens": 68885,
+        "cost_usd": 1.1487,
+        "runs": 2
+       },
+       "work": {
+        "cache_read_tokens": 15143530,
+        "cache_write_tokens": 318068,
+        "cost_usd": 14.0227,
+        "runs": 4
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T10:00",
+      "groups": {
+       "persona": {
+        "cache_read_tokens": 9426407,
+        "cache_write_tokens": 937987,
+        "cost_usd": 28.0216,
+        "runs": 7
+       },
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 1
+       },
+       "retro": {
+        "cache_read_tokens": 158588,
+        "cache_write_tokens": 41762,
+        "cost_usd": 1.7429,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 1197944,
+        "cache_write_tokens": 157068,
+        "cost_usd": 3.064,
+        "runs": 3
+       },
+       "work": {
+        "cache_read_tokens": 7164065,
+        "cache_write_tokens": 131406,
+        "cost_usd": 2.4089,
+        "runs": 1
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T11:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 6316132,
+        "cache_write_tokens": 257523,
+        "cost_usd": 6.8963,
+        "runs": 3
+       },
+       "revise": {
+        "cache_read_tokens": 2395868,
+        "cache_write_tokens": 106837,
+        "cost_usd": 2.7718,
+        "runs": 1
+       },
+       "work": {
+        "cache_read_tokens": 49861081,
+        "cache_write_tokens": 557401,
+        "cost_usd": 40.4298,
+        "runs": 2
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T12:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 45
+       },
+       "rebase": {
+        "cache_read_tokens": 5388323,
+        "cache_write_tokens": 212878,
+        "cost_usd": 2.3568,
+        "runs": 22
+       },
+       "review": {
+        "cache_read_tokens": 15020877,
+        "cache_write_tokens": 1588853,
+        "cost_usd": 29.9227,
+        "runs": 34
+       },
+       "revise": {
+        "cache_read_tokens": 4319990,
+        "cache_write_tokens": 200096,
+        "cost_usd": 4.31,
+        "runs": 4
+       },
+       "work": {
+        "cache_read_tokens": 172012741,
+        "cache_write_tokens": 2920770,
+        "cost_usd": 108.1738,
+        "runs": 21
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T13:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 16
+       },
+       "rebase": {
+        "cache_read_tokens": 579585,
+        "cache_write_tokens": 26685,
+        "cost_usd": 0.2472,
+        "runs": 12
+       },
+       "review": {
+        "cache_read_tokens": 2198811,
+        "cache_write_tokens": 273699,
+        "cost_usd": 4.7932,
+        "runs": 14
+       },
+       "revise": {
+        "cache_read_tokens": 3366909,
+        "cache_write_tokens": 102772,
+        "cost_usd": 1.2284,
+        "runs": 2
+       },
+       "work": {
+        "cache_read_tokens": 73414152,
+        "cache_write_tokens": 1259136,
+        "cost_usd": 43.2651,
+        "runs": 26
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T15:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 32
+       },
+       "rebase": {
+        "cache_read_tokens": 17791813,
+        "cache_write_tokens": 447714,
+        "cost_usd": 6.4225,
+        "runs": 18
+       },
+       "review": {
+        "cache_read_tokens": 22261748,
+        "cache_write_tokens": 1134708,
+        "cost_usd": 11.9926,
+        "runs": 22
+       },
+       "revise": {
+        "cache_read_tokens": 20707366,
+        "cache_write_tokens": 461193,
+        "cost_usd": 7.2569,
+        "runs": 7
+       },
+       "work": {
+        "cache_read_tokens": 61755948,
+        "cache_write_tokens": 843116,
+        "cost_usd": 18.4869,
+        "runs": 10
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T16:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 11
+       },
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 3
+       },
+       "review": {
+        "cache_read_tokens": 13142532,
+        "cache_write_tokens": 567157,
+        "cost_usd": 6.4729,
+        "runs": 13
+       },
+       "revise": {
+        "cache_read_tokens": 21480065,
+        "cache_write_tokens": 434565,
+        "cost_usd": 7.3728,
+        "runs": 5
+       },
+       "work": {
+        "cache_read_tokens": 24692644,
+        "cache_write_tokens": 357627,
+        "cost_usd": 9.2744,
+        "runs": 4
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T17:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 20
+       },
+       "rebase": {
+        "cache_read_tokens": 3379413,
+        "cache_write_tokens": 130068,
+        "cost_usd": 1.4063,
+        "runs": 12
+       },
+       "review": {
+        "cache_read_tokens": 24136654,
+        "cache_write_tokens": 1075172,
+        "cost_usd": 11.8105,
+        "runs": 14
+       },
+       "revise": {
+        "cache_read_tokens": 31405960,
+        "cache_write_tokens": 530214,
+        "cost_usd": 10.2087,
+        "runs": 5
+       },
+       "work": {
+        "cache_read_tokens": 115348030,
+        "cache_write_tokens": 1248017,
+        "cost_usd": 33.8836,
+        "runs": 6
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T18:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 12
+       },
+       "other": {
+        "cache_read_tokens": 9671255,
+        "cache_write_tokens": 177971,
+        "cost_usd": 2.6088,
+        "runs": 11
+       },
+       "rebase": {
+        "cache_read_tokens": 9639388,
+        "cache_write_tokens": 205626,
+        "cost_usd": 3.3048,
+        "runs": 8
+       },
+       "review": {
+        "cache_read_tokens": 14486921,
+        "cache_write_tokens": 614975,
+        "cost_usd": 7.004,
+        "runs": 7
+       },
+       "revise": {
+        "cache_read_tokens": 5867527,
+        "cache_write_tokens": 185528,
+        "cost_usd": 2.5512,
+        "runs": 2
+       },
+       "work": {
+        "cache_read_tokens": 29116179,
+        "cache_write_tokens": 402717,
+        "cost_usd": 9.4291,
+        "runs": 3
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T19:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 7
+       },
+       "other": {
+        "cache_read_tokens": 18980293,
+        "cache_write_tokens": 317775,
+        "cost_usd": 5.2903,
+        "runs": 3
+       },
+       "rebase": {
+        "cache_read_tokens": 453443,
+        "cache_write_tokens": 25479,
+        "cost_usd": 0.2288,
+        "runs": 2
+       },
+       "review": {
+        "cache_read_tokens": 11102471,
+        "cache_write_tokens": 434051,
+        "cost_usd": 5.0474,
+        "runs": 7
+       },
+       "revise": {
+        "cache_read_tokens": 10067200,
+        "cache_write_tokens": 172972,
+        "cost_usd": 3.2246,
+        "runs": 1
+       },
+       "work": {
+        "cache_read_tokens": 33928143,
+        "cache_write_tokens": 385433,
+        "cost_usd": 9.5633,
+        "runs": 3
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T20:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 9
+       },
+       "other": {
+        "cache_read_tokens": 17759453,
+        "cache_write_tokens": 247515,
+        "cost_usd": 5.0266,
+        "runs": 2
+       },
+       "rebase": {
+        "cache_read_tokens": 3978849,
+        "cache_write_tokens": 132772,
+        "cost_usd": 1.5871,
+        "runs": 4
+       },
+       "review": {
+        "cache_read_tokens": 2996747,
+        "cache_write_tokens": 258230,
+        "cost_usd": 3.5999,
+        "runs": 6
+       },
+       "revise": {
+        "cache_read_tokens": 9112310,
+        "cache_write_tokens": 277691,
+        "cost_usd": 3.5509,
+        "runs": 4
+       },
+       "work": {
+        "cache_read_tokens": 49007115,
+        "cache_write_tokens": 760807,
+        "cost_usd": 20.7245,
+        "runs": 6
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T21:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 15
+       },
+       "rebase": {
+        "cache_read_tokens": 7190275,
+        "cache_write_tokens": 184955,
+        "cost_usd": 2.6804,
+        "runs": 9
+       },
+       "review": {
+        "cache_read_tokens": 22326170,
+        "cache_write_tokens": 885797,
+        "cost_usd": 10.1753,
+        "runs": 11
+       },
+       "revise": {
+        "cache_read_tokens": 5550290,
+        "cache_write_tokens": 148842,
+        "cost_usd": 3.6865,
+        "runs": 3
+       },
+       "work": {
+        "cache_read_tokens": 12788064,
+        "cache_write_tokens": 178444,
+        "cost_usd": 3.8119,
+        "runs": 1
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T22:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 2
+       },
+       "persona": {
+        "cache_read_tokens": 16286989,
+        "cache_write_tokens": 1276708,
+        "cost_usd": 38.0315,
+        "runs": 7
+       },
+       "rebase": {
+        "cache_read_tokens": 693956,
+        "cache_write_tokens": 26814,
+        "cost_usd": 0.2972,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 3974082,
+        "cache_write_tokens": 140444,
+        "cost_usd": 1.709,
+        "runs": 2
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-05T23:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 3
+       },
+       "persona": {
+        "cache_read_tokens": 1744585,
+        "cache_write_tokens": 229794,
+        "cost_usd": 7.6532,
+        "runs": 1
+       },
+       "retro": {
+        "cache_read_tokens": 173950,
+        "cache_write_tokens": 72184,
+        "cost_usd": 3.6694,
+        "runs": 2
+       },
+       "review": {
+        "cache_read_tokens": 2816635,
+        "cache_write_tokens": 142383,
+        "cost_usd": 1.5518,
+        "runs": 2
+       },
+       "revise": {
+        "cache_read_tokens": 2085767,
+        "cache_write_tokens": 72379,
+        "cost_usd": 0.8587,
+        "runs": 1
+       },
+       "work": {
+        "cache_read_tokens": 24169755,
+        "cache_write_tokens": 381193,
+        "cost_usd": 7.7186,
+        "runs": 2
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T00:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 17
+       },
+       "other": {
+        "cache_read_tokens": 3051740,
+        "cache_write_tokens": 302747,
+        "cost_usd": 4.1038,
+        "runs": 22
+       },
+       "rebase": {
+        "cache_read_tokens": 494416,
+        "cache_write_tokens": 29113,
+        "cost_usd": 0.2562,
+        "runs": 4
+       },
+       "review": {
+        "cache_read_tokens": 15851655,
+        "cache_write_tokens": 818319,
+        "cost_usd": 8.8649,
+        "runs": 12
+       },
+       "revise": {
+        "cache_read_tokens": 5162240,
+        "cache_write_tokens": 0,
+        "cost_usd": 2.079,
+        "runs": 4
+       },
+       "work": {
+        "cache_read_tokens": 84648205,
+        "cache_write_tokens": 1019594,
+        "cost_usd": 33.6249,
+        "runs": 11
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T01:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 7
+       },
+       "other": {
+        "cache_read_tokens": 1943462,
+        "cache_write_tokens": 1088,
+        "cost_usd": 17.9557,
+        "runs": 2
+       },
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 4179875,
+        "cache_write_tokens": 185045,
+        "cost_usd": 2.0144,
+        "runs": 3
+       },
+       "revise": {
+        "cache_read_tokens": 3131789,
+        "cache_write_tokens": 98265,
+        "cost_usd": 1.238,
+        "runs": 2
+       },
+       "work": {
+        "cache_read_tokens": 14090049,
+        "cache_write_tokens": 162321,
+        "cost_usd": 4.1249,
+        "runs": 1
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T02:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 5
+       },
+       "other": {
+        "cache_read_tokens": 5505822,
+        "cache_write_tokens": 266783,
+        "cost_usd": 10.6767,
+        "runs": 1
+       },
+       "rebase": {
+        "cache_read_tokens": 1506215,
+        "cache_write_tokens": 34106,
+        "cost_usd": 0.4875,
+        "runs": 3
+       },
+       "review": {
+        "cache_read_tokens": 4551875,
+        "cache_write_tokens": 149570,
+        "cost_usd": 2.4073,
+        "runs": 4
+       },
+       "revise": {
+        "cache_read_tokens": 2841344,
+        "cache_write_tokens": 0,
+        "cost_usd": 1.0619,
+        "runs": 2
+       }
+      }
+     }
+    ],
+    "grand_total": {
+     "cache_read_tokens": 1474683543,
+     "cache_write_tokens": 35835530,
+     "cost_usd": 896.1628,
+     "runs": 777
+    },
+    "group_by": "activity",
+    "groups": [
+     "work",
+     "review",
+     "persona",
+     "revise",
+     "other",
+     "rebase",
+     "retro",
+     "check"
+    ],
+    "totals": {
+     "check": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.0,
+      "mean_cost_usd": 0.0,
+      "runs": 202,
+      "share": 0.0
+     },
+     "other": {
+      "cache_read_tokens": 56912025,
+      "cache_write_tokens": 1313879,
+      "cost_usd": 45.6619,
+      "mean_cost_usd": 1.1137,
+      "runs": 41,
+      "share": 0.051
+     },
+     "persona": {
+      "cache_read_tokens": 45135626,
+      "cache_write_tokens": 4037441,
+      "cost_usd": 119.3576,
+      "mean_cost_usd": 4.9732,
+      "runs": 24,
+      "share": 0.1332
+     },
+     "rebase": {
+      "cache_read_tokens": 54910663,
+      "cache_write_tokens": 1570973,
+      "cost_usd": 20.6272,
+      "mean_cost_usd": 0.1705,
+      "runs": 121,
+      "share": 0.023
+     },
+     "retro": {
+      "cache_read_tokens": 1605065,
+      "cache_write_tokens": 277591,
+      "cost_usd": 11.7151,
+      "mean_cost_usd": 1.9525,
+      "runs": 6,
+      "share": 0.0131
+     },
+     "review": {
+      "cache_read_tokens": 187498192,
+      "cache_write_tokens": 10550181,
+      "cost_usd": 153.7665,
+      "mean_cost_usd": 0.7688,
+      "runs": 200,
+      "share": 0.1716
+     },
+     "revise": {
+      "cache_read_tokens": 156896481,
+      "cache_write_tokens": 3481002,
+      "cost_usd": 66.8048,
+      "mean_cost_usd": 1.2371,
+      "runs": 54,
+      "share": 0.0745
+     },
+     "work": {
+      "cache_read_tokens": 971725491,
+      "cache_write_tokens": 14604463,
+      "cost_usd": 478.2298,
+      "mean_cost_usd": 3.7072,
+      "runs": 129,
+      "share": 0.5336
+     }
+    }
+   },
+   "since": "2026-09-05T02:34:47+00:00",
+   "throughput": [
+    8,
+    14,
+    43,
+    46,
+    8,
+    13,
+    7,
+    126,
+    70,
+    89,
+    36,
+    57,
+    43,
+    23,
+    31,
+    39,
+    12,
+    11,
+    70,
+    16,
+    15
+   ],
+   "tiers": {
+    "metrics": [
+     {
+      "better": "low",
+      "key": "cost_per_accepted",
+      "label": "cost per accepted task",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 50,
+         "value": 4.623
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 4,
+         "value": 12.198
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 7.267
+        }
+       },
+       "medium": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 13.355
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 23,
+         "value": 8.985
+        },
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 15,
+         "value": 11.689
+        },
+        "gpt-5.6-terra": {
+         "best": true,
+         "n": 4,
+         "value": 5.575
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "high",
+      "key": "first_pass",
+      "label": "first-pass approval",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 49,
+         "value": 0.857
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 5,
+         "value": 0.8
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.0
+        }
+       },
+       "medium": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 0.0
+        },
+        "claude-opus-4-8": {
+         "best": true,
+         "n": 26,
+         "value": 0.846
+        },
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 14,
+         "value": 0.571
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 4,
+         "value": 0.0
+        }
+       }
+      },
+      "unit": "pct"
+     },
+     {
+      "better": "low",
+      "key": "work_run_cost",
+      "label": "work-run cost",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 73,
+         "value": 2.245
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 9,
+         "value": 7.31
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 6.243
+        },
+        "gpt-6-astra": {
+         "best": false,
+         "n": 1,
+         "value": 5.982
+        }
+       },
+       "medium": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 3,
+         "value": 3.829
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 49,
+         "value": 4.561
+        },
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 41,
+         "value": 2.325
+        },
+        "gpt-5.6-terra": {
+         "best": true,
+         "n": 12,
+         "value": 0.601
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "low",
+      "key": "revise_rounds",
+      "label": "revise rounds",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 50,
+         "value": 0.34
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 4,
+         "value": 0.75
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 0.0
+        }
+       },
+       "medium": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 1.0
+        },
+        "claude-opus-4-8": {
+         "best": true,
+         "n": 23,
+         "value": 0.217
+        },
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 15,
+         "value": 1.4
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 4,
+         "value": 1.25
+        }
+       }
+      },
+      "unit": "rounds"
+     },
+     {
+      "better": "low",
+      "key": "lead_time",
+      "label": "median lead time",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 50,
+         "value": 0.786
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 4,
+         "value": 0.643
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.989
+        }
+       },
+       "medium": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 0.914
+        },
+        "claude-opus-4-8": {
+         "best": true,
+         "n": 23,
+         "value": 0.764
+        },
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 15,
+         "value": 2.558
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 4,
+         "value": 1.905
+        }
+       }
+      },
+      "unit": "hours"
+     }
+    ],
+    "models": [
+     "claude-sonnet-5",
+     "claude-opus-4-8",
+     "claude-fable-5-1",
+     "gpt-5.6-terra",
+     "gpt-6-astra"
+    ],
+    "thin": 3
+   }
+  },
+  "hour": {
+   "annotations": [
+    {
+     "at": "2026-09-06T02:01:11+00:00",
+     "changed": [
+      "harness",
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    }
+   ],
+   "bucket": "hour",
+   "by_model": [
+    {
+     "cost": 22.65,
+     "runs": 2,
+     "who": "claude:claude-fable-5-1"
+    },
+    {
+     "cost": 3.01,
+     "runs": 5,
+     "who": "garden:review"
+    },
+    {
+     "cost": 1.71,
+     "runs": 3,
+     "who": "claude:claude-sonnet-5"
+    },
+    {
+     "cost": 1.06,
+     "runs": 2,
+     "who": "codex:gpt-5.6-terra"
+    },
+    {
+     "cost": 0.01,
+     "runs": 1,
+     "who": "codex:gpt-5.6-luna"
+    },
+    {
+     "cost": 0.0,
+     "runs": 2,
+     "who": "garden:rebase"
+    },
+    {
+     "cost": 0.0,
+     "runs": 9,
+     "who": "garden:check"
+    }
+   ],
+   "cost": 28.45,
+   "first_pass": {
+    "approved": 0,
+    "reviewed": 2
+   },
+   "hand_kinds": {
+    "dispatch_paused": 1,
+    "dispatch_resumed": 2
+   },
+   "hand_steps": 3,
+   "merged": 8,
+   "merged_ids": [
+    "CG-236",
+    "CG-243",
+    "CG-244",
+    "CG-245",
+    "CG-249",
+    "CG-250",
+    "CG-291",
+    "CG-292"
+   ],
+   "per_accepted": 4.53,
+   "runs": 24,
+   "series": {
+    "bucket": "hour",
+    "buckets": [
+     {
+      "bucket": "2026-09-06T01:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 4
+       },
+       "other": {
+        "cache_read_tokens": 574502,
+        "cache_write_tokens": 1088,
+        "cost_usd": 11.9738,
+        "runs": 1
+       },
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 1244152,
+        "cache_write_tokens": 59599,
+        "cost_usd": 0.6013,
+        "runs": 1
+       },
+       "revise": {
+        "cache_read_tokens": 3131789,
+        "cache_write_tokens": 98265,
+        "cost_usd": 1.238,
+        "runs": 2
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T02:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 5
+       },
+       "other": {
+        "cache_read_tokens": 5505822,
+        "cache_write_tokens": 266783,
+        "cost_usd": 10.6767,
+        "runs": 1
+       },
+       "rebase": {
+        "cache_read_tokens": 1506215,
+        "cache_write_tokens": 34106,
+        "cost_usd": 0.4875,
+        "runs": 3
+       },
+       "review": {
+        "cache_read_tokens": 4551875,
+        "cache_write_tokens": 149570,
+        "cost_usd": 2.4073,
+        "runs": 4
+       },
+       "revise": {
+        "cache_read_tokens": 2841344,
+        "cache_write_tokens": 0,
+        "cost_usd": 1.0619,
+        "runs": 2
+       }
+      }
+     }
+    ],
+    "grand_total": {
+     "cache_read_tokens": 19355699,
+     "cache_write_tokens": 609411,
+     "cost_usd": 28.4465,
+     "runs": 24
+    },
+    "group_by": "activity",
+    "groups": [
+     "other",
+     "review",
+     "revise",
+     "rebase",
+     "check"
+    ],
+    "totals": {
+     "check": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.0,
+      "mean_cost_usd": 0.0,
+      "runs": 9,
+      "share": 0.0
+     },
+     "other": {
+      "cache_read_tokens": 6080324,
+      "cache_write_tokens": 267871,
+      "cost_usd": 22.6504,
+      "mean_cost_usd": 11.3252,
+      "runs": 2,
+      "share": 0.7962
+     },
+     "rebase": {
+      "cache_read_tokens": 1506215,
+      "cache_write_tokens": 34106,
+      "cost_usd": 0.4875,
+      "mean_cost_usd": 0.1219,
+      "runs": 4,
+      "share": 0.0171
+     },
+     "review": {
+      "cache_read_tokens": 5796027,
+      "cache_write_tokens": 209169,
+      "cost_usd": 3.0087,
+      "mean_cost_usd": 0.6017,
+      "runs": 5,
+      "share": 0.1058
+     },
+     "revise": {
+      "cache_read_tokens": 5973133,
+      "cache_write_tokens": 98265,
+      "cost_usd": 2.2999,
+      "mean_cost_usd": 0.575,
+      "runs": 4,
+      "share": 0.0809
+     }
+    }
+   },
+   "since": "2026-09-06T01:34:47+00:00",
+   "throughput": [
+    9,
+    15
+   ],
+   "tiers": {
+    "metrics": [
+     {
+      "better": "low",
+      "key": "cost_per_accepted",
+      "label": "cost per accepted task",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 2.999
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 7.267
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 1,
+         "value": 5.221
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 3.081
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "high",
+      "key": "first_pass",
+      "label": "first-pass approval",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 1,
+         "value": 0.0
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 0.0
+        }
+       },
+       "medium": {}
+      },
+      "unit": "pct"
+     },
+     {
+      "better": "low",
+      "key": "work_run_cost",
+      "label": "work-run cost",
+      "rows": {
+       "easy": {},
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 2,
+         "value": 11.325
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 0.619
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 2,
+         "value": 0.531
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "low",
+      "key": "revise_rounds",
+      "label": "revise rounds",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 0.0
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 0.0
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 1,
+         "value": 1.0
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.333
+        }
+       }
+      },
+      "unit": "rounds"
+     },
+     {
+      "better": "low",
+      "key": "lead_time",
+      "label": "median lead time",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 1.561
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.989
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 1,
+         "value": 1.914
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.612
+        }
+       }
+      },
+      "unit": "hours"
+     }
+    ],
+    "models": [
+     "claude-sonnet-5",
+     "gpt-5.6-terra",
+     "claude-opus-4-8",
+     "claude-fable-5-1"
+    ],
+    "thin": 3
+   }
+  },
+  "phase": {
+   "annotations": [
+    {
+     "at": "2026-09-06T02:01:11+00:00",
+     "changed": [
+      "harness",
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    }
+   ],
+   "bucket": "day",
+   "by_model": [
+    {
+     "cost": 23.16,
+     "runs": 10,
+     "who": "claude:claude-sonnet-5"
+    },
+    {
+     "cost": 22.65,
+     "runs": 2,
+     "who": "claude:claude-fable-5-1"
+    },
+    {
+     "cost": 12.62,
+     "runs": 18,
+     "who": "garden:review"
+    },
+    {
+     "cost": 12.49,
+     "runs": 2,
+     "who": "claude:claude-opus-4-8"
+    },
+    {
+     "cost": 7.21,
+     "runs": 10,
+     "who": "codex:gpt-5.6-terra"
+    },
+    {
+     "cost": 5.98,
+     "runs": 1,
+     "who": "codex:gpt-6-astra"
+    },
+    {
+     "cost": 2.68,
+     "runs": 21,
+     "who": "garden:edit"
+    },
+    {
+     "cost": 1.42,
+     "runs": 1,
+     "who": "garden:kickoff"
+    },
+    {
+     "cost": 0.01,
+     "runs": 1,
+     "who": "codex:gpt-5.6-luna"
+    },
+    {
+     "cost": 0.0,
+     "runs": 29,
+     "who": "garden:check"
+    },
+    {
+     "cost": 0.0,
+     "runs": 4,
+     "who": "garden:rebase"
+    }
+   ],
+   "cost": 88.22,
+   "first_pass": {
+    "approved": 5,
+    "reviewed": 12
+   },
+   "hand_kinds": {
+    "decision_resolved": 4,
+    "dispatch_paused": 1,
+    "dispatch_resumed": 3,
+    "moved": 2,
+    "suggestion": 21
+   },
+   "hand_steps": 31,
+   "merged": 10,
+   "merged_ids": [
+    "CG-236",
+    "CG-239",
+    "CG-243",
+    "CG-244",
+    "CG-245",
+    "CG-248",
+    "CG-249",
+    "CG-250",
+    "CG-291",
+    "CG-292"
+   ],
+   "per_accepted": 4.41,
+   "runs": 99,
+   "series": {
+    "bucket": "day",
+    "buckets": [
+     {
+      "bucket": "2026-09-06",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 29
+       },
+       "other": {
+        "cache_read_tokens": 10501024,
+        "cache_write_tokens": 570618,
+        "cost_usd": 32.7362,
+        "runs": 25
+       },
+       "rebase": {
+        "cache_read_tokens": 2000631,
+        "cache_write_tokens": 63219,
+        "cost_usd": 0.7437,
+        "runs": 7
+       },
+       "review": {
+        "cache_read_tokens": 23519633,
+        "cache_write_tokens": 1082380,
+        "cost_usd": 12.6153,
+        "runs": 18
+       },
+       "revise": {
+        "cache_read_tokens": 11135373,
+        "cache_write_tokens": 98265,
+        "cost_usd": 4.3789,
+        "runs": 8
+       },
+       "work": {
+        "cache_read_tokens": 98738254,
+        "cache_write_tokens": 1181915,
+        "cost_usd": 37.7498,
+        "runs": 12
+       }
+      }
+     }
+    ],
+    "grand_total": {
+     "cache_read_tokens": 145894915,
+     "cache_write_tokens": 2996397,
+     "cost_usd": 88.2239,
+     "runs": 99
+    },
+    "group_by": "activity",
+    "groups": [
+     "work",
+     "other",
+     "review",
+     "revise",
+     "rebase",
+     "check"
+    ],
+    "totals": {
+     "check": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.0,
+      "mean_cost_usd": 0.0,
+      "runs": 29,
+      "share": 0.0
+     },
+     "other": {
+      "cache_read_tokens": 10501024,
+      "cache_write_tokens": 570618,
+      "cost_usd": 32.7362,
+      "mean_cost_usd": 1.3094,
+      "runs": 25,
+      "share": 0.3711
+     },
+     "rebase": {
+      "cache_read_tokens": 2000631,
+      "cache_write_tokens": 63219,
+      "cost_usd": 0.7437,
+      "mean_cost_usd": 0.1062,
+      "runs": 7,
+      "share": 0.0084
+     },
+     "review": {
+      "cache_read_tokens": 23519633,
+      "cache_write_tokens": 1082380,
+      "cost_usd": 12.6153,
+      "mean_cost_usd": 0.7008,
+      "runs": 18,
+      "share": 0.143
+     },
+     "revise": {
+      "cache_read_tokens": 11135373,
+      "cache_write_tokens": 98265,
+      "cost_usd": 4.3789,
+      "mean_cost_usd": 0.5474,
+      "runs": 8,
+      "share": 0.0496
+     },
+     "work": {
+      "cache_read_tokens": 98738254,
+      "cache_write_tokens": 1181915,
+      "cost_usd": 37.7498,
+      "mean_cost_usd": 3.1458,
+      "runs": 12,
+      "share": 0.4279
+     }
+    }
+   },
+   "since": "2026-09-06T00:01:13+00:00",
+   "throughput": [
+    99
+   ],
+   "tiers": {
+    "metrics": [
+     {
+      "better": "low",
+      "key": "cost_per_accepted",
+      "label": "cost per accepted task",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 2.5
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 7.267
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 5.805
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 3.081
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "high",
+      "key": "first_pass",
+      "label": "first-pass approval",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 0.667
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 0.0
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.0
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 0.5
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 4,
+         "value": 0.0
+        }
+       }
+      },
+      "unit": "pct"
+     },
+     {
+      "better": "low",
+      "key": "work_run_cost",
+      "label": "work-run cost",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 1.943
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 2,
+         "value": 11.325
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 6.243
+        },
+        "gpt-6-astra": {
+         "best": false,
+         "n": 1,
+         "value": 5.982
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 5,
+         "value": 3.32
+        },
+        "gpt-5.6-terra": {
+         "best": true,
+         "n": 10,
+         "value": 0.721
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "low",
+      "key": "revise_rounds",
+      "label": "revise rounds",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 0.0
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 0.0
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 1.0
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.333
+        }
+       }
+      },
+      "unit": "rounds"
+     },
+     {
+      "better": "low",
+      "key": "lead_time",
+      "label": "median lead time",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 1.332
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.989
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 1.404
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.612
+        }
+       }
+      },
+      "unit": "hours"
+     }
+    ],
+    "models": [
+     "claude-sonnet-5",
+     "gpt-5.6-terra",
+     "claude-opus-4-8",
+     "claude-fable-5-1",
+     "gpt-6-astra"
+    ],
+    "thin": 3
+   }
+  },
+  "today": {
+   "annotations": [
+    {
+     "at": "2026-09-06T02:01:11+00:00",
+     "changed": [
+      "harness",
+      "review"
+     ],
+     "from": "",
+     "kind": "config_reloaded",
+     "to": ""
+    }
+   ],
+   "bucket": "hour",
+   "by_model": [
+    {
+     "cost": 23.16,
+     "runs": 10,
+     "who": "claude:claude-sonnet-5"
+    },
+    {
+     "cost": 22.65,
+     "runs": 2,
+     "who": "claude:claude-fable-5-1"
+    },
+    {
+     "cost": 13.29,
+     "runs": 19,
+     "who": "garden:review"
+    },
+    {
+     "cost": 12.49,
+     "runs": 2,
+     "who": "claude:claude-opus-4-8"
+    },
+    {
+     "cost": 7.21,
+     "runs": 10,
+     "who": "codex:gpt-5.6-terra"
+    },
+    {
+     "cost": 5.98,
+     "runs": 1,
+     "who": "codex:gpt-6-astra"
+    },
+    {
+     "cost": 2.68,
+     "runs": 21,
+     "who": "garden:edit"
+    },
+    {
+     "cost": 1.42,
+     "runs": 1,
+     "who": "garden:kickoff"
+    },
+    {
+     "cost": 0.01,
+     "runs": 1,
+     "who": "codex:gpt-5.6-luna"
+    },
+    {
+     "cost": 0.0,
+     "runs": 5,
+     "who": "garden:rebase"
+    },
+    {
+     "cost": 0.0,
+     "runs": 29,
+     "who": "garden:check"
+    }
+   ],
+   "cost": 88.9,
+   "first_pass": {
+    "approved": 5,
+    "reviewed": 12
+   },
+   "hand_kinds": {
+    "decision_resolved": 4,
+    "dispatch_paused": 1,
+    "dispatch_resumed": 3,
+    "moved": 2,
+    "suggestion": 21
+   },
+   "hand_steps": 31,
+   "merged": 10,
+   "merged_ids": [
+    "CG-236",
+    "CG-239",
+    "CG-243",
+    "CG-244",
+    "CG-245",
+    "CG-248",
+    "CG-249",
+    "CG-250",
+    "CG-291",
+    "CG-292"
+   ],
+   "per_accepted": 4.41,
+   "runs": 101,
+   "series": {
+    "bucket": "hour",
+    "buckets": [
+     {
+      "bucket": "2026-09-06T00:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 17
+       },
+       "other": {
+        "cache_read_tokens": 3051740,
+        "cache_write_tokens": 302747,
+        "cost_usd": 4.1038,
+        "runs": 22
+       },
+       "rebase": {
+        "cache_read_tokens": 494416,
+        "cache_write_tokens": 29113,
+        "cost_usd": 0.2562,
+        "runs": 4
+       },
+       "review": {
+        "cache_read_tokens": 15851655,
+        "cache_write_tokens": 818319,
+        "cost_usd": 8.8649,
+        "runs": 12
+       },
+       "revise": {
+        "cache_read_tokens": 5162240,
+        "cache_write_tokens": 0,
+        "cost_usd": 2.079,
+        "runs": 4
+       },
+       "work": {
+        "cache_read_tokens": 84648205,
+        "cache_write_tokens": 1019594,
+        "cost_usd": 33.6249,
+        "runs": 11
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T01:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 7
+       },
+       "other": {
+        "cache_read_tokens": 1943462,
+        "cache_write_tokens": 1088,
+        "cost_usd": 17.9557,
+        "runs": 2
+       },
+       "rebase": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 1
+       },
+       "review": {
+        "cache_read_tokens": 4179875,
+        "cache_write_tokens": 185045,
+        "cost_usd": 2.0144,
+        "runs": 3
+       },
+       "revise": {
+        "cache_read_tokens": 3131789,
+        "cache_write_tokens": 98265,
+        "cost_usd": 1.238,
+        "runs": 2
+       },
+       "work": {
+        "cache_read_tokens": 14090049,
+        "cache_write_tokens": 162321,
+        "cost_usd": 4.1249,
+        "runs": 1
+       }
+      }
+     },
+     {
+      "bucket": "2026-09-06T02:00",
+      "groups": {
+       "check": {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.0,
+        "runs": 5
+       },
+       "other": {
+        "cache_read_tokens": 5505822,
+        "cache_write_tokens": 266783,
+        "cost_usd": 10.6767,
+        "runs": 1
+       },
+       "rebase": {
+        "cache_read_tokens": 1506215,
+        "cache_write_tokens": 34106,
+        "cost_usd": 0.4875,
+        "runs": 3
+       },
+       "review": {
+        "cache_read_tokens": 4551875,
+        "cache_write_tokens": 149570,
+        "cost_usd": 2.4073,
+        "runs": 4
+       },
+       "revise": {
+        "cache_read_tokens": 2841344,
+        "cache_write_tokens": 0,
+        "cost_usd": 1.0619,
+        "runs": 2
+       }
+      }
+     }
+    ],
+    "grand_total": {
+     "cache_read_tokens": 146958687,
+     "cache_write_tokens": 3066951,
+     "cost_usd": 88.8952,
+     "runs": 101
+    },
+    "group_by": "activity",
+    "groups": [
+     "work",
+     "other",
+     "review",
+     "revise",
+     "rebase",
+     "check"
+    ],
+    "totals": {
+     "check": {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.0,
+      "mean_cost_usd": 0.0,
+      "runs": 29,
+      "share": 0.0
+     },
+     "other": {
+      "cache_read_tokens": 10501024,
+      "cache_write_tokens": 570618,
+      "cost_usd": 32.7362,
+      "mean_cost_usd": 1.3094,
+      "runs": 25,
+      "share": 0.3683
+     },
+     "rebase": {
+      "cache_read_tokens": 2000631,
+      "cache_write_tokens": 63219,
+      "cost_usd": 0.7437,
+      "mean_cost_usd": 0.093,
+      "runs": 8,
+      "share": 0.0084
+     },
+     "review": {
+      "cache_read_tokens": 24583405,
+      "cache_write_tokens": 1152934,
+      "cost_usd": 13.2866,
+      "mean_cost_usd": 0.6993,
+      "runs": 19,
+      "share": 0.1495
+     },
+     "revise": {
+      "cache_read_tokens": 11135373,
+      "cache_write_tokens": 98265,
+      "cost_usd": 4.3789,
+      "mean_cost_usd": 0.5474,
+      "runs": 8,
+      "share": 0.0493
+     },
+     "work": {
+      "cache_read_tokens": 98738254,
+      "cache_write_tokens": 1181915,
+      "cost_usd": 37.7498,
+      "mean_cost_usd": 3.1458,
+      "runs": 12,
+      "share": 0.4247
+     }
+    }
+   },
+   "since": "2026-09-06T00:00:00+00:00",
+   "throughput": [
+    70,
+    16,
+    15
+   ],
+   "tiers": {
+    "metrics": [
+     {
+      "better": "low",
+      "key": "cost_per_accepted",
+      "label": "cost per accepted task",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 2.5
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 7.267
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 5.805
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 3.081
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "high",
+      "key": "first_pass",
+      "label": "first-pass approval",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 0.667
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 1,
+         "value": 0.0
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.0
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 0.5
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 4,
+         "value": 0.0
+        }
+       }
+      },
+      "unit": "pct"
+     },
+     {
+      "better": "low",
+      "key": "work_run_cost",
+      "label": "work-run cost",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 1.943
+        }
+       },
+       "hard": {
+        "claude-fable-5-1": {
+         "best": false,
+         "n": 2,
+         "value": 11.325
+        },
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 6.243
+        },
+        "gpt-6-astra": {
+         "best": false,
+         "n": 1,
+         "value": 5.982
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 5,
+         "value": 3.32
+        },
+        "gpt-5.6-terra": {
+         "best": true,
+         "n": 10,
+         "value": 0.721
+        }
+       }
+      },
+      "unit": "usd"
+     },
+     {
+      "better": "low",
+      "key": "revise_rounds",
+      "label": "revise rounds",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 0.0
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 0.0
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 1.0
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.333
+        }
+       }
+      },
+      "unit": "rounds"
+     },
+     {
+      "better": "low",
+      "key": "lead_time",
+      "label": "median lead time",
+      "rows": {
+       "easy": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 3,
+         "value": 1.332
+        }
+       },
+       "hard": {
+        "claude-opus-4-8": {
+         "best": false,
+         "n": 2,
+         "value": 1.989
+        }
+       },
+       "medium": {
+        "claude-sonnet-5": {
+         "best": false,
+         "n": 2,
+         "value": 1.404
+        },
+        "gpt-5.6-terra": {
+         "best": false,
+         "n": 3,
+         "value": 1.612
+        }
+       }
+      },
+      "unit": "hours"
+     }
+    ],
+    "models": [
+     "claude-sonnet-5",
+     "gpt-5.6-terra",
+     "claude-opus-4-8",
+     "claude-fable-5-1",
+     "gpt-6-astra"
+    ],
+    "thin": 3
+   }
+  }
+ },
+ "where": {
+  "closed": [
+   {
+    "budget": null,
+    "closed": "2026-09-05",
+    "common": "foxglove",
+    "done": 30,
+    "first_dispatch": "2026-09-05T03:01:55+00:00",
+    "fraction": 1.0,
+    "frozen": "2026-09-05",
+    "goals": [
+     {
+      "done": 1,
+      "ids": [
+       "CG-137"
+      ],
+      "label": "Structure",
+      "mark": "done",
+      "n": 1,
+      "total": 1,
+      "word": "merged"
+     },
+     {
+      "done": 2,
+      "ids": [
+       "CG-139",
+       "CG-141"
+      ],
+      "label": "Rebase as its own mode, and a merge queue",
+      "mark": "done",
+      "n": 2,
+      "total": 2,
+      "word": "merged"
+     },
+     {
+      "done": 3,
+      "ids": [
+       "CG-142",
+       "CG-144",
+       "CG-148"
+      ],
+      "label": "State and accounting are correct",
+      "mark": "done",
+      "n": 3,
+      "total": 3,
+      "word": "merged"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Trust at the edges",
+      "mark": "",
+      "n": 4,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 2,
+      "ids": [
+       "CG-134",
+       "CG-135"
+      ],
+      "label": "Testability",
+      "mark": "done",
+      "n": 5,
+      "total": 2,
+      "word": "merged"
+     },
+     {
+      "done": 2,
+      "ids": [
+       "CG-145",
+       "CG-147"
+      ],
+      "label": "Operability",
+      "mark": "done",
+      "n": 6,
+      "total": 2,
+      "word": "merged"
+     }
+    ],
+    "key": "context-garden/phase-03",
+    "latin": "Digitalis purpurea",
+    "name": "phase-03",
+    "note": "tall, and every bell in its turn",
+    "plant": "foxglove",
+    "plate": "III",
+    "product": "context-garden",
+    "prs_open": 0,
+    "retro": null,
+    "running": 0,
+    "spent": 188.72,
+    "stage_word": "in fruit",
+    "total": 30
+   },
+   {
+    "budget": null,
+    "closed": "2026-09-04",
+    "common": "garden pea",
+    "done": 19,
+    "first_dispatch": "",
+    "fraction": 1.0,
+    "frozen": "",
+    "goals": [
+     {
+      "done": 0,
+      "ids": [],
+      "label": "A file layout for principles, products, phases, specs and tasks that is readable by",
+      "mark": "",
+      "n": 1,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "A CLI that plans a phase into task files, computes the ready set from the dependency",
+      "mark": "",
+      "n": 2,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "A skill so a human-driven Claude Code session can take a task from the same queue",
+      "mark": "",
+      "n": 3,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "A local web UI and a TUI for the board, the graph, and run/cost history",
+      "mark": "",
+      "n": 4,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "The tool is its own first product, with a follow-on phase seeded with draft tasks",
+      "mark": "",
+      "n": 5,
+      "total": 0,
+      "word": "unlinked"
+     }
+    ],
+    "key": "context-garden/phase-01-bootstrap",
+    "latin": "Pisum sativum",
+    "name": "phase-01-bootstrap",
+    "note": "a climber: it needs the trellis it is given",
+    "plant": "pea",
+    "plate": "I",
+    "product": "context-garden",
+    "prs_open": 0,
+    "retro": null,
+    "running": 0,
+    "spent": 0.0,
+    "stage_word": "in fruit",
+    "total": 19
+   },
+   {
+    "budget": 2000.0,
+    "closed": "2026-09-04",
+    "common": "bramble",
+    "done": 90,
+    "first_dispatch": "2026-09-04T16:06:35+00:00",
+    "fraction": 1.0,
+    "frozen": "",
+    "goals": [
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Close the loop on review: make the automated review pass (shipped in bootstrap) earn its keep, and",
+      "mark": "",
+      "n": 1,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Make waiting visible: live worker output in the web UI, and a notification when a",
+      "mark": "",
+      "n": 2,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Collect friction from worker PR bodies into a phase document so the next planning",
+      "mark": "",
+      "n": 3,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Keep the fixed cost of a brief flat while the garden grows",
+      "mark": "",
+      "n": 4,
+      "total": 0,
+      "word": "unlinked"
+     }
+    ],
+    "key": "context-garden/phase-02-friction",
+    "latin": "Rubus fruticosus agg.",
+    "name": "phase-02-friction",
+    "note": "thorns first, fruit after",
+    "plant": "bramble",
+    "plate": "II",
+    "product": "context-garden",
+    "prs_open": 0,
+    "retro": null,
+    "running": 0,
+    "spent": 547.07,
+    "stage_word": "in fruit",
+    "total": 90
+   }
+  ],
+  "others": [
+   {
+    "budget": null,
+    "closed": "",
+    "common": "male fern",
+    "done": 61,
+    "first_dispatch": "2026-09-05T03:02:23+00:00",
+    "fraction": 0.9839,
+    "frozen": "2026-09-05",
+    "goals": [
+     {
+      "done": 2,
+      "ids": [
+       "CG-180",
+       "CG-182"
+      ],
+      "label": "The loop runs overnight",
+      "mark": "done",
+      "n": 1,
+      "total": 2,
+      "word": "merged"
+     },
+     {
+      "done": 1,
+      "ids": [
+       "CG-179"
+      ],
+      "label": "Briefs are complete before they cost a run",
+      "mark": "done",
+      "n": 2,
+      "total": 1,
+      "word": "merged"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Trust claims match the mechanism",
+      "mark": "",
+      "n": 3,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 3,
+      "ids": [
+       "CG-156",
+       "CG-184",
+       "CG-185"
+      ],
+      "label": "Every state has a surface and every surface is right",
+      "mark": "done",
+      "n": 4,
+      "total": 3,
+      "word": "merged"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "One writer per fact",
+      "mark": "",
+      "n": 5,
+      "total": 0,
+      "word": "unlinked"
+     },
+     {
+      "done": 11,
+      "ids": [
+       "CG-030",
+       "CG-132",
+       "CG-146",
+       "CG-158",
+       "CG-162",
+       "CG-163",
+       "CG-178",
+       "CG-181",
+       "CG-183",
+       "CG-186",
+       "CG-187"
+      ],
+      "label": "The features",
+      "mark": "done",
+      "n": 6,
+      "total": 11,
+      "word": "merged"
+     }
+    ],
+    "key": "context-garden/phase-04",
+    "latin": "Dryopteris filix-mas",
+    "name": "phase-04",
+    "note": "unfurls one frond at a time",
+    "plant": "fern",
+    "plate": "IV",
+    "product": "context-garden",
+    "prs_open": 1,
+    "retro": {
+     "accepted_at": "2026-09-05T23:59:48+00:00",
+     "accepted_by": "cli",
+     "at": "2026-09-05T23:15:12+00:00",
+     "blocking_ids": [
+      "CG-240",
+      "CG-241",
+      "CG-242",
+      "CG-243",
+      "CG-244",
+      "CG-245",
+      "CG-246",
+      "CG-247"
+     ],
+     "followup_ids": [
+      "CG-284",
+      "CG-285",
+      "CG-286",
+      "CG-287",
+      "CG-288",
+      "CG-289",
+      "CG-290",
+      "CG-291",
+      "CG-292",
+      "CG-293",
+      "CG-294",
+      "CG-295"
+     ],
+     "next_phase": "phase-05",
+     "note": "Joined retro (fable + astra, edited on fable): reopen on CG-238 (merged), CG-239 (in review) and CG-242 (approved). CG-240/CG-241 cancelled as duplicates; CG-243 to CG-247 moved to phase 05, first in dispatch order. Decided by the operator with the user's authority.",
+     "phase": "context-garden/phase-04",
+     "pr": "",
+     "status": "accepted",
+     "verdict": "reopen"
+    },
+    "running": 1,
+    "spent": 503.12,
+    "stage_word": "in bud",
+    "total": 62
+   },
+   {
+    "budget": null,
+    "closed": "",
+    "common": "peony",
+    "done": 0,
+    "first_dispatch": "",
+    "fraction": 0.0,
+    "frozen": "",
+    "goals": [
+     {
+      "done": 0,
+      "ids": [
+       "CG-222"
+      ],
+      "label": "A collective, searchable context written by runs and read by briefs (CG-222), after a design document argues it is worth a prototype",
+      "mark": "draft",
+      "n": 1,
+      "total": 1,
+      "word": "not started"
+     },
+     {
+      "done": 0,
+      "ids": [],
+      "label": "Whatever the phase-04 and phase-05 retros defer here",
+      "mark": "",
+      "n": 2,
+      "total": 0,
+      "word": "unlinked"
+     }
+    ],
+    "key": "context-garden/phase-06",
+    "latin": "Paeonia mascula",
+    "name": "phase-06",
+    "note": "big first, before anything else opens",
+    "plant": "peony",
+    "plate": "VI",
+    "product": "context-garden",
+    "prs_open": 0,
+    "retro": null,
+    "running": 0,
+    "spent": 0.0,
+    "stage_word": "seed",
+    "total": 1
+   }
+  ],
+  "primary": {
+   "budget": null,
+   "closed": "",
+   "common": "prickly poppy",
+   "done": 10,
+   "first_dispatch": "2026-09-06T00:01:13+00:00",
+   "fraction": 0.2222,
+   "frozen": "",
+   "goals": [
+    {
+     "done": 0,
+     "ids": [
+      "CG-215"
+     ],
+     "label": "Onboarding",
+     "mark": "draft",
+     "n": 1,
+     "total": 1,
+     "word": "not started"
+    },
+    {
+     "done": 0,
+     "ids": [
+      "CG-213"
+     ],
+     "label": "Any model, at the right price",
+     "mark": "draft",
+     "n": 2,
+     "total": 1,
+     "word": "not started"
+    },
+    {
+     "done": 0,
+     "ids": [
+      "CG-230"
+     ],
+     "label": "Shared quotas",
+     "mark": "draft",
+     "n": 3,
+     "total": 1,
+     "word": "not started"
+    },
+    {
+     "done": 0,
+     "ids": [
+      "CG-216"
+     ],
+     "label": "Any machine",
+     "mark": "draft",
+     "n": 4,
+     "total": 1,
+     "word": "not started"
+    },
+    {
+     "done": 3,
+     "ids": [
+      "CG-236",
+      "CG-239",
+      "CG-242",
+      "CG-250"
+     ],
+     "label": "What the phase-04 retro adds",
+     "mark": "running",
+     "n": 5,
+     "total": 4,
+     "word": "in flight"
+    }
+   ],
+   "key": "context-garden/phase-05",
+   "latin": "Papaver argemone",
+   "name": "phase-05",
+   "note": "short-lived flower, long-lived seed",
+   "plant": "poppy",
+   "plate": "V",
+   "product": "context-garden",
+   "prs_open": 1,
+   "retro": null,
+   "running": 4,
+   "spent": 71.83,
+   "stage_word": "seed",
+   "total": 45
+  }
+ }
+}

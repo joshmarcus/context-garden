@@ -1,0 +1,168 @@
+{% from 'card.html.j2' import card %}
+<!doctype html>
+<html lang="en" data-server-now="{{ server_now }}">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now 2 · context-garden · snapshot and state atlas</title>
+<style>
+:root { color-scheme:light; --ground:#f2f5f0; --surface:#fff; --ink:#17201b; --muted:#5f6b64; --line:#d6ded4; --accent:#2b7a57; --best:#dcefe4; --worst:#f5e1df; --warn:#836009; --bad:#a32f2f; --run:#3b62d9; --review:#2a8fa3; --leaf:#4f9a72; --seed:#8a6d4e; --petal:#cfa3b9; --apple:#c0383a; --wilt:#9c8b6b; --paper:#fff; --display:'Newsreader','Iowan Old Style','Palatino Linotype',Georgia,serif; --mono:'Courier Prime','Courier New',monospace }
+:root[data-theme=dark] { color-scheme:dark; --ground:#121614; --surface:#1a201c; --ink:#e6ece7; --muted:#98a59e; --line:#3e4b43; --accent:#5cc493; --best:#234334; --worst:#492d2d; --warn:#d3a02a; --bad:#ef6b6b; --run:#6f8ff0; --review:#5fb8cc; --leaf:#4fa57e; --seed:#b08f68; --petal:#d19bb5; --apple:#d95252; --wilt:#a89a78; --paper:#1a201c }
+@media(prefers-color-scheme:dark) { :root:not([data-theme=light]) { color-scheme:dark; --ground:#121614; --surface:#1a201c; --ink:#e6ece7; --muted:#98a59e; --line:#3e4b43; --accent:#5cc493; --best:#234334; --worst:#492d2d; --warn:#d3a02a; --bad:#ef6b6b; --run:#6f8ff0; --review:#5fb8cc; --leaf:#4fa57e; --seed:#b08f68; --petal:#d19bb5; --apple:#d95252; --wilt:#a89a78; --paper:#1a201c } }
+* { box-sizing:border-box } [hidden] { display:none!important }
+body { margin:0; background:var(--ground); color:var(--ink); font:17px/1.45 var(--display); font-variant-numeric:tabular-nums }
+a { color:inherit; text-underline-offset:4px } a:hover { text-decoration-thickness:2px }
+button,select { color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:2px; font:13px var(--mono); padding:9px 12px; min-height:44px; max-width:100%; cursor:pointer }
+button:hover { border-color:var(--ink) } :focus-visible { outline:2px solid var(--accent); outline-offset:4px }
+header { min-height:64px; padding:10px 40px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:32px; flex-wrap:wrap }
+.brand { font:14px var(--mono); letter-spacing:.06em } nav { display:flex; gap:22px; align-items:center; flex-wrap:wrap; font:13px var(--mono) } nav a { padding:12px 0; min-height:44px } nav [aria-current] { font-weight:bold; text-decoration-thickness:2px }
+main { max-width:1360px; margin:auto; padding:24px 40px 60px }
+.preview { padding:12px 16px; border:1px dashed var(--line); font:13px/1.6 var(--mono); margin-bottom:26px }
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px }
+.controls label { display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+.heading { display:flex; justify-content:space-between; align-items:end; gap:20px; margin-bottom:24px }
+h1 { font-weight:400; font-size:44px; line-height:1.1; margin:0 0 8px; letter-spacing:-.02em } h2 { font-size:26px; line-height:1.2; font-weight:400; margin:0 } h3 { font-size:22px; line-height:1.25; font-weight:400; margin:8px 0 } h4 { font:13px var(--mono); margin:22px 0 8px }
+p { margin:6px 0 } .muted,.metadata { color:var(--muted) } .metadata,.eyebrow,.mode { font:13px/1.5 var(--mono) } .eyebrow { text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:8px }
+.heading p { color:var(--muted); margin:0 } .heading .meta { font:13px var(--mono); white-space:nowrap }
+.top { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:32px }
+.bottom { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:32px; border-top:1px solid var(--ink); margin-top:34px; padding-top:26px }
+section { min-width:0 } .section-title { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:16px }
+.now { background:var(--surface); border-top:2px solid var(--ink); padding:20px 24px }
+.attention { border-left:3px solid var(--warn); padding:8px 12px; background:var(--ground); margin:14px 0 } .attention b { font-weight:400 } .attention .state-word { color:var(--warn); font:13px var(--mono) }
+.run { padding:18px 0; border-bottom:1px solid var(--line); min-width:0; overflow-wrap:anywhere } .run:last-child { border-bottom:0 }
+.run-heading { display:flex; align-items:center; gap:8px } .mode { color:var(--run) } .in_review .mode { color:var(--review) } .done .mode { color:var(--accent) } .done { background:var(--ground); padding:14px; margin-top:14px }
+.recovery { padding:12px 0; min-height:44px } .recovery a { display:inline-block; padding:10px 0; min-height:44px } .process-missing .mode { color:var(--warn) } .process-missing .duration-track i { background:var(--muted) }
+.run h3 { max-width:34ch } .transcript { margin-top:10px; color:var(--muted) } .transcript summary { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; min-height:44px; padding:9px 0; font-size:16px } .transcript p { white-space:normal; font-size:16px }
+.timing { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:4px } .elapsed { font:22px var(--mono); min-width:5.5ch; letter-spacing:-.04em }
+.duration-track { display:inline-block; width:80px; height:3px; background:var(--line); position:relative } .duration-track:after { content:''; position:absolute; right:0; top:-3px; width:1px; height:9px; background:var(--muted) } .duration-track i { display:block; width:0; height:100%; background:var(--accent); transition:width 200ms linear }
+.typical-label { font:12px var(--mono); color:var(--muted) } .spend { margin-top:8px }
+.next { border-left:1px solid var(--line); padding-left:24px } .queue { margin:0; padding:0; list-style:none; counter-reset:queue } .queue li { border-top:1px solid var(--line); padding:12px 0 12px 30px; position:relative; counter-increment:queue } .queue li:before { content:counter(queue,decimal-leading-zero); position:absolute; left:0; top:15px; font:12px var(--mono); color:var(--muted) } .queue p { font-size:16px; line-height:1.4 } .queue .metadata { font-size:12px }
+.plate { display:flex; align-items:center; gap:18px; padding:14px; border:1px solid var(--line); background:var(--surface); margin:18px 0; position:relative } .plate img { width:104px; height:150px; object-fit:contain; background:#f4efe3; filter:saturate(.55) } .plate .latin { font-style:italic } .plate-label { min-width:0 } .plate-label strong { display:block; font-size:30px; font-weight:400 } .plate-label .metadata { font-size:12px }
+.stem { height:2px; background:var(--line); margin:12px 0; position:relative } .stem:before { content:''; display:block; width:var(--progress,24%); height:2px; background:var(--accent) }
+.goals { padding:0; list-style:none; margin:18px 0 } .goals li { display:flex; gap:10px; padding:7px 0; border-bottom:1px solid var(--line) } .goals small { display:block; color:var(--muted) } .goal-mark { font:16px var(--mono); min-width:18px; color:var(--accent) }
+.specimens { display:flex; gap:12px; flex-wrap:wrap; margin-top:18px } .specimens figure { margin:0; width:65px; text-align:center } .specimens img { width:48px; height:72px; object-fit:contain; background:#f4efe3; filter:grayscale(.6) } figcaption { font:11px/1.5 var(--mono); color:var(--muted) }
+.outcomes { font-size:21px; margin-top:16px } .outcomes strong { font-weight:500 } .plot { width:100%; height:92px; margin-top:12px } .plot text { font:12px var(--mono); fill:var(--muted) }
+.metric-controls { margin:22px 0 10px; display:flex; flex-wrap:wrap; align-items:center; gap:10px } .metric-controls label { font:13px var(--mono) }
+.table-scroll { overflow-x:auto; max-width:100%; border:1px solid var(--line); background:var(--surface) } table { border-collapse:separate; border-spacing:4px; width:100%; min-width:550px } caption { text-align:left; padding:12px; font-size:17px } caption small { display:block; font:12px/1.5 var(--mono); color:var(--muted) } th,td { text-align:left; padding:10px; white-space:nowrap } th { font:12px/1.4 var(--mono) } th[scope=row] { position:sticky; left:0; background:var(--surface); z-index:1 } td { font:18px/1.4 var(--mono); background:color-mix(in srgb,var(--heat-end) var(--heat-strength),var(--surface)); color:var(--ink) } td small { display:block; font-size:12px; color:var(--ink) }
+td.low { background:color-mix(in srgb,color-mix(in srgb,var(--heat-end) var(--heat-strength),var(--surface)) 25%,var(--surface)) } td.equal,td.missing { background:var(--surface) } .cell-mark { font-size:13px; margin-left:4px } .legend { font:12px/1.6 var(--mono); color:var(--muted); margin:10px 0 } .mobile-hint { display:none }
+.breakdown { display:grid; grid-template-columns:1fr 1fr; gap:24px; border-top:1px solid var(--line); margin-top:24px; padding-top:14px } .breakdown h3 { font-size:18px } dl { margin:12px 0; font:13px/1.5 var(--mono) } dl div { display:flex; justify-content:space-between; gap:12px; padding:5px 0; flex-wrap:wrap } dt,dd { margin:0 } dd { color:var(--muted) } .bar { height:5px; background:repeating-linear-gradient(90deg,var(--muted) 0,var(--muted) 2px,transparent 2px,transparent 4px); margin:3px 0 8px }
+.atlas { border-top:1px solid var(--ink); margin-top:40px; padding-top:24px } .atlas-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:20px; margin-top:20px } .sample { padding:20px; background:var(--surface); border:1px solid var(--line); min-width:0 } .sample h3 { font-size:22px } .sample p { font-size:16px } .sample .eyebrow { font-size:12px } .sample .example-state { display:block; font:13px var(--mono); margin-bottom:12px; color:var(--accent) } .sample.held .example-state,.sample.paused .example-state { color:var(--warn) } .sample.failed .example-state { color:var(--bad) } .sample .timing { margin:15px 0 } .sample .run { padding:0 }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0 }
+.arriving { animation:arrive 240ms ease-out both } @keyframes arrive { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
+html[data-motion=off] *,html[data-motion=off] *:before { animation:none!important; transition:none!important }
+@media(prefers-reduced-motion:reduce) { *,*:before { animation:none!important; transition:none!important } }
+@media(max-width:799px) { header { padding:12px 20px; gap:8px 24px } nav { gap:18px } main { padding:20px 20px 40px } h1 { font-size:36px } .heading { display:block } .heading .meta { margin-top:12px; white-space:normal; line-height:1.5 } .top,.bottom { grid-template-columns:1fr; gap:28px } .now { padding:18px 16px } .next { border-left:0; border-top:1px solid var(--line); padding:22px 0 0 } .bottom { margin-top:28px } .atlas-grid,.breakdown { grid-template-columns:1fr } .mobile-hint { display:block } .plate img { width:110px } .preview { padding:12px } .preview .controls { align-items:stretch } .heading { margin-bottom:20px } .metric-controls select { width:100% } }
+@media print { header,.controls,.metric-controls { display:none } .metric { display:block!important } .table-scroll { overflow:visible } .top,.bottom { display:block } }
+</style>
+</head>
+<body>
+{{ defs }}
+<header><span class="brand">context-garden</span><nav aria-label="Preview navigation"><a href="#now" aria-current="page">Now 2</a><a href="#next">Next</a><a href="#phase">Phase</a><a href="#period">Outcomes</a><a href="#states">State atlas</a></nav></header>
+<main>
+<div class="preview"><b>Recorded snapshot · {{ snapshot.captured_at }}.</b> Main regions render the supplied garden export. State atlas below is simulated. Task, run and Inbox links show live-app destinations; they require a running app. Clocks replay from capture time; this is not a live connection.
+<div class="controls"><label for="theme">Theme <select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button id="motion" type="button" aria-pressed="false">Motion off</button><button id="arrive" type="button">Preview arriving run</button></div></div>
+<div class="heading"><div><p class="eyebrow">Plate {{ phase.plate }} · {{ snapshot.garden.name }}</p><h1>Work in view.</h1><p>What is moving, what comes next, and what it adds up to.</p></div><p class="meta">September 6, 2026<br>{{ snapshot.now|length }} run records · {{ snapshot.garden.worker_without_process }} without a process</p></div>
+<div class="top">
+<section class="now" id="now" aria-labelledby="now-title"><div class="section-title"><h2 id="now-title">Now</h2><span class="metadata">{{ runs|rejectattr("no_process")|list|length }} processes present · {{ runs|selectattr("no_process")|list|length }} missing</span></div>
+{% for item in snapshot.next.merge.in_review if item.blocked %}<div class="attention"><span class="state-word">Ⅱ Merge held</span><p><a href="/tasks/{{ item.task }}">{{ item.title }}</a></p><p class="metadata">{{ item.blocked }}</p><p class="metadata recovery"><a href="/tasks/{{ item.task }}">View decision</a> · <a href="/inbox">Open in Inbox</a></p></div>{% endfor %}
+<div id="runs">{% for run in runs %}{{ card(run) }}{% endfor %}</div>
+<p class="metadata">Process status comes from the capture. “Implemented” in an assistant message does not finish a run.</p>
+</section>
+<section class="next" id="next" aria-labelledby="next-title"><div class="section-title"><h2 id="next-title">Next</h2><span class="metadata">at the next opening</span></div><p class="muted">Each queue moves on its own.</p>
+<h4>Workers · {{ snapshot.garden.worker_busy }} / {{ snapshot.garden.max_parallel }} recorded occupied</h4>
+<ol class="queue">{% for item in snapshot.next.dispatch[:3] %}<li><p>{{ item.title }}</p><p class="metadata">{{ item.mode }} · {{ item.why }}{% if item.skip %}<br>{{ item.skip }}{% endif %}</p></li>{% endfor %}</ol>
+<details><summary class="metadata" style="padding:12px 0;min-height:44px">{{ snapshot.next.dispatch|length - 3 }} more in dispatch order</summary><ol class="queue" style="counter-reset:queue 3">{% for item in snapshot.next.dispatch[3:] %}<li><p>{{ item.title }}</p><p class="metadata">{{ item.mode }} · {{ item.why }}{% if item.skip %}<br>{{ item.skip }}{% endif %}</p></li>{% endfor %}</ol></details>
+<h4>Merges</h4><p>No eligible merge candidates.</p>{% for item in snapshot.next.merge.in_review %}<p>{{ item.title }}</p><p class="metadata">review round {{ item.round }} / {{ item.max_rounds }} · CI {{ item.checks }}</p>{% endfor %}
+<h4>Reviews · {{ snapshot.garden.review_busy }} / {{ snapshot.garden.review_parallel }} slots occupied</h4>{% for item in snapshot.next.merge.waiting %}<p><a href="/tasks/{{ item.task }}">{{ item.title }}</a></p><p class="metadata">Exported reason: {{ item.why }}</p>{% endfor %}<p class="metadata">Queue reason conflicts with available capacity. Reconciliation timing unknown. <a href="/tasks/CG-242">View decision</a> for the current review state.</p>
+<p class="metadata" style="margin-top:26px">Last tick · {{ snapshot.garden.last_tick }}<br>Next tick not reported<br>Dispatch pause state not supplied</p></section>
+</div>
+<div class="bottom">
+<section id="phase" aria-labelledby="phase-title"><p class="eyebrow">Progress in context</p><h2 id="phase-title">Where we are</h2>
+<div class="plate"><img src="../plates/{{ phase.plant }}.webp" alt="{{ phase.common }}, botanical plate by Thomé, 1885"><div class="plate-label"><p class="metadata">{{ phase.name }} · PLATE {{ phase.plate }}</p><p class="latin">{{ phase.latin }}</p><strong>{{ phase.done }} <span class="muted">/ {{ phase.total }}</span></strong><p class="metadata">tasks done</p><div class="stem" aria-hidden="true" style="--progress:{{ phase.fraction * 100 }}%"></div>{{ stage('running') }} <span class="metadata">in leaf · 22%</span></div></div>
+<p>A garden in someone else’s environment.</p><p class="metadata">Adoption, measured by the cost of accepted work.</p>
+<ul class="goals">{% for goal in phase.goals %}<li><span class="goal-mark">{{ {'done':'✓','running':'→','draft':'○'}.get(goal.mark,'—') }}</span><span>{{ goal.label }}<small>{{ goal.word if goal.ids else 'Progress not mapped' }} · {{ goal.done }} / {{ goal.total }} linked tasks</small></span></li>{% endfor %}</ul>
+<p class="metadata">Retro verdict · {{ phase.retro.verdict if phase.retro else 'not yet recorded' }}<br>Cancelled / won't-do breakdown not supplied</p>
+{% for other in snapshot.where.others %}<div class="plate"><img src="../plates/{{ other.plant }}-thumb.webp" alt="{{ other.latin }}"><div><p>{{ other.name }}</p><p class="metadata">{{ other.done }} / {{ other.total }} done · plate {{ other.plate }}</p><p class="metadata">{% if other.retro %}Retro: {{ other.retro.verdict }} · {{ other.retro.status }}{% else %}No retro verdict{% endif %}</p><p class="metadata">{{ 'Frozen' if other.frozen else 'Open' }}</p></div></div>{% endfor %}
+<h4>Earlier specimens · closed phases</h4><div class="specimens">{% for closed in snapshot.where.closed %}<figure><img src="../plates/{{ closed.plant }}-thumb.webp" alt="{{ closed.latin }}"><figcaption>Plate {{ closed.plate }}<br>{{ closed.done }} done</figcaption></figure>{% endfor %}</div>
+<p class="metadata" style="margin-top:12px">Thomé, Flora von Deutschland, 1885.<br>Plate provenance: static/plates/SOURCES.md.</p>
+</section>
+<section id="period" aria-labelledby="period-title"><div class="section-title"><div><p class="eyebrow">Outcomes, not activity alone</p><h2 id="period-title">The last period</h2></div></div>
+<div class="metric-controls"><label for="window">Window</label><select id="window">{% for window in periods %}<option value="{{ window.key }}">{{ window.label }}</option>{% endfor %}</select><label for="metric">Compare models by</label><select id="metric">{% for metric in matrices %}<option value="{{ metric.key }}">{{ metric.title }}</option>{% endfor %}</select></div>
+{% for window in periods %}{% include 'period.html.j2' %}{% endfor %}
+</section></div>
+<section class="atlas" id="states" aria-labelledby="states-title"><p class="eyebrow">Inspection sheet · all examples are simulated</p><h2 id="states-title">Every state has something to say.</h2><p class="muted">The live page uses these treatments in place. This sheet keeps them visible for design review.</p>
+<div class="atlas-grid">
+<div class="sample"><span class="example-state">Running · beyond typical</span>{% set longrun = dict(examples[0], run_id='simulation-long', started_at='2026-09-06T01:40:00+00:00', elapsed='1:05:00', title='Workers on independent hosts') %}{{ card(longrun) }}</div>
+<div class="sample"><span class="example-state">Finishing</span><h3>Review approved.</h3><p>Every PR reaches the review queue</p><p class="metadata">2:14 · $0.18 final</p><p class="muted">Waiting for CI before merge. Keep for eight seconds, then settle into recent activity.</p></div>
+<div class="sample held"><span class="example-state">Ⅱ Held</span><h3>Merge held.</h3><p>Base branch checks failed.</p><p class="muted">Other workers continue. This reason stays visible until the hold clears.</p><p class="metadata"><a href="/tasks/CG-242">View decision</a> · <a href="/inbox">Open in Inbox</a></p></div>
+<div class="sample paused"><span class="example-state">Ⅱ Paused</span><h3>codex is paused.</h3><p>Account quota reached.</p><p class="muted">New codex work waits; in-flight clocks keep counting. No retry time reported.</p><p class="metadata">Global variant: Dispatch paused · by operator.</p></div>
+<div class="sample failed"><span class="example-state">× Failed</span>{{ stage('failed') }}<h3>Checks failed.</h3><p>The acceptance check returned an error.</p><p class="muted">Run stopped at 1:08. The failure stays until a retry or a decision resolves it.</p></div>
+<div class="sample"><span class="example-state">Empty</span>{{ stage('draft') }}<h3>No tasks yet.</h3><p>Plan work from the phase goals or create the first task.</p><p class="metadata recovery"><a href="/phases/context-garden/phase-05">Open phase planning</a> · <a href="/phases/context-garden/phase-05#new-task">Open task creation</a></p><p class="metadata">Next: no approved work<br>Phase: no tasks yet<br>Last period: no recorded outcomes</p></div>
+<div class="sample"><span class="example-state">Drafts awaiting approval</span><h3>Work is ready to consider.</h3><p>Review existing drafts before workers can start.</p><p class="metadata recovery"><a href="/board?view=backlog">Review drafts</a></p></div>
+<div class="sample"><span class="example-state">Quiet</span><h3>Nothing running.</h3><p>Waiting for an approved task.</p><p class="metadata">Next tick · 02:46 UTC</p><p class="muted">Phase and past outcomes stay visible. There is no idle animation.</p></div>
+<div class="sample"><span class="example-state">Disconnected</span><h3>Updates disconnected.</h3><p>Last received at 02:44 UTC.</p><p class="muted">Retain the last snapshot. Clocks show elapsed since start; they cannot prove a worker is still alive.</p></div>
+<div class="sample"><span class="example-state">Unavailable</span><h3>State not supplied.</h3><p>Queue unavailable · typical not established · progress not mapped.</p><p class="muted">Costs and outcomes show —. Missing history is not an empty garden.</p></div>
+</div></section>
+<p class="metadata" style="margin-top:32px">Now 2 · design target for /now2 · recorded snapshot + simulated atlas · full specification in docs/design/now-2.md</p>
+<div class="sr-only" id="announcements" role="status" aria-live="polite"></div>
+</main>
+<script>
+// Offline replay uses the same start/anchor contract as the proposed live page.
+const root = document.documentElement;
+const anchor = {server: Date.parse(root.dataset.serverNow), local: performance.now()};
+const now = () => anchor.server + performance.now() - anchor.local;
+const formatElapsed = seconds => seconds < 60 ? `${seconds}s` : seconds < 3600
+  ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  : `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+function clocks() {
+  document.querySelectorAll('[data-started-at]').forEach(card => {
+    const start = Date.parse(card.dataset.startedAt);
+    const end = card.dataset.finishedAt ? Date.parse(card.dataset.finishedAt) : now();
+    const clock = card.querySelector('.elapsed');
+    if (!Number.isFinite(start) || !Number.isFinite(end)) { clock.textContent = 'Clock unavailable'; return; }
+    const elapsed = Math.max(0, Math.floor((end - start) / 1000));
+    clock.textContent = formatElapsed(elapsed);
+    const typical = Number(card.dataset.typicalSeconds);
+    const track = card.querySelector('.duration-track');
+    track.hidden = !typical || !!card.dataset.finishedAt;
+    if (typical && !card.dataset.finishedAt) {
+      track.querySelector('i').style.width = `${Math.min(1, elapsed / typical) * 100}%`;
+      card.querySelector('.typical-label').textContent = elapsed > typical
+        ? 'longer than usual' : `typical ${formatElapsed(Math.round(typical))} · n not supplied`;
+    }
+  });
+}
+clocks(); setInterval(clocks, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) clocks(); });
+document.getElementById('theme').addEventListener('change', event => {
+  if (event.target.value === 'system') delete root.dataset.theme;
+  else root.dataset.theme = event.target.value;
+});
+document.getElementById('motion').addEventListener('click', event => {
+  const off = root.dataset.motion !== 'off'; root.dataset.motion = off ? 'off' : 'on';
+  event.target.setAttribute('aria-pressed', String(off));
+  event.target.textContent = off ? 'Motion on' : 'Motion off';
+});
+const picker = document.getElementById('metric');
+const windowPicker = document.getElementById('window');
+function selectMetric() {
+  document.querySelectorAll('[data-window]').forEach(panel => { panel.hidden = panel.dataset.window !== windowPicker.value; });
+  document.querySelectorAll('.metric').forEach(table => { table.hidden = table.dataset.metric !== picker.value; });
+}
+windowPicker.addEventListener('change', selectMetric);
+picker.addEventListener('change', selectMetric); selectMetric();
+document.getElementById('arrive').addEventListener('click', () => {
+  let previous = document.getElementById('arrival-preview');
+  if (previous) previous.remove();
+  const card = document.querySelector('#runs .run').cloneNode(true);
+  card.id = 'arrival-preview'; card.dataset.runId = 'simulation-arrival';
+  card.dataset.startedAt = new Date(now()).toISOString(); card.dataset.finishedAt = '';
+  card.classList.add('arriving'); card.querySelector('h3').textContent = 'A new run begins';
+  card.querySelector('.spend').textContent = '— · not reported yet';
+  card.querySelector('.transcript summary').textContent = 'Reading the task brief.';
+  card.querySelector('.transcript p').textContent = 'Reading the task brief.';
+  document.getElementById('runs').prepend(card); clocks();
+  document.getElementById('announcements').textContent = 'Simulation: a new work run started.';
+});
+</script>
+</body>
+</html>
