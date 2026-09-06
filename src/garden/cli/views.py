@@ -235,28 +235,12 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(table)
 
 
-@app.command(rich_help_panel=PANEL_BOARD)
-def now(
-    page: int = typer.Option(1, "--page", help="Which Now page's regions to print: 1 (Fable's design) or 2 (astra's)"),
-    window: str = typer.Option("hour", "--window", help="The last period's window: hour|today|24h|phase"),
-):
-    """What is running, what is next, where the phase is and the last period, as text."""
+def render_now1(window: str) -> None:
+    """Render Now 1 for the shared ``garden now`` command."""
     store = _store()
-    if page == 1:
-        from ..now1 import render_text, snapshot
+    from ..now1 import render_text, snapshot
 
-        print(render_text(snapshot(store, _scheduler(store), window=window)), end="")
-        return
-    if page == 2:
-        try:
-            from .. import now2  # type: ignore[attr-defined]  # Now 2 is built beside this page
-        except ImportError:
-            console.print("[red]Now 2 is not built in this install yet; use --page 1[/red]")
-            raise typer.Exit(1) from None
-        print(now2.render_text(now2.snapshot(store, _scheduler(store), window=window)), end="")
-        return
-    console.print(f"[red]no Now page {page}; use --page 1 or --page 2[/red]")
-    raise typer.Exit(1)
+    print(render_text(snapshot(store, _scheduler(store), window=window)), end="")
 
 
 @app.command(rich_help_panel=PANEL_BOARD)
