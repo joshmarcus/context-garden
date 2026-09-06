@@ -320,6 +320,12 @@ class DispatchMixin:
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
+        if mode == "revise" and not feedback.strip() and st.get("pending_feedback_rebase"):
+            feedback = (
+                "## Concrete blocker\n\n"
+                "GitHub has no open review comments to address. The branch instead needs its "
+                "rebase conflict resolved against the current base."
+            )
         revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
         easy_tier = revise_easy or mode == "rebase"
         # Snapshot what this dispatch is about to clear from state, before it clears it, so a

@@ -204,7 +204,8 @@ def test_approve_warns_on_a_phase_start_with_no_kickoff(garden, sched):
         status: draft
         depends_on: []
         priority: 2
-        reading: []
+        reading:
+        - demo/p2/goals.md
         created: '2026-01-01T00:00:00+00:00'
         updated: '2026-01-01T00:00:00+00:00'
         ---
@@ -224,7 +225,8 @@ def test_approve_warns_on_a_phase_start_with_no_kickoff(garden, sched):
         status: draft
         depends_on: []
         priority: 2
-        reading: []
+        reading:
+        - demo/p2/goals.md
         created: '2026-01-01T00:00:00+00:00'
         updated: '2026-01-01T00:00:00+00:00'
         ---
@@ -260,7 +262,8 @@ def test_approve_is_quiet_once_a_kickoff_report_exists(garden, sched, monkeypatc
         status: draft
         depends_on: []
         priority: 2
-        reading: []
+        reading:
+        - demo/p2/goals.md
         created: '2026-01-01T00:00:00+00:00'
         updated: '2026-01-01T00:00:00+00:00'
         ---

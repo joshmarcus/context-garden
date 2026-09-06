@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import to_feedback
-from ..criteria import apply_verification, parse_criteria
+from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -19,6 +19,23 @@ from .report import TickReport
 
 
 class ReapMixin:
+    def _apply_criteria_amendments(self, task: Task, result: dict[str, Any]) -> None:
+        """Persist a worker's narrowly-scoped criterion correction before routing its result."""
+        body, applied = amend_criteria(task.body, result.get("criteria_amended"))
+        if not applied:
+            return
+        task.body = body
+        recorded = list(task.extra.get("criteria_amended") or [])
+        for amendment in applied:
+            recorded.append(amendment)
+            task.log(
+                f"acceptance criterion {amendment['index'] + 1} amended: "
+                f"{amendment['reason']}"
+            )
+            self.events.emit("criteria_amended", task.id, **amendment)
+        task.extra["criteria_amended"] = recorded
+        self.store.save(task)
+
     def _cleanup_reaped_temp_dirs(self) -> None:
         """Remove disk-backed temp directories once their local run is no longer active."""
         work_dir = self.cfg.work_dir
@@ -128,6 +145,7 @@ class ReapMixin:
         if final_text and not (run.path / "final.md").exists():
             (run.path / "final.md").write_text(final_text)
         result = run.result
+        self._apply_criteria_amendments(task, result)
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
         # Persist the collected outcome (finished_at, usage, cost, result) before the fence
         # check, push and PR steps below. A kill during any of them then leaves finished_at

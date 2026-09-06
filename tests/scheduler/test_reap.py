@@ -28,6 +28,19 @@ def drive(sched, until, n=8):
     return dispatched, transitions
 
 
+def test_reap_persists_a_criteria_amendment_and_records_why(sched):
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original outcome works.\n"
+    sched._apply_criteria_amendments(task, {
+        "criteria_amended": [{"index": 0, "text": "The corrected outcome works.", "reason": "The original was false."}],
+    })
+    sched.store.invalidate()
+    amended = sched.store.task("DM-001")
+    assert "- [ ] The corrected outcome works." in amended.body
+    assert "acceptance criterion 1 amended: The original was false." in amended.body
+    assert amended.extra["criteria_amended"][0]["text"] == "The corrected outcome works."
+
+
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
     """CG-083: a crash between the run record's final-status write and the task
     transition / push / PR step must not strand the finished run. Simulate the

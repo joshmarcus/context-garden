@@ -86,7 +86,7 @@ def make_garden(root: Path) -> Path:
     for tid, title, mode, why in SEED_TASKS:
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
         (phase / "tasks" / f"{tid}-{slug}.md").write_text(
-            f"---\nid: {tid}\ntitle: {title}\nstatus: ready\ndepends_on: []\npriority: 1\ndifficulty: easy\nreading: []\n"
+            f"---\nid: {tid}\ntitle: {title}\nstatus: ready\ndepends_on: []\npriority: 1\ndifficulty: easy\nreading: [demo/p1/specs/spec.md]\n"
             f"created: '2026-01-01T00:00:00+00:00'\nupdated: '2026-01-01T00:00:00+00:00'\n---\n\n"
             f"## Goal\n\n{why}\n\nqa-worker: {mode}\n"
         )

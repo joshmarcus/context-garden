@@ -68,6 +68,8 @@ def complete_brief(garden_root: Path, task_id: str) -> None:
     if "## Acceptance criteria" not in t.body:
         t.body = t.body.rstrip() + "\n\n## Acceptance criteria\n\n- [ ] ...\n"
     t.body = t.body.replace("- [ ] ...", "- [ ] The thing works and is covered by a test.", 1)
+    if not t.reading:
+        t.reading = ["demo/p1/specs/spec.md"]
     store.save(t)
 
 

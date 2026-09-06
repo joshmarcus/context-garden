@@ -9,6 +9,7 @@ Workers are told not to go exploring the garden; if something is missing, the ta
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,7 +35,7 @@ OPERATING_RULES = """\
 - Speak to every acceptance criterion. In `verified`, give one entry per criterion in the task's **Acceptance criteria** list, in order: quote the `criterion` and give its `evidence` — the test that proves it (by name), the command and its output, or the page and what it shows. A criterion you did not meet is `{{"criterion": "...", "not_done": true, "reason": "<why>"}}`, never a silent omission. Do not write a Verification section in `pr_body`: the garden builds one from `verified`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "criteria_amended": [{{"index": 0, "text": "<replacement criterion>", "reason": "<why the original was false or missing>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
   The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty; each item carries a `kind` (default `task`):
 
@@ -214,6 +215,33 @@ def resolve_reading(store: Store, task: Task, rel: str) -> tuple[Path | None, Pa
     return None, None
 
 
+def _read_at_base(path: Path, repo: Path, base: str) -> str | None:
+    """Read ``path`` as it was at ``base``, never from a dirty checkout.
+
+    A reading entry can name a garden file or a product file.  Both are git
+    checkouts in normal operation; a non-git fixture simply falls back to its
+    on-disk file so the offline brief builder remains useful there.
+    """
+    try:
+        rel = path.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return None
+    try:
+        is_repo = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False,
+        )
+        if is_repo.returncode != 0:
+            return _read(path)
+        shown = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{base}:{rel}"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return _read(path)
+    return shown.stdout if shown.returncode == 0 else None
+
+
 # A criterion whose text is only one of these is a planning placeholder, not a real,
 # testable acceptance criterion: the template's own `...`, filler words, or a "to be
 # written at planning" promise. Matched against a single line after its list/checkbox
@@ -237,6 +265,8 @@ def _criteria_are_placeholder(body: str) -> str:
     criterion that passes this gate is not invisible to them: a non-checkbox bullet counts as no
     criteria at all, same as an empty section."""
     items = parse_criteria(body)
+    if not items and not re.search(r"^#{1,6}\s+acceptance criteria\b", body, re.IGNORECASE | re.MULTILINE):
+        return ""  # Criteria are optional; the Goal is the contract.
     if not items:
         return "no `## Acceptance criteria` checklist (`- [ ] ...` items)"
     for text in items:
@@ -254,6 +284,8 @@ def brief_gaps(store: Store, task: Task) -> list[str]:
     crit = _criteria_are_placeholder(task.body)
     if crit:
         gaps.append(crit)
+    if not task.reading and task.extra.get("allow_empty_reading_list") is not True:
+        gaps.append("reading list is empty (set `allow_empty_reading_list: true` only for a mechanical task)")
     seen: set[str] = set()
     for rel in task.reading:
         if rel in seen:
@@ -334,6 +366,8 @@ def build_brief(
         inlined.append(store.rel(phase.goals_path))
 
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
+    if not parse_criteria(task.body):
+        sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []
@@ -343,20 +377,22 @@ def build_brief(
         if rel in seen:
             continue
         seen.add(rel)
-        p, base = resolve_reading(store, task, rel)
-        if p is None or base is None:
+        p, source_root = resolve_reading(store, task, rel)
+        if p is None or source_root is None:
             missing.append(rel)
-            to_read.append(rel)  # still named for the worker: paths are relative to its checkout
             continue
         if p.is_dir():
             files = sorted(f for f in p.rglob("*") if f.is_file() and not f.name.startswith("."))
         else:
             files = [p]
         for f in files:
-            frel = str(f.resolve().relative_to(base.resolve()))
+            frel = str(f.resolve().relative_to(source_root.resolve()))
             if frel in inlined:
                 continue
-            content = _read(f)
+            content = _read_at_base(f, source_root, base or "HEAD")
+            if content is None:
+                missing.append(frel)
+                continue
             if not content or len(content) > inline_max:
                 referenced.append(frel)
                 to_read.append(frel)
@@ -371,13 +407,15 @@ def build_brief(
         sections.append(
             (
                 "reading_refs",
-                "## Reading list (read these)\n\nThese files are relevant but too large to inline, "
-                "or were not found where the brief was built. "
+                "## Reading list (read these)\n\nThese files are relevant but too large to inline. "
                 "Read them (paths relative to your current directory) before starting:\n\n"
-                + "\n".join(f"- `{r}`" + (" (not found when the brief was built)" if r in missing else "") for r in to_read)
+                + "\n".join(f"- `{r}`" for r in to_read)
                 + "\n",
             )
         )
+    if missing:
+        sections.append(("gaps", "## Brief gaps\n\nThe following reading-list entries were dropped because they did not resolve:\n\n"
+                         + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
     if qa:
