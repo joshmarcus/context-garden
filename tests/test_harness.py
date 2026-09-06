@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from garden.harness import Harness
+from garden.personas import parse_persona
 from garden.runs import Run
 
 
@@ -322,25 +323,42 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     parsed = codex.parse(agent_message, model="gpt-5.6-luna")
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
+    # A CLI error must win over worker prose regardless of event order.
+    agent_then_error = "\n".join([
+        agent_message,
+        json.dumps({"type": "error", "message": "not authenticated: run codex login"}),
+    ])
+    parsed = codex.parse(agent_then_error, model="gpt-5.6-luna")
+    assert parsed["env_error"] is True and parsed["env_kind"] == "auth"
+    error_then_agent = "\n".join([
+        json.dumps({"type": "error", "message": "not authenticated: run codex login"}),
+        agent_message,
+    ])
+    parsed = codex.parse(error_then_agent, model="gpt-5.6-luna")
+    assert parsed["env_error"] is True and parsed["env_kind"] == "auth"
+
     # A short plain output with another garden result block is worker output too.
     garden_block = "not logged in was discussed\nGARDEN_PERSONA: {}"
     parsed = h.parse(garden_block)
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
-@pytest.mark.parametrize("persona, cost", [
-    ("security", 5.12),
-    ("designer", 5.38),
-    ("product-manager", 5.67),
-    ("user", 5.84),
+@pytest.mark.parametrize("filename, persona, cost", [
+    ("20260905T223519Z-result.txt", "security", 5.12),
+    ("20260905T223635Z-result.txt", "usability-expert", 5.38),
+    ("20260905T223405Z-result.txt", "product-manager", 5.67),
+    ("20260905T223557Z-result.txt", "staff-engineer", 5.84),
 ])
-def test_replay_discarded_persona_outputs_keeps_done_and_cost(persona, cost):
-    """Replay the four phase-04 persona reports that were discarded by the old guard."""
+def test_replay_discarded_persona_outputs_keeps_done_cost_and_persona(filename, persona, cost):
+    """Replay the four surviving phase-04 final persona messages through result events.
+
+    The original stdout.json files were truncated; the surviving final-message fixtures
+    preserve the marker-bearing report shape supplied for the incident.
+    """
     h = Harness("claude", {"output_format": "stream-json"})
-    report = (f"Persona: {persona}. The day's not logged in outage was discussed, "
-              "but the reviewed work completed successfully. " * 30)
+    report = (Path(__file__).parent / "fixtures" / "persona-replay" / filename).read_text()
     stdout = json.dumps({
-        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "type": "result", "subtype": "success", "is_error": False,
         "result": report + '\nGARDEN_RESULT: {"status":"done"}',
         "usage": {"input_tokens": 1}, "total_cost_usd": cost,
     })
@@ -349,6 +367,7 @@ def test_replay_discarded_persona_outputs_keeps_done_and_cost(persona, cost):
 
     assert out["env_error"] is False and out["env_kind"] == ""
     assert out["result"]["status"] == "done" and out["cost_usd"] == cost
+    assert parse_persona(out["final_text"])["persona"] == persona
 
 
 def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():
