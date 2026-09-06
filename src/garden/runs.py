@@ -34,6 +34,9 @@ class Run:
     model: str = ""
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
+    claimed_at: str = ""  # pull-based remote runner lease
+    lease_expires_at: str = ""
+    pushed_head: str = ""
     session_id: str = ""  # harness session, for resume
     status: str = "running"  # running | done | blocked | failed | timeout | cancelled | superseded
     pid: int | None = None

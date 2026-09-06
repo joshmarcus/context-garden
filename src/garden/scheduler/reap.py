@@ -223,10 +223,14 @@ class ReapMixin:
         if runner.remote:
             gitops.fetch(repo)
             try:
-                gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo)
+                remote_head = gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo).strip()
+                if run.pushed_head and remote_head != run.pushed_head:
+                    raise gitops.GitError("the pushed branch head does not match the head reported by the worker")
                 ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
-            except gitops.GitError:
+            except gitops.GitError as e:
                 ahead = 0
+                if run.pushed_head:
+                    run.error = str(e)
             if ahead == 0:
                 run.status = "failed"
                 run.error = "no commits pushed"
