@@ -15,7 +15,10 @@ from garden.scheduler.report import TickReport
 from garden.store import Store
 from garden.walkthrough import (
     COLOR_SCHEMES,
+    NARROW_FRAME_HEIGHT,
+    NARROW_OUTER_WIDTH,
     VIEWPORTS,
+    _narrow_frame,
     _prepare_browser,
     _redact_home,
     _scrub_stderr,
@@ -88,6 +91,30 @@ def test_ui_path_detection():
     assert not _is_ui_path("src/garden/model.py")
     assert VIEWPORTS == (1280, 390)
     assert COLOR_SCHEMES == ("light", "dark")
+    assert NARROW_OUTER_WIDTH == 600
+    assert NARROW_FRAME_HEIGHT == 5400
+
+
+def test_narrow_frame_uses_a_390px_content_viewport():
+    class Page:
+        def __init__(self):
+            self.wrapper = ""
+            self.script = ""
+
+        def set_content(self, wrapper, **_kwargs):
+            self.wrapper = wrapper
+
+        def evaluate(self, script):
+            self.script = script
+            return {"clientWidth": 390, "scrollWidth": 390}
+
+    page = Page()
+    measurements = _narrow_frame(page, "http://localhost:8765/inbox")
+
+    assert 'src="http://localhost:8765/inbox"' in page.wrapper
+    assert 'width:390px;height:5400px;border:0' in page.wrapper
+    assert "clientWidth" in page.script and "scrollWidth" in page.script
+    assert measurements == {"clientWidth": 390, "scrollWidth": 390}
 
 
 def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):

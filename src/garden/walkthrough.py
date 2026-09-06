@@ -231,6 +231,33 @@ def _fetch(store: Store, specs: list[PageSpec], base_url: str) -> dict[str, tupl
 
 VIEWPORTS = (1280, 390)
 COLOR_SCHEMES = ("light", "dark")
+NARROW_OUTER_WIDTH = 600
+NARROW_FRAME_HEIGHT = 5400
+
+
+def _narrow_frame(page: object, url: str) -> object:
+    """Load a page in a 390px frame so Edge's outer-window floor cannot widen it."""
+    import html
+
+    frame_url = html.escape(url, quote=True)
+    wrapper = ("<html><body style=\"margin:0\">"
+               f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
+               "</body></html>")
+    page.set_content(wrapper, wait_until="networkidle", timeout=30000)
+    measurements = page.evaluate(
+        """() => {
+            const frame = document.querySelector('iframe');
+            const doc = frame.contentDocument;
+            const width = doc.documentElement.clientWidth;
+            const scrollWidth = doc.documentElement.scrollWidth;
+            if (width !== 390 || scrollWidth !== 390) {
+                throw new Error(`narrow frame measured clientWidth ${width}, scrollWidth ${scrollWidth}`);
+            }
+            frame.style.height = `${Math.max(5400, doc.documentElement.scrollHeight)}px`;
+            return {clientWidth: width, scrollWidth};
+        }"""
+    )
+    return measurements
 
 
 def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
@@ -249,13 +276,30 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                 complete = True
                 for width in VIEWPORTS:
                     for scheme in COLOR_SCHEMES:
-                        page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
+                        narrow = width == 390
+                        page = browser.new_page(
+                            viewport={"width": NARROW_OUTER_WIDTH if narrow else width,
+                                      "height": 900},
+                            color_scheme=scheme,
+                        )
                         try:
-                            page.goto(base_url.rstrip("/") + s.url, wait_until="networkidle", timeout=30000)
-                            viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
-                            page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
-                            evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
-                                             "color_scheme": scheme, **viewport})
+                            url = base_url.rstrip("/") + s.url
+                            if narrow:
+                                measurements = _narrow_frame(page, url)
+                                log(f"  narrow frame {s.slug} {scheme}: "
+                                    f"clientWidth={measurements['clientWidth']} "
+                                    f"scrollWidth={measurements['scrollWidth']}")
+                                page.locator("iframe").screenshot(
+                                    path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
+                                )
+                                evidence.append({"page": s.slug, "action": "frame", "viewport": width,
+                                                 "color_scheme": scheme, **measurements})
+                            else:
+                                page.goto(url, wait_until="networkidle", timeout=30000)
+                                viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
+                                page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
+                                evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
+                                                 "color_scheme": scheme, **viewport})
                         except Exception as e:  # noqa: BLE001 - one bad page should not sink the rest
                             complete = False
                             log(f"  screenshot {s.slug} at {width}/{scheme} failed: {e}")
