@@ -90,6 +90,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     """The pages to capture, in the order a person uses them, with the data this phase has."""
     key = phase.key
     specs = [
+        PageSpec("now2", "/now2", "Now 2",
+                 "Live work, dispatch and merge queues, phase progress and windowed outcomes.",
+                 "Can you see what is running and what that work adds up to?"),
         PageSpec("now", "/", "Now",
                  "The first page: everything that needs the operator now.",
                  "Can a person immediately tell what needs action?"),

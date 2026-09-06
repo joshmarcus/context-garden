@@ -1,0 +1,11 @@
+{% set r = row.run %}<article class="n2-run" id="run-{{ r.task_id }}-{{ r.run_id }}" data-run-id="{{ r.run_id }}" data-started-at="{{ r.started_at }}" data-finished-at="{{ r.finished_at }}" data-status="{{ r.status }}" data-typical-seconds="{{ row.typical.seconds if row.typical.seconds is not none else '' }}">
+<div class="n2-meta"><span class="state s-{{ 'failed' if row.missing_process else r.status }}">{{ r.mode }} · {{ 'Process missing' if row.missing_process else row.verdict }}</span></div>
+<h3><a href="{{ row.title_url }}" aria-label="{{ row.title }} ({{ r.task_id }})">{{ row.title }}</a></h3>
+<p class="n2-meta">{{ r.harness or 'local check' }} / {{ r.model or 'no model' }} · {{ r.difficulty or 'tier not recorded' }}</p>
+<details data-key="transcript"><summary>{{ row.said[:180] }}</summary><p class="n2-transcript">{{ row.said }}</p></details>
+<div class="n2-run-foot"><span><time data-clock>Elapsed since start</time> <span data-overdue></span></span><span>{{ ('$%.2f' % row.spend) if row.spend is not none else 'Spend not reported yet' }}</span></div>
+<div class="n2-duration" aria-hidden="true"><span data-fill></span></div>
+<p class="n2-meta">{% if row.typical.seconds is not none %}Typical {{ '%.1f' % (row.typical.seconds / 60) }} min · n={{ row.typical.n }} · {{ r.mode }}/{{ r.difficulty }}{% else %}Typical not established · n={{ row.typical.n }}{% endif %} · successful runs, last 30 days</p>
+{% if r.error %}<p class="n2-meta">{{ r.error }}</p>{% endif %}
+{% if row.missing_process %}<p class="n2-meta">Activity unconfirmed · reconciliation timing unknown</p>{% endif %}
+<p class="n2-meta">Spend from {{ row.freshness }} · <a href="/runs/{{ r.task_id }}/{{ r.run_id }}">Open run</a></p></article>

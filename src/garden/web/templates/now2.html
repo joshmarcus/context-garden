@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Now 2{% endblock %}
+{% block body %}
+<style>{% include '_now2.css' %}</style>
+<div id="now2" data-server-now="{{ d.server_now }}" data-window="{{ d.window }}" data-phase="{{ d.phase }}">
+<header class="n2-heading"><div><div class="n2-label">Work in view</div><h1>Now 2</h1><p>The garden, moving forward.</p></div><div><span id="n2-connection" role="status">Connecting live updates…</span><button type="button" id="n2-motion" aria-pressed="false">Motion off</button></div></header>
+<div class="n2-top"><section aria-labelledby="now-heading"><div id="now2-summary">{% include '_now2_summary.html' %}</div><div id="now2-attention">{% include '_now2_attention.html' %}</div><div id="n2-runs">{% for row in d.running %}{% include '_now2_run.html' %}{% endfor %}</div></section>
+<section id="now2-next" aria-labelledby="next-heading">{% include '_now2_next.html' %}</section></div>
+<div class="n2-bottom"><section id="now2-where" aria-labelledby="where-heading">{% include '_now2_where.html' %}</section><section aria-labelledby="period-heading"><h2 id="period-heading">The last period</h2>
+<form id="n2-window-form" action="/now2" method="get"><label>Window <select name="window" id="n2-window">{% for value, label in d.windows.items() %}<option value="{{ value }}" {{ 'selected' if value == d.window else '' }}>{{ label }}</option>{% endfor %}</select></label>
+<label>Phase <select name="phase" id="n2-phase">{% for p in d.phases %}<option value="{{ p.phase.key }}" {{ 'selected' if p.phase.key == d.phase else '' }}>{{ p.phase.key }}</option>{% endfor %}</select></label><button type="submit">Show</button></form>
+<div id="now2-period">{% include '_now2_period.html' %}</div></section></div>
+<p class="n2-meta">Read-only view · <a href="/inbox">Open Inbox</a> to answer a decision · <a href="/costs">Explore costs</a></p>
+<div id="n2-announcement" class="n2-sr" aria-live="polite"></div>
+</div><script>{% include '_now2.js' %}</script>
+{% endblock %}
