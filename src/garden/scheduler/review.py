@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
-from ..criteria import criteria_counts
+from ..criteria import criteria_counts, required_evidence
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -40,6 +40,10 @@ class ReviewMixin:
         # A review that follows a conflict rebase (or a stale-base rebase, CG-131) re-reads
         # code the reviewer already approved: it runs, but must not count toward review.max_rounds.
         after_rebase = bool(st.pop("last_round_rebase", False))
+        requirements = required_evidence(task.body, task.extra.get("requires"))
+        evidence = st.setdefault("required_evidence", {})
+        for item in requirements:
+            evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
             max_rounds = int(self.cfg.get("review.max_rounds", 2))
@@ -53,8 +57,9 @@ class ReviewMixin:
                 self.store.save(task)
                 notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
                 rep.transitions.append(f"{task.id} review cap reached")
-        for name in list(self.cfg.get("review.personas", []) or []):
-            wanted.append({"kind": "persona", "name": str(name)})
+        required_personas = [item["name"] for item in requirements if item["kind"] == "persona"]
+        for name in dict.fromkeys([*required_personas, *(str(n) for n in list(self.cfg.get("review.personas", []) or []))]):
+            wanted.append({"kind": "persona", "name": name, "required": name in required_personas})
         self._dispatch_or_defer_reviews(task, wanted, rep, work_run=work_run)
 
     def _dispatch_or_defer_reviews(self, task: Task, wanted: list[dict[str, Any]], rep: TickReport,
@@ -64,6 +69,9 @@ class ReviewMixin:
         on a later tick, so a full review_parallel does not lose the round — it just waits its
         turn, the same way a full max_parallel makes a work task wait in the ready queue."""
         st = self.state.get(task.id)
+        required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
+                             if item["kind"] == "persona"}
+        evidence = st.setdefault("required_evidence", {})
         # Never dispatch a review under a worker round still in flight (work/revise/resume/rebase):
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
@@ -77,6 +85,9 @@ class ReviewMixin:
         st.pop("reviews_deferred_for_worker", None)
         deferred: list[dict[str, Any]] = []
         for item in wanted:
+            if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
+                deferred.append(item)
+                continue
             if self.review_slots_free() <= 0:
                 deferred.append(item)
                 continue
@@ -92,7 +103,9 @@ class ReviewMixin:
                     rep.dispatched.append(f"{task.id}(review)")
                     self.log(f"{task.id}: review run {run.run_id} started")
                 else:
-                    self.dispatch_persona_pr(task, item["name"])
+                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
+                    if item.get("required"):
+                        evidence[f"persona:{item['name']}"] = "running"
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
             except Exception as e:  # noqa: BLE001
                 task.log(f"automated {kind} could not start: {e}")
@@ -245,9 +258,12 @@ class ReviewMixin:
                 pass
         capture_paths: list[str] = []
         capture_pages: list[str] = []
+        check_results: list[dict[str, Any]] = []
         for check_run in reversed(self.runs.runs_for(task.id)):
             if check_run.mode != "check":
                 continue
+            if not check_results:
+                check_results = list((check_run.result or {}).get("checks", []))
             ui_results = [result for result in (check_run.result or {}).get("checks", [])
                           if result.get("name") == "ui"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
@@ -258,7 +274,7 @@ class ReviewMixin:
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
-                            reask_missing_fixes=reask_missing_fixes)
+                            checks=check_results, reask_missing_fixes=reask_missing_fixes)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this

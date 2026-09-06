@@ -106,6 +106,9 @@
         {% endfor %}
       </table>
     </div>{% endif %}
+    {% if evidence_rows %}<div class="panel"><div class="eyebrow">Required evidence</div>
+      <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for item in evidence_rows %}<li><span class="pill s-{{ 'done' if item.state == 'posted' else 'failed' if item.state == 'failed' else 'running' if item.state == 'running' else 'ready' }}">{{ item.state }}</span> {{ item.label }}</li>{% endfor %}</ul>
+    </div>{% endif %}
     {% if suggestions %}<div class="panel"><div class="eyebrow">Suggestions{% if edit_running %} · integrating…{% endif %}</div>
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for sg in suggestions %}<li style="margin-bottom:4px"><span class="pill s-{{ 'done' if sg.integrated else 'ready' }}">{{ 'integrated' if sg.integrated else 'pending' }}</span> {% if sg.applies_to %}<span class="muted">{{ sg.applies_to }}</span> {% endif %}{{ sg.text }} <span class="faint mono">— {{ sg.author }}{% if sg.date %}, {{ sg.date }}{% endif %}</span></li>{% endfor %}</ul>
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}

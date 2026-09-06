@@ -19,6 +19,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
+from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
@@ -58,9 +59,13 @@ class CheckRunMixin:
         run = self.runs.new_run(task.id, "local", mode="check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
+        evidence = self.state.get(task.id).setdefault("required_evidence", {})
+        for item in required_evidence(task.body, task.extra.get("requires")):
+            evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
             changed = gitops.diff_names(worktree, base)
-            if any(_is_ui_path(path) for path in changed) and not any(s.get("name") == "ui" for s in specs):
+            needs_captures = any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
+            if (needs_captures or any(_is_ui_path(path) for path in changed)) and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
                                   "changed": changed}]
@@ -104,6 +109,12 @@ class CheckRunMixin:
         for r in results:
             self.events.emit("check", task.id, stage=_EVENT_STAGE.get(stage, "pre_pr"),
                              name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+        evidence = self.state.get(task.id).setdefault("required_evidence", {})
+        for r in results:
+            name = str(r.get("name") or "")
+            key = "capture:" if name == "ui" else f"check:{name}"
+            if key in evidence:
+                evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
         cont = dict(info.get("cont") or {})
         handler = {
             "pre_pr": self._after_pre_pr_check,

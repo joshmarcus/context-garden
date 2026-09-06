@@ -65,7 +65,8 @@ class PersonaMixin:
                                                              "min_severity": min_severity},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
-    def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False) -> Run:
+    def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
+                            required_evidence: bool = False) -> Run:
         ensure_open(task)
         valid_name(name)
         if not task.pr and not task.branch:
@@ -88,7 +89,8 @@ class PersonaMixin:
                 break
         text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff,
                         int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
-        return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
+        return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes,
+                                                         "required_evidence": required_evidence},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
     def _finding_target_phase(self, phase: Phase) -> Phase:
@@ -162,15 +164,20 @@ class PersonaMixin:
         md = report_markdown(rev, f"{name} review of {task.id}", run.run_id)
         slug = self.slug_for(task)
         number = self._pr_number(task)
+        comment_posted = False
         if slug and number and self.github.available:
             try:
                 comment_body = mark_garden_comment(md, run.run_id)
                 self.github.comment(slug, number, comment_body)
+                comment_posted = True
             except GitHubError as e:
                 self.log(f"{task.id}: could not post persona review: {e}")
         (run.path / "report.md").write_text(md)
         task.log(f"persona {name} review: score {rev.get('score', '–')}/10, {len(rev.get('findings') or [])} finding(s)")
         self.store.save(task)
+        if entry.get("required_evidence"):
+            self.state.get(task.id).setdefault("required_evidence", {})[f"persona:{name}"] = "posted" if comment_posted else "failed"
+            self.state.save()
         rep.transitions.append(f"{task.id} persona {name}: {rev.get('score', '–')}/10")
         highs = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"]
         if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.cfg.get("auto_revise", True)):

@@ -15,6 +15,61 @@ from typing import Any
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*$")
 _CHECK_RE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s+(.*\S)\s*$")
 _VERIFICATION_HEADING_RE = re.compile(r"(?im)^#{1,6}\s+verification\b.*$")
+_PERSONA_REQUIREMENT_RE = re.compile(r"\bpersona-review\b.*?\s-p\s+([a-z0-9][a-z0-9-]*)\b", re.I)
+_CHECK_REQUIREMENT_RE = re.compile(r"\bcheck\s*:\s*`?([a-z0-9][a-z0-9_-]*)`?", re.I)
+
+
+def required_evidence(body: str, requires: Any = None) -> list[dict[str, str]]:
+    """Evidence the task explicitly asks the scheduler to produce.
+
+    The portable frontmatter form is ``requires: ["persona-review -p designer",
+    "captures", "check: unit"]``.  The same concise forms in an acceptance criterion work
+    for author-written tasks.  A named check refers to a configured pre-PR check; task text
+    never supplies a shell command.
+    """
+    text = "\n".join(parse_criteria(body))
+    values = requires if isinstance(requires, list) else []
+    out: list[dict[str, str]] = []
+
+    def add(kind: str, name: str = "") -> None:
+        item = {"kind": kind, "name": name}
+        if item not in out:
+            out.append(item)
+
+    def parse(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("persona"):
+                add("persona", str(value["persona"]))
+            if value.get("check"):
+                add("check", str(value["check"]))
+            if value.get("captures") or value.get("capture"):
+                add("capture")
+            return
+        value = str(value)
+        for name in _PERSONA_REQUIREMENT_RE.findall(value):
+            add("persona", name)
+        if re.search(r"\bcaptures?\b", value, re.I):
+            add("capture")
+        for name in _CHECK_REQUIREMENT_RE.findall(value):
+            add("check", name)
+
+    parse(text)
+    for value in values:
+        parse(value)
+    return out
+
+
+def required_evidence_rows(requirements: list[dict[str, str]], state: Any) -> list[dict[str, str]]:
+    """Display-ready required evidence rows, retaining queued/running/posted state."""
+    stored = (state or {}).get("required_evidence") if isinstance(state, dict) else {}
+    stored = stored if isinstance(stored, dict) else {}
+    rows = []
+    for item in requirements:
+        key = f"{item['kind']}:{item['name']}"
+        label = (f"persona review · {item['name']}" if item["kind"] == "persona" else
+                 "UI captures" if item["kind"] == "capture" else f"check · {item['name']}")
+        rows.append({**item, "label": label, "state": str(stored.get(key, "queued"))})
+    return rows
 
 
 def parse_criteria(body: str) -> list[str]:

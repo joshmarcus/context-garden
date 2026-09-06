@@ -328,6 +328,20 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        # A task can require a configured check by name.  It is deliberately a name, rather
+        # than a command from task text: check commands run branch code and stay garden config.
+        from ..criteria import required_evidence
+        required = {r["name"] for r in required_evidence(task.body, task.extra.get("requires")) if r["kind"] == "check"}
+        if required:
+            configured = list(self.cfg.get("checks.pre_pr", []) or [])
+            known = {str(spec.get("name")) for spec in specs}
+            for spec in configured:
+                if str(spec.get("name")) in required and str(spec.get("name")) not in known:
+                    specs.append(spec)
+                    known.add(str(spec.get("name")))
+            # Keep a misspelled requirement visible: an error result follows the ordinary
+            # mechanical changes-requested route instead of silently reviewing without it.
+            specs.extend({"name": name} for name in sorted(required - known))
         env = dict(setup.get("env") or {})
         if env:
             specs = [{**s, "env": {**env, **(s.get("env") or {})}} for s in specs]

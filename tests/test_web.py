@@ -83,6 +83,24 @@ def test_run_page_links_and_serves_every_capture_type(garden):
     assert c.get("/runs/DM-001/capture-run/captures/garden.yaml").status_code == 404
 
 
+def test_task_page_shows_required_evidence_states(garden):
+    from garden.scheduler import State
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.extra["requires"] = ["persona-review -p designer", "captures", "check: unit"]
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["required_evidence"] = {
+        "persona:designer": "running", "capture:": "posted", "check:unit": "queued",
+    }
+    state.save()
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Required evidence" in page
+    assert "persona review · designer" in page and "UI captures" in page and "check · unit" in page
+    assert "running" in page and "posted" in page and "queued" in page
+
+
 def test_header_has_seedling_mark_and_favicon(garden):
     c = client(garden)
     page = c.get("/").text
