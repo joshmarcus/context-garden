@@ -696,6 +696,15 @@ runs it all in well under a minute; CI for this repository runs the same in
 and on demand (`workflow_dispatch`), so a page regression is caught between phases without
 spending tokens; a failed flow exits non-zero and fails the job.
 
+## Incident control path
+
+`GET /healthz`, `GET /api/control/status`, and `POST /pause` are the overload-safe
+control path. They touch only `state.json` (plus the pause event append); they do not
+construct a scheduler, discover tasks, or read run history. On the supported
+single-operator deployment each must return within 500 ms even while an ordinary page
+read is slow. Recovery dispatch can take longer, but reserves a durable run identity
+before preparation; `GET /api/operations/<task>/<run>` reads it directly.
+
 ## Rules the code keeps
 
 - `model`, `store`, `graph` and `brief` make no network calls and no subprocess calls
