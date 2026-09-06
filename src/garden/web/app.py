@@ -13,7 +13,7 @@ from typing import Any
 
 import jinja2
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -113,6 +113,21 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.get("/favicon.svg", include_in_schema=False)
     def favicon() -> Response:
         return Response(favicon_svg(), media_type="image/svg+xml")
+
+    @app.get("/healthz", include_in_schema=False)
+    async def health() -> PlainTextResponse:
+        """Process liveness only: deliberately no Store, Scheduler, or history reads."""
+        return PlainTextResponse("ok")
+
+    @app.get("/api/control/status", include_in_schema=False)
+    async def control_status() -> JSONResponse:
+        """Bounded incident status from the small side-store, without task/history reads."""
+        from ..scheduler.state import State
+
+        ctrl = State(store.config.garden_dir / "state.json").get("_control")
+        return JSONResponse({"ok": True, "dispatch": ctrl.get("dispatch", "running"),
+                             "by": ctrl.get("by", ""), "at": ctrl.get("at", ""),
+                             "reason": ctrl.get("reason", "")})
 
     site = Site(hub, templates, plates)
     pages.register(app, site)

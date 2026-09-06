@@ -102,6 +102,17 @@ have had to make:
 
 ### 2. Starting the process (the runner, in `start`)
 
+Before potentially slow worktree or setup work, dispatch writes the run identity as
+`requested`, then advances it to `preparing`. Only recording the detached worker PID
+advances it to `running`; terminal outcomes are presented as `finished` by the operation
+API. All three startup states reserve the task and capacity, so a timed-out retry cannot
+start another run. After restart, a `requested` or `preparing` record with no PID is not
+live. Ordinary launches are closed once and left retryable. Recovery API launches retain
+their client idempotency key and are resumed on the same record when that client replays
+after restart; the runner's setup lock/stamp makes an escaped setup child and the resumed
+server reconcile preparation once. The preparation server's PID is never exposed as the
+worker PID.
+
 The local runner writes the brief to `brief.md` in the run directory and starts one shell
 command, detached in its own session (`start_new_session=True`, stdin closed), so it
 survives the scheduler exiting:

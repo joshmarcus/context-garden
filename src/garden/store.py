@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -211,6 +212,21 @@ class Store:
             if tid.lower() == task_id.lower():
                 return t
         raise KeyError(f"no task {task_id!r}")
+
+    def control_task(self, task_id: str) -> Task:
+        """Load one canonical task without discovering the garden.
+
+        Incident controls use this bounded path so an expensive products/tasks page read
+        cannot delay accepting a recovery launch.  Control clients use the canonical id
+        already shown by the operation/status API; fuzzy lookup remains a UI convenience.
+        """
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-[0-9]+", task_id) is None:
+            raise KeyError(f"invalid canonical task id {task_id!r}")
+        matches = list(self.root.glob(f"*/*/tasks/{task_id}-*.md"))
+        if len(matches) != 1:
+            raise KeyError(f"no unique task {task_id!r}")
+        path = matches[0]
+        return self._load_task(path, path.parents[2].name, path.parents[1].name)
 
     def phase(self, product: str, phase: str) -> Phase:
         for p in self.products():

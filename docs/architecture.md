@@ -696,6 +696,23 @@ runs it all in well under a minute; CI for this repository runs the same in
 and on demand (`workflow_dispatch`), so a page regression is caught between phases without
 spending tokens; a failed flow exits non-zero and fails the job.
 
+## Incident control path
+
+`GET /healthz`, `GET /api/control/status`, `POST /pause`, and
+`POST /api/control/tasks/<task>/launch` are the overload-safe control path. They run
+independently of the ordinary request-worker pool and do not discover the garden or read
+full run history. On the supported single-operator deployment each accepts or answers
+within 500 ms even when ordinary read workers are exhausted.
+
+Recovery launch accepts JSON `idempotency_key` and `expected_run_id` (the empty string
+means the client observed no current run). Under a cross-process compare-and-act lock it
+either reserves one durable requested run, replays the operation already carrying that
+key, or returns 409 with the actual current run. Its 202 JSON and `Location` header name
+`GET /api/operations/<task>/<run>`; only after the response is sent does worktree/setup
+preparation begin. A retry after server restart resumes the same preparing record. Its
+server preparation PID is bookkeeping, not a worker PID and never counts as confirmed
+live work.
+
 ## Rules the code keeps
 
 - `model`, `store`, `graph` and `brief` make no network calls and no subprocess calls

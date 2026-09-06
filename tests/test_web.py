@@ -1878,6 +1878,255 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     done.wait(timeout=10)
 
 
+def test_incident_health_and_control_status_do_not_touch_slow_reads(garden, monkeypatch):
+    """Incident probes stay bounded even when ordinary task discovery is overloaded."""
+    import time
+
+    app = create_app(Store(garden), watch=False)
+    c = TestClient(app)
+    monkeypatch.setattr(Store, "tasks", lambda self: (time.sleep(2), {})[1])
+
+    started = time.monotonic()
+    assert c.get("/healthz").text == "ok"
+    assert c.get("/api/control/status").json()["dispatch"] == "running"
+    assert c.post("/pause", data={"reason": "incident"}, follow_redirects=False).status_code == 303
+    assert c.get("/api/control/status").json()["dispatch"] == "paused"
+    assert time.monotonic() - started < 0.5
+
+
+def test_operation_endpoint_exposes_preparing_and_finished_identity(garden):
+    from garden.runs import RunStore
+
+    runs = RunStore(Store(garden).config.garden_dir)
+    run = runs.new_run("DM-001", "local", initial_status="requested")
+    run.status = "preparing"
+    run.save()
+    c = client(garden)
+
+    preparing = c.get(f"/api/operations/DM-001/{run.run_id}").json()
+    assert preparing == {"operation_id": run.run_id, "task_id": "DM-001", "state": "preparing",
+                         "status": "preparing", "pid": None, "requested_at": run.started_at,
+                         "finished_at": "", "error": ""}
+    run.status = "failed"
+    run.finished_at = run.started_at
+    run.error = "startup interrupted"
+    run.save()
+    finished = c.get(f"/api/operations/DM-001/{run.run_id}").json()
+    assert finished["state"] == "finished" and finished["status"] == "failed"
+
+
+def test_recovery_launch_returns_identity_replays_key_and_rejects_stale_observation(garden, monkeypatch):
+    import threading
+
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_dispatch = Scheduler.dispatch
+
+    def blocked_dispatch(self, *args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return real_dispatch(self, *args, **kwargs)
+
+    monkeypatch.setattr(Scheduler, "dispatch", blocked_dispatch)
+    c = client(garden)
+    payload = {"idempotency_key": "operator-17", "expected_run_id": ""}
+    response_box = []
+    request = threading.Thread(target=lambda: response_box.append(
+        c.post("/api/control/tasks/DM-001/launch", json=payload)), daemon=True)
+    request.start()
+    assert entered.wait(5)
+
+    # A real HTTP client has already received the response before BackgroundTasks runs.
+    run = RunStore(Store(garden).config.garden_dir).runs_for("DM-001")[0]
+    assert run.idempotency_key == "operator-17" and run.status == "requested"
+    replay = c.post("/api/control/tasks/DM-001/launch", json=payload)
+    assert replay.status_code == 202
+    assert replay.json()["operation_id"] == run.run_id
+    assert replay.headers["location"] == f"/api/operations/DM-001/{run.run_id}"
+    stale = c.post("/api/control/tasks/DM-001/launch", json={
+        "idempotency_key": "operator-18", "expected_run_id": "not-the-current-run"
+    })
+    assert stale.status_code == 409 and stale.json()["current_run_id"] == run.run_id
+
+    release.set()
+    request.join(5)
+    assert response_box[0].status_code == 202
+    assert len(RunStore(Store(garden).config.garden_dir).runs_for("DM-001")) == 1
+
+
+def test_timed_out_dispatch_retry_does_not_duplicate_preparing_work(garden, monkeypatch):
+    """The first request keeps preparing after its caller gives up; a concurrent retry
+    reconciles against the durable run instead of launching a second worker."""
+    import threading
+
+    from garden.runner.local import LocalRunner
+    from garden.runs import RunStore
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_start = LocalRunner.start
+
+    def slow_start(self, run, worktree, brief_text):
+        entered.set()
+        assert release.wait(5)
+        return real_start(self, run, worktree, brief_text)
+
+    monkeypatch.setattr(LocalRunner, "start", slow_start)
+    app = create_app(Store(garden), watch=False)
+    c = TestClient(app)
+    responses = []
+    original = threading.Thread(target=lambda: responses.append(
+        c.post("/tasks/DM-001/dispatch", follow_redirects=False)), daemon=True)
+    original.start()
+    assert entered.wait(5)
+
+    runs = RunStore(Store(garden).config.garden_dir).runs_for("DM-001")
+    assert len(runs) == 1 and runs[0].status == "preparing" and runs[0].pid is None
+    retry = threading.Thread(target=lambda: responses.append(
+        c.post("/tasks/DM-001/dispatch", follow_redirects=False)), daemon=True)
+    retry.start()
+    release.set()
+    original.join(5)
+    retry.join(5)
+
+    assert len(RunStore(Store(garden).config.garden_dir).runs_for("DM-001")) == 1
+    assert len(responses) == 2 and all(response.status_code == 303 for response in responses)
+
+
+def test_served_incident_controls_retry_and_restart_during_overload(garden, tmp_path):
+    """Exercise the incident journey through a real socket and ASGI worker pool."""
+    import concurrent.futures
+    import shlex
+    import socket
+    import subprocess
+    import threading
+
+    import httpx
+    import yaml
+
+    gate = tmp_path / "incident-gates"
+    gate.mkdir()
+    (gate / "slow").touch()
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    setup_script = Path(__file__).with_name("blocked_setup.py")
+    config["products"]["demo"]["setup"] = {
+        "command": f"{shlex.quote(str(Path(__file__).parents[1] / '.venv/bin/python'))} "
+                   f"{shlex.quote(str(setup_script))} {shlex.quote(str(gate))}"
+    }
+    config_path.write_text(yaml.safe_dump(config))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    command = [str(Path(__file__).parents[1] / ".venv/bin/python"),
+               str(Path(__file__).with_name("served_incident_app.py")),
+               str(garden), str(port), str(gate)]
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+
+    def start_server():
+        process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for _ in range(100):
+            try:
+                if httpx.get(f"{base}/healthz", timeout=0.1).status_code == 200:
+                    return process
+            except httpx.HTTPError:
+                time.sleep(0.02)
+        process.kill()
+        raise AssertionError("disposable incident server did not start")
+
+    process = start_server()
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=45)
+    blocked = [pool.submit(httpx.get, f"{base}/api/tasks", timeout=10) for _ in range(45)]
+    try:
+        for _ in range(100):
+            if (gate / "read-entered").exists():
+                break
+            time.sleep(0.01)
+        assert httpx.get(f"{base}/healthz", timeout=0.5).status_code == 200
+        assert httpx.get(f"{base}/api/control/status", timeout=0.5).status_code == 200
+        assert httpx.post(f"{base}/pause", data={"reason": "served overload"},
+                          timeout=0.5, follow_redirects=False).status_code == 303
+        payload = {"idempotency_key": "served-timeout-retry", "expected_run_id": ""}
+        response_dropped = threading.Event()
+        with socket.socket() as proxy:
+            proxy.bind(("127.0.0.1", 0))
+            proxy.listen()
+            proxy_port = proxy.getsockname()[1]
+
+            def drop_launch_response():
+                connection, _ = proxy.accept()
+                with connection:
+                    connection.recv(65536)  # consume the small client request
+                    assert httpx.post(
+                        f"{base}/api/control/tasks/DM-001/launch", json=payload, timeout=0.5
+                    ).status_code == 202
+                    response_dropped.set()  # the upstream mutation completed; return nothing
+                    time.sleep(0.2)
+
+            proxy_thread = threading.Thread(target=drop_launch_response, daemon=True)
+            proxy_thread.start()
+            try:
+                httpx.post(f"http://127.0.0.1:{proxy_port}/launch", json=payload, timeout=0.05)
+            except httpx.TimeoutException:
+                timed_out = True
+            else:
+                timed_out = False
+            assert response_dropped.wait(1)
+        for _ in range(100):
+            original_runs = RunStore(Store(garden).config.garden_dir).runs_for("DM-001")
+            if original_runs:
+                break
+            time.sleep(0.01)
+        assert timed_out
+        assert len(original_runs) == 1
+        operation_id = original_runs[0].run_id
+        accepted = httpx.post(f"{base}/api/control/tasks/DM-001/launch", json=payload, timeout=0.5)
+        assert accepted.status_code == 202
+        assert accepted.json()["operation_id"] == operation_id
+        assert accepted.headers["location"].endswith(operation_id)
+
+        (gate / "read-release").touch()
+        for future in blocked:
+            assert future.result(timeout=10).status_code == 200
+        for _ in range(200):
+            if (gate / "setup-entered").exists():
+                break
+            time.sleep(0.01)
+        assert (gate / "setup-entered").exists()
+        process.kill()  # crash while the accepted operation is preparing
+        process.wait(timeout=5)
+
+        process = start_server()
+        replay = httpx.post(f"{base}/api/control/tasks/DM-001/launch", json=payload, timeout=0.5)
+        assert replay.status_code == 202 and replay.json()["operation_id"] == operation_id
+        assert len(RunStore(Store(garden).config.garden_dir).runs_for("DM-001")) == 1
+        (gate / "setup-release").touch()
+        for _ in range(300):
+            operation = httpx.get(f"{base}/api/operations/DM-001/{operation_id}", timeout=0.5).json()
+            if operation["state"] == "running":
+                break
+            time.sleep(0.02)
+        assert operation["state"] == "running" and operation["pid"]
+        runs = RunStore(Store(garden).config.garden_dir).runs_for("DM-001")
+        assert len(runs) == 1 and runs[0].run_id == operation_id
+        assert (gate / "setup-count").read_text().splitlines() == ["completed"]
+        assert Store(garden).config.get("max_parallel") == 2
+    finally:
+        (gate / "read-release").touch()
+        (gate / "setup-release").touch()
+        pool.shutdown(wait=False, cancel_futures=True)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for run in RunStore(Store(garden).config.garden_dir).active():
+            if run.pid:
+                run.kill()
+
+
 def test_inbox_renders_taskless_question_once(garden, monkeypatch):
     from garden.scheduler import Scheduler
 

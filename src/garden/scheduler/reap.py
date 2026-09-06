@@ -809,6 +809,11 @@ class ReapMixin:
             process_missing = run.pid is None
             process_dead = not process_missing and run.process_finished()
             if no_exit_code and (process_missing or process_dead):
+                # A recovery operation with no worker pid is durable pending work, not live
+                # work.  Its client replays the same key after a server restart, which resumes
+                # preparation on this record; never close it or let a tick duplicate it.
+                if run.idempotency_key and run.status in ("requested", "preparing"):
+                    continue
                 task = tasks.get(run.task_id)
                 # A terminal task can still have a worktree that the terminal sweep
                 # protects with this record (for example while a human finishes a

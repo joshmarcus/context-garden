@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,21 @@ def test_run_setup_runs_once_then_reuses(tmp_path):
     assert setup_marker(wt).exists()
     # marker lives beside the worktree, never inside the checkout
     assert setup_marker(wt).parent == wt.parent
+
+
+def test_concurrent_setup_recovery_executes_command_once(tmp_path):
+    """A replacement preparation waits for an orphaned setup shell and consumes its
+    durable stamp, rather than starting the same setup work again."""
+    wt = tmp_path / "worktrees" / "T-1"
+    wt.mkdir(parents=True)
+    tally = tmp_path / "count.txt"
+    setup = {"command": f"sleep .2; echo x >> {tally}"}
+    threads = [threading.Thread(target=run_setup, args=(wt, setup)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(2)
+    assert tally.read_text() == "x\n"
 
 
 def test_run_setup_reruns_when_command_changes(tmp_path):
