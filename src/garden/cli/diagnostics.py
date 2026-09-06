@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import shutil
 from pathlib import Path
 
@@ -30,6 +32,51 @@ def runs(task_id: str | None = typer.Argument(None)):
                       str(r.usage.get("output_tokens", "")),
                       f"${r.cost_usd:.2f}" if r.cost_usd is not None else "")
     console.print(table)
+
+
+@app.command("archive-runs", rich_help_panel=PANEL_DIAG)
+def archive_runs(
+    older_than_days: int = typer.Option(30, min=1, help="Archive terminal runs finished before this many days ago."),
+):
+    """Move old terminal runs to .garden/run-archive and keep a compact history index.
+
+    Running, unreaped, and run ids still referenced by recovery state are always retained.
+    The operation is atomic per run and safe to retry; its index is rebuilt and verified
+    on every invocation.
+    """
+    from ..runs import RunStore
+
+    store = _store()
+    state_path = store.config.garden_dir / "state.json"
+    try:
+        state_text = json.dumps(json.loads(state_path.read_text())) if state_path.exists() else ""
+    except (OSError, json.JSONDecodeError):
+        err.print("[red]state.json is unreadable; refusing to archive recovery evidence[/red]")
+        raise typer.Exit(2) from None
+    rs = RunStore(store.config.garden_dir)
+    protected = {r.run_id for r in rs.all_runs() if r.run_id in state_text}
+    before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
+    try:
+        moved = rs.archive_terminal(before, protected)
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from None
+    console.print(
+        f"archived {moved} terminal run(s) finished before {before.isoformat()} to "
+        f"{rs.archive_dir}; retained {len(protected)} recovery-referenced run(s)"
+    )
+
+
+@app.command("restore-run", rich_help_panel=PANEL_DIAG)
+def restore_run(task_id: str, run_id: str):
+    """Restore one archived run to the active run directory for recovery work."""
+    from ..runs import RunStore
+
+    rs = RunStore(_store().config.garden_dir)
+    if not rs.restore_archived(task_id, run_id):
+        err.print("[red]archived run not found, or an active record already exists[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"restored {task_id}/{run_id} to {rs.dir}")
 
 
 @app.command("log", rich_help_panel=PANEL_BOARD)

@@ -116,6 +116,7 @@ Git is the database. The split between the four stores is deliberate.
 | `<product>/<phase>/tasks/*.md` | one task per file: YAML frontmatter is the state (`status`, `depends_on`, `priority`, `difficulty`, `branch`, `pr`, `attempts`, `last_dispatched_at`), the body is what the worker reads, `## Log` is one line per transition | humans (everything but the scheduler-owned fields), the planner, the scheduler | reviewable in git, readable by people, the source of truth for *state* |
 | `.garden/state.json` | per-task bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; safe to delete and rebuild from GitHub, at the cost of one poll; concurrent writers are safe (see below) |
 | `.garden/runs/<task>/<run>/` | one directory per worker run: the exact brief, raw output, exit code, usage and cost | runners and the scheduler | the audit trail and the token ledger |
+| `.garden/run-archive/<task>/<run>/` | old terminal run artifacts plus `index.json`, a compact metadata ledger | `garden archive-runs` | keeps transcripts available on demand without putting their directories in ordinary request scans |
 | `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
@@ -123,6 +124,21 @@ Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the tas
 `reservations.json` (durable id reservations, below).
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
+
+Run metadata is indexed in process and shared by scheduler/read facades. A writer in the
+process invalidates it immediately; writes from another process appear within one second. One
+caller rebuilds an expired view while concurrent callers wait for that result, so page
+partials cannot fan out into duplicate history scans. The archive's compact `index.json`
+participates in costs and run listings; ordinary reads never walk the archive tree.
+
+`garden archive-runs --older-than-days 30` moves only terminal runs with a recorded finish
+before the cutoff. It retains running/unreaped records and any run id still named by
+`state.json` recovery bookkeeping. Each move and the manifest replacement is atomic, and a
+retry rebuilds the manifest from the archive, making interruption recoverable. `garden
+restore-run TASK RUN` returns one run and all of its logs to `.garden/runs`. A missing or
+invalid manifest is reported by the run store rather than inferred as empty history. Deploy
+the indexed reader by restarting `garden serve` normally; no cache file or temporary
+operator parsing cache is retained, and active workers remain detached across the restart.
 
 Fence manifests protect live config, state and concurrently active run evidence. They are
 stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while

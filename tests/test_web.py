@@ -1,8 +1,11 @@
+import os
+import statistics
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from garden.runs import Run
+from garden.runs import Run, RunStore
 from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
@@ -23,6 +26,31 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_initial_pages_stay_bounded_with_large_run_history(garden):
+    rs = RunStore(garden / ".garden")
+    for n in range(3000):
+        run_dir = rs.dir / f"DM-{n % 2 + 1:03d}" / f"20260101T{n:06d}Z-work"
+        Run(task_id=f"DM-{n % 2 + 1:03d}", run_id=run_dir.name, dir=str(run_dir), runner="local",
+            started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
+            status="done", cost_usd=0.01).save()
+    for n in range(3):
+        run_dir = rs.dir / f"LIVE-{n}" / f"20260906T17000{n}Z-work"
+        Run(task_id=f"LIVE-{n}", run_id=run_dir.name, dir=str(run_dir), runner="local", pid=os.getpid(),
+            started_at="2026-09-06T17:00:00+00:00", status="running").save()
+    c = client(garden)
+    timings = []
+    scans = rs.scan_count
+    for url in ("/", "/board", "/partials/board", "/now2", "/now2/period") * 2:
+        started = time.perf_counter()
+        assert c.get(url).status_code == 200
+        timings.append(time.perf_counter() - started)
+
+    p95 = statistics.quantiles(timings, n=20)[18]
+    print(f"3003 runs, 3 active: page p95={p95:.3f}s max={max(timings):.3f}s scans={rs.scan_count - scans}")
+    assert p95 < 2.0
+    assert rs.scan_count - scans <= len(timings)
 
 
 def test_design_files_are_safe_and_use_the_product_checkout(garden):

@@ -110,6 +110,7 @@ class Scheduler(
         log: Callable[[str], None] | None = None,
         upgrader: Any | None = None,
         restarter: Callable[[], None] | None = None,
+        read_only: bool = False,
     ):
         self.store = store
         self.cfg = store.config
@@ -118,10 +119,11 @@ class Scheduler(
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self.log = log or (lambda msg: None)
-        self._migrate_fence_bookkeeping()
-        # A new CLI process has no old Store instance to compare against.  Check active
-        # dispatch manifests before constructing anything that could use garden.yaml.
-        self._hold_startup_config_against_fences()
+        if not read_only:
+            self._migrate_fence_bookkeeping()
+            # A new CLI process has no old Store instance to compare against.  Check active
+            # dispatch manifests before constructing anything that could use garden.yaml.
+            self._hold_startup_config_against_fences()
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.

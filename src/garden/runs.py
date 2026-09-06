@@ -14,7 +14,9 @@ import datetime as dt
 import json
 import os
 import signal
+import threading
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +24,31 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import Config
     from .events import EventLog
+
+
+_INDEXES: dict[Path, _RunIndex] = {}
+_INDEXES_LOCK = threading.Lock()
+
+
+@dataclass
+class _RunIndex:
+    """One process-wide, short-lived view of run metadata for a garden.
+
+    Web requests create many RunStore instances.  Sharing this view means concurrent
+    requests coalesce onto one scan rather than each parsing every run.  Writers bump
+    ``generation`` immediately; otherwise the one-second maximum age bounds visibility of
+    changes made by another process.
+    """
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    generation: int = 0
+    built_generation: int = -1
+    built_at: float = 0.0
+    runs: tuple[Run, ...] = ()
+    by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    active: tuple[Run, ...] = ()
+    totals: dict[str, Any] = field(default_factory=dict)
+    scans: int = 0
 
 
 @dataclass
@@ -66,10 +93,12 @@ class Run:
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
+        _invalidate_index(self.path.parents[1])
 
     @classmethod
     def load(cls, d: Path) -> Run:
         data = json.loads((d / "run.json").read_text())
+        data["dir"] = str(d)
         return cls(**data)
 
     # ---- process state -----------------------------------------------------
@@ -232,9 +261,96 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _invalidate_index(runs_dir: Path) -> None:
+    key = runs_dir.resolve()
+    with _INDEXES_LOCK:
+        idx = _INDEXES.get(key)
+    if idx is not None:
+        with idx.lock:
+            idx.generation += 1
+
+
 class RunStore:
+    MAX_INDEX_AGE_SECONDS = 1.0
+
     def __init__(self, garden_dir: Path):
         self.dir = garden_dir / "runs"
+        self.archive_dir = garden_dir / "run-archive"
+        key = self.dir.resolve()
+        with _INDEXES_LOCK:
+            self._index = _INDEXES.setdefault(key, _RunIndex())
+
+    def invalidate(self) -> None:
+        _invalidate_index(self.dir)
+
+    def _snapshot(self) -> list[Run]:
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.runs))
+
+    def _ensure_index(self) -> _RunIndex:
+        idx = self._index
+        now = time.monotonic()
+        with idx.lock:
+            if idx.built_generation != idx.generation or now - idx.built_at > self.MAX_INDEX_AGE_SECONDS:
+                found: list[Run] = []
+                if self.dir.exists():
+                    for run_json in self.dir.glob("*/*/run.json"):
+                        try:
+                            found.append(Run.load(run_json.parent))
+                        except (OSError, json.JSONDecodeError, TypeError):
+                            continue
+                found.extend(self._archived_runs())
+                found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
+                idx.runs = tuple(found)
+                grouped: dict[str, list[Run]] = {}
+                for run in found:
+                    grouped.setdefault(run.task_id, []).append(run)
+                idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
+                idx.active = tuple(run for run in found if run.status == "running")
+                idx.totals = _totals(found)
+                idx.built_generation = idx.generation
+                idx.built_at = time.monotonic()
+                idx.scans += 1
+            return idx
+
+    def _archived_runs(self) -> list[Run]:
+        """Read the compact archive index, never the archived directory tree."""
+        manifest = self.archive_dir / "index.json"
+        if not manifest.exists():
+            return []
+        try:
+            rows = json.loads(manifest.read_text()).get("runs", [])
+            for row in rows:
+                row["dir"] = str(self.archive_dir / row["task_id"] / row["run_id"])
+            return [Run(**row) for row in rows]
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            return []
+
+    def archive_health(self) -> str:
+        """Return an honest, cheap archive problem description, or an empty string."""
+        manifest = self.archive_dir / "index.json"
+        if not self.archive_dir.exists():
+            return ""
+        if not manifest.exists():
+            return "archive index is missing; run garden archive-runs to verify and rebuild it"
+        try:
+            rows = json.loads(manifest.read_text()).get("runs")
+            if not isinstance(rows, list):
+                raise TypeError
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            return "archive index is unreadable; run garden archive-runs to verify and rebuild it"
+        return ""
+
+    @property
+    def scan_count(self) -> int:
+        """Diagnostic count used by bounded-work regression tests and measurements."""
+        return self._index.scans
+
+    @property
+    def generation(self) -> int:
+        """Changes immediately after an in-process run metadata write."""
+        return self._index.generation
 
     def next_run_id(self, task_id: str, mode: str) -> str:
         """Reserve the id `new_run` would generate for `task_id`/`mode` right now, without
@@ -273,18 +389,9 @@ class RunStore:
         return run
 
     def runs_for(self, task_id: str) -> list[Run]:
-        d = self.dir / task_id
-        if not d.exists():
-            return []
-        out = []
-        for rd in sorted(d.iterdir()):
-            if (rd / "run.json").exists():
-                try:
-                    out.append(Run.load(rd))
-                except (json.JSONDecodeError, TypeError):
-                    continue
-        out.sort(key=lambda r: (r.started_at, r.run_id))
-        return out
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.by_task.get(task_id, ())))
 
     def latest(self, task_id: str) -> Run | None:
         runs = self.runs_for(task_id)
@@ -294,29 +401,12 @@ class RunStore:
         return runs[-1] if runs else None
 
     def all_runs(self) -> list[Run]:
-        if not self.dir.exists():
-            return []
-        out: list[Run] = []
-        for td in sorted(self.dir.iterdir()):
-            if td.is_dir():
-                out.extend(self.runs_for(td.name))
-        return out
+        return self._snapshot()
 
     def active(self) -> list[Run]:
-        # Do not materialise every completed Run just to find the handful in flight. Run
-        # history is intentionally durable and can contain thousands of records.
-        if not self.dir.exists():
-            return []
-        active: list[Run] = []
-        for run_json in self.dir.glob("*/*/run.json"):
-            try:
-                data = json.loads(run_json.read_text())
-                if data.get("status") == "running":
-                    active.append(Run(**data))
-            except (OSError, json.JSONDecodeError, TypeError):
-                continue
-        active.sort(key=lambda r: (r.started_at, r.run_id))
-        return active
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.active))
 
     def usage_for(self, task_id: str) -> dict[str, Any]:
         """Tokens and cost across every run of one task, split by run mode."""
@@ -335,23 +425,99 @@ class RunStore:
         return {tid: _rollup(rs) for tid, rs in out.items()}
 
     def totals(self) -> dict[str, Any]:
-        runs = self.all_runs()
-        cost = sum(r.cost_usd or 0.0 for r in runs)
-        inp = sum(int(r.usage.get("input_tokens", 0) or 0) for r in runs)
-        out = sum(int(r.usage.get("output_tokens", 0) or 0) for r in runs)
-        cache_read = sum(int(r.usage.get("cache_read_input_tokens", 0) or 0) for r in runs)
-        return {
-            "runs": len(runs),
-            "cost_usd": round(cost, 4),
-            "input_tokens": inp,
-            "output_tokens": out,
-            "cache_read_input_tokens": cache_read,
-        }
+        idx = self._ensure_index()
+        with idx.lock:
+            return dict(idx.totals)
+
+    def costs_by_task(self) -> dict[str, float]:
+        """Compact cost rollup for status/budget reads without materialising Run objects."""
+        idx = self._ensure_index()
+        with idx.lock:
+            return {
+                task: round(sum(run.cost_usd or 0.0 for run in runs), 4)
+                for task, runs in idx.by_task.items()
+            }
 
     def spend_since(self, since_iso: str) -> float:
         """Total cost_usd of runs that finished at or after `since_iso` (an events.parse_since
         cutoff), for a spend-rate reading beside the operating profile (CG-221)."""
         return round(sum(r.cost_usd or 0.0 for r in self.all_runs() if (r.finished_at or "") >= since_iso), 4)
+
+    def archive_terminal(self, before: dt.datetime, protected_run_ids: set[str] | None = None) -> int:
+        """Move old terminal run directories out of the active working set.
+
+        Selection is deliberately conservative: a record must have a terminal status,
+        a recorded finish before ``before``, and must not be named by recovery state.
+        Each directory move is atomic.  The archive index is then rebuilt from the
+        archive itself, so retrying after interruption repairs a move that happened
+        before its index write without losing or double-counting the run.
+        """
+        protected = protected_run_ids or set()
+        terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
+        moved = 0
+        for run in self._active_disk_runs():
+            if run.status not in terminal or not run.finished_at or run.run_id in protected:
+                continue
+            try:
+                finished = dt.datetime.fromisoformat(run.finished_at)
+            except ValueError:
+                continue
+            if finished >= before:
+                continue
+            target = self.archive_dir / run.task_id / run.run_id
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                continue
+            os.replace(run.path, target)
+            moved += 1
+        self.rebuild_archive_index()
+        self.invalidate()
+        return moved
+
+    def restore_archived(self, task_id: str, run_id: str) -> bool:
+        """Restore one archived run atomically for recovery or inspection tooling."""
+        source = self.archive_dir / task_id / run_id
+        if not source.exists():
+            return False
+        target = self.dir / task_id / run_id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            return False
+        os.replace(source, target)
+        self.rebuild_archive_index()
+        self.invalidate()
+        return True
+
+    def rebuild_archive_index(self) -> int:
+        """Verify archived metadata and atomically replace its compact index."""
+        rows: list[dict[str, Any]] = []
+        invalid: list[str] = []
+        if self.archive_dir.exists():
+            for run_json in self.archive_dir.glob("*/*/run.json"):
+                try:
+                    run = Run.load(run_json.parent)
+                except (OSError, json.JSONDecodeError, TypeError):
+                    invalid.append(str(run_json))
+                    continue
+                rows.append(asdict(run))
+        if invalid:
+            raise ValueError(f"archive contains {len(invalid)} unreadable run record(s): {invalid[0]}")
+        rows.sort(key=lambda row: (row.get("started_at", ""), row.get("task_id", ""), row.get("run_id", "")))
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.archive_dir / "index.json.tmp"
+        tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
+        os.replace(tmp, self.archive_dir / "index.json")
+        return len(rows)
+
+    def _active_disk_runs(self) -> list[Run]:
+        out: list[Run] = []
+        if self.dir.exists():
+            for run_json in self.dir.glob("*/*/run.json"):
+                try:
+                    out.append(Run.load(run_json.parent))
+                except (OSError, json.JSONDecodeError, TypeError):
+                    continue
+        return out
 
     def backfill_codex_costs(self, config: Config, events: EventLog | None = None) -> int:
         """Recompute usage/cost_usd/model for every codex run from its stored transcript
@@ -411,3 +577,10 @@ def _rollup(runs: list[Run]) -> dict[str, Any]:
     for m in tot["by_mode"].values():
         m["cost_usd"] = round(m["cost_usd"], 4)
     return tot
+
+
+def _totals(runs: list[Run]) -> dict[str, Any]:
+    rollup = _rollup(runs)
+    return {key: rollup[key] for key in (
+        "runs", "cost_usd", "input_tokens", "output_tokens", "cache_read_input_tokens"
+    )}
