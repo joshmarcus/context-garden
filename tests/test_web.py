@@ -3,6 +3,7 @@ import os
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from garden.runs import Run, RunStore
@@ -30,9 +31,10 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
-def test_initial_pages_stay_bounded_with_large_run_history(garden):
+@pytest.mark.parametrize("history_size", [1546, 6000])
+def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")
-    for n in range(3000):
+    for n in range(history_size):
         run_dir = rs.dir / f"DM-{n % 2 + 1:03d}" / f"20260101T{n:06d}Z-work"
         Run(task_id=f"DM-{n % 2 + 1:03d}", run_id=run_dir.name, dir=str(run_dir), runner="local",
             started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
@@ -55,11 +57,11 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden):
             time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
 
     p95 = sorted(timings)[math.ceil(0.95 * len(timings)) - 1]
-    print(f"3003 runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
+    print(f"{history_size + 3} runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
           f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
     assert p95 < 2.0
     assert p95 <= max(timings)
-    assert rs.read_count - reads == 3003
+    assert rs.read_count - reads == history_size + 3
 
 
 def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):
