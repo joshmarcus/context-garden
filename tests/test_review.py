@@ -263,6 +263,16 @@ def test_review_brief_advertises_description_rewrite(garden):
     assert "rewrite the description yourself" in text
 
 
+def test_review_brief_marks_an_amended_criterion(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The revised outcome works.\n"
+    task.extra["criteria_amended"] = [{"index": 0, "text": "The revised outcome works.", "reason": "The original was false."}]
+    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+a", max_diff_chars=1000)
+    assert "## Amended acceptance criteria" in text
+    assert "amended — The original was false." in text
+
+
 def test_review_description_only_rewrite_applied_without_a_round(sched, fake_github, monkeypatch):
     """description_ok false, no blocking finding, rewrite supplied: the scheduler updates the PR
     body through the API and starts no revise round."""

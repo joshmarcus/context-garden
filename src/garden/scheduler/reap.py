@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import to_feedback
-from ..criteria import apply_verification, parse_criteria
+from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -59,6 +59,33 @@ class ReapMixin:
         return bool(result.get("improvements_declined")) or any(
             isinstance(row, dict) and row.get("not_done") for row in verified
         )
+
+    def _apply_criteria_amendments(self, task: Task, run: Run, result: dict[str, Any]) -> None:
+        """Persist a worker's narrowly-scoped criterion correction before routing its result."""
+        body, applied = amend_criteria(task.body, result.get("criteria_amended"))
+        if not applied:
+            return
+        recorded = list(task.extra.get("criteria_amended") or [])
+        new_amendments = [
+            amendment for amendment in applied
+            if not any(
+                existing.get("run") == run.run_id
+                and all(existing.get(field) == amendment[field] for field in ("index", "text", "reason"))
+                for existing in recorded if isinstance(existing, dict)
+            )
+        ]
+        if not new_amendments:
+            return
+        task.body = body
+        for amendment in new_amendments:
+            recorded.append({**amendment, "run": run.run_id})
+            task.log(
+                f"acceptance criterion {amendment['index'] + 1} amended: "
+                f"{amendment['reason']}"
+            )
+            self.events.emit("criteria_amended", task.id, run=run.run_id, **amendment)
+        task.extra["criteria_amended"] = recorded
+        self.store.save(task)
 
     def _cleanup_reaped_temp_dirs(self) -> None:
         """Remove disk-backed temp directories once their local run is no longer active."""
@@ -192,6 +219,7 @@ class ReapMixin:
         # can no longer re-emit it (CG-198). A resumed finalize skips the emit because the first
         # pass already made it, so the run's cost is never counted twice (CG-153).
         run.save()
+        self._apply_criteria_amendments(task, run, result)
         if not resumed:
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
