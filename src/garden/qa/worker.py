@@ -24,6 +24,15 @@ from pathlib import Path
 
 MARKER = re.compile(r"^qa-worker:\s*([a-z_]+)\s*$", re.M)
 
+PREFLIGHT_ITEMS = (
+    "A test or stated reason for every acceptance criterion",
+    "Lint is clean",
+    "No conflict markers remain",
+    "UI changes have 1280px and 390px captures",
+    "The PR description states the goal and outcome without process history",
+    "Every acceptance criterion is addressed by name",
+)
+
 PLAN = [
     {"title": "Planned: a plain task", "priority": 1, "estimate": "S", "difficulty": "easy", "depends_on": [], "reading": [],
      "body": "## Goal\n\nA task the planner wrote. The worker finishes it in one round.\n\n## Acceptance criteria\n\n- [ ] The plain task lands with a passing test.\n\nqa-worker: done\n"},
@@ -75,6 +84,11 @@ def main() -> None:
         "summary": "revised per feedback" if revise else ("resumed and finished" if resumed else "implemented the thing"),
         "pr_title": "QA: implemented the thing",
         "pr_body": "## What\n\nA change made by the QA worker.\n",
+        "pre_flight": [
+            {"item": item, "status": "not_applicable" if item.startswith("UI changes") else "pass",
+             "evidence": "QA worker clean check"}
+            for item in PREFLIGHT_ITEMS
+        ],
         "notes": "",
     }
     emit("All done.\nGARDEN_RESULT: " + json.dumps(result), 0.05)
