@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
-from ..criteria import criteria_counts
+from ..criteria import criteria_counts, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -174,12 +174,20 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
-        pr_title, pr_body, pr_comment, verified = task.title, "", "", None
+        pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
             pr_comment = str(work_run.result.get("pr_comment") or "")
             verified = work_run.result.get("verified")
+            pre_flight = work_run.result.get("pre_flight")
+        criteria_snapshot = list((work_run.env_snapshot or {}).get("criteria") or []) if work_run else []
+        if not criteria_snapshot:
+            for prior in reversed(self.runs.runs_for(task.id)):
+                if prior.mode in ("work", "revise", "resume"):
+                    criteria_snapshot = list((prior.env_snapshot or {}).get("criteria") or [])
+                    if criteria_snapshot:
+                        break
         if verified is None:
             verified = self._last_worker_verified(task)
         slug = self.slug_for(task)
@@ -204,13 +212,15 @@ class ReviewMixin:
                 break
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment, verified=verified, captures=capture_paths)
+                            pr_comment=pr_comment, verified=verified, captures=capture_paths,
+                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight)
         run = self.runs.new_run(task.id, runner.name, mode="review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages))}
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+                            "criteria": criteria_snapshot}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -396,6 +406,9 @@ class ReviewMixin:
                     self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                     return True
                 fb = feedback_from_review(review)
+                changed = self._criteria_changed_note(task, run)
+                if changed:
+                    fb = (fb + "\n\n" + changed).strip()
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
@@ -408,6 +421,9 @@ class ReviewMixin:
                 # rewrite to apply directly: dispatch a description-only revise round rather
                 # than leaving the flagged description sitting on an in_review task forever.
                 fb = feedback_from_review(review)
+                changed = self._criteria_changed_note(task, run)
+                if changed:
+                    fb = (fb + "\n\n" + changed).strip()
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = True
@@ -423,6 +439,19 @@ class ReviewMixin:
                   f"automated review: {verdict} — {review.get('summary', '')}{cost}", task.pr or "")
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    def _criteria_changed_note(self, task: Task, review_run: Run) -> str:
+        """Add task edits made after dispatch to the next revise brief."""
+        frozen = list((review_run.env_snapshot or {}).get("criteria") or [])
+        current = parse_criteria(task.body)
+        if not frozen or frozen == current:
+            return ""
+        added = [item for item in current if item not in frozen]
+        removed = [item for item in frozen if item not in current]
+        lines = ["### Criteria changed after dispatch", "", "The review judged the frozen criteria in your prior brief. The task was edited while you worked; address this delta now:"]
+        lines += [f"- Added: {item}" for item in added]
+        lines += [f"- Removed: {item}" for item in removed]
+        return "\n".join(lines)
 
     def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
         """The reviewer found nothing blocking but the description, and returned the corrected

@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import gitops
 from ..brief import build_brief
+from ..criteria import parse_criteria
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -346,6 +347,9 @@ class DispatchMixin:
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
+        # The task can be edited while this run is in flight. Preserve exactly what this
+        # worker was asked to meet, so review never silently moves its goalposts.
+        run.env_snapshot["criteria"] = parse_criteria(task.body)
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())

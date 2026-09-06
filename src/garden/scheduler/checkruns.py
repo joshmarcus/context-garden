@@ -20,6 +20,7 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..model import Status, Task, now_iso
+from ..preflight import mechanical_results
 from ..runs import Run
 from .report import TickReport
 
@@ -137,6 +138,19 @@ class CheckRunMixin:
         worktree = Path(cont["worktree"])
         branch, base = cont["branch"], cont["base"]
         stalled = bool(cont.get("stalled"))
+        failed = check_failures(results)
+        worker_result = worker_run.result if worker_run is not None else self._last_worker_result(task)
+        changed = gitops.diff_names(worktree, base)
+        ui = [item for item in results if item.get("name") == "ui"]
+        captures = [str(path) for item in ui for path in item.get("captures", [])]
+        mechanical = mechanical_results(
+            worktree, base, str(worker_result.get("pr_body") or ""),
+            require_description=not bool(task.pr), ui_changed=any(_is_ui_path(path) for path in changed),
+            captures=captures,
+        )
+        results.extend(mechanical)
+        run.result = {"checks": results}
+        run.save()
         failed = check_failures(results)
         if failed and not stalled:
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)

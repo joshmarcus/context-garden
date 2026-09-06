@@ -13,6 +13,7 @@ from ..criteria import apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
+from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
 from .report import TickReport
@@ -215,6 +216,16 @@ class ReapMixin:
             return
 
         self._file_discovered(task, run, result)
+
+        missing = missing_preflight(result.get("pre_flight"))
+        if missing:
+            run.status = "failed"
+            run.error = "missing review pre-flight: " + ", ".join(missing)
+            run.save()
+            failed = [{"name": "review pre-flight", "status": "fail",
+                       "summary": "missing items: " + ", ".join(missing), "details": ""}]
+            self._start_check_revise(task, failed, rep, cost)
+            return
 
         base = run.base or self.base_for(task)
         branch = run.branch or task.branch or task.default_branch()
