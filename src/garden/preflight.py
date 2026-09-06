@@ -29,7 +29,9 @@ The garden rejects a result that omits this list or any item. Mechanical failure
 back before review; include a stated reason rather than silently skipping an item.
 """
 
-_CONFLICT = re.compile(r"^(?:<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
+# A regular unified diff prefixes newly-added source lines with ``+``.  Match both
+# that form and raw file content, but not a marker removed from the branch.
+_CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
 
 
 def preflight_section() -> str:
@@ -64,8 +66,13 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
     for name in names:
         if not name.endswith(".py"):
             continue
+        path = worktree / name
+        # A deleted Python module is still listed by `git diff --name-only`, but
+        # it cannot be a syntax error in the candidate branch.
+        if not path.is_file():
+            continue
         try:
-            py_compile.compile(str(worktree / name), doraise=True)
+            py_compile.compile(str(path), doraise=True)
         except (OSError, py_compile.PyCompileError) as exc:
             syntax_error = str(exc).splitlines()[-1]
             break

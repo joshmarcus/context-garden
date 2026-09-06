@@ -22,7 +22,7 @@ def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
     (worktree / "bad.py").write_text("def broken(:\n")
     from garden import gitops
 
-    monkeypatch.setattr(gitops, "diff", lambda *_args: "<<<<<<< ours\n=======\n>>>>>>> theirs\n")
+    monkeypatch.setattr(gitops, "diff", lambda *_args: "+<<<<<<< ours\n+=======\n+>>>>>>> theirs\n")
     monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["bad.py", "src/garden/web/page.html"])
     results = mechanical_results(worktree, "main", "", require_description=True, ui_changed=True, captures=[])
     failed = {row["name"] for row in results if row["status"] == "fail"}
@@ -42,6 +42,18 @@ def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
     assert {row["status"] for row in results} == {"pass"}
 
 
+def test_mechanical_preflight_ignores_deleted_python_modules(garden, monkeypatch):
+    worktree = garden / "deleted"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "diff", lambda *_args: "-def old(:\n")
+    monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["removed.py"])
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+    assert {row["status"] for row in results} == {"pass"}
+
+
 def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
     store = Store(garden)
     task = store.task("DM-001")
@@ -56,6 +68,29 @@ def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
     assert frozen[0] in text
     assert "## Criteria changed after dispatch" in text
     assert "The later criterion is met." in text
+
+
+def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monkeypatch):
+    """The first review is against the worker's contract; the edit reaches revise."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original criterion is met.\n"
+    sched.store.save(task)
+    sched.tick()  # dispatch work with the original criteria
+    task = sched.store.task("DM-001")
+    task.body = task.body.replace("The original criterion is met.", "The later criterion is met.")
+    sched.store.save(task)
+    sched.store.invalidate()  # emulate the next scheduler tick seeing the task-file edit
+
+    sched.tick()  # reap work, open PR, and dispatch review
+    sched.tick()  # reap review and dispatch revise
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "### Criteria changed after dispatch" in brief
+    assert "Added: The later criterion is met." in brief
+    assert "Removed: The original criterion is met." in brief
 
 
 def test_static_assets_are_ui_changes():
