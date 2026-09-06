@@ -156,7 +156,7 @@ def test_phase_specimens_goals_attention_and_held_reason(garden):
     ph.goals_path.write_text('# Phase\n\n## Goals\n\n1. Make adoption easy.\n2. Measure cost.\n')
     p = phase_rows(s, sched)[0]
     assert p['stage'] == 'bud' and p['done'] == 1 and p['total'] == 2
-    assert p['goals'] == ['Make adoption easy.', 'Measure cost.']
+    assert [g['label'] for g in p['goals']] == ['Make adoption easy.', 'Measure cost.']
     ph.meta['closed'] = '2026-09-06'
     s.task('DM-002').status = Status.CANCELLED
     assert phase_rows(s, sched)[0]['stage'] == 'fruit'
@@ -185,3 +185,70 @@ def test_stream_observes_transcript_and_ledger_without_domain_event(garden):
     before = versions(s.root, s.config.garden_dir)
     (run.path / 'stdout.json').write_text('new output\n')
     assert versions(s.root, s.config.garden_dir) != before
+
+
+def test_goal_marks_follow_explicit_membership_and_task_progress(garden):
+    from garden.model import Status
+    from garden.now2 import goal_rows
+
+    s = Store(garden)
+    first, second = s.task('DM-001'), s.task('DM-002')
+    text = ('## Goals\n1. **Adoption.** Ship DM-001.\n'
+            '2. **Measurement.**\n   Follow DM-002 and DM-001.\n'
+            '3. No mapping.\n4. Missing DM-0010.\n'
+            '## Decisions\nDM-002 must not become part of goal four.\n')
+    first.status, second.status = Status.DONE, Status.READY
+    rows = goal_rows(text, s.tasks())
+    assert [r['status'] for r in rows] == ['Merged', 'In flight', 'Progress not mapped', 'Progress not mapped']
+    assert rows[1]['detail'] == '1 / 2 linked tasks done'
+    assert 'unresolved' in rows[3]['detail']
+    for status in (Status.DRAFT, Status.READY):
+        first.status = status
+        assert goal_rows(text, s.tasks())[0]['status'] == 'Not started'
+    for status in (Status.RUNNING, Status.IN_REVIEW, Status.CHANGES_REQUESTED,
+                   Status.WAITING_HUMAN, Status.MERGED_INTO_PARENT, Status.FAILED):
+        first.status = status
+        assert goal_rows(text, s.tasks())[0]['status'] == 'In flight'
+    for status in (Status.CANCELLED, Status.WONT_DO):
+        first.status = status
+        assert goal_rows(text, s.tasks())[0]['status'] == 'Progress not mapped'
+    first.status, first.attempts = Status.READY, 1
+    assert goal_rows(text, s.tasks())[0]['status'] == 'In flight'
+    first.status = second.status = Status.DONE
+    assert goal_rows(text, s.tasks())[1]['status'] == 'Merged'
+    assert goal_rows('## Goals\n### A goal\nDM-001\n', s.tasks())[0]['status'] == 'Merged'
+
+
+def test_goal_marks_render_in_page_cli_and_stream_after_merge(garden):
+    from garden.now2 import text_view
+
+    s = Store(garden)
+    ph = s.products()[0].phases[0]
+    ph.goals_path.write_text('## Goals\n1. **Adoption.** DM-001\n2. **Measurement.** DM-002\n')
+    first = s.task('DM-001')
+    first.path.write_text(first.path.read_text().replace('status: ready', 'status: running'))
+    s.invalidate_tasks()
+    app = create_app(s)
+    with TestClient(app) as client:
+        html = client.get('/now2').text
+    assert 'In flight · 0 / 1 linked tasks done' in html
+    assert 'Not started · 0 / 1 linked tasks done' in html
+    assert '→ Adoption. · In flight' in text_view(snapshot(s))
+    endpoint = next(r.endpoint for r in app.routes if getattr(r, 'path', '') == '/api/events/now2')
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    async def drive():
+        it = endpoint(Request(), 'hour', '').body_iterator
+        await anext(it)
+        first.path.write_text(first.path.read_text().replace('status: running', 'status: done'))
+        s.invalidate_tasks()
+        EventLog(s.config.garden_dir / 'events.jsonl').emit('transition', first.id, to='done')
+        message = await anext(it)
+        payload = json.loads(message.split('data: ', 1)[1])
+        assert 'Merged · 1 / 1 linked tasks done' in payload['fragments']['now2-where']
+        assert '✓ Adoption. · Merged' in text_view(snapshot(s))
+        await it.aclose()
+    asyncio.run(drive())

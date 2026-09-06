@@ -12,7 +12,7 @@ from .costs import cost_series
 from .events import EventLog, metrics, with_run_records
 from .graph import blockers
 from .inbox import build_inbox, decisions
-from .model import Status, goals_text, phase_refusal
+from .model import Status, Task, goals_text, phase_refusal
 from .outcomes import format_cell, timestamp
 from .runs import Run, RunStore
 from .scheduler import Scheduler
@@ -149,6 +149,43 @@ def next_queues(s: Store, sched: Scheduler) -> dict:
             "review_busy": len(sched.review_runs_active()), "review_limit": sched.review_parallel_limit()}
 
 
+def goal_rows(text: str, tasks: dict[str, Task]) -> list[dict]:
+    """Read explicit task references in each goal, including its continuation lines.
+
+    A reference is membership, not a fuzzy title match. Missing references and
+    abandoned scope cannot prove completion; retain an explicit unknown state.
+    """
+    section = re.split(r"^## Goals\s*$", text, flags=re.M)
+    body = re.split(r"^## ", section[1], maxsplit=1, flags=re.M)[0] if len(section) > 1 else text
+    headings = list(re.finditer(r"^(?:\d+\.\s+|###\s+)(.+)", body, re.M))
+    rows = []
+    for i, heading in enumerate(headings):
+        block = body[heading.start():headings[i + 1].start() if i + 1 < len(headings) else len(body)]
+        refs = set(re.findall(r"(?<![\w-])[A-Z][A-Z0-9]*-\d+(?![\w-])", block))
+        members = [tasks[key] for key in sorted(refs) if key in tasks]
+        done = sum(t.status == Status.DONE for t in members)
+        started = any(t.status.active or t.status in (Status.DONE, Status.MERGED_INTO_PARENT, Status.FAILED)
+                      or t.attempts or t.last_dispatched_at for t in members if not t.status.terminal or t.status == Status.DONE)
+        if refs and len(members) == len(refs) and done == len(refs):
+            status, mark = "Merged", "✓"
+        elif started:
+            status, mark = "In flight", "→"
+        elif members and len(members) == len(refs) and all(t.status in (Status.DRAFT, Status.READY) for t in members):
+            status, mark = "Not started", "○"
+        else:
+            status, mark = "Progress not mapped", "?"
+        label = heading[1]
+        bold = re.match(r"\*\*(.+?)\*\*", label)
+        label = bold[1] if bold else re.sub(r"\s*\(?[A-Z][A-Z0-9]*-\d+\)?", "", label).strip()
+        detail = f"{done} / {len(refs)} linked tasks done" if refs else "No task references in this goal"
+        if refs - tasks.keys():
+            detail += " · unresolved task references"
+        if any(t.status in (Status.CANCELLED, Status.WONT_DO) for t in members):
+            detail += " · includes work set aside"
+        rows.append({"label": label, "status": status, "mark": mark, "detail": detail})
+    return rows
+
+
 def phase_rows(s: Store, sched: Scheduler) -> list[dict]:
     out = []
     for p in s.products():
@@ -159,12 +196,7 @@ def phase_rows(s: Store, sched: Scheduler) -> list[dict]:
             growth = ("fruit" if total and ph.closed and all(t.status.terminal for t in ph.tasks) else
                       "flower" if fraction >= .8 else "bud" if fraction >= .5 else
                       "leaf" if fraction >= .2 else "sprout" if done else "seed")
-            text = goals_text(ph.goals_path)
-            section = re.split(r"^## Goals\s*$", text, flags=re.M)
-            goal_text = re.split(r"^## ", section[1], maxsplit=1, flags=re.M)[0] if len(section) > 1 else text
-            labels = re.findall(r"^\d+\.\s+(.+)|^###\s+(.+)", goal_text, re.M)
-            goals = [a or b for a, b in labels]
-            goals = [re.match(r"\*\*(.+?)\*\*", g)[1] if re.match(r"\*\*(.+?)\*\*", g) else g for g in goals]
+            goals = goal_rows(goals_text(ph.goals_path), s.tasks())
             out.append({"phase": ph, "done": done, "total": total, "stage": growth, "fraction": fraction,
                         "cancelled": sum(t.status == Status.CANCELLED for t in ph.tasks),
                         "wont_do": sum(t.status == Status.WONT_DO for t in ph.tasks), "goals": goals,
@@ -272,7 +304,7 @@ def text_view(data: dict) -> str:
     lines += ["", "Where we are"]
     for p in data["phases"]:
         lines.append(f"{p['phase'].key} · {p['stage']} · {p['done']}/{p['total']} · {p['verdict']}")
-        lines += [f"  ○ {g} · Progress not mapped" for g in p["goals"]]
+        lines += [f"  {g['mark']} {g['label']} · {g['status']} · {g['detail']}" for g in p["goals"]]
     p = data["period"]
     lines += ["", "The last period", f"{p['since']} → {p['until']}",
               f"{p['matrices']['accepted_count']} tasks merged · first pass {format_cell(p['matrices']['first_pass'])}",
