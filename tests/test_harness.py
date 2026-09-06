@@ -314,6 +314,19 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
                    'fixed.\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{},"total_cost_usd":0.1}')
     assert done["env_error"] is False
 
+    # Codex's agent message is worker prose, even when it is short and contains the marker.
+    codex = Harness("codex", {})
+    agent_message = json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "The outage said not logged in, but the task is done."
+    }})
+    parsed = codex.parse(agent_message, model="gpt-5.6-luna")
+    assert parsed["env_error"] is False and parsed["env_kind"] == ""
+
+    # A short plain output with another garden result block is worker output too.
+    garden_block = "not logged in was discussed\nGARDEN_PERSONA: {}"
+    parsed = h.parse(garden_block)
+    assert parsed["env_error"] is False and parsed["env_kind"] == ""
+
 
 def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():
     """A worker that reads harness.py prints the quota pattern into its transcript; that is
