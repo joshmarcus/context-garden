@@ -14,6 +14,7 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 
 def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> int:
@@ -53,9 +54,21 @@ def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> in
         (cwd / filename).write_text(f"model={model}\nbrief={brief}\n")
         subprocess.run(["git", "add", "-A"], cwd=cwd, env=dict(env), check=True)
         subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake", "commit", "-q", "-m", "codex change"], cwd=cwd, env=dict(env), check=True)
-        final = "Done.\nGARDEN_RESULT: " + json.dumps({
+        result: dict[str, Any] = {
             "status": "needs_input" if waiting else "done", "question": "Which database?" if waiting else "",
-            "summary": f"codex did it with {model or 'default'}", "pr_title": "Codex PR", "pr_body": "body"})
+            "summary": f"codex did it with {model or 'default'}", "pr_title": "Codex PR", "pr_body": "body",
+        }
+        if not waiting:
+            result["pre_flight"] = [
+                {"item": item, "status": "pass", "evidence": "fake check"}
+                for item in (
+                    "A test or stated reason for every acceptance criterion", "Lint is clean",
+                    "No conflict markers remain", "UI changes have 1280px and 390px captures",
+                    "The PR description states the goal and outcome without process history",
+                    "Every acceptance criterion is addressed by name",
+                )
+            ]
+        final = "Done.\nGARDEN_RESULT: " + json.dumps(result)
     events = [
         {"type": "thread.started", "thread_id": "th_1"},
         {"type": "turn.started"},
