@@ -253,6 +253,61 @@ def test_fence_reuses_sibling_output_backup_across_dispatches(sched):
     assert cache_file.stat().st_mtime_ns == before.st_mtime_ns
 
 
+def test_fence_manifest_size_does_not_scale_with_completed_run_history(sched):
+    task = sched.store.task("DM-001")
+    baseline = _run_naming(sched, "DM-001", "nothing")
+    sched._fence_snapshot(task, baseline)
+    baseline_size = (baseline.path / "fence_guard.json").stat().st_size
+    baseline.status = "done"
+    baseline.save()
+
+    for n in range(40):
+        old = sched.runs.new_run(f"OLD-{n:03}", "local")
+        (old.path / "stdout.json").write_text("historical audit output\n" * 500)
+        old.status = "done"
+        old.save()
+
+    after_history = _run_naming(sched, "DM-001", "nothing")
+    sched._fence_snapshot(task, after_history)
+
+    assert (after_history.path / "fence_guard.json").stat().st_size == baseline_size
+    ref = sched.state.get(task.id)["fence_guard_manifest"]
+    assert ref == {"run": after_history.run_id, "sha256": ref["sha256"]}
+    assert len(json.dumps(ref)) < 160
+
+
+def test_fence_manifest_still_protects_a_concurrently_active_run(sched):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_text("active evidence before\n")
+    run = _run_naming(sched, "DM-001", str(output))
+
+    sched._fence_snapshot(task, run)
+    output.write_text("worker redirect\n")
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations
+    assert output.read_text() == "active evidence before\n"
+
+
+def test_legacy_completed_fence_state_is_compacted_under_state_save_lock(sched):
+    huge = json.dumps([{"rel": f"old/{n}", "sha": "x" * 64} for n in range(2_000)])
+    sched.state.get("OLD-001")["fence_guard_manifest"] = huge
+    sched.state.get("OLD-001")["fence"] = {"repo": {"status": huge}}
+    sched.state.get("_fence_guard_cache")["old/path"] = {"sha": "x" * 64}
+    sched.state.save()
+    before = sched.state.path.stat().st_size
+
+    sched._migrate_fence_bookkeeping()
+    saved = json.loads(sched.state.path.read_text())
+
+    assert "fence_guard_manifest" not in saved["OLD-001"]
+    assert "fence" not in saved["OLD-001"]
+    assert saved["_fence_guard_cache"] == {}
+    assert sched.state.path.stat().st_size < before / 100
+
+
 def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):
     """A well-behaved worker leaves garden.yaml and state.json alone: no false positive."""
     _init_repo(garden)
