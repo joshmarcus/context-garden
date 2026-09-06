@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+import re
 
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+
+from ...brief import brief_gaps
 from ...github import GitHubError
 from ...gitops import GitError
 from ...model import Status, Task, ensure_open
@@ -197,6 +200,34 @@ def reset_revisions(s: Store, sched: Scheduler, t: Task, note: str, applies_to: 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
+    @app.post("/tasks/{task_id}/brief")
+    def save_brief(task_id: str, acceptance: str = Form(""), reading: str = Form("")):
+        """Save a draft's brief repair only when it clears the shared approval gate."""
+        s = hub.fresh()
+        try:
+            t = s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        if t.status != Status.DRAFT:
+            raise HTTPException(400, "only draft briefs can be edited")
+        try:
+            with hub.action_lock:
+                t = hub.scheduler().store.task(task_id)
+                if t.status != Status.DRAFT:
+                    raise HTTPException(400, "only draft briefs can be edited")
+                t.body = _replace_acceptance_criteria(t.body, acceptance)
+                t.reading = [path.strip() for path in reading.splitlines() if path.strip()]
+                gaps = brief_gaps(s, t)
+                if gaps:
+                    return JSONResponse({"detail": "; ".join(gaps), "gaps": gaps}, status_code=422)
+                s.save(t)
+        except HTTPException:
+            raise
+        except Exception:
+            LOGGER.exception("brief edit on %s failed", task_id)
+            raise HTTPException(500, "something failed; see the log") from None
+        return {"gaps": []}
+
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form("")):
         s = hub.fresh()
@@ -233,3 +264,15 @@ def register(app: FastAPI, site: Site) -> None:
         if warning:
             return RedirectResponse(_flash_url(redirect_to, str(warning)), status_code=303)
         return RedirectResponse(redirect_to, status_code=303)
+
+def _replace_acceptance_criteria(body: str, acceptance: str) -> str:
+    """Replace or add the editable checklist while leaving every other task section intact."""
+    content = re.sub(r"(?im)^##\s+Acceptance criteria\s*$\n?", "", acceptance).strip()
+    section = f"## Acceptance criteria\n\n{content}\n"
+    match = re.search(r"(?ms)^##\s+Acceptance criteria\s*$.*?(?=^##\s|\Z)", body)
+    if match:
+        return body[:match.start()] + section + body[match.end():]
+    log = re.search(r"(?m)^##\s+Log\s*$", body)
+    if log:
+        return body[:log.start()].rstrip() + "\n\n" + section + "\n" + body[log.start():]
+    return body.rstrip() + "\n\n" + section

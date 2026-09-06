@@ -673,6 +673,18 @@ def test_garden_now_prints_the_four_regions(garden):
     assert now1.QUIET_PERIOD in r.output
 
 
+def test_garden_now_page_2_prints_the_four_regions(garden):
+    cwd = os.getcwd()
+    os.chdir(garden)
+    try:
+        r = CliRunner().invoke(app, ["now", "--page", "2"])
+    finally:
+        os.chdir(cwd)
+    assert r.exit_code == 0, r.output
+    for title in ("Now", "Next", "Where we are", "The last period"):
+        assert title in r.output
+
+
 def test_garden_now_rejects_an_unknown_page(garden):
     cwd = os.getcwd()
     os.chdir(garden)
@@ -688,8 +700,7 @@ def test_walkthrough_captures_now1(garden):
 
     store = Store(garden)
     ph = store.phase("demo", "p1")
-    urls = [p.url for p in pages_for(store, ph)]
-    assert "/" in urls and "/now1" in urls
+    assert [p.url for p in pages_for(store, ph)][:3] == ["/now2", "/", "/now1"]
     out = Path(garden) / "cap"
     result = capture(store, ph, out, screenshots=False)
     now_page = next(pr for pr in result.pages if pr.spec.slug == "now1")

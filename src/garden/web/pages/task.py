@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from ...brief import build_brief
+from ...brief import brief_gaps, build_brief
 from ...criteria import parse_criteria, reconcile, worker_verified
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
@@ -63,6 +63,7 @@ def register(app: FastAPI, site: Site) -> None:
         edit_diff = _edit_diff(runs)
         criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
                                   (st.get("last_review") or {}).get("criteria"))
+        gaps = brief_gaps(s, t) if t.status.value == "draft" else []
 
         # Phases this task can move to (the product's own phases, current one always shown even
         # if closed), and any dependency that now sits in a later phase and so can never merge
@@ -86,6 +87,8 @@ def register(app: FastAPI, site: Site) -> None:
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
+            brief_gaps=gaps,
+            acceptance_text=_acceptance_text(t.body),
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
             edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
@@ -161,6 +164,14 @@ def _edit_diff(runs: list[Any]) -> str:
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile="before", tofile="after"))
     return ""
+
+
+def _acceptance_text(body: str) -> str:
+    """The editable contents of the acceptance-criteria section, without its heading."""
+    import re
+
+    match = re.search(r"(?ms)^##\s+Acceptance criteria\s*$\n?(.*?)(?=^##\s|\Z)", body)
+    return match.group(1).strip() if match else ""
 
 
 def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:
