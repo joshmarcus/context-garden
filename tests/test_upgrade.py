@@ -234,3 +234,20 @@ def test_no_auto_upgrade_when_manual(garden, fake_github):
     sched.tick()
     assert restart.called == 0
     assert sched.upgrade_available()["sha"] == new_sha
+
+
+def test_pin_defers_install_until_active_runs_drain(garden, fake_github):
+    from garden.scheduler import TickReport
+
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    up.after_install = new_sha
+    sched.pin(new_sha, str(garden.parent / "repo"), product="demo")
+    active = sched.runs.new_run("DM-001", "local")
+    sched.maybe_auto_upgrade(TickReport())
+    assert up.installs == []
+    assert restart.called == 0
+    assert sched.upgrade_available()["pinned"]
+    active.status = "done"
+    active.save()
+    sched.maybe_auto_upgrade(TickReport())
+    assert restart.called == 1

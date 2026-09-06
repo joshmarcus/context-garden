@@ -42,3 +42,13 @@ def test_redispatch_refuses_when_worker_cannot_be_confirmed_dead(sched, monkeypa
     with pytest.raises(RuntimeError, match="could not confirm"):
         sched.redispatch(task)
     assert active.status == "running"
+
+
+def test_stop_does_not_trust_stale_exit_file(sched, monkeypatch):
+    active = sched.runs.new_run("DM-001", "local")
+    active.pid = 987654
+    (active.path / "exit_code").write_text("0")
+    monkeypatch.setattr("garden.runs._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("garden.runs.os.killpg", lambda *_args: None)
+    monkeypatch.setattr("garden.runs.os.kill", lambda *_args: None)
+    assert active.stop(timeout=0) is False

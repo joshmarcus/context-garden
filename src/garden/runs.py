@@ -151,10 +151,12 @@ class Run:
         ignores it is force-killed; failure to observe its death is deliberately reported to the
         caller rather than allowing two processes to edit one worktree.
         """
+        if self.pid is None or self.pid == os.getpid():
+            return False  # No safely identifiable process to terminate.
         self.kill()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.process_finished():
+            if not _pid_alive(self.pid):
                 return True
             time.sleep(0.05)
         if self.pid and _pid_alive(self.pid):
@@ -167,10 +169,10 @@ class Run:
                     pass
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.process_finished():
+            if not _pid_alive(self.pid):
                 return True
             time.sleep(0.05)
-        return self.process_finished()
+        return not _pid_alive(self.pid)
 
     def stdout_text(self) -> str:
         p = self.path / "stdout.json"
