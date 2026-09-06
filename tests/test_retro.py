@@ -399,6 +399,69 @@ def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, 
     assert "2 feature(s) filed" in pr["body"] and "1 duplicate(s) skipped" in pr["body"]
 
 
+def test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collides(tmp_path, fake_github, monkeypatch):
+    """CG-244: the retro drafts its next-phase tasks into a worktree, invisible to the live tree
+    until the PR merges. Their ids are reserved durably, so a task created live in the window
+    between filing and merge (discovered work, another retro, the planner) skips them instead of
+    handing out the same id and colliding when the worktree drafts land."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    sched.start_retro(ph, ["designer"], skip_personas=True)
+    rep = sched.tick()  # files GD-003, GD-004 into the worktree, reserving those ids, and opens the PR
+    assert not rep.errors, rep.errors
+    assert fake_github.created
+
+    # the two worktree drafts' ids are reserved durably, on disk, past a restart
+    assert set(store.reserved_ids()) == {"GD-003", "GD-004"}
+    assert set(Store(root).reserved_ids()) == {"GD-003", "GD-004"}
+
+    # a task filed live while the retro PR is still open must not reuse a reserved id
+    live = store.create_task("gdn", "p1", "Filed while the retro PR is open", "## Goal\n\nx\n")
+    assert live.id == "GD-005"
+
+    # the retro PR merges: its worktree drafts land in the live tree. No id collides.
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    for src in (wt / "gdn" / "p2" / "tasks").glob("*.md"):
+        dest = root / "gdn" / "p2" / "tasks" / src.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(src.read_text())
+    store.invalidate()
+    assert store.duplicate_ids() == {}
+    assert {"GD-003", "GD-004", "GD-005"} <= set(store.tasks())
+    # once the drafts exist as files, the ledger prunes them (a tick does this via _audit_ids)
+    assert sorted(store.prune_reservations()) == ["GD-003", "GD-004"]
+    assert store.reserved_ids() == {}
+
+
+def test_retro_rerun_reclaims_an_abandoned_batch_of_reserved_ids(tmp_path, fake_github, monkeypatch):
+    """A retro whose PR is never merged leaves its reserved ids on disk; re-running the retro for
+    the same phase releases that abandoned batch first, so the next attempt reuses the same ids
+    rather than leaking them forward."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    ph = store.phase("gdn", "p1")
+    sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert not sched.tick().errors
+    assert set(store.reserved_ids()) == {"GD-003", "GD-004"}
+
+    # a fresh retro attempt for the same phase (the prior PR never merged)
+    sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert not sched.tick().errors
+    # the batch was released and re-taken, not doubled: still GD-003/GD-004, no GD-005/GD-006
+    assert set(store.reserved_ids()) == {"GD-003", "GD-004"}
+
+
 def test_retro_files_persona_findings_merged_across_personas_by_title(tmp_path, fake_github, monkeypatch):
     """CG-187: every persona finding becomes a draft, not only the high ones, priority from
     severity, and findings that say the same thing across personas (the fake harness returns

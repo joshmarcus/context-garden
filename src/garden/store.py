@@ -216,7 +216,10 @@ class Store:
         prefix = str(self.config.product(product).get("id_prefix") or _prefix_for(product))
         up = prefix.upper() + "-"
         n = 0
-        for tid in (*self.tasks().keys(), *ledger.keys()):
+        # Existing task files, reserved ids, and quarantined duplicate ids all count as taken:
+        # a duplicate is out of the task map but its files are on disk, so reusing its number
+        # would only add a third clashing file.
+        for tid in (*self.tasks().keys(), *ledger.keys(), *self._duplicate_ids.keys()):
             if tid.upper().startswith(up):
                 try:
                     n = max(n, int(tid.split("-", 1)[1]))

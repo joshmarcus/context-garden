@@ -1,9 +1,52 @@
 """Dispatch: the queue, slots and the live max_parallel override, the pause, and the stuck-task audit."""
 
+import os
 import subprocess
+import textwrap
 
+from typer.testing import CliRunner
+
+from garden.cli import app
 from garden.model import Status
 from tests.scheduler.conftest import statuses
+
+
+def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):
+    """CG-244: two files claiming one id used to make store.tasks() raise, which took down every
+    page and tick. Now the ambiguous id is quarantined out of dispatch, the tick runs to
+    completion, unrelated ready tasks still dispatch, and the collision is surfaced on the tick
+    report and by `garden validate`."""
+    for name in ("clash-a", "clash-b"):
+        (garden / "demo" / "p1" / "tasks" / f"DM-050-{name}.md").write_text(textwrap.dedent(f"""
+            ---
+            id: DM-050
+            title: {name}
+            status: ready
+            depends_on: []
+            priority: 1
+            reading: []
+            created: '2026-01-01T00:00:00+00:00'
+            updated: '2026-01-01T00:00:00+00:00'
+            ---
+
+            ## Goal
+
+            {name}
+            """).lstrip())
+    sched.cfg.data["stack"] = False
+    rep = sched.tick()  # does not raise
+    assert rep.dispatched == ["DM-001(work)"]  # the healthy ready task still dispatches
+    assert "DM-050" not in statuses(sched)  # the ambiguous id never entered the task map
+    assert any("duplicate task id DM-050" in e for e in rep.errors)
+
+    cwd = os.getcwd()
+    os.chdir(garden)
+    try:
+        result = CliRunner().invoke(app, ["validate"])
+    finally:
+        os.chdir(cwd)
+    assert result.exit_code == 1
+    assert "duplicate task id DM-050" in result.output
 
 
 def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
