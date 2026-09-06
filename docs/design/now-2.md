@@ -460,9 +460,10 @@ provenance. Missing source data is the outstanding acceptance blocker.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
-1020 passed, 3 skipped, 2 dependency deprecation warnings (298.29s); `.venv/bin/ruff check src tests` passes. The dedicated
+1020 passed, 3 skipped, 2 dependency deprecation warnings (419.86s); `.venv/bin/ruff check src tests` passes. The dedicated
 mock tests report 3 passed. An HTML inspection finds no
-duplicate IDs, no missing local plate images, and all four window panels.
+duplicate IDs, no missing local plate images, and all four window panels with
+twenty matrices.
 These are structural checks; visual evidence is described above and no
 new persona approval is implied. No typecheck
 command is configured in `pyproject.toml` or the repository CI workflow.
