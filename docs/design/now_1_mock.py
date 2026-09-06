@@ -50,8 +50,10 @@ BASE_HTML = REPO / "src" / "garden" / "web" / "templates" / "base.html"
 PLATES = REPO / "src" / "garden" / "web" / "static" / "plates"
 
 WORKER_MODES = {"work", "revise", "resume", "trial", "rebase"}
+WORK_MODES = {"work", "revise", "resume", "trial"}  # the runs that write a task's code: what a model is credited for
 CHECK_MODES = {"check"}
 REVIEW_MODES = {"review", "persona", "compare"}
+DIFFICULTIES = ("easy", "medium", "hard")
 # The design's mode -> growth-stage glyph table (docs/design/now-page.md, Visual system).
 MODE_GLYPH = {"work": "running", "revise": "running", "resume": "running", "trial": "running",
               "rebase": "ready", "edit": "ready", "check": "awaiting_triage",
@@ -66,6 +68,16 @@ STAGE_BANDS = ((0.0, "seed"), (0.25, "sprout"), (0.5, "in leaf"), (0.75, "in bud
 
 def _ts(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s)
+
+
+def _iso_utc(s: str) -> str:
+    """A run record's timestamp as the clock reads it: UTC, whole seconds, an explicit
+    offset (`2026-09-06T01:10:00+00:00`), so `Date.parse` in every browser agrees with
+    the server."""
+    t = _ts(s)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.UTC)
+    return t.astimezone(dt.UTC).replace(microsecond=0).isoformat()
 
 
 def _clip(text: str, n: int = 120) -> str:
@@ -156,7 +168,7 @@ def strips_in_flight(runs: RunStore, tasks: dict, events: list[dict], harness_cf
         out.append({
             "kind": "run", "state": "running", "task": r.task_id, "title": t.title if t else "", "run": r.run_id,
             "mode": r.mode, "stage": stage_of_run.get(r.run_id, ""), "harness": r.harness, "model": r.model,
-            "difficulty": r.difficulty, "started_at": r.started_at[:19], "elapsed_s": round(r.elapsed_minutes() * 60),
+            "difficulty": r.difficulty, "started_at": _iso_utc(r.started_at), "elapsed_s": round(r.elapsed_minutes() * 60),
             "typical_s": typical.get(typical_key(r.mode, r.harness, r.difficulty or "medium")) or typical.get(typical_key(r.mode, r.harness)),
             "said": said, "spend_usd": spend, "tokens_so_far": tokens, "no_process": no_process,
             "glyph": MODE_GLYPH.get(r.mode, "running"), "dot": MODE_DOT.get(r.mode, "running"),
@@ -329,6 +341,121 @@ def phase_sheet(ph: Any, tasks: dict, state: State, active: list[dict], events: 
 
 # ---- the last period ------------------------------------------------------------------
 
+# The five difficulty-by-model tables (the owner's ask of 2026-09-06 02:30Z), in the order the
+# page shows them: the phase's two definition-of-done numbers first. `better` says which end of
+# the scale is the good one, so the best cell of a row can be marked without the template
+# deciding; `unit` is what the template formats with.
+TIER_METRICS = (
+    ("cost_per_accepted", "cost per accepted task", "usd", "low"),
+    ("first_pass", "first-pass approval", "pct", "high"),
+    ("work_run_cost", "work-run cost", "usd", "low"),
+    ("revise_rounds", "revise rounds", "rounds", "low"),
+    ("lead_time", "median lead time", "hours", "low"),
+)
+THIN = 3  # a cell with fewer samples is shown faint and never marked best
+
+
+def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
+    """The model credited for a task at the moment of an event: the model of the task's latest
+    work-mode run finished at or before it (`work_runs` is [(finished_at, model)] in order)."""
+    model = ""
+    for finished, m in work_runs:
+        if finished > at:
+            break
+        model = m
+    return model
+
+
+def difficulty_by_model(events: list[dict], tasks: dict, since: str) -> dict:
+    """The difficulty-by-model tables for a window: rows easy, medium, hard; a column per
+    model that did work in the window; each cell a value and its n. The rule for every table
+    is the one `events.metrics` uses for its per-difficulty figures (per-task facts from the
+    event stream, grouped by the task's difficulty), with one addition: a task is credited to
+    the model of its latest work-mode run (work, revise, resume, trial) finished at or before
+    the event the metric hangs on, so a task the loop escalated is counted for the model that
+    got it accepted. This is the reference the build moves into `events.metrics` (CG-251) so
+    `garden metrics` and the page compute it once.
+
+    - cost per accepted task: tasks whose latest `transition` to done is in the window; the
+      task's whole run cost up to that moment (every mode: work, review, rebase, check);
+      mean; n = accepted tasks. Credited at the done transition.
+    - first-pass approval: tasks whose first `review` ever is in the window; the share whose
+      verdict is approve; n = reviewed tasks. Credited at that review.
+    - work-run cost: `run_finished` in the window with a work mode and a model; mean cost;
+      n = runs. The run's own model.
+    - revise rounds: per accepted task, `dispatch` events with mode revise before its done
+      transition; mean; n = accepted tasks.
+    - median lead time: per accepted task, hours from its first dispatch to its done
+      transition; median; n = accepted tasks.
+    """
+    work_runs: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    cost_to: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    revises: dict[str, list[str]] = defaultdict(list)
+    first_dispatch: dict[str, str] = {}
+    first_review: dict[str, dict] = {}
+    done_at: dict[str, str] = {}
+    for e in events:
+        t, k, at = str(e.get("task") or ""), e.get("kind"), str(e.get("at") or "")
+        if not t or t not in tasks:
+            continue
+        if k == "run_finished":
+            cost_to[t].append((at, float(e.get("cost_usd") or 0.0)))
+            if e.get("mode") in WORK_MODES and e.get("model"):
+                work_runs[t].append((at, str(e["model"])))
+        elif k == "dispatch":
+            first_dispatch.setdefault(t, at)
+            if e.get("mode") == "revise":
+                revises[t].append(at)
+        elif k == "review":
+            first_review.setdefault(t, e)
+        elif k == "transition" and e.get("to") == "done":
+            done_at[t] = at
+    samples: dict[str, dict[str, dict[str, list[float]]]] = {
+        key: {d: defaultdict(list) for d in DIFFICULTIES} for key, *_ in TIER_METRICS}
+
+    def add(metric: str, task_id: str, model: str, value: float) -> None:
+        d = getattr(tasks[task_id], "difficulty", "") or "medium"
+        if model and d in samples[metric]:
+            samples[metric][d][model].append(value)
+
+    for t, at in done_at.items():
+        if at < since:
+            continue
+        model = _model_at(work_runs[t], at)
+        add("cost_per_accepted", t, model, sum(c for when, c in cost_to[t] if when <= at))
+        add("revise_rounds", t, model, sum(1 for when in revises[t] if when <= at))
+        if t in first_dispatch:
+            add("lead_time", t, model, (_ts(at) - _ts(first_dispatch[t])).total_seconds() / 3600)
+    for t, e in first_review.items():
+        if e["at"] >= since:
+            add("first_pass", t, _model_at(work_runs[t], e["at"]), 1.0 if e.get("verdict") == "approve" else 0.0)
+    for e in events:
+        if e.get("kind") == "run_finished" and e.get("mode") in WORK_MODES and e.get("model") and str(e.get("at") or "") >= since and e.get("task") in tasks:
+            add("work_run_cost", str(e["task"]), str(e["model"]), float(e.get("cost_usd") or 0.0))
+
+    weight: Counter = Counter()
+    for by_d in samples.values():
+        for cells in by_d.values():
+            for model, vals in cells.items():
+                weight[model] += len(vals)
+    models = sorted(weight, key=lambda m: (-weight[m], m))
+    metrics = []
+    for key, label, unit, better in TIER_METRICS:
+        rows: dict[str, dict[str, dict[str, Any]]] = {}
+        for d in DIFFICULTIES:
+            cells = {}
+            for model, vals in samples[key][d].items():
+                value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
+                cells[model] = {"value": round(value, 3), "n": len(vals), "best": False}
+            solid = [c for c in cells.values() if c["n"] >= THIN]
+            if len(solid) > 1:
+                pick = min if better == "low" else max
+                pick(solid, key=lambda c: c["value"])["best"] = True
+            rows[d] = cells
+        metrics.append({"key": key, "label": label, "unit": unit, "better": better, "rows": rows})
+    return {"models": models, "metrics": metrics, "thin": THIN}
+
+
 def period(events: list[dict], op_events: list[dict], tasks: dict, since: str, bucket: str) -> dict:
     window = [e for e in events if str(e.get("at") or "") >= since]
     done_at: dict[str, str] = {}
@@ -364,6 +491,7 @@ def period(events: list[dict], op_events: list[dict], tasks: dict, since: str, b
         "runs": len(finished), "hand_steps": sum(1 for e in window if e.get("kind") in HAND_KINDS),
         "hand_kinds": dict(Counter(e["kind"] for e in window if e.get("kind") in HAND_KINDS)),
         "by_model": [{"who": k, "runs": int(v["runs"]), "cost": round(v["cost"], 2)} for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["cost"])],
+        "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
         "annotations": [{"at": e["at"], "from": e.get("from") or "", "to": e.get("to") or "", "kind": e["kind"], "changed": e.get("keys") or []}
                         for e in window if e.get("kind") in ("profile_changed", "config_reloaded")],
@@ -451,10 +579,35 @@ def render(snapshot: dict) -> str:
         "chart": chart,
         "spark": lambda values: _markup(sparkline_svg([float(v) for v in values], width=100, height=26)),
         "minutes": lambda s: ("" if s is None else f"{int(round(s))} s" if s < 90 else f"{int(round(s / 60))} min"),
+        "clock": clock,
+        "cell": cell,
         "money": lambda v: f"${v:.2f}" if v is not None else "—",
         "ktok": lambda n: f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1000:.0f}k" if n >= 1000 else str(n),
     })
     return env.get_template(TEMPLATE.name).render(**snapshot)
+
+
+def clock(seconds: float) -> str:
+    """Elapsed time as the live clock shows it (the owner's rule, 2026-09-06 02:35Z): seconds
+    under a minute, then m:ss, then h:mm:ss. The server renders the first reading with this;
+    the browser's `fmt` in the page script must agree, and a test holds the two together."""
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60}:{s % 60:02d}"
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def cell(unit: str, value: float) -> str:
+    """A difficulty-by-model cell's value in its unit."""
+    if unit == "usd":
+        return f"${value:.2f}"
+    if unit == "pct":
+        return f"{round(value * 100)} %"
+    if unit == "hours":
+        return f"{value:.1f} h"
+    return f"{value:.1f}"
 
 
 def _markup(s: str) -> Any:

@@ -320,7 +320,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .strip .head .id { flex:none; }
 .strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
-.strip .bar { grid-column:2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
+.strip .bar { grid-column:2 / span 2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
 .strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); }
 .strip .bar .spend.faint { color:var(--faint); }
 .strip .bar .verdict { font-weight:700; }
@@ -329,9 +329,16 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .scale { --track:160px; position:relative; width:calc(var(--track) * 1.5); height:11px; flex:none; }
 .scale .track { position:absolute; left:0; width:var(--track); top:5px; height:1px; background:var(--line-strong); }
 .scale .track::before { content:""; position:absolute; left:0; top:-4px; width:1px; height:9px; background:var(--ink); }
-.scale .fill { position:absolute; left:0; top:3px; height:5px; width:calc(var(--track) * var(--r)); background:var(--accent); transition:width 15s linear; }
+.scale .fill { position:absolute; left:0; top:3px; height:5px; width:calc(var(--track) * var(--r)); background:var(--accent); transition:width 1s linear; }
 .scale .end { position:absolute; left:var(--track); top:1px; width:1px; height:9px; background:var(--ink); }
-.scale .over { position:absolute; left:calc(var(--track) + 1px); width:calc(var(--track) * var(--o)); top:5px; height:0; border-top:1px dashed var(--ink); }
+.scale .over { position:absolute; left:calc(var(--track) + 1px); width:calc(var(--track) * var(--o)); top:5px; height:0; border-top:1px dashed var(--ink); transition:width 1s linear; }
+/* the live clock: the digits change in place; the words past typical are plain, never an alarm */
+.strip .clock { white-space:nowrap; }
+.strip .clock [data-elapsed] { color:var(--ink); }
+.strip .longer { color:var(--muted); }
+/* a run arriving: inserted at the top at no height, grows and fades in (the build's rule) */
+.strip.arriving { max-height:0; opacity:0; margin-bottom:0; padding-top:0; padding-bottom:0; overflow:hidden; }
+.strip.arrive { transition:max-height .36s cubic-bezier(.2,.7,.2,1), opacity .36s cubic-bezier(.2,.7,.2,1), margin .36s, padding .36s, border-left-color 1.2s; max-height:240px; }
 .strip .said { grid-column:2 / span 2; font:italic 14.5px/1.4 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .strip .said.reason { font-style:normal; font:13.5px/1.45 var(--body); white-space:normal; color:var(--ink); }
 .strip.st-held, .strip.st-paused, .strip.st-needs_you, .strip.st-failed { border-left-style:dashed; }
@@ -403,6 +410,21 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .period-grid .chart-box { min-width:0; }
 .chart-narrow { display:none; }
 .hand { margin-top:14px; font:12.5px/1.5 var(--mono); color:var(--muted); }
+/* by difficulty and model: five small tables, the same shape each, read as one */
+.tiers { margin-top:26px; }
+.tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
+.tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.tier-tables .scroll { overflow-x:auto; }
+table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
+table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
+table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
+table.tier th .vendor { display:block; color:var(--faint); }
+table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
+table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; }
+table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
+table.tier td.best b { font-weight:600; }
+table.tier td.thin b { color:var(--muted); font-style:italic; }
+table.tier td .faint { color:var(--faint); }
 /* live region for a screen reader */
 .now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 /* the rail on this page: the page is the Running now block, so the rail does not repeat it */
@@ -441,14 +463,15 @@ body.page-now .rail-running { display:none; }
   .sheet .mount img { max-height:300px; }
   .sheet.big .lbl { position:static; width:auto; margin:14px 0 10px; }
   .sheet.big .stamps { position:static; }
-  .figures { grid-template-columns:1fr 1fr; gap:14px; }
-  .fig .v { font-size:28px; gap:6px; }
+  .figures { grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; }
+  .fig .v { font-size:28px; gap:6px; white-space:normal; }
+  .tier-tables { grid-template-columns:minmax(0, 1fr); }
   .fig .l { letter-spacing:.03em; }
   .chart-wide { display:none; } .chart-narrow { display:block; }
 }
 </style>
 </head>
-<body class="page-now">
+<body class="page-now" data-server-now="2026-09-06T02:34:47+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -573,49 +596,49 @@ body.page-now .rail-running { display:none; }
   </nav>
   <div>
     <h4>Phases</h4>
-    <a class="drawer" href="/phases/context-garden/phase-05"><span class="thumb"><img src="../../src/garden/web/static/plates/poppy-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-05</b><i>Plate V · Papaver argemone</i><span>context-garden · 41 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-04"><span class="thumb"><img src="../../src/garden/web/static/plates/fern-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-04 <span class="badge hot">frozen</span></b><i>Plate IV · Dryopteris filix-mas</i><span>context-garden · 62 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-06"><span class="thumb"><img src="../../src/garden/web/static/plates/peony-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-06</b><i>Plate VI · Paeonia mascula</i><span>context-garden · 1 tasks</span></span></a>
+    <a class="drawer" href="/phases/context-garden/phase-05"><span class="thumb"><img src="../../src/garden/web/static/plates/poppy-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-05</b><i>Plate V · Papaver argemone</i><span>context-garden · 45 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-04"><span class="thumb"><img src="../../src/garden/web/static/plates/fern-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-04 <span class="badge hot">frozen</span></b><i>Plate IV · Dryopteris filix-mas</i><span>context-garden · 62 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-06"><span class="thumb"><img src="../../src/garden/web/static/plates/peony-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-06</b><i>Plate VI · Paeonia mascula</i><span>context-garden · 1 tasks</span></span></a>
     <a class="drawer" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>3 closed phases</span></span></a>
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
-    <div class="running-now"><div class="r"><span class="dot"></span><a href="/tasks/CG-292">CG-292</a><span>check · 31 s</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-307">CG-307</a><span>trial · claude-fable-5-1 · 17 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-249">CG-249</a><span>revise · 65 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-242">CG-242</a><span>revise · 69 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-245">CG-245</a><span>revise · 69 min</span></div></div>
+    <div class="running-now"><div class="r"><span class="dot"></span><a href="/tasks/CG-237">CG-237</a><span>work · gpt-5.6-luna · 6 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-307">CG-307</a><span>revise · claude-fable-5-1 · 6 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-249">CG-249</a><span>revise · 90 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-242">CG-242</a><span>revise · 94 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-245">CG-245</a><span>revise · 94 min</span></div></div>
   </div>
-  <div class="foot"><span>scheduler loop on · tick 02:09:57Z</span></div>
+  <div class="foot"><span>scheduler loop on · tick 02:33:04Z</span></div>
 </aside>
 <main>
 <div class="page-head">
   <div><h1>Now</h1></div>
-  <div class="tools mock-tools"><span class="badge">mock · snapshot 2026-09-06T02:10Z</span><button class="quiet" type="button" data-theme-toggle>dark / light</button><button class="quiet" type="button" data-gallery-toggle>states</button></div>
+  <div class="tools mock-tools"><span class="badge">mock · snapshot 2026-09-06T02:34Z</span><button class="quiet" type="button" data-theme-toggle>dark / light</button><button class="quiet" type="button" data-gallery-toggle>states</button><button class="quiet" type="button" data-arrive title="insert a strip as a dispatch would">a run arrives</button></div>
 </div>
-<p class="now-five"><a href="#now">5 runs in flight</a> on 5 of 5 worker slots (3 without a process) and 0 of 3 review slots. <a href="#next">Next</a>: CG-242, then CG-237. <a href="#where">phase-05</a>: 9 of 41 merged.
-  <a href="#period">Last hour</a>: 7 merged, $16.20.
+<p class="now-five"><a href="#now">5 runs in flight</a> on 5 of 5 worker slots (3 without a process) and 0 of 3 review slots. <a href="#next">Next</a>: CG-310, then CG-311. <a href="#where">phase-05</a>: 10 of 45 merged.
+  <a href="#period">Last hour</a>: 8 merged, $28.45.
 </p>
 <div class="now-live" aria-live="polite"></div>
 
 <section class="region" id="now">
   <div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span>
     <span class="right">5 of 5 worker slots · 0 of 3 review slots</span></div>
-  <article class="specimen strip new st-running" data-task="CG-292" data-run="20260906T020957Z-check">
+  <article class="specimen strip new st-running" data-task="CG-237" data-run="20260906T022845Z-work" data-started="2026-09-06T02:28:45+00:00" data-typical="558.880917">
   <span class="tape"></span>
-  <div class="glyphs"><span class="state s-ready" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in bud"><title>in bud</title><use href="#st-bud"/></svg></div>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
-    <a class="id" href="/tasks/CG-292">CG-292</a>
-    <span class="t">Every status write goes through _transition: Scheduler.mark_done and unapprove, and a source-grep test</span>
+    <a class="id" href="/tasks/CG-237">CG-237</a>
+    <span class="t">The not-logged-in check reads a worker&#39;s prose as an auth failure: match the CLI&#39;s own error, not the report text</span>
   </div>
   <div class="meta">
-    check · rebase_recheck
+    work · codex gpt-5.6-luna
     
   </div>
   <div class="bar">
-    <span class="scale" aria-hidden="true" style="--r:0.202;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
-      <span>31 s · typically 3 min</span>
+    <span class="scale" aria-hidden="true" style="--r:0.648;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>6:02</span> · typically 9 min<span class="longer" data-longer hidden> · longer than usual</span></span>
     
-    <span class="spend faint">token-free</span>
+    <span class="spend">$0.05 so far</span>
     
   </div>
-  <div class="said"><span class="faint">no words yet</span></div>
+  <div class="said">“Implemented and committed as `43b5228`.”</div>
   
-</article><article class="specimen strip  st-running" data-task="CG-307" data-run="20260906T015311Z-trial">
+</article><article class="specimen strip  st-running" data-task="CG-307" data-run="20260906T022844Z-revise" data-started="2026-09-06T02:28:44+00:00" data-typical="226.41850850000003">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
@@ -623,17 +646,17 @@ body.page-now .rail-running { display:none; }
     <span class="t">Design the Now page: information architecture, visual system, motion, and a static mock of every state</span>
   </div>
   <div class="meta">
-    trial · claude claude-fable-5-1
+    revise · claude claude-fable-5-1
     
   </div>
   <div class="bar">
     <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
-      <span>17 min · typically 9 min</span>
+      <span class="clock"><span data-elapsed>6:03</span> · typically 4 min<span class="longer" data-longer> · longer than usual</span></span>
     
-    <span class="spend">18.6M tokens so far</span>
+    <span class="spend">7.7M tokens so far</span>
     
   </div>
-  <div class="said">“The rm was blocked by the guard on variable-expanded paths. I&#39;ll skip the cleanup (new names don&#39;t collide) and run the…”</div>
+  <div class="said">“Now re-taking the snapshot from the live garden and rendering, and checking whether a Chrome is reachable for the width…”</div>
   
 </article><article class="specimen strip  st-no_process" data-task="CG-249" data-run="20260906T010518Z-revise">
   <span class="tape"></span>
@@ -689,32 +712,32 @@ body.page-now .rail-running { display:none; }
   
   <ol class="queue">
     
-    <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><a class="id" href="/tasks/CG-242">CG-242</a><span class="lt">Hold untrusted config changes before live reload</span>
-      <span class="why">revise round 2 of 3 · revise · medium → codex gpt-5.6-terra</span></li>
-    
-    <li><span class="pos">2</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-237">CG-237</a><span class="lt">The not-logged-in check reads a worker&#39;s prose as an auth failure: match the CLI&#39;s own error, not the report text</span>
-      <span class="why">priority 1 · work · easy → codex gpt-5.6-luna</span></li>
-    
-    <li><span class="pos">3</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-310">CG-310</a><span class="lt">Worker temp files live on disk and are pruned: TMPDIR under the work root, per-run cleanup at reap, and a sweep of finished tasks&#39; worktree venvs and caches</span>
+    <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-310">CG-310</a><span class="lt">Worker temp files live on disk and are pruned: TMPDIR under the work root, per-run cleanup at reap, and a sweep of finished tasks&#39; worktree venvs and caches</span>
       <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
     
-    <li><span class="pos">4</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-311">CG-311</a><span class="lt">The task page shows the decision a worker&#39;s no-change or question report needs: the same card and actions as the Inbox, right where the notification sends you</span>
+    <li><span class="pos">2</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-311">CG-311</a><span class="lt">The task page shows the decision a worker&#39;s no-change or question report needs: the same card and actions as the Inbox, right where the notification sends you</span>
       <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
     
-    <li><span class="pos">5</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-312">CG-312</a><span class="lt">Inbox decision cards lay out at full width: the text column no longer collapses to one word per line and the action buttons no longer overlap the evidence list</span>
+    <li><span class="pos">3</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-312">CG-312</a><span class="lt">Inbox decision cards lay out at full width: the text column no longer collapses to one word per line and the action buttons no longer overlap the evidence list</span>
       <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
     
-    <li><span class="pos">6</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-314">CG-314</a><span class="lt">Design Now 2: astra&#39;s take on the Now page, information architecture, visual system, motion, and a static mock of every state</span>
+    <li><span class="pos">4</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-314">CG-314</a><span class="lt">Design Now 2: astra&#39;s take on the Now page, information architecture, visual system, motion, and a static mock of every state</span>
       <span class="why">priority 1 · work · hard → codex gpt-6-astra</span></li>
     
-    <li><span class="pos">7</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-215">CG-215</a><span class="lt">Onboarding skill and command: analyse an existing project and its environment to create a garden product, principles, setup config and a first phase</span>
-      <span class="why">priority 2 · work · hard → codex gpt-5.6-sol</span></li>
+    <li><span class="pos">5</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-315">CG-315</a><span class="lt">UI changes are reviewed against rendered pages: a template or style change captures the affected pages as screenshots at two widths, the reviewer and the personas read them, and the walkthrough uses the same capture</span>
+      <span class="why">priority 1 · work · hard → codex gpt-5.6-sol</span></li>
     
-    <li><span class="pos">8</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-253">CG-253</a><span class="lt">The retro captures its own walkthrough, and hand merges and tick duration are in garden metrics and the rail</span>
-      <span class="why">priority 2 · work · easy → codex gpt-5.6-luna</span></li>
+    <li><span class="pos">6</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-316">CG-316</a><span class="lt">A dispatch that fails before its process starts closes the run record at once, and the orphan sweep closes any running record with no live process</span>
+      <span class="why">priority 1 · work · easy → codex gpt-5.6-luna</span></li>
+    
+    <li><span class="pos">7</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-317">CG-317</a><span class="lt">The task page renders a trial in progress: the trial panel treats winner, scores and PRs as optional, and a test renders a task mid-trial with a failed contender</span>
+      <span class="why">priority 1 · work · easy → codex gpt-5.6-luna</span></li>
+    
+    <li><span class="pos">8</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-318">CG-318</a><span class="lt">The web app serves design documents, mocks and run captures: /design/&lt;file&gt; for the product&#39;s docs/design and a run page link to each capture</span>
+      <span class="why">priority 1 · work · easy → codex gpt-5.6-luna</span></li>
     
   </ol>
-  <a class="queue-more" href="/board?view=backlog">and 18 more →</a>
+  <a class="queue-more" href="/board?view=backlog">and 20 more →</a>
   
   
   <div class="sub">
@@ -722,11 +745,13 @@ body.page-now .rail-running { display:none; }
     <ul>
       
       
+      <li><a class="id" href="/tasks/CG-242">CG-242</a><span>Hold untrusted config changes before live reload</span><span class="fact">round 2 of 4 · CI pending · the automated review verdict is request_changes, not approve</span></li>
       
-      <li class="faint">no open PR</li>
     </ul>
     
   </div>
+  
+  <div class="sub"><h3>Reviews waiting</h3><ul><li><a class="id" href="/tasks/CG-242">CG-242</a><span>review</span><span class="fact">no review slot (0 of 3 busy)</span></li></ul></div>
   
 </section>
 
@@ -735,12 +760,12 @@ body.page-now .rail-running { display:none; }
   
   <div class="specimen sheet big">
   <span class="tape t1"></span>
-  <div class="mount plate-mount" style="--grown:21.9%">
+  <div class="mount plate-mount" style="--grown:22.2%">
     <img class="plate ghost" src="../../src/garden/web/static/plates/poppy.webp" alt=""><img class="plate inked" src="../../src/garden/web/static/plates/poppy.webp" alt="Papaver argemone, inked to 22 percent">
     
   </div>
   <span class="tape t2"></span>
-  <div class="lbl"><b>context-garden · plate V</b><br><a href="/phases/context-garden/phase-05">phase-05</a><br><i>Papaver argemone</i> — prickly poppy<br>9 of 41 merged · 1 PRs open · 4 running<br>seed · spent $60.18</div>
+  <div class="lbl"><b>context-garden · plate V</b><br><a href="/phases/context-garden/phase-05">phase-05</a><br><i>Papaver argemone</i> — prickly poppy<br>10 of 45 merged · 1 PRs open · 4 running<br>seed · spent $71.83</div>
   <div class="stamps"><span class="stamp">open</span></div>
 </div>
   
@@ -755,7 +780,7 @@ body.page-now .rail-running { display:none; }
     
   </div>
   
-  <div class="lbl"><b>context-garden · plate IV</b><br><a href="/phases/context-garden/phase-04">phase-04</a><br><i>Dryopteris filix-mas</i> — male fern<br>61 of 62 merged · 1 PRs open · 1 running<br>in bud · spent $502.52</div>
+  <div class="lbl"><b>context-garden · plate IV</b><br><a href="/phases/context-garden/phase-04">phase-04</a><br><i>Dryopteris filix-mas</i> — male fern<br>61 of 62 merged · 1 PRs open · 1 running<br>in bud · spent $503.12</div>
   <div class="stamps"><span class="stamp">frozen</span><span class="stamp">reopen</span></div>
 </div><div class="specimen sheet small">
   <span class="tape t1"></span>
@@ -778,10 +803,10 @@ body.page-now .rail-running { display:none; }
   <div class="window" data-window-panel="24h" hidden>
     
     <div class="figures">
-      <div class="fig"><div class="v">103</div><div class="l">merged · CG-030, CG-074, CG-079, CG-086 and 99 more</div></div>
-      <div class="fig"><div class="v">78 %<small>79 of 101</small></div><div class="l">first-pass approval</div></div>
-      <div class="fig"><div class="v">$890.02<small>774 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,20.9 5.0,20.8 10.0,16.2 15.0,15.7 20.0,21.7 25.0,20.9 30.0,21.9 35.0,3.0 40.0,11.9 45.0,8.9 50.0,17.3 55.0,14.0 60.0,16.2 65.0,19.3 70.0,18.1 75.0,16.8 80.0,21.1 85.0,21.3 90.0,11.9 95.0,20.5 100.0,21.9"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
-      <div class="fig"><div class="v">$7.67</div><div class="l">per accepted task</div></div>
+      <div class="fig"><div class="v">100</div><div class="l">merged · CG-030, CG-125, CG-132, CG-134 and 96 more</div></div>
+      <div class="fig"><div class="v">77 %<small>79 of 102</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$896.16<small>777 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,21.7 5.0,20.8 10.0,16.2 15.0,15.7 20.0,21.7 25.0,20.9 30.0,21.9 35.0,3.0 40.0,11.9 45.0,8.9 50.0,17.3 55.0,14.0 60.0,16.2 65.0,19.3 70.0,18.1 75.0,16.8 80.0,21.1 85.0,21.3 90.0,11.9 95.0,20.5 100.0,20.6"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$7.15</div><div class="l">per accepted task</div></div>
     </div>
     <div class="period-grid">
       <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
@@ -791,10 +816,8 @@ body.page-now .rail-running { display:none; }
 <text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$72</text>
 <line x1="40" x2="624" y1="52.0" y2="52.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$145</text>
-<rect x="43.9" y="187.2" width="20.0" height="2.8" fill="var(--viz-2)"><title>2026-09-05T02:00 · revise: $2.93</title></rect>
-<rect x="43.9" y="184.2" width="20.0" height="3.0" fill="var(--viz-cat-4)"><title>2026-09-05T02:00 · review: $3.17</title></rect>
-<rect x="43.9" y="153.9" width="20.0" height="30.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
-<rect x="43.9" y="150.4" width="20.0" height="3.5" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
+<rect x="43.9" y="159.7" width="20.0" height="30.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
+<rect x="43.9" y="156.2" width="20.0" height="3.5" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
 <rect x="71.7" y="161.4" width="20.0" height="28.6" fill="var(--viz-1)"><title>2026-09-05T03:00 · work: $30.00</title></rect>
 <rect x="71.7" y="157.1" width="20.0" height="4.3" fill="var(--viz-cat-4)"><title>2026-09-05T03:00 · review: $4.54</title></rect>
 <rect x="71.7" y="143.8" width="20.0" height="13.2" fill="var(--viz-cat-5)"><title>2026-09-05T03:00 · persona: $13.89</title></rect>
@@ -869,19 +892,21 @@ body.page-now .rail-running { display:none; }
 <rect x="572.3" y="184.9" width="20.0" height="1.2" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
 <rect x="572.3" y="183.0" width="20.0" height="1.9" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
 <rect x="572.3" y="165.9" width="20.0" height="17.1" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
-<rect x="600.1" y="189.5" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="600.1" y="187.7" width="20.0" height="1.8" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<rect x="600.1" y="189.0" width="20.0" height="1.0" fill="var(--viz-2)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="600.1" y="188.5" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="600.1" y="186.2" width="20.0" height="2.3" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="600.1" y="176.1" width="20.0" height="10.2" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-05T02:00</text>
 <text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($478.23)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($68.68)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($66.80)</text>
 <rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($20.63)</text>
-<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($156.43)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($153.77)</text>
 <rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">persona ($119.36)</text>
 <rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-6)"/><text x="54" y="28">retro ($11.72)</text>
 <rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-7)"/><text x="162" y="28">check ($0.00)</text>
-<rect x="256" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="270" y="28">other ($34.99)</text>
+<rect x="256" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="270" y="28">other ($45.66)</text>
 </g>
 </svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
 <line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
@@ -890,10 +915,8 @@ body.page-now .rail-running { display:none; }
 <text x="34" y="141.0" text-anchor="end" fill="var(--muted)" font-size="11">$72</text>
 <line x1="40" x2="344" y1="84.0" y2="84.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="88.0" text-anchor="end" fill="var(--muted)" font-size="11">$145</text>
-<rect x="42.0" y="187.9" width="10.4" height="2.1" fill="var(--viz-2)"><title>2026-09-05T02:00 · revise: $2.93</title></rect>
-<rect x="42.0" y="185.5" width="10.4" height="2.3" fill="var(--viz-cat-4)"><title>2026-09-05T02:00 · review: $3.17</title></rect>
-<rect x="42.0" y="162.3" width="10.4" height="23.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
-<rect x="42.0" y="159.6" width="10.4" height="2.7" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
+<rect x="42.0" y="166.7" width="10.4" height="23.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
+<rect x="42.0" y="164.0" width="10.4" height="2.7" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
 <rect x="56.5" y="168.0" width="10.4" height="22.0" fill="var(--viz-1)"><title>2026-09-05T03:00 · work: $30.00</title></rect>
 <rect x="56.5" y="164.7" width="10.4" height="3.3" fill="var(--viz-cat-4)"><title>2026-09-05T03:00 · review: $4.54</title></rect>
 <rect x="56.5" y="154.5" width="10.4" height="10.2" fill="var(--viz-cat-5)"><title>2026-09-05T03:00 · persona: $13.89</title></rect>
@@ -968,29 +991,101 @@ body.page-now .rail-running { display:none; }
 <rect x="317.1" y="186.1" width="10.4" height="0.9" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
 <rect x="317.1" y="184.6" width="10.4" height="1.5" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
 <rect x="317.1" y="171.5" width="10.4" height="13.1" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
-<rect x="331.6" y="189.6" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="331.6" y="188.3" width="10.4" height="1.4" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<rect x="331.6" y="189.2" width="10.4" height="0.8" fill="var(--viz-2)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="331.6" y="188.9" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="331.6" y="187.1" width="10.4" height="1.8" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="331.6" y="179.3" width="10.4" height="7.8" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-05T02:00</text>
 <text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($478.23)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($68.68)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($66.80)</text>
 <rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($20.63)</text>
-<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($156.43)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($153.77)</text>
 <rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">persona ($119.36)</text>
 <rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-6)"/><text x="162" y="44">retro ($11.72)</text>
 <rect x="40" y="52" width="10" height="10" fill="var(--viz-cat-7)"/><text x="54" y="60">check ($0.00)</text>
-<rect x="148" y="52" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="60">other ($34.99)</text>
+<rect x="148" y="52" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="60">other ($45.66)</text>
 </g>
 </svg></div>
         <p class="hand">14:36Z config reloaded: review · 14:59Z config reloaded: harnesses · 17:11Z config reloaded: review · 18:50Z config reloaded: harnesses · 19:45Z config reloaded: harnesses · 20:37Z config reloaded: review · 20:39Z config reloaded: harnesses · 20:45Z config reloaded: harnesses · 22:32Z config reloaded: harnesses · 23:07Z config reloaded: harnesses, review · 23:08Z config reloaded: review · 02:01Z config reloaded: harness, review</p></div>
       <div>
         <div class="eyebrow">Runs by harness and model</div>
-        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
-          <tr><td class="mono">claude:claude-sonnet-5</td><td>157</td><td>$281.16</td><td>$1.79</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>52</td><td>$237.63</td><td>$4.57</td></tr><tr><td class="mono">garden:review</td><td>201</td><td>$156.43</td><td>$0.78</td></tr><tr><td class="mono">garden:persona</td><td>24</td><td>$119.36</td><td>$4.97</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>11</td><td>$66.60</td><td>$6.05</td></tr><tr><td class="mono">garden:retro</td><td>6</td><td>$11.72</td><td>$1.95</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>10</td><td>$6.15</td><td>$0.61</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">garden:compare</td><td>2</td><td>$0.88</td><td>$0.44</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>78</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>199</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:work</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:trial</td><td>1</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:trial</td><td>6</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:work</td><td>1</td><td>$0.00</td><td>$0.00</td></tr>
-        </table>
-        <div class="hand">hand steps: 94 (budget set 3, config override 2, decision accepted 5, decision resolved 21, dispatch paused 5, dispatch resumed 8, moved 10, resumed 12, suggestion 21, triaged 7) · hand merges: — until metrics carries them</div>
+        <div class="scroll"><table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>156</td><td>$279.87</td><td>$1.79</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>51</td><td>$235.98</td><td>$4.63</td></tr><tr><td class="mono">garden:review</td><td>200</td><td>$153.77</td><td>$0.77</td></tr><tr><td class="mono">garden:persona</td><td>24</td><td>$119.36</td><td>$4.97</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>12</td><td>$77.28</td><td>$6.44</td></tr><tr><td class="mono">garden:retro</td><td>6</td><td>$11.72</td><td>$1.95</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>12</td><td>$7.21</td><td>$0.60</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">garden:compare</td><td>2</td><td>$0.88</td><td>$0.44</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>78</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>202</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:work</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:trial</td><td>1</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:trial</td><td>6</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:work</td><td>1</td><td>$0.00</td><td>$0.00</td></tr>
+        </table></div>
+        <div class="hand">hand steps: 91 (budget set 3, config override 2, decision accepted 5, decision resolved 21, dispatch paused 5, dispatch resumed 8, moved 10, resumed 12, suggestion 21, triaged 4) · hand merges: — until metrics carries them</div>
       </div>
+    </div>
+    
+    <div class="tiers">
+      <div class="eyebrow">By difficulty and model</div>
+      
+      <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; the best of a row is bold once it has 3 samples, a thinner cell is italic</p>
+      <div class="tier-tables">
+        
+        <div class="scroll"><table class="tier">
+          <caption>cost per accepted task</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$4.62</b><small>n 50</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>$11.69</b><small>n 15</small></td><td class=" "><b>$8.98</b><small>n 23</small></td><td class=" thin"><b>$13.36</b><small>n 1</small></td><td class="best "><b>$5.58</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$7.27</b><small>n 2</small></td><td class=" "><b>$12.20</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>first-pass approval</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>86 %</b><small>n 49</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>57 %</b><small>n 14</small></td><td class="best "><b>85 %</b><small>n 26</small></td><td class=" thin"><b>0 %</b><small>n 1</small></td><td class=" "><b>0 %</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" thin"><b>100 %</b><small>n 2</small></td><td class=" "><b>80 %</b><small>n 5</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>work-run cost</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$2.25</b><small>n 73</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>$2.33</b><small>n 41</small></td><td class=" "><b>$4.56</b><small>n 49</small></td><td class=" "><b>$3.83</b><small>n 3</small></td><td class="best "><b>$0.60</b><small>n 12</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$6.24</b><small>n 2</small></td><td class=" "><b>$7.31</b><small>n 9</small></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$5.98</b><small>n 1</small></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>revise rounds</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>0.3</b><small>n 50</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>1.4</b><small>n 15</small></td><td class="best "><b>0.2</b><small>n 23</small></td><td class=" thin"><b>1.0</b><small>n 1</small></td><td class=" "><b>1.2</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" thin"><b>0.0</b><small>n 2</small></td><td class=" "><b>0.8</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>median lead time</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>0.8 h</b><small>n 50</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>2.6 h</b><small>n 15</small></td><td class="best "><b>0.8 h</b><small>n 23</small></td><td class=" thin"><b>0.9 h</b><small>n 1</small></td><td class=" "><b>1.9 h</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" thin"><b>2.0 h</b><small>n 2</small></td><td class=" "><b>0.6 h</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+      </div>
+      
     </div>
     
   </div>
@@ -998,10 +1093,10 @@ body.page-now .rail-running { display:none; }
   <div class="window" data-window-panel="hour" >
     
     <div class="figures">
-      <div class="fig"><div class="v">7</div><div class="l">merged · CG-236, CG-243, CG-244, CG-245 and 3 more</div></div>
-      <div class="fig"><div class="v">0 %<small>0 of 1</small></div><div class="l">first-pass approval</div></div>
-      <div class="fig"><div class="v">$16.20<small>16 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,3.0 100.0,7.4"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
-      <div class="fig"><div class="v">$4.62</div><div class="l">per accepted task</div></div>
+      <div class="fig"><div class="v">8</div><div class="l">merged · CG-236, CG-243, CG-244, CG-245 and 4 more</div></div>
+      <div class="fig"><div class="v">0 %<small>0 of 2</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$28.45<small>24 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,11.0 100.0,3.0"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$4.53</div><div class="l">per accepted task</div></div>
     </div>
     <div class="period-grid">
       <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
@@ -1010,20 +1105,22 @@ body.page-now .rail-running { display:none; }
 <line x1="40" x2="624" y1="113.0" y2="113.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="117.0" text-anchor="end" fill="var(--muted)" font-size="11">$7</text>
 <line x1="40" x2="624" y1="36.0" y2="36.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="40.0" text-anchor="end" fill="var(--muted)" font-size="11">$14</text>
-<rect x="80.9" y="176.2" width="210.2" height="13.8" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
-<rect x="80.9" y="169.5" width="210.2" height="6.7" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
-<rect x="80.9" y="36.0" width="210.2" height="133.5" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
-<rect x="372.9" y="184.6" width="210.2" height="5.4" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="372.9" y="163.4" width="210.2" height="21.1" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="34" y="40.0" text-anchor="end" fill="var(--muted)" font-size="11">$15</text>
+<rect x="80.9" y="177.0" width="210.2" height="13.0" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="80.9" y="170.6" width="210.2" height="6.3" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
+<rect x="80.9" y="44.6" width="210.2" height="126.0" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
+<rect x="372.9" y="178.8" width="210.2" height="11.2" fill="var(--viz-1)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="372.9" y="173.7" width="210.2" height="5.1" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="372.9" y="148.4" width="210.2" height="25.3" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="372.9" y="36.0" width="210.2" height="112.4" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T01:00</text>
 <text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
-<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($1.24)</text>
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($2.30)</text>
 <rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">rebase ($0.49)</text>
-<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">review ($2.50)</text>
+<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">review ($3.01)</text>
 <rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">check ($0.00)</text>
-<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-9)"/><text x="486" y="12">other ($11.97)</text>
+<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-9)"/><text x="486" y="12">other ($22.65)</text>
 </g>
 </svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
 <line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
@@ -1031,30 +1128,102 @@ body.page-now .rail-running { display:none; }
 <line x1="40" x2="344" y1="129.0" y2="129.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$7</text>
 <line x1="40" x2="344" y1="68.0" y2="68.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$14</text>
-<rect x="61.3" y="179.1" width="109.4" height="10.9" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
-<rect x="61.3" y="173.8" width="109.4" height="5.3" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
-<rect x="61.3" y="68.0" width="109.4" height="105.8" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
-<rect x="213.3" y="185.7" width="109.4" height="4.3" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="213.3" y="168.9" width="109.4" height="16.7" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$15</text>
+<rect x="61.3" y="179.7" width="109.4" height="10.3" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="61.3" y="174.7" width="109.4" height="5.0" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
+<rect x="61.3" y="74.8" width="109.4" height="99.8" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
+<rect x="213.3" y="181.1" width="109.4" height="8.9" fill="var(--viz-1)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="213.3" y="177.1" width="109.4" height="4.1" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="213.3" y="157.0" width="109.4" height="20.1" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="213.3" y="68.0" width="109.4" height="89.0" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T01:00</text>
 <text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
-<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($1.24)</text>
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($2.30)</text>
 <rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">rebase ($0.49)</text>
-<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">review ($2.50)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">review ($3.01)</text>
 <rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">check ($0.00)</text>
-<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="44">other ($11.97)</text>
+<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="44">other ($22.65)</text>
 </g>
 </svg></div>
         <p class="hand">02:01Z config reloaded: harness, review</p></div>
       <div>
         <div class="eyebrow">Runs by harness and model</div>
-        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
-          <tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">garden:review</td><td>3</td><td>$2.50</td><td>$0.83</td></tr><tr><td class="mono">claude:claude-sonnet-5</td><td>3</td><td>$1.71</td><td>$0.57</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>6</td><td>$0.00</td><td>$0.00</td></tr>
-        </table>
+        <div class="scroll"><table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-fable-5-1</td><td>2</td><td>$22.65</td><td>$11.32</td></tr><tr><td class="mono">garden:review</td><td>5</td><td>$3.01</td><td>$0.60</td></tr><tr><td class="mono">claude:claude-sonnet-5</td><td>3</td><td>$1.71</td><td>$0.57</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>2</td><td>$1.06</td><td>$0.53</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>9</td><td>$0.00</td><td>$0.00</td></tr>
+        </table></div>
         <div class="hand">hand steps: 3 (dispatch paused 1, dispatch resumed 2) · hand merges: — until metrics carries them</div>
       </div>
+    </div>
+    
+    <div class="tiers">
+      <div class="eyebrow">By difficulty and model</div>
+      
+      <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; the best of a row is bold once it has 3 samples, a thinner cell is italic</p>
+      <div class="tier-tables">
+        
+        <div class="scroll"><table class="tier">
+          <caption>cost per accepted task</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th></tr>
+          
+          <tr><th>easy</th><td class=" thin"><b>$3.00</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>$5.22</b><small>n 1</small></td><td class=" "><b>$3.08</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$7.27</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>first-pass approval</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th></tr>
+          
+          <tr><th>easy</th><td class=" thin"><b>0 %</b><small>n 1</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>0 %</b><small>n 1</small></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>work-run cost</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th></tr>
+          
+          <tr><th>easy</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>$0.62</b><small>n 2</small></td><td class=" thin"><b>$0.53</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$11.32</b><small>n 2</small></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>revise rounds</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th></tr>
+          
+          <tr><th>easy</th><td class=" thin"><b>0.0</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.0</b><small>n 1</small></td><td class=" "><b>1.3</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>0.0</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>median lead time</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th></tr>
+          
+          <tr><th>easy</th><td class=" thin"><b>1.6 h</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.9 h</b><small>n 1</small></td><td class=" "><b>1.6 h</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>2.0 h</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+      </div>
+      
     </div>
     
   </div>
@@ -1062,65 +1231,135 @@ body.page-now .rail-running { display:none; }
   <div class="window" data-window-panel="phase" hidden>
     
     <div class="figures">
-      <div class="fig"><div class="v">9</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 5 more</div></div>
-      <div class="fig"><div class="v">45 %<small>5 of 11</small></div><div class="l">first-pass approval</div></div>
-      <div class="fig"><div class="v">$75.97<small>91 runs </small></div><div class="l">cost</div></div>
-      <div class="fig"><div class="v">$4.47</div><div class="l">per accepted task</div></div>
+      <div class="fig"><div class="v">10</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 6 more</div></div>
+      <div class="fig"><div class="v">42 %<small>5 of 12</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$88.22<small>99 runs </small></div><div class="l">cost</div></div>
+      <div class="fig"><div class="v">$4.41</div><div class="l">per accepted task</div></div>
     </div>
     <div class="period-grid">
       <div class="chart-box"><div class="eyebrow">Cost by activity, per day</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
 <line x1="40" x2="624" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
 <line x1="40" x2="624" y1="121.0" y2="121.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$38</text>
+<text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$44</text>
 <line x1="40" x2="624" y1="52.0" y2="52.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$76</text>
-<rect x="121.8" y="121.4" width="420.5" height="68.6" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
-<rect x="121.8" y="115.4" width="420.5" height="6.0" fill="var(--viz-2)"><title>2026-09-06 · revise: $3.32</title></rect>
-<rect x="121.8" y="114.1" width="420.5" height="1.4" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
-<rect x="121.8" y="92.1" width="420.5" height="22.0" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.10</title></rect>
-<rect x="121.8" y="52.0" width="420.5" height="40.1" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $22.06</title></rect>
+<text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$88</text>
+<rect x="121.8" y="131.0" width="420.5" height="59.0" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
+<rect x="121.8" y="124.1" width="420.5" height="6.8" fill="var(--viz-2)"><title>2026-09-06 · revise: $4.38</title></rect>
+<rect x="121.8" y="122.9" width="420.5" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
+<rect x="121.8" y="103.2" width="420.5" height="19.7" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.62</title></rect>
+<rect x="121.8" y="52.0" width="420.5" height="51.2" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $32.74</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06</text>
 <text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($4.38)</text>
 <rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($0.74)</text>
-<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($12.10)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($12.62)</text>
 <rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">check ($0.00)</text>
-<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($22.06)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($32.74)</text>
 </g>
 </svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
 <line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
 <text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
 <line x1="40" x2="344" y1="129.0" y2="129.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$38</text>
+<text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$44</text>
 <line x1="40" x2="344" y1="68.0" y2="68.0" stroke="var(--line)" stroke-width="1"/>
-<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$76</text>
-<rect x="82.6" y="129.4" width="218.9" height="60.6" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
-<rect x="82.6" y="124.1" width="218.9" height="5.3" fill="var(--viz-2)"><title>2026-09-06 · revise: $3.32</title></rect>
-<rect x="82.6" y="122.9" width="218.9" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
-<rect x="82.6" y="103.4" width="218.9" height="19.4" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.10</title></rect>
-<rect x="82.6" y="68.0" width="218.9" height="35.4" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $22.06</title></rect>
+<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$88</text>
+<rect x="82.6" y="137.8" width="218.9" height="52.2" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
+<rect x="82.6" y="131.7" width="218.9" height="6.1" fill="var(--viz-2)"><title>2026-09-06 · revise: $4.38</title></rect>
+<rect x="82.6" y="130.7" width="218.9" height="1.0" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
+<rect x="82.6" y="113.3" width="218.9" height="17.4" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.62</title></rect>
+<rect x="82.6" y="68.0" width="218.9" height="45.3" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $32.74</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06</text>
 <text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($4.38)</text>
 <rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($0.74)</text>
-<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($12.10)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($12.62)</text>
 <rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">check ($0.00)</text>
-<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($22.06)</text>
+<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($32.74)</text>
 </g>
 </svg></div>
         <p class="hand">02:01Z config reloaded: harness, review</p></div>
       <div>
         <div class="eyebrow">Runs by harness and model</div>
-        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
-          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">garden:review</td><td>16</td><td>$12.10</td><td>$0.76</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>8</td><td>$6.15</td><td>$0.77</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:check</td><td>26</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:rebase</td><td>4</td><td>$0.00</td><td>$0.00</td></tr>
-        </table>
+        <div class="scroll"><table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>2</td><td>$22.65</td><td>$11.32</td></tr><tr><td class="mono">garden:review</td><td>18</td><td>$12.62</td><td>$0.70</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>10</td><td>$7.21</td><td>$0.72</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:check</td><td>29</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:rebase</td><td>4</td><td>$0.00</td><td>$0.00</td></tr>
+        </table></div>
         <div class="hand">hand steps: 31 (decision resolved 4, dispatch paused 1, dispatch resumed 3, moved 2, suggestion 21) · hand merges: — until metrics carries them</div>
       </div>
+    </div>
+    
+    <div class="tiers">
+      <div class="eyebrow">By difficulty and model</div>
+      
+      <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; the best of a row is bold once it has 3 samples, a thinner cell is italic</p>
+      <div class="tier-tables">
+        
+        <div class="scroll"><table class="tier">
+          <caption>cost per accepted task</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$2.50</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>$5.80</b><small>n 2</small></td><td class=" "><b>$3.08</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$7.27</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>first-pass approval</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>67 %</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>50 %</b><small>n 2</small></td><td class=" "><b>0 %</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>100 %</b><small>n 2</small></td><td class=" thin"><b>0 %</b><small>n 1</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>work-run cost</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$1.94</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>$3.32</b><small>n 5</small></td><td class="best "><b>$0.72</b><small>n 10</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$6.24</b><small>n 2</small></td><td class=" thin"><b>$11.32</b><small>n 2</small></td><td class=" thin"><b>$5.98</b><small>n 1</small></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>revise rounds</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>0.0</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.0</b><small>n 2</small></td><td class=" "><b>1.3</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>0.0</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>median lead time</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>1.3 h</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.4 h</b><small>n 2</small></td><td class=" "><b>1.6 h</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>2.0 h</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+      </div>
+      
     </div>
     
   </div>
@@ -1128,10 +1367,10 @@ body.page-now .rail-running { display:none; }
   <div class="window" data-window-panel="today" hidden>
     
     <div class="figures">
-      <div class="fig"><div class="v">9</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 5 more</div></div>
-      <div class="fig"><div class="v">45 %<small>5 of 11</small></div><div class="l">first-pass approval</div></div>
-      <div class="fig"><div class="v">$76.65<small>93 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,3.0 50.0,18.4 100.0,21.0"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
-      <div class="fig"><div class="v">$4.47</div><div class="l">per accepted task</div></div>
+      <div class="fig"><div class="v">10</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 6 more</div></div>
+      <div class="fig"><div class="v">42 %<small>5 of 12</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$88.90<small>101 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,3.0 50.0,18.4 100.0,18.7"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$4.41</div><div class="l">per accepted task</div></div>
     </div>
     <div class="period-grid">
       <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
@@ -1150,17 +1389,19 @@ body.page-now .rail-running { display:none; }
 <rect x="261.9" y="174.9" width="140.2" height="3.5" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
 <rect x="261.9" y="169.2" width="140.2" height="5.7" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
 <rect x="261.9" y="118.6" width="140.2" height="50.6" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
-<rect x="456.6" y="188.6" width="140.2" height="1.4" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="456.6" y="183.3" width="140.2" height="5.3" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<rect x="456.6" y="187.0" width="140.2" height="3.0" fill="var(--viz-2)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="456.6" y="185.6" width="140.2" height="1.4" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="456.6" y="178.8" width="140.2" height="6.8" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="456.6" y="148.7" width="140.2" height="30.1" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T00:00</text>
 <text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($4.38)</text>
 <rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($0.74)</text>
-<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($12.78)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($13.29)</text>
 <rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">check ($0.00)</text>
-<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($22.06)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($32.74)</text>
 </g>
 </svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
 <line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
@@ -1178,27 +1419,99 @@ body.page-now .rail-running { display:none; }
 <rect x="155.5" y="176.6" width="73.0" height="3.1" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
 <rect x="155.5" y="171.6" width="73.0" height="5.0" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
 <rect x="155.5" y="126.8" width="73.0" height="44.8" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
-<rect x="256.9" y="188.8" width="73.0" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
-<rect x="256.9" y="184.1" width="73.0" height="4.7" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<rect x="256.9" y="187.4" width="73.0" height="2.6" fill="var(--viz-2)"><title>2026-09-06T02:00 · revise: $1.06</title></rect>
+<rect x="256.9" y="186.1" width="73.0" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="256.9" y="180.1" width="73.0" height="6.0" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $2.41</title></rect>
+<rect x="256.9" y="153.5" width="73.0" height="26.6" fill="var(--viz-cat-9)"><title>2026-09-06T02:00 · other: $10.68</title></rect>
 <text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T00:00</text>
 <text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
 <g font-size="11" fill="var(--muted)">
 <rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
-<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($4.38)</text>
 <rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($0.74)</text>
-<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($12.78)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($13.29)</text>
 <rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">check ($0.00)</text>
-<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($22.06)</text>
+<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($32.74)</text>
 </g>
 </svg></div>
         <p class="hand">02:01Z config reloaded: harness, review</p></div>
       <div>
         <div class="eyebrow">Runs by harness and model</div>
-        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
-          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">garden:review</td><td>17</td><td>$12.78</td><td>$0.75</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>8</td><td>$6.15</td><td>$0.77</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>5</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>26</td><td>$0.00</td><td>$0.00</td></tr>
-        </table>
+        <div class="scroll"><table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>2</td><td>$22.65</td><td>$11.32</td></tr><tr><td class="mono">garden:review</td><td>19</td><td>$13.29</td><td>$0.70</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>10</td><td>$7.21</td><td>$0.72</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>5</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>29</td><td>$0.00</td><td>$0.00</td></tr>
+        </table></div>
         <div class="hand">hand steps: 31 (decision resolved 4, dispatch paused 1, dispatch resumed 3, moved 2, suggestion 21) · hand merges: — until metrics carries them</div>
       </div>
+    </div>
+    
+    <div class="tiers">
+      <div class="eyebrow">By difficulty and model</div>
+      
+      <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; the best of a row is bold once it has 3 samples, a thinner cell is italic</p>
+      <div class="tier-tables">
+        
+        <div class="scroll"><table class="tier">
+          <caption>cost per accepted task</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$2.50</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>$5.80</b><small>n 2</small></td><td class=" "><b>$3.08</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$7.27</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>first-pass approval</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>67 %</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>50 %</b><small>n 2</small></td><td class=" "><b>0 %</b><small>n 4</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>100 %</b><small>n 2</small></td><td class=" thin"><b>0 %</b><small>n 1</small></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>work-run cost</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>$1.94</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" "><b>$3.32</b><small>n 5</small></td><td class="best "><b>$0.72</b><small>n 10</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>$6.24</b><small>n 2</small></td><td class=" thin"><b>$11.32</b><small>n 2</small></td><td class=" thin"><b>$5.98</b><small>n 1</small></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>revise rounds</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>0.0</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.0</b><small>n 2</small></td><td class=" "><b>1.3</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>0.0</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+        <div class="scroll"><table class="tier">
+          <caption>median lead time</caption>
+          <tr><th></th><th><span class="vendor">claude-</span>sonnet-5</th><th><span class="vendor">gpt-</span>5.6-terra</th><th><span class="vendor">claude-</span>opus-4-8</th><th><span class="vendor">claude-</span>fable-5-1</th><th><span class="vendor">gpt-</span>6-astra</th></tr>
+          
+          <tr><th>easy</th><td class=" "><b>1.3 h</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>medium</th><td class=" thin"><b>1.4 h</b><small>n 2</small></td><td class=" "><b>1.6 h</b><small>n 3</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+          <tr><th>hard</th><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td><td class=" thin"><b>2.0 h</b><small>n 2</small></td><td class=" "><span class="faint">—</span></td><td class=" "><span class="faint">—</span></td></tr>
+          
+        </table></div>
+        
+      </div>
+      
     </div>
     
   </div>
@@ -1209,7 +1522,27 @@ body.page-now .rail-running { display:none; }
   <h2>States</h2>
   <p>A design gallery, not part of the page: one strip per state, and the empty and quiet sheets. Each is the same markup as above with different data.</p>
   
-  <div class="g"><h4>running, priced from the stream</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <template id="arrival"><article class="specimen strip  st-running" data-task="CG-215" data-run="x" data-started="2026-09-06T02:34:47+00:00" data-typical="2700">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-215">CG-215</a>
+    <span class="t">Onboarding: garden onboard drafts a garden from an existing repository</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:0.0;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>0 s</span> · typically 45 min<span class="longer" data-longer hidden> · longer than usual</span></span>
+    
+    <span class="spend faint">no usage yet</span>
+  </div>
+  <div class="said"><span class="faint">no words yet</span></div>
+  
+</article></template>
+  <div class="g"><h4>running, priced from the stream</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="1080">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
@@ -1221,8 +1554,8 @@ body.page-now .rail-running { display:none; }
     
   </div>
   <div class="bar">
-    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
-      <span>7 min · typically 18 min</span>
+    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>7:00</span> · typically 18 min<span class="longer" data-longer hidden> · longer than usual</span></span>
     
     <span class="spend">$0.41 so far</span>
     
@@ -1230,7 +1563,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“Tests pass; writing the PR description.”</div>
   
 </article></div>
-  <div class="g"><h4>running, no price table for the model: tokens instead of dollars</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <div class="g"><h4>running, no price table for the model: tokens instead of dollars</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="1080">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
@@ -1242,8 +1575,8 @@ body.page-now .rail-running { display:none; }
     
   </div>
   <div class="bar">
-    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
-      <span>7 min · typically 18 min</span>
+    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span class="clock"><span data-elapsed>7:00</span> · typically 18 min<span class="longer" data-longer hidden> · longer than usual</span></span>
     
     <span class="spend">163k tokens so far</span>
     
@@ -1251,7 +1584,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“Tests pass; writing the PR description.”</div>
   
 </article></div>
-  <div class="g"><h4>running, past its typical time</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <div class="g"><h4>running, past its typical time</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="1080">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
@@ -1264,7 +1597,7 @@ body.page-now .rail-running { display:none; }
   </div>
   <div class="bar">
     <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
-      <span>31 min · typically 18 min</span>
+      <span class="clock"><span data-elapsed>31:00</span> · typically 18 min<span class="longer" data-longer> · longer than usual</span></span>
     
     <span class="spend">$1.12 so far</span>
     
@@ -1272,7 +1605,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“Tests pass; writing the PR description.”</div>
   
 </article></div>
-  <div class="g"><h4>running, fewer than three finished runs to take a typical from</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <div class="g"><h4>running, fewer than three finished runs to take a typical from</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
@@ -1285,7 +1618,7 @@ body.page-now .rail-running { display:none; }
   </div>
   <div class="bar">
     
-      <span>5 min</span>
+      <span class="clock"><span data-elapsed>5:00</span></span>
     
     <span class="spend">$0.03 so far</span>
     
@@ -1293,7 +1626,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“Reading the brief.”</div>
   
 </article></div>
-  <div class="g"><h4>finishing: done (holds eight seconds, then leaves)</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x">
+  <div class="g"><h4>finishing: done (holds eight seconds, then leaves)</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="1080" data-stopped="1140">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-done" title="finishing"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg></div>
   <div class="head">
@@ -1306,7 +1639,7 @@ body.page-now .rail-running { display:none; }
   </div>
   <div class="bar">
     <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.056"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
-      <span>19 min · typically 18 min</span>
+      <span class="clock"><span data-elapsed>19:00</span> · typically 18 min<span class="longer" data-longer> · longer than usual</span></span>
     
     <span class="verdict">done · $1.42</span>
     
@@ -1314,7 +1647,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“Committed the change and the test.”</div>
   
 </article></div>
-  <div class="g"><h4>finishing: a review's verdict</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x">
+  <div class="g"><h4>finishing: a review's verdict</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="290" data-stopped="300">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-in_review" title="finishing"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg></div>
   <div class="head">
@@ -1327,7 +1660,7 @@ body.page-now .rail-running { display:none; }
   </div>
   <div class="bar">
     <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.034"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
-      <span>5 min · typically 5 min</span>
+      <span class="clock"><span data-elapsed>5:00</span> · typically 5 min<span class="longer" data-longer> · longer than usual</span></span>
     
     <span class="verdict">approve · 4 of 4 criteria</span>
     
@@ -1335,7 +1668,7 @@ body.page-now .rail-running { display:none; }
   <div class="said">“All criteria are met and verified against the diff.”</div>
   
 </article></div>
-  <div class="g"><h4>failed</h4><article class="specimen strip  st-failed" data-task="CG-236" data-run="x">
+  <div class="g"><h4>failed</h4><article class="specimen strip  st-failed" data-task="CG-236" data-run="x" data-started="2026-09-06T01:10:00+00:00" data-typical="1080" data-stopped="2700">
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-failed" title="failed"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="wilted"><title>wilted</title><use href="#st-wilt"/></svg></div>
   <div class="head">
@@ -1348,7 +1681,7 @@ body.page-now .rail-running { display:none; }
   </div>
   <div class="bar">
     <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
-      <span>45 min · typically 18 min</span>
+      <span class="clock"><span data-elapsed>45:00</span> · typically 18 min<span class="longer" data-longer> · longer than usual</span></span>
     
     <span class="verdict">failed · exit 1</span>
     
@@ -1431,7 +1764,47 @@ body.page-now .rail-running { display:none; }
 </main>
 </div>
 <script>
-// Mock-only controls: the theme and gallery toggles, the window switch and the countdown.
+// The live clock (docs/design/now-1.md, "Live clocks"). This block is the one the build lifts
+// into base.html: it ticks every element with data-started (a Now strip, a Board card, the task
+// page's run line) from the run's start time and the page's own clock, offset once against the
+// server's (data-server-now on <body>), so the figure matches the run page. Nothing here needs
+// the events stream; the stream only adds, ends or replaces an element.
+(function () {
+  var serverNow = Date.parse(document.body.dataset.serverNow || "");
+  var offset = isNaN(serverNow) ? 0 : serverNow - Date.now();
+  function fmt(s) {
+    s = Math.max(0, Math.floor(s));
+    var two = function (n) { return (n < 10 ? "0" : "") + n; };
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.floor(s / 60) + ":" + two(s % 60);
+    return Math.floor(s / 3600) + ":" + two(Math.floor(s % 3600 / 60)) + ":" + two(s % 60);
+  }
+  function tick() {
+    var now = Date.now() + offset;
+    document.querySelectorAll("[data-started]:not([data-stopped])").forEach(function (el) {
+      var started = Date.parse(el.dataset.started);
+      if (isNaN(started)) return;
+      var s = (now - started) / 1000;
+      var digits = el.querySelector("[data-elapsed]");
+      if (digits) digits.textContent = fmt(s);
+      var typical = parseFloat(el.dataset.typical);
+      if (!(typical > 0)) return;
+      var r = s / typical;
+      var scale = el.querySelector(".scale");
+      if (scale) {
+        scale.style.setProperty("--r", Math.min(r, 1).toFixed(3));
+        scale.style.setProperty("--o", Math.min(Math.max(r - 1, 0), 0.5).toFixed(3));
+      }
+      var longer = el.querySelector("[data-longer]");
+      if (longer) longer.hidden = r <= 1;
+    });
+  }
+  tick();
+  setInterval(tick, 1000);
+  window.gardenClock = { fmt: fmt, now: function () { return Date.now() + offset; } };
+})();
+// Mock-only controls: the theme and gallery toggles, the window switch, the countdown and a
+// button that lets a run arrive so the slide-in and the count from zero can be seen.
 (function () {
   var q = new URLSearchParams(location.search);
   if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
@@ -1459,6 +1832,20 @@ body.page-now .rail-running { display:none; }
     left = left > 0 ? left - 1 : 60;
     document.querySelectorAll("[data-countdown]").forEach(function (el) { el.textContent = left; });
   }, 1000);
+  // A run arrives: the template strip is cloned with its start time set to now, inserted at the
+  // top of Now at no height, and grows in; the clock picks it up on its next tick and counts
+  // from zero. The build does the same on a `dispatch` event.
+  document.querySelector("[data-arrive]").addEventListener("click", function () {
+    var strip = document.getElementById("arrival").content.firstElementChild.cloneNode(true);
+    strip.dataset.started = new Date(window.gardenClock.now()).toISOString();
+    strip.classList.add("arriving", "new");
+    var region = document.getElementById("now");
+    region.insertBefore(strip, region.querySelector(".region-head").nextSibling);
+    requestAnimationFrame(function () { requestAnimationFrame(function () {
+      strip.classList.add("arrive"); strip.classList.remove("arriving");
+      setTimeout(function () { strip.classList.remove("new"); }, 3000);
+    }); });
+  });
 })();
 </script>
 </body>
