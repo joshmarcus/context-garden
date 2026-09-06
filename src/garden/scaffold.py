@@ -204,6 +204,38 @@ plan only the gap: smaller tasks, clearer reading lists, or a spec fix. Prefer f
 spec over adding a task that explains the spec.
 """
 
+ONBOARD_SKILL = """\
+---
+name: garden-onboard
+description: Analyse an existing repository interactively and draft a context garden from its docs, environment and backlog. Use when the user says "onboard this project", "/garden-onboard", or "make a garden for this repo".
+---
+
+# garden-onboard
+
+The command performs deterministic, secret-safe discovery and one planner call. Use it first,
+then help the person review the drafts rather than recreating discovery in the conversation.
+
+## Steps
+
+1. Ask which existing repository to analyse and where the garden should live if either is
+   unclear. Then run:
+
+   ```bash
+   garden onboard <path-or-url> --into <garden-directory>
+   ```
+
+2. Read `<product>/docs/onboarding.md` with the person. It lists every input read, every
+   inference, what could not be determined, and decisions still requiring a person.
+3. Review and edit `product.md`, the new principles entry, the product setup in `garden.yaml`,
+   `phase-01/goals.md`, and every draft task. Never copy values from `.env`, credentials, or
+   CI secrets; configure those by hand.
+4. Run `garden validate` and `garden doctor`. Resolve setup uncertainty before approving any
+   task. Approve drafts individually only when their criteria and reading lists are right.
+
+The command accepts a local checkout or a git URL. All generated tasks remain drafts; onboarding
+never spends worker budget merely because discovery completed.
+"""
+
 REVIEW_SKILL = """\
 ---
 name: garden-review
@@ -416,6 +448,7 @@ drafts the same way: cancel duplicates and already-fixed items with a note namin
 SKILL_TEMPLATES = {
     "garden-take": TAKE_SKILL,
     "garden-plan": PLAN_SKILL,
+    "garden-onboard": ONBOARD_SKILL,
     "garden-review": REVIEW_SKILL,
     "garden-operate": OPERATE_SKILL,
 }

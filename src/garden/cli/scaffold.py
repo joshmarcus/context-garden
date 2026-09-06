@@ -38,6 +38,24 @@ def init(
     console.print("Next: `garden new-product <name>` then `garden new-phase <product> <phase>`.")
 
 
+@app.command(rich_help_panel=PANEL_SETUP)
+def onboard(
+    repo: str = typer.Argument(..., help="Existing repository path or git URL"),
+    into: Path = typer.Option(Path("."), "--into", help="Garden directory to create or extend"),
+):
+    """Analyse an existing project and draft a working garden for it."""
+    from ..onboard import onboard_source
+
+    try:
+        created = onboard_source(repo, into)
+    except (OSError, ValueError, RuntimeError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    for path in created:
+        console.print(f"created {path}")
+    console.print("Draft onboarding complete. Review the report, product, principles, setup, and tasks before approval.")
+
+
 @app.command("new-product", rich_help_panel=PANEL_SETUP)
 def new_product(name: str, repo: str = typer.Option(".", help="Path (relative to garden) or URL of the code repo"),
                 base_branch: str = typer.Option("main")):

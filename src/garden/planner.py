@@ -37,6 +37,8 @@ Rules:
 - `difficulty` picks the model tier: "easy" (mechanical, well-specified, small blast radius), "medium" (typical feature work), "hard" (design judgment, cross-cutting, subtle correctness). Be honest; it controls cost.
 - Output ONLY a JSON array (no prose, no fences) of objects with keys:
   title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard"), depends_on (list of ids or titles from this batch), reading (list of paths), body (markdown string).
+  When additional guidance supplies a provenance value, also return it unchanged in the
+  optional `discovered_from` key.
   Reference batch-internal dependencies by exact title; they are resolved to ids on import.
 """
 
