@@ -65,3 +65,29 @@ def test_operator_feed_names_effective_limit_pressure_and_recovery(sched, monkey
     assert "local 1/1" in line
     assert "pressure local execution limit reached (1/1)" in line
     assert "wait for drain or pause dispatch" in line
+
+
+def test_completed_check_continuation_survives_pressure_until_next_tick(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": [{"name": "tests", "status": "fail"}]}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "collected": True,
+    }
+    sched.state.save()
+
+    def pressured(*args):
+        raise ResourcePressureError("temp headroom low")
+
+    monkeypatch.setattr(sched, "_after_base_probe_check", pressured)
+    with pytest.raises(ResourcePressureError):
+        sched.reap_check(task, type("Report", (), {})())
+    assert sched.state.get(task.id)["check_run"]["run_id"] == run.run_id
+
+    handled = []
+    monkeypatch.setattr(sched, "_after_base_probe_check", lambda *args: handled.append(True))
+    assert sched.reap_check(task, type("Report", (), {})()) is True
+    assert handled == [True]
+    assert sched.state.get(task.id)["check_run"] == {}
