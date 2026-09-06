@@ -86,6 +86,16 @@ def test_walkthrough_includes_now2(garden):
     assert any(p.url == '/now2' for p in pages_for(s, ph))
 
 
+def test_metrics_cli_renders_windowed_and_established_tables(garden, monkeypatch):
+    monkeypatch.chdir(garden)
+    result = CliRunner().invoke(cli, ['metrics', '--since', '1h'])
+    assert result.exit_code == 0, result.output
+    output = ' '.join(result.output.split())
+    assert 'Total cost / accepted task' in output
+    assert 'Median lead time' in output
+    assert 'rebases (their own mode' in output
+
+
 def test_next_preserves_revision_priority_and_merge_head_state(garden):
     from garden.model import Status
 

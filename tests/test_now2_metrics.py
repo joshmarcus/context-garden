@@ -3,7 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from types import SimpleNamespace
 
-from garden.events import difficulty_by_model, metrics
+from garden.events import metrics
+from garden.events import windowed_difficulty_by_model as difficulty_by_model
 from garden.now2 import period_data, typical_durations, window_bounds
 from garden.outcomes import rank_row
 from garden.runs import RunStore

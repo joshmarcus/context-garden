@@ -25,6 +25,10 @@ full lifecycle cost for accepted tasks, explicit missing-price counts, reviewed
 first-pass denominators, and unrounded row-relative ranks. `garden metrics`
 prints the same five matrices; `--since` / `--until` bound those comparisons.
 Legacy summary tables retain their established lifetime semantics.
+The existing `events.difficulty_by_model` API and `by_difficulty_model` metrics
+field retain the table schema used by Now 1. Now 2 uses the separate
+`events.windowed_difficulty_by_model` API, returned in metrics' `difficulty_by_model`
+field; both remain available to CLI callers.
 The phase window retains garden-wide profile, configuration and upgrade marks
 while keeping another phase's activity out of its spend and outcome totals.
 
