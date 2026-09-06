@@ -326,6 +326,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <a class="wordmark" href="/">{{ mark(18) }}<span>{{ garden_name }}<small>context garden</small></span></a>
   <nav class="nav">
     <a href="/" class="{{ 'on' if page == 'inbox' else '' }}">Inbox <span class="count {{ 'hot' if inbox_count else '' }}">{{ inbox_count }}</span></a>
+    <a href="/now2" class="{{ 'on' if page == 'now2' else '' }}">Now 2</a>
     <a href="/board" class="{{ 'on' if page == 'board' else '' }}">Board</a>
     <a href="/trellis" class="{{ 'on' if page == 'trellis' else '' }}">Trellis</a>
     <a href="/events" class="{{ 'on' if page == 'events' else '' }}">Timeline</a>
@@ -559,7 +560,7 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
   const box = document.getElementById("notify");
   const toggle = document.getElementById("notify-toggle");
   const state = document.getElementById("notify-state");
-  if (!box || !toggle) return;
+  if (!box || !toggle || document.getElementById("now2")) return;
   const ON = "garden.notify.on", SEEN = "garden.notify.seen", SEEN_KEYS = "garden.notify.seenKeys";
   const supported = "Notification" in window;
 
