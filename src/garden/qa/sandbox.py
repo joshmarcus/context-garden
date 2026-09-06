@@ -61,7 +61,7 @@ def make_garden(root: Path) -> Path:
         # Fake workers exercise scheduler interleavings and never invoke a product test
         # suite; do not serialize this deterministic QA fixture behind the production
         # heavy-execution default.
-        "resources": {"heavy_test_parallel": 64},
+        "resources": {"heavy_test_parallel": 0},
         "max_attempts": 2,
         "max_revisions": 3,
         "timeout_minutes": 2,

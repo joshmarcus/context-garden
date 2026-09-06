@@ -15,7 +15,10 @@ from pathlib import Path
 
 def _execution_slot(run_dir: Path, should_stop: object) -> object:
     """Take one host-wide execution lease, recoverable by kernel lock release."""
-    limit = max(1, int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1")))
+    limit = int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1"))
+    if limit <= 0:
+        (run_dir / "execution.json").write_text(json.dumps({"state": "disabled", "limit": 0}))
+        return None
     lock_root = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
     while True:
         if should_stop():
