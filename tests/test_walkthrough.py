@@ -27,7 +27,19 @@ def _run(garden, *args):
 
 
 def test_capture_writes_pages_and_index(garden):
+    from garden.model import Status
+
     store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.FAILED
+    task.body += "\n## Log\n\n- a long failed-worker reason that the Inbox must keep readable\n"
+    store.save(task)
+    run = RunStore(store.config.garden_dir).new_run(
+        task.id, "local", run_id="20260906T010102Z-revise-with-an-unusually-long-suffix"
+    )
+    run.status = "failed"
+    run.error = "A long failure detail verifies the Inbox capture includes the decision card."
+    run.save()
     ph = store.phase("demo", "p1")
     out = Path(garden) / "demo" / "p1" / "docs" / "walkthrough" / "2026-09-05"
     result = capture(store, ph, out, screenshots=False)
@@ -44,6 +56,10 @@ def test_capture_writes_pages_and_index(garden):
     assert "Walkthrough of the live web app" in index
     assert "Screenshots were not captured" in index
     assert "`/board`" in index and "`/trellis`" in index
+    inbox_capture = (out / "inbox.html").read_text()
+    assert run.run_id in inbox_capture
+    assert 'class="decision-evidence"' in inbox_capture
+    assert 'class="card-actions decision-actions"' in inbox_capture
 
 
 def test_pages_include_the_phase_and_a_task(garden):

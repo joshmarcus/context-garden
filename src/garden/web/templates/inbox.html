@@ -38,7 +38,7 @@
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>
     <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}{% if it.status %}<span class="state s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span>{% endif %}<span class="age">{{ stage_word(it.status) if it.status else '' }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %} · {{ it.age }}</span></div>
-    <div class="what">
+    <div class="what decision-content">
       <div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>
       <div class="why">{{ it.why }}</div>
       {% if it.group == 'question' %}<div class="q">{{ it.question }}</div>{% endif %}
@@ -47,7 +47,7 @@
       {% if it.group == 'approve' and it.gaps %}<div class="why">Fix the brief before approving — a run would be spent on:</div><ul class="why" style="margin:4px 0 0;padding-left:16px">{% for g in it.gaps %}<li>{{ g }}</li>{% endfor %}</ul>{% endif %}
       {% if it.group == 'attention' %}
         {% if it.get('kind_blurb') %}<div class="why">{{ it.kind_blurb }}</div>{% endif %}
-        {% if it.get('evidence') %}<ul class="why" style="margin:4px 0 0;padding-left:16px">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+        {% if it.get('evidence') %}<ul class="decision-evidence">{% for line in it.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
         {% if it.get('decision_kind') == 'question' %}
           {% if it.question_context %}<div class="why">{{ it.question_context }}</div>{% endif %}
           {% if it.question_options %}<div class="why">options: {{ it.question_options|join(', ') }}</div>{% endif %}
@@ -58,7 +58,7 @@
         </div>{% endif %}
       {% endif %}
     </div>
-    <div class="card-actions">
+    <div class="card-actions decision-actions">
     <div class="do">
       {% if it.group == 'tool' %}
         <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
@@ -84,7 +84,7 @@
         <form method="post" action="/decisions/{{ it.decision }}/reject"><button class="quiet danger">Reject</button></form>
       {% elif it.group == 'attention' %}
         {% for a in it.actions %}
-        <div style="display:flex;gap:8px;align-items:center">
+        <div class="decision-action">
           {% if a.kind == 'resume' %}<form method="post" action="/tasks/{{ it.task }}/resume"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'review-again' %}<form method="post" action="/tasks/{{ it.task }}/review"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'retry' %}<form method="post" action="/tasks/{{ it.task }}/retry"><button>{{ a.label }}</button></form>

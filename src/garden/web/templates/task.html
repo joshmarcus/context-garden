@@ -35,13 +35,16 @@
 </div>
 {% endif %}
 {% if attention %}
-<div class="panel" style="border-color:var(--bad);margin-bottom:14px">
-  <div class="eyebrow" style="color:var(--bad)">Needs a decision: {{ attention.kind_title }}</div>
-  <p style="margin:6px 0 2px"><b>{{ attention.reason }}</b></p>
-  {% if attention.kind_blurb %}<p class="muted" style="margin:2px 0 8px">{{ attention.kind_blurb }}</p>{% endif %}
-  {% if attention.evidence %}<ul style="margin:0 0 10px;padding-left:18px">{% for line in attention.evidence %}<li class="muted">{{ line }}</li>{% endfor %}</ul>{% endif %}
+<div class="panel decision-card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="decision-content">
+    <div class="eyebrow" style="color:var(--bad)">Needs a decision: {{ attention.kind_title }}</div>
+    <p style="margin:6px 0 2px"><b>{{ attention.reason }}</b></p>
+    {% if attention.kind_blurb %}<p class="muted" style="margin:2px 0 8px">{{ attention.kind_blurb }}</p>{% endif %}
+    {% if attention.evidence %}<ul class="decision-evidence">{% for line in attention.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+  <div class="decision-actions">
   {% for a in attention.actions %}
-  <div class="actions" style="align-items:center;margin-top:6px">
+  <div class="decision-action">
     {% if a.kind == 'resume' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/resume"><button class="primary">{{ a.label }}</button></form>
     {% elif a.kind == 'review-again' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="primary">{{ a.label }}</button></form>
     {% elif a.kind == 'retry' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ a.label }}</button></form>
@@ -52,6 +55,7 @@
     <span class="faint">{{ a.detail }}</span>
   </div>
   {% endfor %}
+  </div>
   <div id="discuss-panel" hidden style="margin-top:10px">
     <textarea id="discuss-text" readonly style="width:100%;box-sizing:border-box;min-height:150px">{{ attention.discuss }}</textarea>
     <div class="actions" style="margin-top:6px"><button data-copy="discuss-text">Copy prompt</button><span class="faint">paste it into a chat session or <code>garden take {{ task.id }}</code></span></div>
