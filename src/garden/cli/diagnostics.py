@@ -84,6 +84,15 @@ def doctor():
         fail("work dir")
     else:
         console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
+    min_free_mb = int(store.config.get("doctor.min_free_mb", 2048) or 0)
+    for label, path in (("work dir", wd), ("/tmp", Path("/tmp"))):
+        try:
+            disk_path = path if path.exists() else path.parent
+            free_mb = shutil.disk_usage(disk_path).free // (1024 * 1024)
+            warning = f"  [yellow](below doctor.min_free_mb={min_free_mb} MB)[/yellow]" if free_mb < min_free_mb else ""
+            console.print(f"free space {label}: {free_mb} MB{warning}")
+        except OSError as e:
+            console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]")
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"

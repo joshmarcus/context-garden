@@ -33,17 +33,21 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
     cwd = Path(payload["cwd"]) if payload.get("cwd") else None
     setup = payload.get("setup") or {}
     config = payload.get("config") or {}
+    temp_dir = str(payload.get("temp_dir") or "")
+    temp_env = {"TMPDIR": temp_dir, "PYTEST_DEBUG_TEMPROOT": temp_dir} if temp_dir else {}
     # A pre-PR / base-probe check runs in a worktree that exists (its caller guards that); a CI
     # analyser (`checks.ci`) may run with no worktree at all. Only prepare an env when there is a
     # worktree to prepare.
     if cwd is not None and cwd.exists():
         try:
-            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
-                      env=scrubbed_env(config, setup, worktree=cwd))
+            setup_env = scrubbed_env(config, setup, worktree=cwd)
+            setup_env.update(temp_env)
+            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log", env=setup_env)
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
     elif cwd is not None and not cwd.exists():
         cwd = None  # do not run command checks in a worktree that isn't there
+    specs = [{**spec, "env": {**(spec.get("env") or {}), **temp_env}} for spec in specs]
     results = run_checks(specs, payload.get("ctx") or {}, cwd=cwd,
                          timeout=int(payload.get("timeout") or 600), config=config)
     if payload.get("ci_rerun"):
@@ -57,6 +61,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
             # or the operator's HOME unless `worker_env.pass` names them — so a flaky rerun
             # cannot become a channel for a branch to run a privileged shell command.
             retry_env = scrubbed_env(config, worktree=cwd)
+            retry_env.update(temp_env)
             for r in flaky_results:
                 if r.get("retry_command"):
                     subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True,

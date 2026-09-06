@@ -33,6 +33,8 @@ def no_live_garden_root(base: Path) -> str:
 
 DEFAULTS: dict[str, Any] = {
     "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
+    "worktrees": {"keep_days": 2}, # prune terminal-task worktrees after this age
+    "doctor": {"min_free_mb": 2048},
     "name": "garden",
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",

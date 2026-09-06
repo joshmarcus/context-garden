@@ -197,14 +197,19 @@ class RunStore:
     def next_run_id(self, task_id: str, mode: str) -> str:
         """Reserve the id `new_run` would generate for `task_id`/`mode` right now, without
         creating the run — so a caller that needs the id before the run exists (e.g. to name a
-        `backup/<run-id>` ref before dispatch; CG-220) gets the same id `new_run` will use a
-        moment later, as long as no other run for this task+mode is created in between (the
-        scheduler dispatches one task at a time, so within a tick this always holds)."""
+        `backup/<run-id>` ref before dispatch) gets the same id `new_run` will use a moment
+        later. IDs are unique across tasks too, because they also name the shared work root's
+        per-run temp directory."""
         stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
         run_id = f"{stamp}-{mode}"
         d = self.dir / task_id / run_id
+
+        def exists_anywhere(candidate: str) -> bool:
+            return d.exists() or (self.dir.exists() and any(
+                (task_dir / candidate).exists() for task_dir in self.dir.iterdir() if task_dir.is_dir()))
+
         n = 1
-        while d.exists():
+        while exists_anywhere(run_id):
             n += 1
             run_id = f"{stamp}-{mode}-{n}"
             d = self.dir / task_id / run_id

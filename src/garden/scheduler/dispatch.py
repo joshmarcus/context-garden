@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,31 @@ from .report import TickReport
 
 
 class DispatchMixin:
+    def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
+        """Cheaply reclaim caches from terminal task worktrees without touching live runs."""
+        active_task_ids = {run.task_id for run in self.runs.active()}
+        keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
+        now = time.time()
+        for task in self.store.tasks().values():
+            if task.status not in (Status.DONE, Status.CANCELLED) or task.id in active_task_ids:
+                continue
+            worktree = self.worktree_for(task)
+            if not worktree.exists():
+                continue
+            try:
+                age_days = (now - worktree.stat().st_mtime) / 86400
+            except OSError:
+                continue
+            if age_days >= keep_days:
+                gitops.remove_worktree(self.repo_for(task), worktree)
+                if worktree.exists() and not worktree.is_symlink():
+                    shutil.rmtree(worktree, ignore_errors=True)
+                rep.transitions.append(f"{task.id}: removed terminal worktree")
+                continue
+            for cache in [worktree / ".venv", worktree / ".pytest_cache", *worktree.rglob("__pycache__")]:
+                if cache.is_dir() and not cache.is_symlink():
+                    shutil.rmtree(cache, ignore_errors=True)
+
     # ---- dispatch ----------------------------------------------------------
     def _refuse_if_closed_or_frozen(self, task: Task) -> None:
         """The single gate every dispatch (tick, retry, revise, trial, `garden dispatch`/`take`,

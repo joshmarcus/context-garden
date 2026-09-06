@@ -144,6 +144,7 @@ class Scheduler(
         else:
             cfg = {}
         cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
+        cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         return get_runner(name, cfg, harness)
@@ -428,6 +429,7 @@ class Scheduler(
             self.reap_dead_runs(rep)
         except Exception as e:  # noqa: BLE001
             rep.errors.append(f"dead-run reap failed: {e}")
+        self._cleanup_reaped_temp_dirs()
 
     def reap_on_start(self) -> TickReport:
         """Before a freshly started process ticks, walk the run records of every mode and reap
@@ -515,6 +517,7 @@ class Scheduler(
                 self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
+            self._guard(rep, "worktree sweep", lambda: self._sweep_terminal_worktrees(rep))
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
             self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))
             self._guard(rep, "id audit", lambda: self._audit_ids(rep))
