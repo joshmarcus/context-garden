@@ -572,7 +572,8 @@ class ReapMixin:
         # Verification belongs to the contract the worker received.  The task
         # may have been edited while the run was in flight; that delta is a
         # separate revise note, not a retroactive requirement for this PR.
-        criteria = list((run.env_snapshot or {}).get("criteria") or parse_criteria(task.body))
+        snapshot = run.env_snapshot or {}
+        criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
         verified = result.get("verified")
         st = self.state.get(task.id)
         if not slug or not self.github.available:

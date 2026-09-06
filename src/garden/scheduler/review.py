@@ -181,13 +181,17 @@ class ReviewMixin:
             pr_comment = str(work_run.result.get("pr_comment") or "")
             verified = work_run.result.get("verified")
             pre_flight = work_run.result.get("pre_flight")
-        criteria_snapshot = list((work_run.env_snapshot or {}).get("criteria") or []) if work_run else []
-        if not criteria_snapshot:
+        criteria_snapshot: list[str] | None = None
+        if work_run is not None and "criteria" in (work_run.env_snapshot or {}):
+            criteria_snapshot = list((work_run.env_snapshot or {}).get("criteria") or [])
+        if criteria_snapshot is None:
             for prior in reversed(self.runs.runs_for(task.id)):
-                if prior.mode in ("work", "revise", "resume"):
+                if prior.mode in ("work", "revise", "resume") and "criteria" in (prior.env_snapshot or {}):
                     criteria_snapshot = list((prior.env_snapshot or {}).get("criteria") or [])
-                    if criteria_snapshot:
+                    if criteria_snapshot is not None:
                         break
+        if criteria_snapshot is None:
+            criteria_snapshot = parse_criteria(task.body)
         if verified is None:
             verified = self._last_worker_verified(task)
         if pre_flight is None:
@@ -444,9 +448,12 @@ class ReviewMixin:
 
     def _criteria_changed_note(self, task: Task, review_run: Run) -> str:
         """Add task edits made after dispatch to the next revise brief."""
-        frozen = list((review_run.env_snapshot or {}).get("criteria") or [])
+        snapshot = review_run.env_snapshot or {}
+        if "criteria" not in snapshot:
+            return ""
+        frozen = list(snapshot.get("criteria") or [])
         current = parse_criteria(task.body)
-        if not frozen or frozen == current:
+        if frozen == current:
             return ""
         added = [item for item in current if item not in frozen]
         removed = [item for item in frozen if item not in current]

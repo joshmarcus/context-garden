@@ -93,6 +93,15 @@ def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monke
     assert "Removed: The original criterion is met." in brief
 
 
+def test_empty_criteria_snapshot_does_not_adopt_later_task_edits(sched):
+    task = sched.store.task("DM-001")
+    review_run = sched.runs.new_run(task.id, "local", mode="review")
+    review_run.env_snapshot = {"criteria": []}
+    task.body += "\n## Acceptance criteria\n\n- [ ] A later criterion.\n"
+
+    assert "Added: A later criterion." in sched._criteria_changed_note(task, review_run)
+
+
 def test_static_assets_are_ui_changes():
     from garden.scheduler.checkruns import _is_ui_path
 
