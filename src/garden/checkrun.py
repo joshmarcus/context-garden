@@ -47,7 +47,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
     elif cwd is not None and not cwd.exists():
         cwd = None  # do not run command checks in a worktree that isn't there
-    specs = [{**spec, "env": {**temp_env, **(spec.get("env") or {})}} for spec in specs]
+    specs = [{**spec, "env": {**(spec.get("env") or {}), **temp_env}} for spec in specs]
     results = run_checks(specs, payload.get("ctx") or {}, cwd=cwd,
                          timeout=int(payload.get("timeout") or 600), config=config)
     if payload.get("ci_rerun"):

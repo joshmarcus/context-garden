@@ -362,9 +362,8 @@ def _is_claude_login_probe(cmd) -> bool:
 
 def test_doctor_success_with_valid_setup(garden, monkeypatch):
     import subprocess
-    from unittest import mock
-
     from types import SimpleNamespace
+    from unittest import mock
 
     monkeypatch.setattr("garden.cli.diagnostics.shutil.disk_usage", lambda path: SimpleNamespace(free=1024 * 1024))
     with mock.patch("subprocess.run") as mock_run:

@@ -195,7 +195,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         return
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
-        env[str(k)] = str(v)
+        env.setdefault(str(k), str(v))
     timeout = int((setup or {}).get("timeout_seconds") or 600)
     try:
         proc = subprocess.run(command, shell=True, cwd=str(worktree), env=env,
