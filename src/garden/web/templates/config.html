@@ -5,6 +5,22 @@
   <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change most values: the scheduler re-reads garden.yaml (and its env / local overlays) each tick when the file changes, so an edit takes effect within one tick with no restart. A few keys are read once at startup and need a restart — they are named below. The pause switch and max_parallel can also be overridden live from here.</p></div>
 </div>
 
+{% if config_hold %}
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">CG-242</div>
+  <h3>Held config reload</h3>
+  <p style="color:var(--warn);margin:0 0 10px">
+    garden.yaml changed while a run was in flight. Held since {{ config_hold.since }}:
+    <strong>{{ config_hold['keys']|join(', ') }}</strong> disagrees with the config run(s)
+    <span class="mono">{{ config_hold.runs|join(', ') }}</span> were dispatched under.
+    It will apply on its own once every run above is reaped, or confirm it now if the change is yours.
+  </p>
+  <form method="post" action="/config/accept-reload" class="actions">
+    <button class="primary">Confirm and apply now</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Dispatch</div>
   <h3>Pause / Resume</h3>

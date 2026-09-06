@@ -79,7 +79,7 @@ of the loop touch different files.
 | `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` (per-pass duration and slowest step) |
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
-| `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap |
+| `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap; the live config-reload gate that holds an executable-field change against an in-flight run's fence manifest (CG-242) |
 | `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
@@ -524,14 +524,35 @@ host list without touching the shared file. Per-product blocks under `products:`
 `repo`, `base_branch`, `id_prefix`, `runner`, `harness`, `budget_usd` and `github`.
 `garden doctor` prints which files were loaded and what it found.
 
-**Live reload.** `Store.invalidate` (called at the top of every tick) re-reads these files
-when any of them has changed on disk since the last read, comparing their mtimes, so an edit
-to `garden.yaml` takes effect within one tick and the changed top-level keys are logged (a
-`config_reloaded` event). A handful of keys are consumed once at startup and so are *not*
-picked up live — `config.RESTART_KEYS`: `work_dir` (fixes the `.garden` paths), `tick_interval`
-(the watch/serve loop reads it once), and the `github.*` client and `upgrade.*` installer
-settings that are built when the scheduler is constructed. The Configuration page names both
-sets, and changing a restart key needs a restart of `garden watch` / `garden serve`.
+**Live reload.** `Scheduler._reload_config_if_safe` (called at the top of every tick, before
+reap) re-reads these files when any of them has changed on disk since the last read, comparing
+their mtimes, so an edit to `garden.yaml` normally takes effect within one tick and the changed
+top-level keys are logged (a `config_reloaded` event). A handful of keys are consumed once at
+startup and so are *not* picked up live — `config.RESTART_KEYS`: `work_dir` (fixes the
+`.garden` paths), `tick_interval` (the watch/serve loop reads it once), and the `github.*`
+client and `upgrade.*` installer settings that are built when the scheduler is constructed. The
+Configuration page names both sets, and changing a restart key needs a restart of
+`garden watch` / `garden serve`.
+
+**Held reloads (CG-242).** A change to an *executable* field — `notify.command`, `checks`
+(including any check's `retry_command`), a product's `setup.command`, a harness's `bin`/
+`command`, or `worker_env.pass` (`config.executable_signature`) — is compared against the
+config every fenced run currently in flight (work/revise/resume/rebase; see the fence above)
+was dispatched under. A mismatch holds the reload instead of adopting it: `self.cfg` keeps its
+old, safe value, a `config_reload_held` event names the differing keys and the runs holding it,
+and the Inbox/Config page show the hold. It resolves on its own once every run above is reaped
+(the fence attributes and reverts a worker's own write to these files, same as any other
+worktree escape) or once an operator calls `garden config accept` / the Config page's Confirm
+button, which applies the change on the next tick regardless of what is still in flight.
+Everything else in garden.yaml (budgets, review settings, observe cadence, ...) still reloads
+immediately: only the fields that shape what a run or check subprocess can execute are held.
+Because a config change is only ever adopted when no fenced run is in flight (or the operator
+overrides that), comparing against `self.cfg` is equivalent to comparing against any one
+in-flight run's own fence manifest — they can't disagree while both are still active. Outside
+`Scheduler.tick`/`reap_on_start`, every long-lived config reader (the web `Hub`, the TUI, a
+CLI loop like `garden trial --wait`) refreshes only its task/product scan
+(`Store.invalidate_tasks`) between ticks, never garden.yaml itself, so no other code path can
+hand a held reload's executable fields a route around the gate.
 
 Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.

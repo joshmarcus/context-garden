@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from garden import gitops
 from garden.gitops import head_sha
@@ -427,3 +428,73 @@ def test_sandbox_is_opt_in():
     s = json.loads(boxed[boxed.index("--settings") + 1])
     assert s["sandbox"]["filesystem"]["allowWrite"][0] == "/wt"
     assert "/x" not in s["sandbox"]["filesystem"]["allowWrite"]
+
+
+# ---- held config reload (CG-242) -------------------------------------------
+
+def test_config_reload_is_held_while_a_fenced_run_is_in_flight_then_resumes_after_reap(sched, garden, monkeypatch):
+    """A worker's shell rewrites the live garden.yaml's notify.command while its own run is
+    still in flight. A tick before that run is reaped must not adopt the change — only the
+    fence check (at reap) may revert or accept it — so notify.command must never carry the
+    worker's value in the meantime, and the command it names must never run."""
+    marker = garden.parent / "notify-fired"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape-config")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_MARKER", str(marker))
+
+    sched.tick()  # dispatch DM-001; the in-process worker runs synchronously and rewrites garden.yaml
+    on_disk = yaml.safe_load((garden / "garden.yaml").read_text())
+    assert on_disk.get("notify", {}).get("command")  # the escape landed on disk
+
+    sched.tick()  # a tick before reap: the gate must hold, not adopt notify.command
+    assert sched.cfg.get("notify.command") == ""  # never adopted
+    hold = sched.config_hold()
+    assert hold and "notify.command" in hold["keys"]
+    assert not marker.exists()  # the command was never run
+    assert sched.store.task("DM-001").status.value == "failed"  # the fence already caught and failed this run
+
+    # a further tick: the fence's revert (already applied above) leaves garden.yaml matching
+    # what's loaded, so the reload resumes with nothing left to hold
+    sched.tick()
+    assert not sched.config_hold()
+    assert sched.cfg.get("notify.command") == ""
+    assert not marker.exists()
+    restored = yaml.safe_load((garden / "garden.yaml").read_text())
+    assert not restored.get("notify", {}).get("command")
+
+
+def test_config_reload_with_no_runs_in_flight_applies_within_a_tick(sched, garden):
+    """A legitimate operator edit with nothing dispatched applies immediately, as before
+    CG-242: no fenced run means nothing for the reload to race."""
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["notify"] = {"command": "true"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    sched.tick()  # the gate runs before dispatch, and no run has been dispatched yet: nothing to hold
+    assert not sched.config_hold()
+    assert sched.cfg.get("notify.command") == "true"
+
+
+def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monkeypatch):
+    """`accept_config_reload` (the CLI's `garden config accept`, or the Config page) lets the
+    operator vouch for their own garden.yaml edit even while a run dispatched before it is
+    still in flight, instead of waiting for that run to be reaped. (A worker's own forged
+    write is a different case: the fence reverts it at reap regardless, whatever the reload
+    gate does meanwhile — see test_config_reload_is_held_... above.)"""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")  # DM-001's run never finishes on its own
+    sched.tick()  # dispatch DM-001; its fence manifest is now on file
+    assert sched.store.task("DM-001").status.value == "running"
+
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["notify"] = {"command": "true"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    sched.tick()  # held: DM-001's run is still in flight and unreaped
+    assert sched.config_hold()
+    assert sched.cfg.get("notify.command") == ""
+
+    sched.accept_config_reload(by="test")
+    sched.tick()  # applies now, even though DM-001 has not been reaped yet
+    assert not sched.config_hold()
+    assert sched.cfg.get("notify.command") == "true"
+    assert sched.store.task("DM-001").status.value == "running"  # still in flight, untouched

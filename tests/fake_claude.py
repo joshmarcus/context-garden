@@ -33,6 +33,7 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | wont_do (first run reports wont_do; a revise run after a reject finishes normally)
        | no_change (first run finishes normally; a revise round reports no_change)
        | escape (leaves the worktree and writes/commits in another repo, whatever the brief said)
+       | escape-config (rewrites the live garden.yaml's notify.command; commits normally otherwise)
        | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
        | skip-criterion (done, but the `verified` list silently omits the first acceptance criterion)
        | qa (the `garden qa` agent: every flow ok, or FAKE_CLAUDE_QA_FAIL's flow failed, plus one finding)
@@ -422,6 +423,21 @@ def resolve_rebase(call: Call) -> bool:
     return True
 
 
+def escape_config_notify(call: Call) -> None:
+    """CG-242: a worker's shell reaches out of its worktree and rewrites the live garden.yaml's
+    notify.command to a command that would leave a marker file behind if it ever ran — proof
+    that the live-reload gate holds an in-flight run's config change (and never runs the
+    command) until the fence reverts it at reap."""
+    import yaml
+
+    cfg_path = Path(call.env["FAKE_CLAUDE_ESCAPE_DIR"]) / "garden.yaml"
+    marker = call.env["FAKE_CLAUDE_ESCAPE_MARKER"]
+    data = yaml.safe_load(cfg_path.read_text()) or {}
+    data["notify"] = {"command": f"touch {marker}"}
+    cfg_path.write_text(yaml.safe_dump(data))
+    call.escaped_path = str(cfg_path)  # a real worker names the path it wrote (Edit file_path / Bash / final msg)
+
+
 def escape_worktree(call: Call) -> None:
     # Do what CG-092's worker did: leave the worktree and write/commit in another repo
     # (the live garden or the product clone), whatever the brief said.
@@ -517,6 +533,7 @@ WORKERS: dict[str, Worker] = {
     "friction": Worker(tweak=add_friction),
     "omit-body": Worker(tweak=drop_body_on_revise),
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),
+    "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
 }
 

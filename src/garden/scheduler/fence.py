@@ -1,7 +1,8 @@
 """The worktree fence: snapshot the guarded repos at dispatch, revert a worker's writes outside
 its worktree. Also the git-internals guard (CG-239): hash a clone's `.git/config`, its hooks
 directory and a worktree's git-admin files at dispatch, and block every scheduler-side `git`
-command in that clone at reap if any of them changed."""
+command in that clone at reap if any of them changed. And a held config reload (CG-242): hold
+a live config reload that would race ahead of an in-flight run's fence manifest."""
 
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
-from ..model import Status, Task
+from ..config import executable_diff
+from ..model import Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
 
@@ -493,3 +495,63 @@ class FenceMixin:
         run.save()
         self._transition(task, Status.FAILED, f"fenced: {card}"[:400], needs_human=True)
         rep.transitions.append(f"{task.id} -> failed (wrote outside worktree)")
+
+    # ---- held config reload (CG-242) ----------------------------------------
+    def _fenced_runs_in_flight(self) -> list[Run]:
+        """Active runs whose dispatch left a fence manifest behind (work/revise/resume/rebase;
+        see dispatch()'s `_fence_snapshot` call) — the runs a config reload's executable fields
+        must not race ahead of."""
+        return [r for r in self.active_runs() if (r.path / "fence_guard.json").exists()]
+
+    def config_hold(self) -> dict[str, Any]:
+        """The currently held config reload, if any: `keys` (the executable fields that
+        disagree with an in-flight run's dispatch config), `runs` (the run ids holding it) and
+        `since`. Empty when nothing is held. Read by the Inbox, the Config page and
+        `garden config`."""
+        return dict(self.control().get("config_hold") or {})
+
+    def accept_config_reload(self, by: str = "cli") -> None:
+        """Let a held reload apply on the next tick even though its runs are still in flight:
+        the operator has looked at the change and vouches it is theirs, not a worker's write
+        racing the fence (CG-242). Recorded even when nothing is currently held; the next
+        tick's gate then simply finds no pending change to apply."""
+        ctrl = self.control()
+        ctrl["config_hold_accept"] = True
+        self.state.save()
+        self.events.emit("config_reload_accepted", "", by=by)
+        self.log(f"held config reload accepted by {by}; applies next tick")
+
+    def _reload_config_if_safe(self) -> None:
+        """Re-read garden.yaml (CG-192) — unless doing so right now could hand an in-flight
+        run's own config write a route to execute before its fence check (at reap) can revert
+        it (CG-242). `executable_diff` compares notify.command, checks (including any
+        retry_command), every product's setup.command, every harness's bin/command and
+        worker_env.pass between what is loaded now and what is on disk; a mismatch while a
+        fenced run is in flight holds the reload — logged and recorded once as `config_hold`,
+        naming the keys and the runs — until every such run has been reaped (its own writes
+        reverted or not) or `accept_config_reload` marks the change operator-confirmed. Every
+        other key (budgets, review settings, observe cadence, ...) still reloads immediately,
+        and a change with no fenced run in flight always applies at once, as before CG-242."""
+        if not self.store.config_changed_on_disk():
+            return
+        new_cfg = self.store.load_config_from_disk()
+        ctrl = self.control()
+        accepted = bool(ctrl.pop("config_hold_accept", False))
+        exec_keys = executable_diff(self.cfg.data, new_cfg.data)
+        in_flight = self._fenced_runs_in_flight() if exec_keys and not accepted else []
+        if exec_keys and in_flight and not accepted:
+            run_ids = sorted(r.run_id for r in in_flight)
+            existing = ctrl.get("config_hold") or {}
+            if sorted(existing.get("keys") or []) != exec_keys or sorted(existing.get("runs") or []) != run_ids:
+                self.events.emit("config_reload_held", "", keys=exec_keys, runs=run_ids)
+                self.log(f"config reload held: {', '.join(exec_keys)} disagrees with run(s) {', '.join(run_ids)}'s dispatch config")
+            ctrl["config_hold"] = {"keys": exec_keys, "runs": run_ids, "since": existing.get("since") or now_iso()}
+            return
+        changed = self.store.adopt_config(new_cfg)
+        self.cfg = self.store.config
+        was_held = ctrl.pop("config_hold", None)
+        if changed:
+            keys = ", ".join(sorted(changed))
+            note = " (operator-confirmed while runs were in flight)" if accepted and was_held else ""
+            self.log(f"garden.yaml reloaded; changed: {keys}{note}")
+            self.events.emit("config_reloaded", "", keys=sorted(changed), accepted=accepted)

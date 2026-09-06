@@ -76,7 +76,10 @@ class Hub:
             threading.Thread(target=self._loop, daemon=True, name="garden-watch").start()
 
     def scheduler(self) -> Scheduler:
-        self.store.invalidate()
+        # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
+        # every action's scheduler() call, so a button press between ticks can't hand a held
+        # reload's executable fields (notify.command, checks, ...) a route around the gate.
+        self.store.invalidate_tasks()
         return Scheduler(self.store, github=self.github, log=self._log)
 
     def reader(self) -> Scheduler:
@@ -112,7 +115,9 @@ class Hub:
             self._stop.wait(interval)
 
     def fresh(self) -> Store:
-        self.store.invalidate()
+        """Re-scan task files for a page read. Config reload is gated by tick() (CG-242); see
+        `scheduler()`."""
+        self.store.invalidate_tasks()
         return self.store
 
 

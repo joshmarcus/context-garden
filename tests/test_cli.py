@@ -677,6 +677,40 @@ def test_status_shows_a_paused_harness(garden):
     assert "harness claude paused" in out and "quota limit hit on claude" in out
 
 
+def test_config_accept_with_nothing_held(garden):
+    r = run(garden, "config", "accept")
+    assert r.exit_code == 1
+    assert "no config reload is held" in r.output
+
+
+def test_config_shows_and_accepts_a_held_reload(garden, monkeypatch):
+    """CG-242: `garden config` names a held reload and its runs; `garden config accept`
+    lets the operator apply it now instead of waiting for those runs to be reaped."""
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")  # DM-001's run never finishes on its own
+    sched = Scheduler(Store(garden))
+    sched.tick()  # dispatch DM-001
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["notify"] = {"command": "true"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+
+    sched.tick()  # held: DM-001 is still in flight and unreaped
+    assert sched.config_hold()
+
+    r = run(garden, "config")
+    assert r.exit_code == 0 and "notify.command" in r.output
+
+    r = run(garden, "config", "accept")
+    assert r.exit_code == 0 and "accepted" in r.output.lower()
+
+    sched.tick()  # applies now, even though DM-001 has not been reaped yet
+    assert not sched.config_hold()
+    assert sched.cfg.get("notify.command") == "true"
+
+
 def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "pause").exit_code == 0
     assert "dispatch paused" in run(garden, "status").output

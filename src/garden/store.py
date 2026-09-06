@@ -36,13 +36,20 @@ class Store:
     # ---- discovery ---------------------------------------------------------
     def invalidate(self) -> None:
         self.reload_config_if_changed()
+        self.invalidate_tasks()
+
+    def invalidate_tasks(self) -> None:
+        """Drop the cached task/product scan, without touching garden.yaml — for a caller
+        that already knows a config reload does not belong here (e.g. mid-tick, after the
+        scheduler's own config-reload gate has already run once for this pass; see
+        Scheduler._reload_config_if_safe, CG-242)."""
         self._tasks = None
         self._products = None
 
     def _config_signature(self) -> dict[str, int]:
         """The mtime (nanoseconds) of each garden*.yaml file that currently exists, keyed by
         name. A new or removed file changes the key set; an edit changes an mtime — either way
-        the signature differs and reload_config_if_changed() re-reads the config."""
+        the signature differs from config_changed_on_disk()/reload_config_if_changed() on."""
         sig: dict[str, int] = {}
         for name in self.config.source_names():
             try:
@@ -51,24 +58,44 @@ class Store:
                 pass
         return sig
 
+    def config_changed_on_disk(self) -> bool:
+        """Whether garden*.yaml has a newer mtime than the config currently loaded — without
+        reading or adopting it. Lets a caller (the scheduler's live-reload gate, CG-242) decide
+        whether it is safe to adopt the change before touching `self.config`."""
+        return self._config_signature() != self._config_sig
+
+    def load_config_from_disk(self) -> Config:
+        """A fresh Config read from the current garden*.yaml files, without adopting it (see
+        adopt_config)."""
+        return Config.load(self.root, env=self.config.env)
+
+    def adopt_config(self, new_config: Config) -> dict[str, tuple[object, object]]:
+        """Make `new_config` current, returning (and recording on `last_config_change`) the
+        top-level keys whose value changed. Used directly by a caller (the scheduler's
+        live-reload gate, CG-242) that already read the pending config itself via
+        `load_config_from_disk` before deciding it is safe to adopt; `reload_config_if_changed`
+        is the immediate-adopt path for every other caller."""
+        old = self.config.data
+        self.config = new_config
+        self._config_sig = self._config_signature()
+        new = self.config.data
+        changed = {k: (old.get(k), new.get(k)) for k in set(old) | set(new) if old.get(k) != new.get(k)}
+        self.last_config_change = changed
+        self.invalidate_tasks()
+        return changed
+
     def reload_config_if_changed(self) -> dict[str, tuple[object, object]]:
         """Re-read garden.yaml (and its env/local overlays) from disk when any of them has
         changed since the last read, so an edit takes effect within one tick without a restart
         (see docs/architecture.md and RESTART_KEYS for the keys this does *not* cover). Returns
         (and records on `last_config_change`) the top-level keys whose value changed, so the
-        caller can log them; returns an empty mapping when nothing changed."""
-        sig = self._config_signature()
-        if sig == self._config_sig:
+        caller can log them; returns an empty mapping when nothing changed. Adopts unconditionally
+        — the scheduler's tick uses `config_changed_on_disk`/`load_config_from_disk`/
+        `adopt_config` directly instead, so it can hold an executable-field change against an
+        in-flight run's fence manifest first (CG-242)."""
+        if not self.config_changed_on_disk():
             return {}
-        old = self.config.data
-        self.config = Config.load(self.root, env=self.config.env)
-        self._config_sig = sig
-        new = self.config.data
-        changed = {k: (old.get(k), new.get(k)) for k in set(old) | set(new) if old.get(k) != new.get(k)}
-        self.last_config_change = changed
-        self._tasks = None
-        self._products = None
-        return changed
+        return self.adopt_config(self.load_config_from_disk())
 
     def products(self) -> list[Product]:
         if self._products is None:
@@ -315,7 +342,7 @@ class Store:
         else:
             t = build(task_id)
             self.save(t)
-        self.invalidate()
+        self.invalidate_tasks()
         return t
 
     # ---- durable id reservations ------------------------------------------
@@ -414,7 +441,7 @@ class Store:
         else:
             meta.pop("closed", None)
         _atomic_write(goals, join_frontmatter(meta, body) if meta else body)
-        self.invalidate()
+        self.invalidate_tasks()
 
     def set_phase_frozen(self, phase: Phase, frozen: str) -> None:
         """Write (or, with an empty string, clear) `frozen:` in the phase's goals.md frontmatter."""
@@ -428,7 +455,7 @@ class Store:
         else:
             meta.pop("frozen", None)
         _atomic_write(goals, join_frontmatter(meta, body) if meta else body)
-        self.invalidate()
+        self.invalidate_tasks()
 
     def rel(self, path: Path) -> str:
         try:

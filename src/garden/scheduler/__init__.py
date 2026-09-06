@@ -439,9 +439,10 @@ class Scheduler(
         already-reaped run is skipped (CG-198)."""
         rep = TickReport()
         started = time.monotonic()
-        self.store.invalidate()
+        self.store.invalidate_tasks()
         self.state = State(self.state.path)
         with self._step(rep, "reap"):
+            self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
             self._reap_all(rep)
         self.state.save()
         rep.duration_s = time.monotonic() - started
@@ -452,16 +453,13 @@ class Scheduler(
     def tick(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
-        self.store.invalidate()  # re-reads task files, and garden.yaml if it changed (CG-192)
-        self.cfg = self.store.config  # pick up a live garden.yaml edit without a restart
-        changed = self.store.last_config_change
-        if changed:
-            self.store.last_config_change = {}  # consumed: log it once
-            keys = ", ".join(sorted(changed))
-            self.log(f"garden.yaml reloaded; changed: {keys}")
-            self.events.emit("config_reloaded", "", keys=sorted(changed))
+        self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         try:
+            # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
+            # change against an in-flight run's fence manifest until it's safe or an operator
+            # confirms it (CG-242) — before anything else in this pass can act on it.
+            self._reload_config_if_safe()
             self._tick_body(rep, dispatch)
         finally:
             # Saved here, not just at the end of the happy path, so a phase that raises past
@@ -478,7 +476,7 @@ class Scheduler(
     def _tick_body(self, rep: TickReport, dispatch: bool | None) -> None:
         with self._step(rep, "reap"):
             self._reap_all(rep)
-        self.store.invalidate()
+        self.store.invalidate_tasks()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):
             for t in list(tasks.values()):

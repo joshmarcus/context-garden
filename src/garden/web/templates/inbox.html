@@ -108,6 +108,9 @@
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Drop</button></form>
       {% elif it.group == 'budget' %}
         <span class="muted mono">{{ it.actions[0].command }}</span>
+      {% elif it.group == 'config_hold' %}
+        <form method="post" action="/config/accept-reload"><button class="primary">Confirm now</button></form>
+        <a class="btn quiet" href="/config">Config page ↗</a>
       {% endif %}
     </div>
     {% if it.group == 'review' %}

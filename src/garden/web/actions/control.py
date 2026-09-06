@@ -108,6 +108,20 @@ def register(app: FastAPI, site: Site) -> None:
             hub._log(f"operating profile set to {value or '(none)'} via web")
         return RedirectResponse(back, status_code=303)
 
+    @app.post("/config/accept-reload")
+    def web_accept_config_reload(request: Request):
+        """Apply a held garden.yaml reload now, even while its runs are still in flight
+        (CG-242): the operator vouches the change is theirs, not a worker's write racing the
+        fence."""
+        back = request.headers.get("referer", "/config")
+        with hub.action_lock:
+            sched = hub.scheduler()
+            if not sched.config_hold():
+                return RedirectResponse(_flash_url(back, "no config reload is held"), status_code=303)
+            sched.accept_config_reload(by="web")
+            hub._log("held config reload accepted via web")
+        return RedirectResponse(back, status_code=303)
+
     @app.post("/upgrade")
     def web_upgrade(request: Request):
         back = request.headers.get("referer", "/")

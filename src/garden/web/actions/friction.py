@@ -40,7 +40,7 @@ def register(app: FastAPI, site: Site) -> None:
             date = _dt.date.today().isoformat()
             append_friction_report(doc, text, provenance, date)
             create_friction_draft_task(s, product, phase, text, provenance, date)
-            s.invalidate()
+            s.invalidate_tasks()
         except (RuntimeError, GitError, GitHubError) as e:
             message = str(e)
             hub._log(f"friction report {product}/{phase} failed: {message}")
