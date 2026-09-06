@@ -38,6 +38,7 @@ class ProjectDiscovery:
     read: list[str] = field(default_factory=list)
     inferred: list[str] = field(default_factory=list)
     configure_by_hand: list[str] = field(default_factory=list)
+    unavailable: list[str] = field(default_factory=list)
     trusted_authors: list[str] = field(default_factory=list)
     name_source: str = "repository directory"
     base_branch_source: str = "default fallback"
@@ -90,6 +91,8 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
             result.inferred = [item for item in result.inferred if not item.startswith("base branch `")]
             result.inferred.append(f"base branch from GitHub repository metadata: {default}")
         result.read.append(f"github:{slug}:repository")
+    else:
+        result.unavailable.append(f"GitHub repository metadata for `{slug}`")
     issues = _gh_json(repo, ["issue", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title,milestone"])
     if isinstance(issues, list):
         result.read.append(f"github:{slug}:open-issues")
@@ -98,14 +101,20 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
                 milestone = (issue.get("milestone") or {}).get("title") if isinstance(issue.get("milestone"), dict) else ""
                 suffix = f" [milestone: {milestone}]" if milestone else ""
                 result.backlog.append((f"GitHub issue #{issue.get('number')}: {issue['title']}{suffix}", f"github:{slug}:issue-{issue.get('number')}"))
+    else:
+        result.unavailable.append(f"GitHub open issues for `{slug}`")
     prs = _gh_json(repo, ["pr", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title"])
     if isinstance(prs, list):
         result.read.append(f"github:{slug}:open-prs")
         result.inferred.append(f"{len(prs)} open pull request(s) found; review them before approving overlapping drafts")
+    else:
+        result.unavailable.append(f"GitHub open pull requests for `{slug}`")
     rules = _gh_json(repo, ["api", f"repos/{slug}/rulesets"])
     if isinstance(rules, list):
         result.read.append(f"github:{slug}:rulesets")
         result.inferred.append(f"{len(rules)} repository ruleset(s) found; preserve their review and branch requirements")
+    else:
+        result.unavailable.append(f"GitHub repository rulesets for `{slug}`")
 
 
 def _safe_ci_command(command: str) -> bool:
@@ -148,9 +157,43 @@ def _runner_commands(repo: Path, names: set[str]) -> tuple[str, str, str, list[s
     return "", "", "", []
 
 
+def _documented_commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
+    """Read explicit development commands before falling back to ecosystem guesses."""
+    rels = {p.relative_to(repo).as_posix(): p for p in files}
+    ordered = [name for name in ("AGENTS.md", "CONTRIBUTING.md", "README.md") if name in rels]
+    ordered.extend(sorted(name for name in rels if name.startswith("docs/") and name.endswith(".md")))
+    found: dict[str, tuple[str, str]] = {}
+    patterns = {
+        "setup": re.compile(r"(?:^|\s)(?:uv venv|uv sync|uv pip install|python(?:3)? -m pip install|npm (?:ci|install)|go mod download|cargo fetch|bundle install)"),
+        "test": re.compile(r"(?:^|\s)(?:[^\s`]+/)?(?:python -m )?pytest(?:\s|$)|(?:^|\s)(?:npm test|go test|cargo test|bundle exec rake test)(?:\s|$)"),
+        "lint": re.compile(r"(?:^|\s)(?:[^\s`]+/)?ruff check(?:\s|$)|(?:^|\s)(?:npm run lint|go vet|cargo clippy|pre-commit run)(?:\s|$)"),
+    }
+    for name in ordered:
+        text = _text(rels[name])
+        candidates = re.findall(r"`([^`\n]+)`", text)
+        candidates.extend(line.strip() for block in re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL) for line in block.splitlines())
+        for candidate in candidates:
+            command = candidate.strip().rstrip(".")
+            if not command or not _safe_ci_command(command):
+                continue
+            for kind, pattern in patterns.items():
+                if kind not in found and pattern.search(command):
+                    found[kind] = (command, name)
+        if len(found) == 3:
+            break
+    sources = list(dict.fromkeys(source for _, source in found.values()))
+    setup = found.get("setup", ("", ""))[0]
+    test = found.get("test", ("", ""))[0]
+    lint = found.get("lint", ("", ""))[0]
+    return setup, test, lint, sources
+
+
 def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
     names = {p.relative_to(repo).as_posix() for p in files}
     ci = "\n".join(_text(p) for p in files if p.relative_to(repo).as_posix().startswith(".github/workflows/"))
+    documented = _documented_commands(repo, files)
+    if documented[0] and documented[1] and documented[2]:
+        return documented
     runner = _runner_commands(repo, names)
     if runner[3]:
         setup, test, lint, sources = runner
@@ -313,6 +356,31 @@ def _prefix(name: str) -> str:
     return (letters or re.sub(r"[^A-Za-z]", "", name))[:4].upper() or "PRJ"
 
 
+def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]], index: int) -> str:
+    """Return an exact discovered source, repairing only an unambiguous planner omission."""
+    provenance = str(item.get("discovered_from") or "")
+    known_sources = {source for _, source in backlog}
+    source = provenance.removeprefix("onboard:") if provenance.startswith("onboard:") else ""
+    if source in known_sources:
+        return provenance
+
+    task_words = set(re.findall(r"[a-z0-9]+", f"{item.get('title', '')} {item.get('body', '')}".lower()))
+    scores = []
+    for backlog_item, backlog_source in backlog:
+        words = set(re.findall(r"[a-z0-9]+", backlog_item.lower()))
+        scores.append((len(task_words & words), backlog_source))
+    best = max((score for score, _ in scores), default=0)
+    matches = {candidate for score, candidate in scores if score == best and score > 0}
+    if len(matches) == 1:
+        return f"onboard:{matches.pop()}"
+    if index < len(backlog):
+        return f"onboard:{backlog[index][1]}"
+    raise ValueError(
+        f"planner task {item.get('title')!r} has no unambiguous backlog provenance; "
+        "it must return discovered_from as onboard:<source> from the phase goals"
+    )
+
+
 def onboard_project(
     repo: Path,
     garden: Path,
@@ -392,12 +460,10 @@ def onboard_project(
         "For each item add discovered_from as onboard:<source>, using its stated source."
     )
     items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
+    provenances = [_backlog_provenance(item, backlog, index) for index, item in enumerate(items)]
     tasks = import_plan(store, product, "phase-01", items, status="draft")
-    known_sources = {source for _, source in backlog}
-    for task, item in zip(tasks, items, strict=False):
-        provenance = str(item.get("discovered_from") or "")
-        source = provenance.removeprefix("onboard:") if provenance.startswith("onboard:") else ""
-        task.discovered_from = provenance if source in known_sources else "onboard:project-backlog"
+    for task, provenance in zip(tasks, provenances, strict=False):
+        task.discovered_from = provenance
         store.save(task)
         created.append(task.path)
 
@@ -421,7 +487,10 @@ def onboard_project(
     report.write_text(
         "# Onboarding report (draft)\n\n## Read\n\n" + "\n".join(f"- `{p}`" for p in info.read) + "\n\n"
         "## Inferences and provenance\n\n" + "\n".join(f"- {item}" for item in derived) + "\n\n"
-        "## Could not determine\n\n" + "\n".join(f"- {label} command" for label, value in (("setup", info.setup_command), ("test", info.test_command), ("lint", info.lint_command)) if not value) + "\n\n"
+        "## Could not determine\n\n" + "\n".join(
+            [f"- {label} command" for label, value in (("setup", info.setup_command), ("test", info.test_command), ("lint", info.lint_command)) if not value]
+            + [f"- {item}" for item in info.unavailable]
+        ) + "\n\n"
         "## Decisions to make\n\n" + "\n".join(f"- {item}" for item in open_decisions) + "\n"
     )
     created.append(report)

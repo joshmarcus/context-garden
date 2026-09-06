@@ -142,6 +142,61 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
     assert all(task.status.value == "draft" for task in tasks)
 
 
+def test_onboard_this_repository_uses_documented_development_commands(tmp_path, monkeypatch):
+    repo = Path(__file__).parents[1]
+    garden = tmp_path / "garden"
+    info = discover_project(repo)
+    source = info.backlog[0][1]
+
+    def self_plan(_store: Store, _prompt: str) -> str:
+        item = json.loads(_valid_plan(_store, _prompt))[0]
+        item["discovered_from"] = f"onboard:{source}"
+        return json.dumps([item])
+
+    monkeypatch.setattr("garden.onboard._gh_json", lambda *_args, **_kwargs: None)
+    onboard_project(repo, garden, planner=self_plan)
+
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    assert config["products"]["context-garden"]["setup"] == {
+        "command": 'uv venv && uv pip install -e ".[dev]"',
+        "test": "PYTHONPATH=src .venv/bin/python -m pytest -q",
+        "lint": ".venv/bin/ruff check src tests",
+        "env": {},
+    }
+    report = (garden / "context-garden" / "docs" / "onboarding.md").read_text()
+    assert "GitHub repository metadata" in report
+    assert "GitHub open issues" in report
+    assert "GitHub open pull requests" in report
+    assert "GitHub repository rulesets" in report
+
+    from typer.testing import CliRunner
+
+    from garden.cli import app
+
+    monkeypatch.chdir(garden)
+    result = CliRunner().invoke(app, ["validate"])
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("planner_provenance", [None, "onboard:not-a-real-source"])
+def test_onboard_repairs_bad_planner_provenance_to_exact_backlog_source(tmp_path, planner_provenance):
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+
+    def plan_with_bad_provenance(store: Store, prompt: str) -> str:
+        item = json.loads(_valid_plan(store, prompt))[0]
+        if planner_provenance is None:
+            item.pop("discovered_from")
+        else:
+            item["discovered_from"] = planner_provenance
+        return json.dumps([item])
+
+    onboard_project(repo, garden, planner=plan_with_bad_provenance)
+
+    task = Store(garden).product("sample-web").phases[0].tasks[0]
+    assert task.discovered_from == "onboard:src/index.js"
+
+
 def test_discovery_uses_safe_environment_sources_and_reports_exact_provenance(tmp_path):
     repo = tmp_path / "checkout-name"
     repo.mkdir()
