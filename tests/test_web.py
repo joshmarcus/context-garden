@@ -101,7 +101,12 @@ def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
 
     assert "Mark done without merging" in task_page
     assert "Mark this task done without merging its PR?" in task_page
-    assert 'action="/tasks/DM-001/done"' not in inbox
+    assert 'action="/tasks/DM-001/done"' in inbox
+    assert "Mark done without merging" in inbox
+    assert "Mark this task done without merging its PR?" in inbox
+    primary_actions, escape_hatch = inbox.split('class="escape-hatch"')
+    assert 'action="/tasks/DM-001/done"' not in primary_actions
+    assert 'action="/tasks/DM-001/done"' in escape_hatch
 
 
 def test_task_page_lists_stashed_changes(garden):

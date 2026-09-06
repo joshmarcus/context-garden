@@ -58,6 +58,7 @@
         </div>{% endif %}
       {% endif %}
     </div>
+    <div class="card-actions">
     <div class="do">
       {% if it.group == 'tool' %}
         <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
@@ -108,6 +109,10 @@
       {% elif it.group == 'budget' %}
         <span class="muted mono">{{ it.actions[0].command }}</span>
       {% endif %}
+    </div>
+    {% if it.group == 'review' %}
+      <form class="escape-hatch" method="post" action="/tasks/{{ it.task }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>
+    {% endif %}
     </div>
   </div>
   {% endfor %}
