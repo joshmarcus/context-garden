@@ -73,7 +73,7 @@ def test_wont_do_reject_carries_the_note_into_a_revise(sched, fake_github, monke
 
 
 # ---- no_change ---------------------------------------------------------------
-def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monkeypatch):
+def test_satisfied_no_change_reconciles_without_a_human_decision(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
     sched.tick()
     sched.tick()
@@ -83,33 +83,39 @@ def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monk
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
     rep = sched.tick()  # -> changes_requested + revise dispatched
     assert rep.dispatched == ["DM-001(revise)"]
-    sched.tick()  # reap the revise run: it reports no_change
-    assert statuses(sched)["DM-001"] == "waiting_human"
-    assert sched.state.get("DM-001")["decision"]["kind"] == "no_change"
-
-    n_runs = len(sched.runs.runs_for("DM-001"))
-    n_comments = len(fake_github.comments)
-    sched.accept_decision(sched.store.task("DM-001"))
-    # resumed as if the round had pushed: no new run, back to the PR, not stalled
+    rep = sched.tick()  # reap no_change: unchanged head goes through checks/review itself
     assert statuses(sched)["DM-001"] == "in_review"
-    assert len(sched.runs.runs_for("DM-001")) == n_runs
-    assert len(fake_github.comments) > n_comments
+    assert "DM-001 no-change -> verification" in rep.transitions
+    assert not sched.state.get("DM-001").get("decision")
     assert not sched.state.get("DM-001").get("needs_human")
 
 
-def test_no_change_reject_revises(sched, fake_github, monkeypatch):
+def test_real_scope_disagreement_is_a_product_decision(sched):
+    result = {"status": "no_change", "verified": [
+        {"criterion": "Keep the old API", "not_done": True, "reason": "That would break compatibility"}
+    ]}
+    assert sched._no_change_changes_outcome(result)
+    assert sched._no_change_changes_outcome({"improvements_declined": [{"suggestion": "remove API", "reason": "public"}]})
+    assert not sched._no_change_changes_outcome({"verified": [{"criterion": "works", "evidence": "green"}]})
+
+
+def test_no_change_does_not_erase_an_internal_review_finding(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 4, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
-    sched.tick()
-    sched.tick()
-    pr = fake_github.prs["garden/dm-001-first-task"]
-    pr.updated_at = "t2"
-    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
-    sched.tick()
-    sched.tick()
-    assert statuses(sched)["DM-001"] == "waiting_human"
-    sched.reject_decision(sched.store.task("DM-001"), "there is a real change to make here")
-    assert statuses(sched)["DM-001"] == "changes_requested"
-    assert "The person disagrees" in sched.state.get("DM-001")["pending_feedback"]
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    seen: list[str] = []
+    dispatched: list[str] = []
+    for _ in range(12):
+        rep = sched.tick()
+        seen.extend(rep.transitions)
+        dispatched.extend(rep.dispatched)
+        if seen.count("DM-001 -> changes_requested (review)") >= 2:
+            break
+    assert "DM-001 no-change -> verification" in seen
+    assert seen.count("DM-001 -> changes_requested (review)") >= 2
+    assert dispatched.count("DM-001(revise)") >= 2
+    assert sched.store.task("DM-001").status == Status.RUNNING
 
 
 # ---- CLI and web agree -------------------------------------------------------
@@ -173,9 +179,10 @@ def test_web_decision_flow(garden, monkeypatch):
     sched.tick()
     c = TestClient(create_app(Store(garden), watch=False))
     page = c.get("/tasks/DM-001").text
-    assert "asks you to decide" in page and "duplicates DM-002" in page
+    assert "Decide whether to cancel this work" in page and "duplicates DM-002" in page
+    assert "Cancel this task" in page and "Keep this task" in page
     assert "I do not think this should be done" in page  # the full message
-    assert "Accept or reject a worker" in c.get("/").text
+    assert "Choose the product outcome" in c.get("/").text
     assert "s-wont_do" in c.get("/partials/board").text
     r = c.post("/tasks/DM-001/accept", follow_redirects=False)
     assert r.status_code == 303

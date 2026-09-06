@@ -177,21 +177,18 @@ def triage(c: Client) -> None:
         raise FlowFailed(f"DM-001 is {c.status('DM-001')} after Ready for review, expected in_review")
 
 
-def accept_no_change(c: Client) -> None:
+def reconcile_no_change(c: Client) -> None:
     c.get("/tasks/DM-002")
     c.post("/tasks/DM-002/dispatch")
     c.wait_status("DM-002", "awaiting_triage")
     c.post("/tasks/DM-002/triage-changes", {"note": "please look again"})
     c.post("/tasks/DM-002/dispatch")
-    c.wait_status("DM-002", "waiting_human")
-    page = c.get("/tasks/DM-002")
-    if "nothing to change" not in page.lower() and "no_change" not in page:
-        raise FlowFailed("DM-002 is waiting for a person but its page does not present the nothing-to-change card")
-    if "Accept" not in c.get("/"):
-        raise FlowFailed("the Inbox shows no Accept button for DM-002's nothing-to-change card")
-    c.post("/tasks/DM-002/accept", referer="/")
     c.wait_status("DM-002", "awaiting_triage", "in_review")
-    c.post("/tasks/DM-002/triage-ready")
+    page = c.get("/tasks/DM-002")
+    if "Decide whether to change the promised outcome" in page:
+        raise FlowFailed("an ordinary nothing-to-change report incorrectly asks for a product decision")
+    if c.status("DM-002") == "awaiting_triage":
+        c.post("/tasks/DM-002/triage-ready")
     if c.status("DM-002") != "in_review":
         raise FlowFailed(f"DM-002 is {c.status('DM-002')} after Ready for review, expected in_review")
 
@@ -244,10 +241,10 @@ FLOWS: list[Flow] = [
          "press 'Dispatch revise run'. It comes back awaiting triage and the note is on its page.", send_back),
     Flow("triage", "/inbox",
          "In the Inbox press 'Ready for review' on DM-003 and on DM-001; both become in review.", triage),
-    Flow("accept a nothing-to-change card", "/tasks/DM-002",
+    Flow("reconcile a nothing-to-change report", "/tasks/DM-002",
          "Dispatch DM-002 and wait for awaiting triage. Send it back with a note and dispatch the revise run: this worker "
-         "reports that there is nothing to change, so DM-002 waits for you with a decision card. Accept it (the round resumes "
-         "without a new run), then mark it ready for review.", accept_no_change),
+         "reports that there is nothing to change, so the garden reconciles the current head with checks and review without "
+         "asking you to accept an internal status. Mark the PR ready if triage is enabled.", reconcile_no_change),
     Flow("merge", "/qa/github",
          "PR links on the task pages point at the pretend GitHub at /qa/github. Merge the PRs of DM-001, DM-002 and DM-003 "
          "there; on the next tick each task is done and its page says the PR merged.", merge),

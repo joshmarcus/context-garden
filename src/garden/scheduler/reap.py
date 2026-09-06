@@ -19,6 +19,20 @@ from .report import TickReport
 
 
 class ReapMixin:
+    @staticmethod
+    def _no_change_changes_outcome(result: dict[str, Any]) -> bool:
+        """Whether a no-change report is really asking to narrow or change the task.
+
+        Ordinary no-change reports are evidence claims: checks and a fresh review can decide
+        whether the current head already satisfies the task.  A worker that explicitly leaves
+        a criterion undone or declines a requested improvement is instead disputing the
+        product outcome; only that disagreement needs a person.
+        """
+        verified = result.get("verified") or []
+        return bool(result.get("improvements_declined")) or any(
+            isinstance(row, dict) and row.get("not_done") for row in verified
+        )
+
     def _cleanup_reaped_temp_dirs(self) -> None:
         """Remove disk-backed temp directories once their local run is no longer active."""
         work_dir = self.cfg.work_dir
@@ -197,6 +211,29 @@ class ReapMixin:
             self.events.emit("waiting_human", task.id, question=question, run=run.run_id)
             self._transition(task, Status.WAITING_HUMAN, f"worker asks: {question}{cost}")
             rep.transitions.append(f"{task.id} -> waiting_human")
+            return
+
+        if status == "no_change" and not self._no_change_changes_outcome(result):
+            run.status = status
+            run.save()
+            self._file_discovered(task, run, result)
+            reason = str(result.get("reason") or result.get("summary") or "(no reason given)")
+            st = self.state.get(task.id)
+            st.pop("decision", None)
+            st.pop("needs_human", None)
+            # The next verdict is reconciliation evidence for this unchanged head, not a
+            # repeated-finding stall. If it still finds the issue, the normal bounded revise
+            # loop sends that actionable finding back to a worker.
+            st["last_findings"] = []
+            task.log(f"worker found no change to make: {reason}; reconciling with checks and a fresh review")
+            self.store.save(task)
+            self.events.emit("no_change_reconciled", task.id, reason=reason, run=run.run_id)
+            base = run.base or self.base_for(task)
+            branch = run.branch or task.branch or task.default_branch()
+            worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+            task.branch = branch
+            self._after_push(task, run, worktree, branch, base, result, rep, cost, check_stall=False)
+            rep.transitions.append(f"{task.id} no-change -> verification")
             return
 
         if status in ("wont_do", "no_change"):
