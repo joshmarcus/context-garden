@@ -166,18 +166,17 @@ def import_plan(
         title = str(item["title"]).strip()
         if title.lower() in existing_titles:
             continue
-        tid = store.next_id(product)
-        # reserve the id by creating the file immediately (next_id scans files)
+        # Let create_task allocate the id under its reservation lock: it writes the file at once
+        # and, holding that lock, is atomic against a concurrent retro reserving branch-filed ids.
         t = store.create_task(
             product, phase, title, str(item.get("body") or ""),
             priority=int(item.get("priority", 3) or 3),
             estimate=str(item.get("estimate") or ""),
             reading=[str(r) for r in (item.get("reading") or [])],
             status="draft",
-            task_id=tid,
             difficulty=str(item.get("difficulty") or "medium"),
         )
-        title_to_id[title.lower()] = tid
+        title_to_id[title.lower()] = t.id
         pending.append((t, item))
         created.append(t)
     # second pass: dependencies

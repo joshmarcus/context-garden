@@ -288,6 +288,9 @@ def validate():
 
     store = _store()
     problems = _validate(store.tasks())
+    for tid, paths in sorted(store.duplicate_ids().items()):
+        problems.append(f"duplicate task id {tid}: claimed by {', '.join(paths)} "
+                        "(both are quarantined from dispatch until one is renamed or removed)")
     from ..brief import resolve_reading
 
     for t in store.tasks().values():

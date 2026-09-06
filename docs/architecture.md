@@ -118,9 +118,27 @@ Git is the database. The split between the four stores is deliberate.
 | `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
-`repos/` (clones of products given as URLs), `trials.jsonl` (model trial records).
+`repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
+`reservations.json` (durable id reservations, below).
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
+
+### Reserving task ids
+
+`store.next_id` counts up from the highest existing id. That is safe when the file is written
+at once (the planner and `create_task` do), but a retro drafts its next-phase tasks into a git
+*worktree*, invisible to the live tree until the PR merges — so between filing and merge every
+live task creator (discovered work, another retro, the planner) would hand out the same ids and
+collide the moment those drafts land, a collision that used to disable every page and tick.
+
+`store.reserve_ids(product, n, owner=…)` closes that window: it allocates ids and records them
+in `.garden/reservations.json` under a lock shared with `create_task`, so `next_id` and every
+live creation skip them. Reservations survive a restart. They are released three ways: a merged
+draft's id is pruned once its file exists (`prune_reservations`, run each tick by `_audit_ids`);
+a phase's whole batch is released and re-taken when its retro re-runs (`release_reservation`, so
+an abandoned attempt leaks nothing); and, as a backstop, if two files ever do claim one id,
+`store.tasks()` quarantines it — dropped from the task map so it cannot dispatch, surfaced by
+`duplicate_ids` on `garden validate`, `doctor` and each tick — instead of raising.
 
 ### Committing task state
 
