@@ -18,7 +18,9 @@ workflow: `docs/codex.md`. For a dispatched task, use its supplied brief and rea
   thin; put orchestration in the scheduler and reusable logic in package modules.
 - Task files and status belong to the scheduler; use garden commands for transitions.
 - Automated workers commit in their assigned worktree and emit the brief's result
-  marker. The scheduler pushes and opens PRs. Workers must not run the controller
+  marker. The scheduler opens PRs. When `setup.worker_push: true`, workers may also push
+  their assigned branch for CI as described in `docs/worker-ci.md`; otherwise only the
+  scheduler pushes. Workers must not run the controller
   (tick/watch/serve/dispatch/take/finish) or modify its checkout or `.garden` state.
 - Preserve local config overlays and unrelated task changes.
 

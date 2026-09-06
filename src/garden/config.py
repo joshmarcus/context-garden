@@ -323,6 +323,8 @@ class Config:
         - `env`: extra environment for the worker, the setup command and the pre-PR checks.
         - `test` / `lint`: the commands the brief tells the worker to run and the commands the
           default `checks.pre_pr` uses in the worktree.
+        - `worker_push`: explicitly allow the worker to push its assigned branch for CI
+          (default false); does not grant credentials or permission to manage PRs.
         - `timeout_seconds`: cap for the setup command (default 600).
 
         Nothing here assumes Python, pip, uv or a venv; a product that manages dependencies

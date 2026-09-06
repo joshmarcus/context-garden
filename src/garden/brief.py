@@ -21,7 +21,7 @@ RESULT_MARKER = "GARDEN_RESULT:"
 OPERATING_RULES = """\
 ## Operating rules
 
-- You are working in a git worktree checked out on branch `{branch}` (based on `{base}`). Everything you change must be committed on this branch. Commit in small, well-described steps. Do NOT push and do NOT open a pull request: the garden runner does that when you finish.
+- You are working in a git worktree checked out on branch `{branch}` (based on `{base}`). Everything you change must be committed on this branch. Commit in small, well-described steps. {push_rule}
 {turn_cap_rule}- Do NOT edit files under `**/tasks/` in the context garden; task state is managed by the scheduler.
 - Work only in the directory you were started in: it is your checkout on your branch. Do not change into any other checkout of this repository.
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
@@ -60,7 +60,7 @@ The human answered your question.
 
 **Answer:** {answer}
 
-Continue the task from where you stopped, in the same worktree and branch. The same rules apply: commit your work, do not push, and end your final message with the `{marker}` line (status `done`, or `needs_input` again with a new question).
+Continue the task from where you stopped, in the same worktree and branch. The same rules apply: commit your work, follow the original brief's push/CI rules, and end your final message with the `{marker}` line (status `done`, or `needs_input` again with a new question).
 """
 
 REVISE_RULES = """\
@@ -145,6 +145,19 @@ class Brief:
         reading_sections = {"reading", "reading_refs", "feedback"}
         chars = sum(v for k, v in self.sections.items() if k in reading_sections)
         return max(1, chars // 4)
+
+
+def _push_rule(setup: dict) -> str:
+    if setup.get("worker_push") is True:
+        return (
+            "You may push ONLY this assigned branch to origin for the configured CI checks, "
+            "without force or changing git configuration. Run focused local checks first, "
+            "commit, push and wait for CI on the exact final commit in this session. Fix "
+            "failures and recheck before declaring done; missing, pending or stale CI is not "
+            "a pass. Report the commit, run URL and conclusion in your acceptance evidence. "
+            "Do NOT open, edit or merge pull requests: the garden runner owns them."
+        )
+    return "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
 
 
 def _env_rule(setup: dict) -> str:
@@ -309,6 +322,7 @@ def build_brief(
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
             env_rule=_env_rule(cfg.product_setup(task.product)),
+            push_rule=_push_rule(cfg.product_setup(task.product)),
         )
         sections.append(("rules", rules))
         if review_feedback:
