@@ -24,7 +24,7 @@ from typing import Any
 from . import operator_spend as ops
 from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
-from .events import THIN_SAMPLES, EventLog, difficulty_by_model, format_cell, shade_row
+from .events import THIN_SAMPLES, EventLog, difficulty_by_model, format_cell, metrics, shade_row
 from .graph import effective_status
 from .inbox import merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
@@ -420,18 +420,43 @@ def runs_by_model(finished: list[dict[str, Any]]) -> dict[str, Any]:
             "columns": columns, "rows": rows, "heads": heads, "thin": THIN_SAMPLES}
 
 
+def rebase_rounds(window: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
+    """Rebase rounds in the window split into mechanical (git only, free) and agent (a model
+    run), each also per merge: the counts are `events.metrics`' own rebase block over the
+    window's events, so the page and `garden metrics` never disagree about what a rebase is."""
+    rb = metrics(window, tasks)["rebase"]
+    merges = int(rb["merges"])
+    return {"mechanical": int(rb["mechanical"]), "agent": int(rb["agent"]), "merges": merges,
+            "cost": float(rb["cost_usd"]),
+            "mechanical_per_merge": round(rb["mechanical"] / merges, 2) if merges else None,
+            "agent_per_merge": round(rb["agent"] / merges, 2) if merges else None}
+
+
+def operator_share(op_window: list[dict[str, Any]], total: float) -> dict[str, Any]:
+    """The operator's spend in the window from the ledger's cost events and its share of the
+    window's whole spend (runs plus operator), None when nothing was spent at all."""
+    spend = sum(float(e.get("cost_usd") or 0.0) for e in op_window)
+    return {"spend": round(spend, 2), "share": round(spend / total, 4) if total else None,
+            "sessions": len({str(e.get("session") or "") for e in op_window})}
+
+
 def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks: dict[str, Any],
            since: str, bucket: str) -> dict[str, Any]:
     """The last period's figures, every one a function of the window's events: merged tasks,
     first-pass approval, cost (runs plus the operator ledger, so it agrees with the Costs
-    page), cost per accepted task, hand steps, the cost-by-activity series with its
-    annotations, throughput per bucket, and the two kinds of shaded table: runs by harness
-    and model, and the five difficulty-by-model tables."""
+    page), cost per accepted task, the hand's work (hand merges, hand steps, rebase rounds
+    per merge split into mechanical and agent, the operator's spend and share), the
+    cost-by-activity series with its annotations, throughput per bucket, and the two kinds of
+    shaded table: runs by harness and model, and the five difficulty-by-model tables."""
     window = [e for e in events if str(e.get("at") or "") >= since]
     done_at: dict[str, str] = {}
     for e in window:
         if e.get("kind") == "transition" and e.get("to") == "done" and e.get("task"):
             done_at[e["task"]] = e["at"]
+    # A merge the loop made emits `automerged` for the task (the digest's rule); a task that
+    # reached done without one was merged by hand, the phase's definition-of-done number.
+    automerged = {e.get("task") for e in events if e.get("kind") == "automerged"}
+    hand_merged = sorted(t for t in done_at if t not in automerged)
     first_review: dict[str, dict[str, Any]] = {}
     for e in events:
         if e.get("kind") == "review" and e.get("task") and e["task"] not in first_review:
@@ -455,6 +480,8 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
         "cost": round(cost, 2), "per_accepted": round(accepted_cost / len(done_at), 2) if done_at else None,
         "runs": len(finished), "hand_steps": sum(1 for e in window if e.get("kind") in HAND_KINDS),
         "hand_kinds": dict(Counter(e["kind"] for e in window if e.get("kind") in HAND_KINDS)),
+        "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
+        "rebase": rebase_rounds(window, tasks), "operator": operator_share(op_window, cost),
         "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
@@ -523,6 +550,31 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
 
 
 # ---- the text view (`garden now --page 1`) --------------------------------------------
+
+def per_merge(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else "—"
+
+
+def hand_lines(w: dict[str, Any]) -> list[str]:
+    """The By hand block in words, one line per figure, the same on the page and in text:
+    hand merges against merged, hand steps by kind, rebase rounds per merge split into
+    mechanical and agent, and the operator's spend with its share of the window's whole."""
+    rb, op = w["rebase"], w["operator"]
+    merges = f"hand merges {w['hand_merges']} of {w['merged']}"
+    if w["hand_merged_ids"]:
+        merges += f" ({', '.join(w['hand_merged_ids'][:4])}{' and more' if len(w['hand_merged_ids']) > 4 else ''})"
+    steps = f"hand steps {w['hand_steps']}"
+    if w["hand_kinds"]:
+        steps += " (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in w["hand_kinds"].items()) + ")"
+    rebases = (f"rebase rounds per merge {per_merge(rb['mechanical_per_merge'])} mechanical · {per_merge(rb['agent_per_merge'])} agent"
+               f" ({rb['mechanical']} + {rb['agent']} over {rb['merges']} merge{'s' if rb['merges'] != 1 else ''})")
+    if op["spend"]:
+        share = f" · {round(100 * op['share'])} % of the window's spend" if op["share"] is not None else ""
+        operator = f"operator {money(op['spend'])}{share}"
+    else:
+        operator = "operator: no ledger entry in this window"
+    return [merges, steps, rebases, operator]
+
 
 def render_text(snap: dict[str, Any]) -> str:
     """The same four regions as plain text, one line per strip, queue line, goal and figure."""
@@ -608,7 +660,7 @@ def render_text(snap: dict[str, Any]) -> str:
     first = f"{round(100 * fp['approved'] / fp['reviewed'])} % ({fp['approved']} of {fp['reviewed']})" if fp["reviewed"] else "—"
     out.append(f"  merged {w['merged']}" + (f" ({', '.join(w['merged_ids'][:4])}{' and more' if len(w['merged_ids']) > 4 else ''})" if w["merged_ids"] else ""))
     out.append(f"  first-pass approval {first} · cost {money(w['cost'])} over {w['runs']} runs · per accepted task {money(w['per_accepted'])}")
-    out.append(f"  hand steps {w['hand_steps']}" + (" (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in w["hand_kinds"].items()) + ")" if w["hand_kinds"] else ""))
+    out += [f"  {line}" for line in hand_lines(w)]
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))
     bm = w["by_model"]

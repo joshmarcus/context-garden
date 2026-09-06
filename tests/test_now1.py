@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from garden import now1
+from garden import operator_spend as ops
 from garden.cli import app
 from garden.events import EventLog, difficulty_by_model, metrics
 from garden.harness import Harness
@@ -373,7 +374,7 @@ def test_last_period_reads_the_windows_events(garden):
     assert 'href="/now1?window=hour#period" class="on"' in page
     assert "merged · DM-001, DM-002" in page and "50 %<small>1 of 2</small>" in page
     assert "$4.00<small>2 runs" in page and "$2.00</div><div class=\"l\">per accepted task" in page
-    assert "claude:opus" in page and "claude:sonnet" in page and "hand steps: 1 (answer 1)" in page
+    assert "claude:opus" in page and "claude:sonnet" in page and "<b>1</b><small>answer 1</small>" in page
     assert "profile changed: (none) → steady" in page and 'class="annotation"' in page
     for label in ("cost per accepted task", "first-pass approval", "work-run cost", "revise rounds", "median lead time"):
         assert f"<caption>{label}" in page
@@ -388,6 +389,55 @@ def test_last_period_reads_the_windows_events(garden):
     assert re.search(r'<th>work</th>.*?class="heat thin" style="--g:100%"[^>]*>\s*<b>\$1\.00</b>', page, re.S)
     for window in ("today", "24h", "phase"):
         assert c.get(f"/now1?window={window}").status_code == 200
+
+
+def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(garden):
+    """The phase's definition-of-done numbers read from the page: a merge with no `automerged`
+    event is a hand merge, rebase rounds per merge are split into mechanical and agent by the
+    same rule as `garden metrics`, and the operator's ledger entries in the window are its
+    spend and its share of the whole."""
+    store = Store(garden)
+    log = EventLog(store.config.garden_dir / "events.jsonl")
+    at = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
+    for task in ("DM-001", "DM-002"):
+        log.emit("dispatch", task, mode="work", model="sonnet", harness="claude")
+        log.emit("run_finished", task, mode="work", model="sonnet", harness="claude", cost_usd=2.0, status="done")
+    log.emit("run_finished", "DM-001", run="r1", mode="rebase", cost_usd=0.0, usage={}, status="done", how="mechanical")
+    log.emit("run_finished", "DM-001", run="r2", mode="rebase", cost_usd=0.0, usage={}, status="done", how="mechanical")
+    log.emit("run_finished", "DM-002", run="r3", mode="rebase", model="sonnet", harness="claude", cost_usd=1.0, status="done")
+    log.emit("automerged", "DM-001", pr="https://example/1", method="merge")
+    for task in ("DM-001", "DM-002"):
+        log.emit("transition", task, **{"from": "in_review", "to": "done"})
+    lines = log.path.read_text().splitlines()
+    log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
+    ledger = garden / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"at": at, "session": "sess-a", "list_price_usd": 1.0, "turns": 3, "avg_context": 100}) + "\n")
+
+    p = now1.period(log.read(), ops.to_cost_events(ops.read_records(ledger)), store.tasks(), at[:19], "hour")
+    assert p["merged"] == 2 and p["hand_merges"] == 1 and p["hand_merged_ids"] == ["DM-002"]
+    assert p["rebase"] == {"mechanical": 2, "agent": 1, "merges": 2, "cost": 1.0, "mechanical_per_merge": 1.0, "agent_per_merge": 0.5}
+    assert p["cost"] == 6.0 and p["operator"] == {"spend": 1.0, "share": round(1 / 6, 4), "sessions": 1}
+    assert now1.hand_lines(p) == ["hand merges 1 of 2 (DM-002)", "hand steps 0",
+                                  "rebase rounds per merge 1.00 mechanical · 0.50 agent (2 + 1 over 2 merges)",
+                                  "operator $1.00 · 17 % of the window's spend"]
+    # the same on the page, one figure per line under By hand
+    page = _client(garden).get("/now1?window=hour").text
+    assert "<dt>hand merges</dt><dd><b>1 of 2</b><small>DM-002</small></dd>" in page
+    assert '<b>1.00 <span class="unit">mechanical</span> · 0.50 <span class="unit">agent</span></b><small>per merge: 2 + 1 over 2 merges · $1.00</small>' in page
+    assert '<b>$1.00 <span class="unit">· 17 % of the window\'s spend</span></b><small>1 session in the ledger' in page
+    # and in the text view
+    text = now1.render_text(now1.snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda m: None)))
+    assert "  hand merges 1 of 2 (DM-002)\n  hand steps 0\n  rebase rounds per merge 1.00 mechanical" in text
+
+
+def test_last_period_says_when_no_hand_merge_and_no_ledger_entry(garden):
+    """The quiet reading: every merge the loop's, no rebase, no operator entry."""
+    p = now1.period([{"kind": "transition", "task": "DM-001", "to": "done", "at": "2026-09-06T01:00:00+00:00"},
+                     {"kind": "automerged", "task": "DM-001", "at": "2026-09-06T01:00:00+00:00"}], [], Store(garden).tasks(),
+                    "2026-09-06T00:00:00+00:00", "hour")
+    assert p["hand_merges"] == 0 and p["rebase"]["mechanical_per_merge"] == 0.0 and p["operator"]["share"] is None
+    assert now1.hand_lines(p)[0] == "hand merges 0 of 1" and now1.hand_lines(p)[-1] == "operator: no ledger entry in this window"
 
 
 # ---- the stream ------------------------------------------------------------------------
@@ -448,7 +498,9 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
         calls.append(1)
         EventLog(Store(garden).config.garden_dir / "events.jsonl").emit("transition", "DM-001", to="done")
 
-    msgs = list(now1.stream(Store(garden), tick_state, limit=3, progress_every=10_000, sleep=sleep))
+    # progress is measured from a monotonic zero, so only an infinite interval keeps it out of
+    # this part on a machine that has been up a while
+    msgs = list(now1.stream(Store(garden), tick_state, limit=3, progress_every=float("inf"), sleep=sleep))
     parsed = _sse("".join(msgs))
     assert parsed[0][0] == "tick" and parsed[1][0] == "event" and parsed[1][1]["kind"] == "transition"
     assert len(calls) >= 1

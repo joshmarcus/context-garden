@@ -340,12 +340,19 @@ phase`), with the Costs page's annotation marks for `profile_changed`, and under
 one mono line listing the window's `profile_changed` and `config_reloaded` events with the
 keys that changed. The chart is rendered twice, at 640 and at 360 wide, and CSS shows one
 per viewport, so the phone gets legible labels rather than a scaled-down projector chart;
-the two SVGs together are a few kilobytes. Right, **By hand**: hand steps, the count of events in the
-window whose kind is a person's action (`answer`, `triaged`, `decision_accepted`,
-`decision_resolved`, `dispatch_paused`, `dispatch_resumed`, `resumed`, `moved`, `budget_set`,
-`config_override`, `suggestion`), by kind, and hand merges from `garden metrics` once CG-253
-lands (`—` until then, and the label says why), and the window's `profile_changed` and
-`config_reloaded` events with the keys that changed, the same marks the chart draws.
+the two SVGs together are a few kilobytes. Right, **By hand, and the operator**: the phase's
+definition-of-done numbers that the four figures do not carry, typed like a specimen label
+(a mono label, the figure in serif, and under it what the figure is made of): hand merges
+against merged (a task that reached `done` in the window with no `automerged` event for it,
+the digest's rule, the ids named); hand steps, the count of events in the window whose kind
+is a person's action (`answer`, `triaged`, `decision_accepted`, `decision_resolved`,
+`dispatch_paused`, `dispatch_resumed`, `resumed`, `moved`, `budget_set`, `config_override`,
+`suggestion`), by kind; rebase rounds per merge split into mechanical and agent, the counts
+from `events.metrics`' rebase block over the window's events so the page and `garden metrics`
+agree on what a rebase is; and the operator's spend in the window from the ledger the Costs
+page reads (`operator_spend.to_cost_events`) with its share of the window's whole spend. Under
+them, the window's `profile_changed` and `config_reloaded` events with the keys that changed,
+the same marks the chart draws.
 
 Then, full width, **Runs by harness and model**, as a table the same shape as the difficulty
 tables below it (`now1.runs_by_model`): a row per mode that ran in the window, a column per
@@ -504,6 +511,9 @@ and the words leave when the stream is back.
 | cost, cost by activity, annotations | events and the operator ledger | `costs.cost_series`, `operator_spend.to_cost_events`, `profile_changed` and `config_reloaded` events |
 | runs by harness and model | events | `run_finished` grouped by `harness`, `model` |
 | hand steps | events | the kinds listed under The last period |
+| hand merges | events | `transition` to `done` in the window for a task with no `automerged` event |
+| rebase rounds per merge, mechanical and agent | events | `events.metrics(window)["rebase"]`, each count over the block's merges |
+| the operator's spend and share | the operator ledger | `operator_spend.to_cost_events` in the window, over the window's whole spend |
 | throughput | events | `run_finished` per bucket via `costs.bucket_key` |
 
 All of it is assembled by `garden/now1.py` into one dict, `now1.snapshot(store, sched,

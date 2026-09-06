@@ -129,6 +129,13 @@ table.tier th .vendor { display:block; color:var(--faint); }
 table.tier th .tot { display:block; color:var(--faint); font:italic 10.5px/1.4 var(--display); }
 .hands .hand { margin-top:8px; }
 .hands .hand.faint { color:var(--faint); font-style:italic; }
+/* the by-hand figures: a typed label per line, the figure in serif, what it is made of under it */
+.hands .kv { margin-top:10px; grid-template-columns:104px minmax(0, 1fr); gap:8px 12px; align-items:baseline; }
+.hands .kv dt { padding-top:3px; }
+.hands .kv dd b { font:500 17px/1.2 var(--display); color:var(--ink); display:block; }
+.hands .kv dd b .unit { font:italic 12.5px/1.2 var(--display); color:var(--muted); }
+.hands .kv dd small { display:block; font:11px/1.4 var(--mono); color:var(--faint); margin-top:2px; }
+.hands .kv dd b.faint { color:var(--faint); }
 .runs-table { margin-top:12px; }
 .runs-table .scroll { overflow-x:auto; }
 .runs-table table.tier { width:auto; min-width:min(100%, 520px); }

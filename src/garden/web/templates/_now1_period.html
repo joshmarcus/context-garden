@@ -15,8 +15,17 @@
   <div class="period-grid">
     <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ f.chart(w, 640) }}</div><div class="chart-narrow">{{ f.chart(w, 360) }}</div></div>
     <div class="hands">
-      <div class="eyebrow">By hand</div>
-      <p class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</p>
+      {#- The phase's definition-of-done numbers that are not on the four figures: what a person
+          did by hand, what the rebases cost, and what the operator seat spent. Typed like the
+          sheet's label, a figure per line, the note under each saying what it is made of. -#}
+      {%- set rb = w.rebase -%}{%- set op = w.operator -%}
+      <div class="eyebrow">By hand, and the operator</div>
+      <dl class="kv">
+        <dt>hand merges</dt><dd><b>{{ w.hand_merges }} of {{ w.merged }}</b><small>{% if w.hand_merged_ids %}{{ w.hand_merged_ids[:4] | join(', ') }}{% if w.hand_merged_ids | length > 4 %} and {{ w.hand_merged_ids | length - 4 }} more{% endif %}{% else %}every merge in the window was the loop's{% endif %}</small></dd>
+        <dt>hand steps</dt><dd><b>{{ w.hand_steps }}</b><small>{% if w.hand_kinds %}{% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}{% else %}no answer, triage, pause or move{% endif %}</small></dd>
+        <dt>rebase rounds</dt><dd><b>{{ f.per_merge(rb.mechanical_per_merge) }} <span class="unit">mechanical</span> · {{ f.per_merge(rb.agent_per_merge) }} <span class="unit">agent</span></b><small>per merge: {{ rb.mechanical }} + {{ rb.agent }} over {{ rb.merges }} merge{{ 's' if rb.merges != 1 }}{% if rb.cost %} · {{ f.money(rb.cost) }}{% endif %}</small></dd>
+        <dt>operator</dt><dd>{% if op.spend %}<b>{{ f.money(op.spend) }}{% if op.share is not none %} <span class="unit">· {{ (100 * op.share) | round | int }} % of the window's spend</span>{% endif %}</b><small>{{ op.sessions }} session{{ 's' if op.sessions != 1 }} in the ledger the Costs page reads</small>{% else %}<b class="faint">—</b><small>no ledger entry in this window</small>{% endif %}</dd>
+      </dl>
       {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>
       {% else %}<p class="hand faint">no profile change or config reload in this window</p>{% endif %}
     </div>
