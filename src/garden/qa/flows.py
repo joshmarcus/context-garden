@@ -24,7 +24,10 @@ class Client:
     refused and the message is the failure."""
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=10.0)
+        # A flow's deadline must also bound an individual request.  Dispatch and resume
+        # actions prepare a worktree before redirecting; on a busy host that can take longer
+        # than the old fixed ten-second HTTP timeout even though the whole flow still has time.
+        self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=timeout)
         self.timeout = timeout
         self.last_page = "/"
 
