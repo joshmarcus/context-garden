@@ -16,6 +16,27 @@ def test_task_state_tracks_setitem():
     assert ts.dirty == {"b"}
 
 
+def test_task_state_tracks_dict_mutators():
+    ts = _TaskState({"a": 1, "b": 2, "c": 3})
+
+    ts.update({"a": 10}, d=4)
+    ts |= {"b": 20}
+    ts.clear()
+
+    assert ts == {}
+    assert ts.dirty == {"a", "b", "c", "d"}
+
+
+def test_task_state_tracks_deletion_mutators():
+    ts = _TaskState({"a": 1, "b": 2})
+
+    del ts["a"]
+    ts.popitem()
+
+    assert ts == {}
+    assert ts.dirty == {"a", "b"}
+
+
 def test_task_state_tracks_pop():
     ts = _TaskState({"a": 1})
     ts.pop("a", None)
@@ -90,6 +111,28 @@ def test_concurrent_writes_different_keys_same_task(tmp_path):
     final = State(path)
     assert final.get("CG-001")["pr_number"] == 42
     assert final.get("CG-001")["pending_feedback"] == "fix this"
+
+
+def test_dict_mutators_persist_and_retain_concurrent_disjoint_updates(tmp_path):
+    path = tmp_path / "state.json"
+
+    init = State(path)
+    init.get("CG-001").update({"old": 1, "remove": True})
+    init.save()
+
+    state_a = State(path)
+    state_b = State(path)
+    task_a = state_a.get("CG-001")
+    task_a.update({"new": 2})
+    task_a.clear()
+    task_a |= {"from_a": 3}
+    state_b.get("CG-001")["from_b"] = 4
+
+    state_a.save()
+    state_b.save()
+
+    final = State(path)
+    assert final.get("CG-001") == {"from_a": 3, "from_b": 4}
 
 
 def test_concurrent_writes_different_tasks(tmp_path):

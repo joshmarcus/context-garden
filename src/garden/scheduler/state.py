@@ -89,11 +89,38 @@ class _TaskState(dict):
         self._written_keys.add(key)
         self._snaps.pop(key, None)
 
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self._written_keys.add(key)
+        self._snaps.pop(key, None)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        """Update keys through ``__setitem__`` so every changed key is tracked."""
+        values = dict(*args, **kwargs)
+        for key, value in values.items():
+            self[key] = value
+
+    def __ior__(self, other: Any) -> _TaskState:
+        self.update(other)
+        return self
+
+    def clear(self) -> None:
+        """Mark existing keys deleted before clearing the mapping."""
+        self._written_keys.update(self)
+        self._snaps.clear()
+        super().clear()
+
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
         result = super().pop(key, *args)
         self._written_keys.add(key)
         self._snaps.pop(key, None)
         return result
+
+    def popitem(self) -> tuple[Any, Any]:
+        key, value = super().popitem()
+        self._written_keys.add(key)
+        self._snaps.pop(key, None)
+        return key, value
 
     def setdefault(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
         if key not in self:
