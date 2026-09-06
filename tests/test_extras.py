@@ -18,6 +18,22 @@ def statuses(sched):
 
 
 # ---- checks -------------------------------------------------------------------
+def test_checkrun_writes_a_structured_error_when_the_job_crashes(tmp_path, monkeypatch):
+    from garden import checkrun
+
+    (tmp_path / "checks_input.json").write_text("{}")
+
+    def crash(_payload):
+        raise RuntimeError("lost the check worker")
+
+    monkeypatch.setattr(checkrun, "run_check_job", crash)
+    assert checkrun.main([str(tmp_path)]) == 0
+    result = json.loads((tmp_path / "checks.json").read_text())[0]
+    assert result["status"] == "error"
+    assert "RuntimeError: lost the check worker" in result["summary"]
+    assert "RuntimeError: lost the check worker" in result["details"]
+
+
 def test_run_check_command_and_python(tmp_path, monkeypatch):
     ok = run_check({"name": "true", "command": "echo hi"}, {"branch": "b"}, cwd=tmp_path)
     assert ok["status"] == "pass"

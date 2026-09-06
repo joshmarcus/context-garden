@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -77,12 +78,15 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads((run_dir / "checks_input.json").read_text())
         results = run_check_job(payload)
     except Exception as e:  # noqa: BLE001
-        # Always leave a structured result for the scheduler to reap.  A detached check
-        # process can fail before run_check_job gets to its normal result handling (for
-        # example, while importing a check plugin); without this record reap reports the
-        # less useful "check run produced no results" and loses the actual exception.
-        results = [{"name": "checks", "status": "error",
-                    "summary": f"check runner failed: {type(e).__name__}: {e}", "details": ""}]
+        # Reap needs a result even when the job infrastructure itself fails. Without
+        # one, it can only say no file arrived and a revise brief loses the traceback
+        # that tells the worker what is actually broken.
+        results = [{
+            "name": "checks",
+            "status": "error",
+            "summary": f"check runner crashed: {type(e).__name__}: {e}",
+            "details": traceback.format_exc(),
+        }]
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
     return 0
 
