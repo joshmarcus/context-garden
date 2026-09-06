@@ -456,7 +456,9 @@ for an authoritative needs-you decision, not inferred solely from elapsed time.
 ## Fixed-input verification
 
 The owner authorizes `snapshot.json` as the fixed, sanitized input; it is not
-regenerated. `test_now_2_generator_delegates_matrices_to_events` inspects the supplied
+regenerated. Its SHA-256 is
+`1bb03eb23619d0f620edc5e538883d7f2e3927f784d1690cc638ae22926ad400`.
+`test_now_2_generator_delegates_matrices_to_events` inspects the supplied
 source without importing it and proves the direct shared-function handoff.
 `test_now_2_preserves_every_exported_metric_cell` compares every window, metric,
 difficulty and model against that input, including units, n, missing cells and
@@ -466,8 +468,8 @@ aggregation itself when integrating the metrics extension.
 
 
 Validation performed in this worktree: `.venv/bin/python -m pytest -q -x` reports
-1020 passed, 3 skipped, 2 dependency deprecation warnings (419.86s); `.venv/bin/ruff check src tests` passes. The dedicated
-mock tests report 3 passed. An HTML inspection finds no
+1022 passed, 3 skipped, 2 dependency deprecation warnings (598.32s); `.venv/bin/ruff check src tests` passes. The dedicated
+mock tests report 5 passed. An HTML inspection finds no
 duplicate IDs, no missing local plate images, and all four window panels with
 twenty matrices.
 These are structural checks; visual evidence is described above and no

@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $tab = (Invoke-RestMethod http://localhost:9335/json) | Where-Object { $_.type -eq 'page' -and ($_.url -eq 'about:blank' -or $_.url -like '*now2-revision/mock/now-2.html') } | Select-Object -First 1
 if (!$tab) { throw 'Open about:blank in the dedicated Edge capture profile first.' }
 $ws = [System.Net.WebSockets.ClientWebSocket]::new()
-$cancel = [Threading.CancellationTokenSource]::new(120000)
+$cancel = [Threading.CancellationTokenSource]::new(600000)
 $ct = $cancel.Token
 $ws.ConnectAsync([Uri]$tab.webSocketDebuggerUrl, $ct).GetAwaiter().GetResult()
 $script:seq = 0
