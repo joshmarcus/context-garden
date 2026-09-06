@@ -7,6 +7,7 @@ draft context written from the redacted discovery result.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -56,6 +57,50 @@ def _project_files(repo: Path) -> list[Path]:
         p for p in repo.rglob("*")
         if p.is_file() and not any(part in _SKIP_DIRS for part in p.relative_to(repo).parts)
     )
+
+
+def _gh_json(repo: Path, args: list[str]) -> object | None:
+    """Return optional GitHub metadata. Failure means simply that this source was unavailable."""
+    try:
+        proc = subprocess.run(
+            ["gh", *args], cwd=repo, capture_output=True, text=True, check=False, timeout=15
+        )
+        return json.loads(proc.stdout) if proc.returncode == 0 and proc.stdout.strip() else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+
+
+def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
+    remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    match = re.search(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?$", remote)
+    if not match:
+        return
+    slug = f"{match.group(1)}/{match.group(2)}"
+    repo_info = _gh_json(repo, ["repo", "view", slug, "--json", "defaultBranchRef"])
+    if isinstance(repo_info, dict):
+        default = (repo_info.get("defaultBranchRef") or {}).get("name")
+        if default:
+            result.base_branch = str(default)
+            result.inferred.append(f"base branch from GitHub repository metadata: {default}")
+        result.read.append(f"github:{slug}:repository")
+    issues = _gh_json(repo, ["issue", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title,milestone"])
+    if isinstance(issues, list):
+        result.read.append(f"github:{slug}:open-issues")
+        for issue in issues:
+            if isinstance(issue, dict) and issue.get("title"):
+                milestone = (issue.get("milestone") or {}).get("title") if isinstance(issue.get("milestone"), dict) else ""
+                suffix = f" [milestone: {milestone}]" if milestone else ""
+                result.backlog.append(f"GitHub issue #{issue.get('number')}: {issue['title']}{suffix}")
+    prs = _gh_json(repo, ["pr", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title"])
+    if isinstance(prs, list):
+        result.read.append(f"github:{slug}:open-prs")
+        result.inferred.append(f"{len(prs)} open pull request(s) found; review them before approving overlapping drafts")
+    rules = _gh_json(repo, ["api", f"repos/{slug}/rulesets"])
+    if isinstance(rules, list):
+        result.read.append(f"github:{slug}:rulesets")
+        result.inferred.append(f"{len(rules)} repository ruleset(s) found; preserve their review and branch requirements")
 
 
 def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
@@ -147,6 +192,7 @@ def discover_project(repo: Path) -> ProjectDiscovery:
     ]
     result.inferred.append(f"base branch from the current Git checkout: {base}")
     result.inferred.append("module map from top-level repository entries")
+    _add_github_metadata(repo, result)
     result.read = sorted(set(result.read))
     return result
 
