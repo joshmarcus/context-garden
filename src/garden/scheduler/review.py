@@ -394,7 +394,8 @@ class ReviewMixin:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
-        runner = self.runner_for(task, "local", harness_name)
+        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
         base = self.base_for(task)
@@ -492,7 +493,8 @@ class ReviewMixin:
         replay_nonce = str(replay.get("nonce") or "") if needs_interaction else ""
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
-        run = self._new_local_run(task.id, "review", "review")
+        run = (self.runs.new_run(task.id, "remote", mode="review")
+               if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,

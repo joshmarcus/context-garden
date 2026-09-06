@@ -9,12 +9,14 @@ from ..harness import Harness
 from .base import Runner, RunnerError
 from .local import LocalRunner
 from .manual import ManualRunner
+from .remote import RemoteRunner
 from .ssh import SSHRunner
 
 REGISTRY: dict[str, type[Runner]] = {
     LocalRunner.name: LocalRunner,
     SSHRunner.name: SSHRunner,
     ManualRunner.name: ManualRunner,
+    RemoteRunner.name: RemoteRunner,
     "claude-local": LocalRunner,  # backwards-compatible alias
 }
 
