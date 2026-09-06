@@ -74,7 +74,14 @@ def git(*args: str, cwd: Path, timeout: float = 30) -> None:
             os.killpg(process.pid, signal.SIGTERM)
         else:  # pragma: no cover - the suite's supported CI hosts are POSIX.
             process.terminate()
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:  # pragma: no cover - the suite's supported CI hosts are POSIX.
+                process.kill()
+            stdout, stderr = process.communicate()
         raise RuntimeError(
             f"fixture git command timed out after {timeout:.1f}s: {' '.join(command)}\n"
             f"stderr:\n{stderr}"
