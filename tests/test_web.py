@@ -34,6 +34,7 @@ def test_design_files_are_safe_and_use_the_product_checkout(garden):
     c = client(garden)
 
     assert "Design" in c.get("/").text
+    assert c.get("/design").status_code == 200
     html = c.get("/design/mock.html")
     assert html.status_code == 200 and "<script>bad()</script>" in html.text
     assert html.headers["content-security-policy"] == "sandbox"
