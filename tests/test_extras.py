@@ -274,6 +274,41 @@ def test_trial_two_prs_still_runs_the_comparison(sched, fake_github, monkeypatch
     assert trial["status"] == "done" and trial["winner"] == "claude:opus"
 
 
+def test_trial_winner_gets_an_automated_review_like_any_other_pushed_pr(sched, fake_github, monkeypatch):
+    """CG-236: a comparison run ranks contenders against each other; it is not a review against
+    this task's acceptance criteria. Before this fix a trial winner's PR sat in in_review with
+    no automated review ever dispatched — the operator had to press `review` by hand (the CG-225
+    and CG-030 incidents). The winner's PR must be queued for review the same tick its trial
+    concludes, exactly like a work run's PR after `_open_or_update_pr` — no extra human step."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    t = sched.store.task("DM-001")
+    sched.start_trial(t, ["claude:sonnet", "claude:opus"])
+    rep = sched.tick()  # both contenders finished -> two PRs -> comparison run
+    assert "DM-001(compare)" in rep.dispatched
+    rep = sched.tick()  # comparison reaped -> winner declared -> review queued on the same pass
+    assert "DM-001 -> in_review (trial winner claude:opus)" in rep.transitions
+    assert "DM-001(review)" in rep.dispatched
+    st = sched.state.get("DM-001")
+    # The fake harness finishes a review near-instantly, so this fast test environment sees the
+    # dispatched round reaped within the same tick; what matters is that a real review verdict
+    # was produced against this task's own criteria, not the trial comparison standing in for one.
+    assert st.get("review_rounds") == 1
+    assert st.get("last_review", {}).get("verdict")
+
+
+def test_work_run_pr_still_gets_its_review_the_same_way(sched, fake_github, monkeypatch):
+    """A non-trial (work-run) PR's path to review is unchanged by CG-236: it still gets its
+    automated review dispatched as soon as the run pushes and opens the PR."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    t = sched.store.task("DM-001")
+    sched.dispatch(t)
+    rep = sched.tick()
+    assert "DM-001 -> in_review" in " ".join(rep.transitions)
+    assert "DM-001(review)" in rep.dispatched
+    assert sched.state.get("DM-001").get("review_run")
+
+
 def test_trial_again_closes_prior_prs_deletes_branches_and_resets_state(sched, fake_github, monkeypatch):
     """CG-232: relaunching a trial with --again closes the previous contenders' PRs, deletes
     their branches, drops their worktrees, and starts fresh contenders named from the task's

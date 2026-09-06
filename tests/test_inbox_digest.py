@@ -342,6 +342,24 @@ def test_cli_digest_prints_decisions_and_notices_line(garden: Path):
     assert "1 notice" in r.output and "no action needed" in r.output
 
 
+def test_in_review_card_reads_review_queued_while_a_review_run_is_in_flight(garden: Path, fake_github):
+    """CG-236: a card for a task whose automated review has been dispatched but not yet reaped
+    must say so ("review queued"), not the misleading "no review yet" a trial winner's PR sat
+    behind for 45+ minutes (the CG-225 and CG-030 incidents) until an operator pressed `review`."""
+    from garden.scheduler import Scheduler
+
+    store = _store(garden)
+    sched = Scheduler(store, github=fake_github, log=print)
+    sched.tick()
+    sched.tick()  # DM-001 -> in_review, PR opened (review is off by default in this fixture)
+    st = sched.state.get("DM-001")
+    st["review_run"] = "fake-review-run"
+    sched.state.save()
+
+    items = {i["task"]: i for i in build_inbox(store, sched)}
+    assert items["DM-001"]["why"] == "review queued"
+
+
 def test_merged_task_with_review_cap_stop_shows_no_inbox_card(garden: Path, fake_github):
     """CG-175: a review-cap card set in the same tick automerge merges the PR must not leave
     the finished task counted on the Inbox."""
