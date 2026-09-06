@@ -6,8 +6,8 @@ attached to it. This page walks through everything that passes between them.
 
 ## The short version
 
-There is no socket, no RPC and no shared memory. The two sides share a filesystem and use
-exactly these channels:
+Local and SSH-driven workers use the filesystem channels below. A pull-based `remote`
+runner instead uses HTTPS and shares no filesystem with the scheduler.
 
 | direction | channel | carries |
 |---|---|---|
@@ -17,6 +17,37 @@ exactly these channels:
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
 | worker to scheduler | the **worktree** | commits on the task branch (never pushed by the worker) |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
+
+## Independent hosts
+
+With `runner: remote`, dispatch queues a run without launching a process. An independent
+host runs `garden worker --garden https://garden.example --host build-1` and authenticates
+with the bearer token named by `workers.hosts[].token_env`.
+
+- `POST /api/runs/claim` leases one compatible work, review, persona, or check run and
+  returns its brief, mode, branch/base, repository URL, setup command, turn cap, and
+  environment-variable allowlist.
+- `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks.
+- `POST /api/runs/<id>/finish` records the exit code, final message, result, usage, cost,
+  and pushed commit. The scheduler fetches and verifies that head, then uses its ordinary
+  result, PR, review, check, and accounting paths.
+
+Expired leases are claimable again and do not fail the task. Browser origin checking still
+applies; only a correctly token-authenticated runs API request bypasses it. Claim responses
+contain no token or environment value. Git and harness credentials belong to the host.
+
+```yaml
+runner: remote
+workers:
+  lease_seconds: 120
+  hosts:
+    - name: build-1
+      token_env: GARDEN_BUILD_1_TOKEN
+      max_parallel: 2
+```
+
+`garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
+the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. Everything else the world sees (the pushed branch, the pull
