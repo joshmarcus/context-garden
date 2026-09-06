@@ -1,6 +1,6 @@
 {#- The last period: the window links, the four figures, the cost chart, runs by harness and
     model, hand steps, and the five difficulty-by-model tables. -#}
-{% from "_now1_macros.html" import tier_table with context %}
+{% from "_now1_macros.html" import heat_table with context %}
 {%- set w = snap.period -%}
 <div id="period-body">
   <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
@@ -17,9 +17,8 @@
       {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}</div>
     <div>
       <div class="eyebrow">Runs by harness and model</div>
-      <div class="scroll"><table class="shade"><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
-        {% for row in w.by_model %}<tr><td class="mono">{{ row.who }}</td><td>{{ row.runs }}</td><td>${{ '%.2f' % row.cost }}</td><td class="heat" style="--g:{{ f.grown(row.heat) }}" title="mean cost per run; lower is better">${{ '%.2f' % row.mean }}</td></tr>{% endfor %}
-      </table></div>
+      {% set bm = w.by_model %}
+      {% if bm.columns %}<div class="runs-table">{{ heat_table(bm, bm.columns, bm.rows.keys() | list, bm.thin, bm.heads) }}</div>{% endif %}
       <div class="hand">hand steps: {{ w.hand_steps }}{% if w.hand_kinds %} ({% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}){% endif %} · hand merges: — until metrics carries them</div>
     </div>
   </div>
@@ -29,7 +28,7 @@
     {% if tiers.models %}
     <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; each row runs from a green ground at its best value to a red one at its worst, the best and worst cells are marked, and a cell under {{ tiers.thin }} samples is faint and marked thin</p>
     <div class="tier-tables">
-      {% for m in tiers.metrics %}{{ tier_table(m, tiers) }}{% endfor %}
+      {% for m in tiers.metrics %}{{ heat_table(m, tiers.models, ("easy", "medium", "hard"), tiers.thin) }}{% endfor %}
     </div>
     {% else %}<p class="lead">No model did work in this window.</p>{% endif %}
   </div>

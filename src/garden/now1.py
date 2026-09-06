@@ -24,7 +24,7 @@ from typing import Any
 from . import operator_spend as ops
 from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
-from .events import EventLog, difficulty_by_model
+from .events import THIN_SAMPLES, EventLog, difficulty_by_model, format_cell, shade_row
 from .graph import effective_status
 from .inbox import merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
@@ -56,6 +56,10 @@ TYPICAL_MIN_SAMPLES = 3
 # quarter is a stage, and everything merged is in fruit.
 STAGE_BANDS = ((0.25, "in leaf"), (0.5, "in bud"), (0.75, "in flower"))
 WINDOWS = (("hour", "last hour"), ("today", "today"), ("24h", "last 24 hours"), ("phase", "this phase"))
+# The rows of the runs-by-harness-and-model table, in the order the loop takes work: the
+# writing modes, the mechanical ones, the reading ones; a mode not listed sorts after them.
+MODE_ORDER = ("work", "revise", "resume", "trial", "rebase", "check", "review", "persona", "compare",
+              "edit", "retro", "kickoff", "planner")
 QUEUE_SHOWN = 8
 
 
@@ -389,22 +393,40 @@ def resolve_window(key: str, now: dt.datetime, phase_start: str = "") -> tuple[s
     return (now - dt.timedelta(hours=1)).replace(microsecond=0).isoformat(), "hour", "hour"
 
 
-def _shade_column(rows: list[dict[str, Any]], field: str) -> None:
-    """The runs-by-model table's `heat` down its mean column (lower is better)."""
-    if not rows:
-        return
-    values = [r[field] for r in rows]
-    lo, hi = min(values), max(values)
-    for r in rows:
-        r["heat"] = round((r[field] - lo) / (hi - lo), 3) if hi > lo else 0.0
+def runs_by_model(finished: list[dict[str, Any]]) -> dict[str, Any]:
+    """Runs by harness and model as a table the same shape as the difficulty tables: a row
+    per mode that ran in the window, a column per harness and model (the garden's own
+    token-free runs under `garden`), each cell the mean cost per run over its n runs, shaded
+    within the row from best to worst (lower is better) with the best, worst and thin marks
+    `events.shade_row` decides. Each column's head carries its total cost and run count, the
+    two figures the old flat list gave, so nothing is lost by turning it on its side."""
+    samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    totals: dict[str, dict[str, float]] = defaultdict(lambda: {"runs": 0, "cost": 0.0})
+    for e in finished:
+        who = f"{e['harness']}:{e.get('model') or e.get('mode')}" if e.get("harness") else "garden"
+        cost = float(e.get("cost_usd") or 0.0)
+        samples[str(e.get("mode") or "run")][who].append(cost)
+        totals[who]["runs"] += 1
+        totals[who]["cost"] += cost
+    columns = sorted(totals, key=lambda w: (-totals[w]["cost"], -totals[w]["runs"], w))
+    modes = [m for m in MODE_ORDER if m in samples] + sorted(m for m in samples if m not in MODE_ORDER)
+    rows: dict[str, dict[str, dict[str, Any]]] = {}
+    for mode in modes:
+        cells = {who: {"value": round(sum(v) / len(v), 3), "n": len(v)} for who, v in samples[mode].items()}
+        shade_row(cells, "low")
+        rows[mode] = cells
+    heads = {who: f"{money(t['cost'])} · {int(t['runs'])} run{'s' if t['runs'] != 1 else ''}" for who, t in totals.items()}
+    return {"label": "cost per run", "unit": "usd", "better": "low", "n_word": "runs",
+            "columns": columns, "rows": rows, "heads": heads, "thin": THIN_SAMPLES}
 
 
 def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks: dict[str, Any],
            since: str, bucket: str) -> dict[str, Any]:
     """The last period's figures, every one a function of the window's events: merged tasks,
     first-pass approval, cost (runs plus the operator ledger, so it agrees with the Costs
-    page), cost per accepted task, runs by harness and model, hand steps, the cost-by-activity
-    series with its annotations, throughput per bucket and the difficulty-by-model tables."""
+    page), cost per accepted task, hand steps, the cost-by-activity series with its
+    annotations, throughput per bucket, and the two kinds of shaded table: runs by harness
+    and model, and the five difficulty-by-model tables."""
     window = [e for e in events if str(e.get("at") or "") >= since]
     done_at: dict[str, str] = {}
     for e in window:
@@ -424,14 +446,6 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     op_window = [e for e in op_events if str(e.get("at") or "") >= since]
     cost = sum(float(e.get("cost_usd") or 0.0) for e in finished + op_window)
     accepted_cost = sum(cost_by_task[t] for t in done_at)
-    by_model: dict[str, dict[str, float]] = defaultdict(lambda: {"runs": 0, "cost": 0.0})
-    for e in finished:
-        key = f"{e.get('harness') or 'garden'}:{e.get('model') or e.get('mode')}"
-        by_model[key]["runs"] += 1
-        by_model[key]["cost"] += float(e.get("cost_usd") or 0.0)
-    rows = [{"who": k, "runs": int(v["runs"]), "cost": round(v["cost"], 2), "mean": round(v["cost"] / v["runs"], 2)}
-            for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["cost"])]
-    _shade_column(rows, "mean")
     series = cost_series(events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
     buckets = [b["bucket"] for b in series.get("buckets") or []]
     per_bucket = Counter(bucket_key(e["at"], bucket) for e in finished)
@@ -441,7 +455,7 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
         "cost": round(cost, 2), "per_accepted": round(accepted_cost / len(done_at), 2) if done_at else None,
         "runs": len(finished), "hand_steps": sum(1 for e in window if e.get("kind") in HAND_KINDS),
         "hand_kinds": dict(Counter(e["kind"] for e in window if e.get("kind") in HAND_KINDS)),
-        "by_model": rows,
+        "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
         "annotations": [{"at": e["at"], "from": e.get("from") or "", "to": e.get("to") or "", "kind": e["kind"], "changed": e.get("keys") or []}
@@ -597,31 +611,40 @@ def render_text(snap: dict[str, Any]) -> str:
     out.append(f"  hand steps {w['hand_steps']}" + (" (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in w["hand_kinds"].items()) + ")" if w["hand_kinds"] else ""))
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))
-    for row in w["by_model"]:
-        out.append(f"  {row['who']:<30} {row['runs']:>3} runs  {money(row['cost']):>8}  mean {money(row['mean'])}")
+    bm = w["by_model"]
+    if bm["columns"]:
+        out.append(f"  by harness and model: cost per run · n runs (* best, - worst, ~ under {bm['thin']} samples)")
+        out += _text_table(bm, bm["columns"], list(bm["rows"]), bm["heads"])
     for a in w["annotations"]:
         out.append(f"  {a['at'][11:16]}Z {a['kind'].replace('_', ' ')}" + (f": {', '.join(a['changed'])}" if a["changed"] else "") + (f": {a['from'] or '(none)'} → {a['to']}" if a["to"] else ""))
     tiers = w["tiers"]
     if tiers["models"]:
-        from .events import format_cell
-
         out.append(f"  by difficulty and model (value · n; * best, - worst, ~ under {tiers['thin']} samples)")
         for m in tiers["metrics"]:
-            out.append(f"    {m['label']:<24} " + "".join(f"{model:>22}" for model in tiers["models"]))
-            for d in ("easy", "medium", "hard"):
-                cells = m["rows"][d]
-                row = ""
-                for model in tiers["models"]:
-                    c = cells.get(model)
-                    if not c:
-                        row += f"{'—':>22}"
-                    else:
-                        mark = "~" if c["thin"] else ("*" if c["best"] else ("-" if c["worst"] else ""))
-                        row += f"{format_cell(m['unit'], c['value']) + ' · ' + str(c['n']) + mark:>22}"
-                out.append(f"    {d:<24} {row}")
+            out += _text_table(m, tiers["models"], ["easy", "medium", "hard"])
     else:
         out.append("  No model did work in this window.")
     return "\n".join(out) + "\n"
+
+
+def _text_table(m: dict[str, Any], columns: list[str], rows: list[str], heads: dict[str, str] | None = None) -> list[str]:
+    """A shaded table as text: the label, then a line per row, each cell `value · n` with the
+    mark the shading decided (* best, - worst, ~ thin), the same rule as the page's cells."""
+    out = [f"    {m['label']:<24} " + "".join(f"{col:>22}" for col in columns)]
+    if heads:
+        out.append(f"    {'':<24} " + "".join(f"{heads.get(col, ''):>22}" for col in columns))
+    for key in rows:
+        cells = m["rows"][key]
+        line = ""
+        for col in columns:
+            c = cells.get(col)
+            if not c:
+                line += f"{'—':>22}"
+            else:
+                mark = "~" if c["thin"] else ("*" if c["best"] else ("-" if c["worst"] else ""))
+                line += f"{format_cell(m['unit'], c['value']) + ' · ' + str(c['n']) + mark:>22}"
+        out.append(f"    {key:<24} {line}")
+    return out
 
 
 # ---- the live stream ------------------------------------------------------------------

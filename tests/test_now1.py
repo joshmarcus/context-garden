@@ -184,6 +184,28 @@ def test_shading_marks_best_and_worst_per_row_in_the_metrics_direction():
 
 # ---- the harness's progress reader ----------------------------------------------------
 
+def test_runs_by_model_is_a_shaded_table_of_mode_by_who():
+    finished = [
+        *({"kind": "run_finished", "mode": "work", "harness": "claude", "model": "opus", "cost_usd": c} for c in (4.0, 5.0, 6.0)),
+        *({"kind": "run_finished", "mode": "work", "harness": "codex", "model": "terra", "cost_usd": c} for c in (1.0, 2.0, 3.0)),
+        {"kind": "run_finished", "mode": "review", "harness": "claude", "model": "opus", "cost_usd": 0.5},
+        {"kind": "run_finished", "mode": "check", "harness": "", "model": "", "cost_usd": 0.0},
+        {"kind": "run_finished", "mode": "rebase", "cost_usd": 0.0},
+    ]
+    t = now1.runs_by_model(finished)
+    assert t["columns"] == ["claude:opus", "codex:terra", "garden"]  # by total cost, then runs, then name
+    assert list(t["rows"]) == ["work", "rebase", "check", "review"]  # the loop's order: writing, mechanical, reading
+    assert t["heads"] == {"claude:opus": "$15.50 · 4 runs", "codex:terra": "$6.00 · 3 runs", "garden": "$0.00 · 2 runs"}
+    work = t["rows"]["work"]
+    assert work["codex:terra"] == {"value": 2.0, "n": 3, "heat": 0.0, "thin": False, "best": True, "worst": False}
+    assert work["claude:opus"] == {"value": 5.0, "n": 3, "heat": 1.0, "thin": False, "best": False, "worst": True}
+    review = t["rows"]["review"]  # one sample: thin, and never best or worst
+    assert review["claude:opus"]["thin"] and not review["claude:opus"]["best"] and "codex:terra" not in review
+    assert t["label"] == "cost per run" and t["better"] == "low" and t["n_word"] == "runs"
+    assert now1.runs_by_model([]) == {"label": "cost per run", "unit": "usd", "better": "low", "n_word": "runs",
+                                      "columns": [], "rows": {}, "heads": {}, "thin": 3}
+
+
 def test_harness_progress_reads_a_partial_stream():
     lines = [json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading the brief.\nmore"}], "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 20}}}),
              json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}], "usage": {"input_tokens": 50, "cache_read_input_tokens": 950, "output_tokens": 10}}}),
@@ -359,7 +381,11 @@ def test_last_period_reads_the_windows_events(garden):
     # each the cells are thin, so neither is marked best or worst, only faintly shaded and marked thin
     assert 'class="heat thin" style="--g:100%"' in page and 'class="heat thin" style="--g:0%"' in page
     assert "n 1 · thin" in page and "· best" not in page
-    assert 'class="heat" style="--g:100%" title="mean cost per run; lower is better">$1.00' in page
+    # the runs table reads the same way: a row per mode, a column per harness:model with its total
+    # in the head, each cell the mean cost per run shaded within the row and marked
+    assert "<caption>cost per run<span class=\"dir\">lower is better · n = runs</span>" in page
+    assert '<span class="vendor">claude:</span>opus<span class="tot">$3.00 · 1 run</span>' in page
+    assert re.search(r'<th>work</th>.*?class="heat thin" style="--g:100%"[^>]*>\s*<b>\$1\.00</b>', page, re.S)
     for window in ("today", "24h", "phase"):
         assert c.get(f"/now1?window={window}").status_code == 200
 

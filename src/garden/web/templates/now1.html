@@ -126,6 +126,9 @@ table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:va
 table.tier caption .dir { margin-left:8px; font:italic 11.5px/1.3 var(--display); color:var(--faint); }
 table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
 table.tier th .vendor { display:block; color:var(--faint); }
+table.tier th .tot { display:block; color:var(--faint); font:italic 10.5px/1.4 var(--display); }
+.runs-table { margin-top:6px; }
+.runs-table .scroll { overflow-x:auto; }
 table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
 table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; }
 table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
@@ -138,7 +141,6 @@ table.tier td .faint { color:var(--faint); }
    thin cell gets less than half of that, and the marks in each cell say what the colour says. */
 td.heat { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 22%, transparent); }
 td.heat.thin { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 9%, transparent); }
-table.shade td.heat { font-variant-numeric:tabular-nums; }
 /* live region for a screen reader */
 .now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 /* the rail on this page: the page is the Running now block, so the rail does not repeat it */

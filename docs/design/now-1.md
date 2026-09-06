@@ -340,9 +340,14 @@ phase`), with the Costs page's annotation marks for `profile_changed`, and under
 one mono line listing the window's `profile_changed` and `config_reloaded` events with the
 keys that changed. The chart is rendered twice, at 640 and at 360 wide, and CSS shows one
 per viewport, so the phone gets legible labels rather than a scaled-down projector chart;
-the two SVGs together are a few kilobytes. Right: runs by harness and model (`run_finished`
-grouped by `harness:model`; the garden's own token-free runs group as `garden:check`,
-`garden:rebase` and so on: runs, cost, mean), then hand steps: the count of events in the
+the two SVGs together are a few kilobytes. Right: runs by harness and model, as a table the
+same shape as the difficulty tables below (`now1.runs_by_model`): a row per mode that ran in
+the window, a column per `harness:model` with its total cost and run count under the name
+(the garden's own token-free runs in one `garden` column), and in each cell the mean cost per
+run over its n runs, shaded within the row from the best to the worst and marked the way every
+shaded cell on the page is. It was first a flat list of who, runs, cost and mean; a list has
+no row to shade, and turned on its side it also says which model does reviews cheaply, which
+the list could not. Then hand steps: the count of events in the
 window whose kind is a person's action (`answer`, `triaged`, `decision_accepted`,
 `decision_resolved`, `dispatch_paused`, `dispatch_resumed`, `resumed`, `moved`, `budget_set`,
 `config_override`, `suggestion`), by kind, and hand merges from `garden metrics` once CG-253

@@ -442,7 +442,7 @@ def _model_at(work_runs: list[tuple[str, str]], at: str) -> str:
     return model
 
 
-def _shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
+def shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
     """Mark a row's cells so a table reads at a glance (the owner's rule, 2026-09-06 02:45Z):
     `heat` runs from 0.0 at the row's best value to 1.0 at its worst, over every cell, for the
     light green-to-red ground; `thin` flags a cell under `THIN_SAMPLES`; `best` and `worst`
@@ -467,7 +467,7 @@ def _shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
 
 def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = "") -> dict[str, Any]:
     """The difficulty-by-model tables for a window: rows easy, medium, hard; a column per model
-    that did work in the window; each cell a value, its n and the marks `_shade_row` sets. The
+    that did work in the window; each cell a value, its n and the marks `shade_row` sets. The
     rule for every table is the one `metrics` uses for its per-difficulty figures (per-task
     facts from the event stream, grouped by the task's difficulty), with one addition: a task
     is credited to the model of its latest work-mode run finished at or before the event the
@@ -547,7 +547,7 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
             for model, vals in samples[key][d].items():
                 value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
                 cells[model] = {"value": round(value, 3), "n": len(vals)}
-            _shade_row(cells, better)
+            shade_row(cells, better)
             rows[d] = cells
         out.append({"key": key, "label": label, "unit": unit, "better": better, "rows": rows})
     return {"models": models, "metrics": out, "thin": THIN_SAMPLES}
