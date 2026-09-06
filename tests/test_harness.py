@@ -350,12 +350,11 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     assert parsed["env_error"] is False and parsed["env_kind"] == ""
 
 
-def test_replay_discarded_persona_outputs_keeps_done_cost_and_persona():
-    """Replay the four surviving phase-04 final persona messages through result events.
+def test_surviving_persona_results_keep_done_cost_and_persona():
+    """Parse the four surviving phase-04 final persona messages as result events.
 
-    The original stdout.json files were truncated. The fixture manifest preserves each
-    result event's metadata and cost, while the adjacent files preserve the complete
-    marker-bearing final result text supplied for the incident.
+    The raw stdout.json files are unavailable; the adjacent fixtures preserve the complete
+    final result text, and the manifest preserves the result metadata and recorded cost.
     """
     h = Harness("claude", {"output_format": "stream-json"})
     replay_dir = Path(__file__).parent / "fixtures" / "persona-replay"
