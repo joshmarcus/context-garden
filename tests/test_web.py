@@ -557,6 +557,9 @@ def test_task_page_shares_pending_worker_decision_card_with_inbox(garden):
         assert "The worker's full message" in page
         assert f'action="/tasks/{task.id}/accept"' in page
         assert f'action="/tasks/{task.id}/reject"' in page
+        assert "Decide whether to change the promised outcome" in page
+        assert "Accept the changed outcome" in page
+        assert "Keep the original outcome" in page
 
 
 def test_task_page_shares_waiting_question_card_and_omits_it_without_a_decision(garden, monkeypatch):
@@ -582,6 +585,27 @@ def test_task_page_shares_waiting_question_card_and_omits_it_without_a_decision(
     state.get(task.id).pop("question", None)
     state.save()
     assert 'class="panel decision-card"' not in c.get("/tasks/DM-001").text
+
+
+def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garden):
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["check_run"] = "live-check"
+    state.save()
+
+    page = client(garden).get("/").text
+    assert "Recovery needed: waiting state is incomplete" in page
+    assert "nothing for you to answer" in page
+    assert "Reconcile state" in page
+    assert "no question recorded" not in page.lower()
+    assert 'action="/tasks/DM-001/answer"' not in page
 
 
 def test_inbox_and_task_page_include_the_same_decision_card_fragment():
