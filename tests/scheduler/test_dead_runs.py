@@ -47,6 +47,7 @@ def test_dead_run_sweep_closes_a_run_that_never_started(sched):
     task.attempts = 1
     sched.store.save(task)
     run = sched.runs.new_run("DM-001", "local", mode="revise")  # no exit_code written
+    (run.path / "stdout.json").write_text("worker output before disappearing\n")
 
     rep = TickReport()
     sched.reap_dead_runs(rep)

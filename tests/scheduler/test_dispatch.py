@@ -4,6 +4,7 @@ import os
 import subprocess
 import textwrap
 
+import pytest
 from typer.testing import CliRunner
 
 from garden.cli import app
@@ -417,3 +418,22 @@ def test_exception_in_dispatch_does_not_lose_an_earlier_transition(sched, fake_g
 
     fresh = State(sched.state.path).get("DM-001")  # reload from disk, not the in-memory copy
     assert fresh.get("pr_number")  # persisted despite the exception in dispatch
+
+
+def test_dispatch_preparation_failure_closes_created_run(sched, monkeypatch):
+    """Any preparation error after run creation closes the run in the same dispatch."""
+    task = sched.store.task("DM-001")
+
+    def boom(_task):
+        raise RuntimeError("broken setup")
+
+    monkeypatch.setattr(sched, "_stack_for", boom)
+    with pytest.raises(RuntimeError, match="broken setup"):
+        sched.dispatch(task)
+
+    run = sched.runs.latest(task.id)
+    assert run is not None
+    assert run.status == "failed" and run.finished_at and run.error == "broken setup"
+    finished = [e for e in sched.events.read(task_id=task.id, kinds=["run_finished"])
+                if e.get("run") == run.run_id]
+    assert len(finished) == 1 and finished[0]["status"] == "failed"
