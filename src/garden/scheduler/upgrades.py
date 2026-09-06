@@ -82,8 +82,26 @@ class UpgradeMixin:
             self._restarter()
         return {"ok": True, "sha": sha, "restarted": bool(restart)}
 
+    def pin(self, sha: str, url: str, product: str = "") -> dict[str, Any]:
+        """Install ``sha`` only after a complete scheduler tick, then restart.
+
+        The caller runs the candidate canary first.  Deferring installation until ``tick``
+        returns keeps the current process from replacing itself while that pass is reaping or
+        dispatching work.  Suppress auto-upgrade for this one pass so it cannot restart early.
+        """
+        self.control()["upgrade"] = {"sha": sha, "url": url, "product": product, "at": now_iso()}
+        self.state.save()
+        self._pinning_after_tick = True
+        try:
+            self.tick()
+        finally:
+            self._pinning_after_tick = False
+        return self.upgrade(restart=True)
+
     def maybe_auto_upgrade(self, rep: TickReport) -> None:
         """On an idle tick, install a pending tool upgrade if config `upgrade: auto` is set."""
+        if getattr(self, "_pinning_after_tick", False):
+            return
         if not self.cfg.upgrade_auto() or self.is_dispatch_paused():
             return
         if not self.upgrade_available() or self.active_runs():

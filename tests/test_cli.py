@@ -660,6 +660,32 @@ def test_help_groups_commands_into_panels():
     # commands read as named groups, not one flat list (CG-156)
     for panel in ("Setting up", "Seeing the board", "Needs you", "Running the loop", "Diagnostics"):
         assert panel in r.output, panel
+    assert "redispatch" in r.output
+    assert "pin" in r.output
+
+
+def test_pin_waits_for_tick_before_restart(garden, monkeypatch):
+    """The explicit pin flow canaries first, then completes a tick before restarting."""
+    from types import SimpleNamespace
+
+    from garden import canary
+    from garden.cli import diagnostics
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    order: list[str] = []
+    sched = Scheduler(Store(garden))
+    monkeypatch.setattr(diagnostics, "_scheduler", lambda store: sched)
+    monkeypatch.setattr(canary, "run_canary", lambda *args, **kwargs: (
+        order.append("canary") or SimpleNamespace(ok=True, summary=lambda: "canary: every check passed")))
+    monkeypatch.setattr(sched, "tick", lambda: order.append("tick"))
+    monkeypatch.setattr(sched, "upgrade", lambda restart=False: (
+        order.append("restart") or {"ok": True, "restarted": restart}))
+
+    result = run(garden, "pin", "deadbeef", "--url", str(garden.parent / "repo"))
+
+    assert result.exit_code == 0, result.output
+    assert order == ["canary", "tick", "restart"]
 
 
 def test_status_fits_80_columns_with_wont_do(garden, monkeypatch):

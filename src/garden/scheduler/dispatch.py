@@ -278,6 +278,22 @@ class DispatchMixin:
         finally:
             self._dispatching_run = None
 
+    def redispatch(self, task: Task) -> Run:
+        """Replace every active run for ``task`` with one fresh work run.
+
+        A task has one persistent branch and worktree.  Marking old records superseded before
+        dispatching means neither slot accounting nor a later reap can mistake a killed worker
+        for the newly dispatched one.
+        """
+        superseded = [run for run in self.runs.active() if run.task_id == task.id]
+        for run in superseded:
+            run.kill()
+            run.status = "superseded"
+            run.finished_at = now_iso()
+            run.save()
+            self.events.emit("run_superseded", task.id, run=run.run_id, mode=run.mode)
+        return self.dispatch(task)
+
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None) -> Run:

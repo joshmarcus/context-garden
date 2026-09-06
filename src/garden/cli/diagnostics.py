@@ -8,7 +8,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from .common import PANEL_BOARD, PANEL_DIAG, _scheduler, _store, app, console, err
+from .common import PANEL_BOARD, PANEL_DIAG, PANEL_LOOP, _scheduler, _store, app, console, err
 
 
 # --------------------------------------------------------------------------- runs / diagnostics
@@ -325,6 +325,35 @@ def upgrade(
         if result.get("output"):
             print(str(result["output"])[-2000:])
         raise typer.Exit(1) from None
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
+def pin(
+    sha: str = typer.Argument(..., help="git commit to canary, install, and run"),
+    url: str = typer.Option("", "--url", help="git URL or local path for the tool product"),
+):
+    """Canary a commit, then install and restart after one complete scheduler tick."""
+    from ..canary import run_canary
+
+    store = _store()
+    if not url:
+        product = store.config.tool_product()
+        if product:
+            url = str(store.config.product_repo(product))
+    if not url:
+        err.print("[red]no product has provides_tool: true; pass --url[/red]")
+        raise typer.Exit(1) from None
+    report = run_canary(sha, url=url, out=store.config.garden_dir / "canary" / sha[:12],
+                        log=lambda m: err.print(f"[dim]{m}[/dim]"))
+    console.print(report.summary(), markup=False, highlight=False, soft_wrap=True)
+    if not report.ok:
+        raise typer.Exit(1)
+    sched = _scheduler(store)
+    result = sched.pin(sha, url, product=store.config.tool_product() or "")
+    if not result.get("ok"):
+        err.print(f"[red]pin failed: {result.get('reason')}[/red]; the current install is unchanged")
+        raise typer.Exit(1)
+    console.print(f"[green]installed {sha[:12]}[/green]; restarting")
 
 
 @app.command()
