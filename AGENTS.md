@@ -32,4 +32,4 @@ EDGE="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
   --screenshot="C:\\Users\\joshm\\AppData\\Local\\Temp\\captures\\inbox-1280.png" "http://localhost:8765/inbox"
 ```
 
-Add `--force-dark-mode` for dark, `--window-size=390,2400` for the phone width. For a static mock, copy it under `/mnt/c/...` first and pass a `file:///C:/...` URL, since Edge reads Windows paths only. Say in the PR which captures you looked at. CG-315 makes this a check the garden runs itself.
+Add `--force-dark-mode` for dark, `--window-size=390,2400` for the phone width. For a static mock, copy it under `/mnt/c/...` first and pass a `file:///C:/...` URL, since Edge reads and writes Windows paths only; then copy the PNGs from the Windows temp folder into your worktree (for example `docs/design/captures/`) so they travel with the PR and stay inside the fence. Say in the PR which captures you looked at. CG-315 makes this a check the garden runs itself.
