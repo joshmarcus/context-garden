@@ -330,7 +330,10 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Open PR", "kind": "link", "href": t.pr},
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
-            why = (st.get("review_decision") or "no review yet").lower().replace("_", " ")
+            if st.get("review_run"):
+                why = "review queued"
+            else:
+                why = (st.get("review_decision") or "no review yet").lower().replace("_", " ")
             if st.get("checks"):
                 why += f" · CI {st['checks'].lower()}"
             if st.get("automerge_blocked"):

@@ -374,7 +374,10 @@ class TrialsMixin:
         st["pr_number"] = winner.get("pr_number") or 0
         st["worktree"] = winner["worktree"]
         st["revisions"] = 0
-        st["review_rounds"] = int(self.cfg.get("review.max_rounds", 2))  # the comparison stands in for the review pass
+        # A comparison run ranks contenders against each other; it is not a review against this
+        # task's acceptance criteria, so it must not stand in for one — the winner's PR gets a
+        # real automated review round below, the same as any other freshly pushed PR (CG-236).
+        st["review_rounds"] = 0
         self.events.emit("trial_done", task.id, winner=trial["winner"], inconclusive=inconclusive,
                          scores={c["label"]: c.get("score") for c in trial["contenders"]})
         st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True)) and bool(winner.get("pr"))
@@ -389,3 +392,10 @@ class TrialsMixin:
             rep.transitions.append(f"{task.id} -> {task.status.value} (trial inconclusive, kept {winner['label']})")
         else:
             rep.transitions.append(f"{task.id} -> {task.status.value} (trial winner {winner['label']})")
+        if task.pr:
+            # Queue the automated review round the same way a pushed work-run PR gets one
+            # (`_open_or_update_pr` -> `_maybe_review`): a trial's winner is otherwise
+            # indistinguishable from a work PR and must not need a person to press `review`.
+            winner_run = next((r for r in self.runs.runs_for(task.id) if r.run_id == winner.get("run_id")), None)
+            if winner_run is not None:
+                self._maybe_review(task, winner_run, rep)
