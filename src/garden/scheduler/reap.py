@@ -136,7 +136,7 @@ class ReapMixin:
         # pass already made it, so the run's cost is never counted twice (CG-153).
         run.save()
         if not resumed:
-            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
+            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model, pool_member=run.pool_member,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
                              cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
 
@@ -548,6 +548,8 @@ class ReapMixin:
         criteria = parse_criteria(task.body)
         verified = result.get("verified")
         st = self.state.get(task.id)
+        if run.pool_member:
+            st["pr_pool_member"] = run.pool_member
         if not slug or not self.github.available:
             self._transition(task, Status.IN_REVIEW,
                              f"branch {branch} pushed; GitHub unavailable, open the PR by hand and run `garden pr {task.id} <url>`{cost}")
@@ -583,6 +585,8 @@ class ReapMixin:
                 title = str(result.get("pr_title") or f"{task.id}: {task.title}")
                 body = apply_verification(str(result.get("pr_body") or summary or task.body), criteria, verified)
                 footer = f"\n\n---\nTask `{task.id}` from the context garden ({task.product}/{task.phase})."
+                if run.pool_member:
+                    footer += f" Produced by pool member `{run.pool_member}`."
                 if st.get("stack_parent"):
                     footer += f" Stacked on `{st['stack_parent']}` (targets `{base}` until it merges)."
                 if st.get("discovered_ids"):
@@ -597,7 +601,8 @@ class ReapMixin:
                 st["revisions"] = 0
                 st["review_rounds"] = 0
                 st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
-                self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
+                self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""),
+                                 draft=st["pr_draft"], pool_member=run.pool_member)
                 nxt = self._pr_status(task)
                 defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st)
                 if defer_triage:

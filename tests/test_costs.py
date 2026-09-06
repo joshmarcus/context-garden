@@ -85,6 +85,16 @@ def test_group_by_model_and_harness():
     assert series["totals"]["codex"]["cost_usd"] == 0.75
 
 
+def test_group_by_pool_member():
+    events = _events()
+    events[0]["pool_member"] = "claude:sonnet"
+    events[2]["pool_member"] = "codex:gpt-std"
+    series = cost_series(events, _tasks(), group_by="pool_member", bucket="day")
+    assert series["totals"]["claude:sonnet"]["cost_usd"] == 1.0
+    assert series["totals"]["codex:gpt-std"]["cost_usd"] == 0.5
+    assert series["totals"]["unpooled"]["cost_usd"] == 2.65
+
+
 def test_group_by_phase_and_task():
     series = cost_series(_events(), _tasks(), group_by="phase", bucket="day")
     assert series["totals"]["demo/p1"]["cost_usd"] == 1.6

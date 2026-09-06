@@ -513,7 +513,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"${d['cost_per_accepted_task']:.2f}" if d["cost_per_accepted_task"] is not None else "",
                       f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
     console.print(table)
-    for dimension, label in (("by_model", "model"), ("by_harness", "harness")):
+    for dimension, label in (("by_model", "model"), ("by_harness", "harness"), ("by_pool_member", "pool member")):
         table = Table(title=f"outcomes by {label}")
         for c in (label, "accepted", "cost/accepted", "first-pass approve", "reviewed"):
             table.add_column(c)
@@ -572,6 +572,13 @@ def trial(
     store = _store()
     t = _task(store, task_id)
     sc = _scheduler(store)
+    expanded: list[str] = []
+    for contender in contenders:
+        if contender.startswith("tier:"):
+            expanded.extend(member["label"] for member in sc.pool_members(contender.split(":", 1)[1]))
+        else:
+            expanded.append(contender)
+    contenders = expanded
     try:
         runs = sc.start_trial(t, contenders, again=again, keep_prs=keep_prs)
     except RuntimeError as e:

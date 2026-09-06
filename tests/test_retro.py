@@ -109,9 +109,11 @@ def test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimens
         "by_difficulty": {"easy": {"mean_cost_usd": 1.0, "cost_per_accepted_task": 2.0, "first_pass_rate": 1.0}},
         "by_model": {"sonnet": {"mean_cost_usd": 0.5, "cost_per_accepted_task": 2.0, "first_pass_rate": 0.75}},
         "by_harness": {"claude": {"mean_cost_usd": 0.5, "cost_per_accepted_task": 2.0, "first_pass_rate": 0.75}},
+        "by_pool_member": {"claude:sonnet": {"mean_cost_usd": 0.5, "cost_per_accepted_task": 2.0, "first_pass_rate": 0.75}},
     })
     assert "Outcomes by tier" in text
     assert "Outcomes by model" in text and "sonnet" in text
+    assert "Outcomes by pool member" in text and "claude:sonnet" in text
     assert "$0.50" in text and "$2.00" in text and "75%" in text
 
 

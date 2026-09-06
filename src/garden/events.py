@@ -243,13 +243,13 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     first_review_criteria: dict[str, tuple[int, int]] = {}
     cost: dict[str, float] = defaultdict(float)
     costs_by_dimension: dict[str, dict[str, float]] = {
-        "model": defaultdict(float), "harness": defaultdict(float),
+        "model": defaultdict(float), "harness": defaultdict(float), "pool_member": defaultdict(float),
     }
     runs_by_dimension: dict[str, dict[str, int]] = {
-        "model": defaultdict(int), "harness": defaultdict(int),
+        "model": defaultdict(int), "harness": defaultdict(int), "pool_member": defaultdict(int),
     }
     task_dimensions: dict[str, dict[str, set[str]]] = defaultdict(
-        lambda: {"model": set(), "harness": set()}
+        lambda: {"model": set(), "harness": set(), "pool_member": set()}
     )
     runs: dict[str, int] = defaultdict(int)
     rebases_mechanical = 0
@@ -268,7 +268,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             if ev.get("mode") == "revise":
                 revisions[t] += 1
             if ev.get("mode") in ("work", "revise", "resume"):
-                for dimension in ("model", "harness"):
+                for dimension in ("model", "harness", "pool_member"):
                     value = str(ev.get(dimension) or "unknown")
                     task_dimensions[t][dimension].add(value)
         elif k == "transition" and ev.get("to") == "done":
@@ -281,7 +281,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         elif k == "run_finished":
             run_cost = float(ev.get("cost_usd") or 0.0)
             cost[t] += run_cost
-            for dimension in ("model", "harness"):
+            for dimension in ("model", "harness", "pool_member"):
                 costs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += run_cost
                 runs_by_dimension[dimension][str(ev.get(dimension) or "unknown")] += 1
                 # Old event logs did not always retain dispatch metadata. A completed work
@@ -313,6 +313,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             "accepted": tid in done_at,
             "model": sorted(task_dimensions[tid]["model"]),
             "harness": sorted(task_dimensions[tid]["harness"]),
+            "pool_member": sorted(task_dimensions[tid]["pool_member"]),
         })
     by_diff: dict[str, dict[str, Any]] = {}
     for row in per_task:
@@ -341,15 +342,15 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
     # only runs belonging to a task the scheduler observed merge to the base branch.
     accepted_ids = set(done_at)
     accepted_cost_by_dimension: dict[str, dict[str, float]] = {
-        "difficulty": defaultdict(float), "model": defaultdict(float), "harness": defaultdict(float),
+        "difficulty": defaultdict(float), "model": defaultdict(float), "harness": defaultdict(float), "pool_member": defaultdict(float),
     }
     accepted_tasks_by_dimension: dict[str, dict[str, set[str]]] = {
-        "difficulty": defaultdict(set), "model": defaultdict(set), "harness": defaultdict(set),
+        "difficulty": defaultdict(set), "model": defaultdict(set), "harness": defaultdict(set), "pool_member": defaultdict(set),
     }
     for tid in accepted_ids:
         task = tasks[tid]
         accepted_tasks_by_dimension["difficulty"][getattr(task, "difficulty", "") or "medium"].add(tid)
-        for dimension in ("model", "harness"):
+        for dimension in ("model", "harness", "pool_member"):
             for value in task_dimensions[tid][dimension]:
                 accepted_tasks_by_dimension[dimension][value].add(tid)
     for tid in accepted_ids:
@@ -360,7 +361,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         # comparison, rather than silently losing its supporting-run costs to "unknown".
         accepted_cost = cost[tid]
         accepted_cost_by_dimension["difficulty"][getattr(tasks[tid], "difficulty", "") or "medium"] += accepted_cost
-        for dimension in ("model", "harness"):
+        for dimension in ("model", "harness", "pool_member"):
             for value in task_dimensions[tid][dimension]:
                 accepted_cost_by_dimension[dimension][value] += accepted_cost
 
@@ -372,7 +373,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             values.update(costs_by_dimension[dimension])
         rows: dict[str, dict[str, Any]] = {}
         for value in sorted(values):
-            members = [row for row in per_task if value in (row[dimension] if dimension in ("model", "harness") else [row["difficulty"] or "medium"])]
+            members = [row for row in per_task if value in (row[dimension] if dimension in ("model", "harness", "pool_member") else [row["difficulty"] or "medium"])]
             reviewed_members = [row for row in members if row["first_review"]]
             accepted = accepted_tasks_by_dimension[dimension][value]
             accepted_cost = accepted_cost_by_dimension[dimension][value]
@@ -394,7 +395,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
             }
         return rows
 
-    outcomes = {dimension: outcome_breakdown(dimension) for dimension in ("difficulty", "model", "harness")}
+    outcomes = {dimension: outcome_breakdown(dimension) for dimension in ("difficulty", "model", "harness", "pool_member")}
     # Preserve the established tier metrics while adding the common outcome measures used
     # for model-routing comparisons.
     for tier, row in outcomes["difficulty"].items():
@@ -410,7 +411,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, An
         "per_merge": round(rebases / merges, 2) if merges else None,
     }
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
-            "by_harness": outcomes["harness"], "rebase": rebase,
+            "by_harness": outcomes["harness"], "by_pool_member": outcomes["pool_member"], "rebase": rebase,
             "by_difficulty_model": difficulty_by_model(events, tasks)}
 
 
@@ -554,8 +555,6 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
             rows[d] = cells
         tables.append({"key": key, "label": label, "unit": unit, "better": better, "n_unit": n_unit, "rows": rows})
     return {"models": models, "metrics": tables, "thin": THIN_SAMPLE}
-
-
 def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[str, Any]:
     """The figures a closed phase is remembered by: dates, tasks done, merged PRs, lead
     time, revise rounds, first-pass rate and cost. `tasks` is id -> Task for the phase."""
