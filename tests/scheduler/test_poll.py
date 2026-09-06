@@ -6,6 +6,69 @@ from garden.model import Status
 from tests.scheduler.conftest import statuses
 
 
+def test_required_persona_comment_precedes_automated_review_and_check_evidence(sched, fake_github):
+    """A task's required PR evidence is produced before the reviewer is allowed to start."""
+    task = sched.store.task("DM-001")
+    task.extra["requires"] = ["persona-review -p usability-expert", "check: unit"]
+    task.body += "\n## Acceptance criteria\n\n- [ ] persona-review -p usability-expert is posted.\n"
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
+
+    sched.tick()  # work
+    sched.tick()  # reap work, start the required check
+    sched.tick()  # reap check, open PR, start persona; review is queued
+    assert not any(run.mode == "review" for run in sched.runs.runs_for("DM-001"))
+
+    rep = sched.tick()  # persona comment posts, then queued automated review starts
+    assert "DM-001(review)" in rep.dispatched
+    assert any("usability-expert review" in comment for comment in fake_github.comments)
+    review = sched.runs.latest("DM-001")
+    assert review.mode == "review"
+    brief = (review.path / "brief.md").read_text()
+    assert "## Pre-review checks" in brief and "**unit**: pass" in brief
+    evidence = sched.state.get("DM-001")["required_evidence"]
+    assert evidence == {"persona:usability-expert": "posted", "check:unit": "posted"}
+
+
+def test_required_persona_without_a_verdict_stops_and_keeps_the_review_queued(sched, monkeypatch):
+    """A malformed required persona result needs a visible retry decision, not a stranded PR."""
+    task = sched.store.task("DM-001")
+    task.extra["requires"] = ["persona-review -p usability-expert"]
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+
+    sched.tick()
+    sched.tick()  # PR opens; required persona starts and automated review queues.
+    monkeypatch.setattr("garden.scheduler.persona.parse_persona", lambda _: {})
+    rep = sched.tick()
+
+    st = sched.state.get(task.id)
+    assert st["required_evidence"]["persona:usability-expert"] == "failed"
+    assert st["needs_human"]["kind"] == "required_evidence"
+    assert any(item["kind"] == "persona" and item["required"] for item in st["pending_reviews"])
+    assert any(item["kind"] == "review" for item in st["pending_reviews"])
+    assert "DM-001(review)" not in rep.dispatched
+
+
+def test_required_persona_dispatch_failure_stops_and_queues_a_retry(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.extra["requires"] = ["persona-review -p usability-expert"]
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setattr(sched, "dispatch_persona_pr", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    sched.tick()
+    rep = sched.tick()  # PR opens; persona dispatch fails.
+
+    st = sched.state.get(task.id)
+    assert st["required_evidence"]["persona:usability-expert"] == "failed"
+    assert st["needs_human"]["kind"] == "required_evidence"
+    assert any(item["kind"] == "persona" and item["required"] for item in st["pending_reviews"])
+    assert any(item["kind"] == "review" for item in st["pending_reviews"])
+    assert any("persona dispatch failed" in error for error in rep.errors)
+
+
 def test_feedback_triggers_revise_round(sched, fake_github):
     sched.tick()
     sched.tick()

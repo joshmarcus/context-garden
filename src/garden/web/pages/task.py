@@ -8,7 +8,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ...brief import brief_gaps, build_brief
-from ...criteria import parse_criteria, reconcile, worker_verified
+from ...criteria import (
+    parse_criteria,
+    reconcile,
+    required_evidence,
+    required_evidence_rows,
+    worker_verified,
+)
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
@@ -63,6 +69,7 @@ def register(app: FastAPI, site: Site) -> None:
         edit_diff = _edit_diff(runs)
         criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
                                   (st.get("last_review") or {}).get("criteria"))
+        evidence_rows = required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)
         gaps = brief_gaps(s, t) if t.status.value == "draft" else []
 
         # Phases this task can move to (the product's own phases, current one always shown even
@@ -87,6 +94,7 @@ def register(app: FastAPI, site: Site) -> None:
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
+            evidence_rows=evidence_rows,
             brief_gaps=gaps,
             acceptance_text=_acceptance_text(t.body),
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),

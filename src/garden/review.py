@@ -92,7 +92,8 @@ def _verification_brief(task: Task, verified: Any) -> str:
 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
-                 captures: list[str] | None = None, reask_missing_fixes: bool = False) -> str:
+                 captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
+                 reask_missing_fixes: bool = False) -> str:
     task_brief = build_brief(store, task, include_rules=False)
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
@@ -106,6 +107,10 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if checks:
+        parts.append("## Pre-review checks\n\n" + "\n".join(
+            f"- **{c.get('name', 'check')}**: {c.get('status', 'unknown')}"
+            + (f" — {c.get('summary')}" if c.get("summary") else "") for c in checks) + "\n")
     if pr_comment.strip():
         parts.append(
             "## Author's response to the previous review (posted as a PR comment, not part of the description)\n\n"

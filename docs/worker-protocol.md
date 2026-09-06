@@ -23,6 +23,27 @@ the whole result contract. Everything else the world sees (the pushed branch, th
 request, the review comments) is done by the scheduler after the fact, from what it finds
 in the run directory and the worktree.
 
+## Required review evidence
+
+A task can ask the scheduler to produce review evidence with `requires:` frontmatter, or
+with the same concise phrases in an acceptance criterion. For example:
+
+```yaml
+requires:
+  - persona-review -p designer
+  - persona-review -p usability-expert
+  - captures
+  - check: unit
+```
+
+`persona-review -p <name>` starts that PR persona review when the PR opens. `captures`
+adds the UI check even when the diff did not itself select it. `check: <name>` selects a
+named `checks.pre_pr` entry; task files name configured checks and never inject commands.
+Checks finish before the PR opens. Required personas post their comments before the
+automated review is dispatched, and their state is shown on the task page. Failed required
+checks enter the normal mechanical changes-requested path with their diagnostic in the
+revise brief.
+
 ## The sequence
 
 ```mermaid

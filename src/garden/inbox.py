@@ -8,6 +8,7 @@ import datetime as dt
 from typing import Any
 
 from .brief import brief_gaps
+from .criteria import required_evidence, required_evidence_rows
 from .graph import effective_status
 from .model import Status, Task
 from .runs import RunStore
@@ -207,6 +208,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if t.status.terminal:
         return None
     info = needs_human_info(st.get("needs_human"))
+    if info and info["kind"] == "review_cap" and any(row["state"] != "posted" for row in required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)):
+        return None
     can_resume = info is not None
     if info is None:
         if t.status != Status.FAILED:
