@@ -10,6 +10,7 @@ from typing import Any
 from .brief import _parse_marked_json, build_brief
 from .criteria import parse_criteria, reconcile
 from .model import Task
+from .preflight import preflight_section
 from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
@@ -114,6 +115,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
+        preflight_section(),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
