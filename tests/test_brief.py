@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from garden.brief import (
     RESULT_MARKER,
     build_brief,
@@ -58,6 +60,8 @@ def test_brief_oversized_reading_is_referenced(garden):
     assert "demo/p1/specs/big.md" in b.referenced
     assert "Reading list (read these)" in b.text
     assert b.missing == ["demo/p1/specs/nope.md"]
+    assert "`demo/p1/specs/nope.md`" not in b.referenced
+    assert "## Brief gaps" in b.text
 
 
 def test_brief_directory_reading(garden):
@@ -72,6 +76,15 @@ def test_parse_result():
     assert parse_result('blah\nGARDEN_RESULT: {"status": "done", "summary": "s"}\n') == {"status": "done", "summary": "s"}
     assert parse_result("GARDEN_RESULT: ```{\"status\": \"done\"}```")["status"] == "done"
     assert parse_result("nothing") == {}
+
+
+def test_worker_criteria_amendment_replaces_only_the_named_checklist_line():
+    from garden.criteria import amend_criteria
+
+    body = "## Acceptance criteria\n\n- [ ] Old criterion.\n- [ ] Keep this one.\n"
+    updated, applied = amend_criteria(body, [{"index": 0, "text": "New criterion.", "reason": "Old one was false."}])
+    assert "- [ ] New criterion." in updated and "- [ ] Keep this one." in updated
+    assert applied == [{"index": 0, "text": "New criterion.", "reason": "Old one was false."}]
 
 
 def test_brief_states_the_pr_body_contract(garden):
@@ -136,6 +149,7 @@ def test_reading_list_resolves_against_the_product_checkout(garden):
 
     from garden.brief import build_brief, product_dirs, resolve_reading
     from garden.store import Store
+    from tests.conftest import git
 
     store = Store(garden)
     task = next(iter(store.tasks().values()))
@@ -143,13 +157,16 @@ def test_reading_list_resolves_against_the_product_checkout(garden):
     assert isinstance(repo, Path) and repo.resolve() != garden.resolve()
     (repo / "src").mkdir(exist_ok=True)
     (repo / "src" / "thing.py").write_text("VALUE = 1\n")
+    git("add", "src/thing.py", cwd=repo)
+    git("commit", "-m", "add reading fixture", cwd=repo)
     task.reading = ["src/thing.py", "src/nowhere.py"]
     assert repo in product_dirs(store, task)
     assert resolve_reading(store, task, "src/thing.py")[1] == repo
     b = build_brief(store, task)
     assert "### src/thing.py" in b.text and "VALUE = 1" in b.text
     assert "src/nowhere.py" in b.missing
-    assert "- `src/nowhere.py` (not found when the brief was built)" in b.text
+    assert "## Brief gaps" in b.text
+    assert "- `src/nowhere.py`" in b.text
     assert str(garden) not in b.text
 
 
@@ -201,13 +218,13 @@ def _task_with(store, body="", reading=None):
     return t
 
 
-def test_brief_gaps_flags_missing_criteria_section(garden):
+def test_brief_gaps_allows_a_criteria_less_task(garden):
     from garden.brief import brief_gaps
 
     store = Store(garden)
-    t = _task_with(store, "## Goal\n\nDo a thing.\n")
-    gaps = brief_gaps(store, t)
-    assert any("Acceptance criteria" in g for g in gaps)
+    t = _task_with(store, "## Goal\n\nDo a thing.\n", reading=["demo/p1/specs/spec.md"])
+    assert brief_gaps(store, t) == []
+    assert "Goal is the contract" in build_brief(store, t).text
 
 
 def test_brief_gaps_flags_placeholder_criteria(garden):
@@ -235,7 +252,7 @@ def test_brief_gaps_accepts_real_criteria(garden):
     from garden.brief import brief_gaps
 
     store = Store(garden)
-    t = _task_with(store, "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] The parser rejects an empty file.\n")
+    t = _task_with(store, "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] The parser rejects an empty file.\n", reading=["demo/p1/specs/spec.md"])
     assert brief_gaps(store, t) == []
 
 
@@ -248,6 +265,29 @@ def test_brief_gaps_flags_unresolved_reading_path(garden):
     gaps = brief_gaps(store, t)
     assert any("missing.md" in g for g in gaps)
     assert not any("spec.md`" in g for g in gaps)  # the resolvable one is not flagged
+
+
+def test_brief_gaps_rejects_empty_reading_except_mechanical_escape(garden):
+    from garden.brief import brief_gaps
+
+    store = Store(garden)
+    body = "## Goal\n\nX\n\n## Acceptance criteria\n\n- [ ] It works.\n"
+    task = _task_with(store, body)
+    assert any("reading list is empty" in gap for gap in brief_gaps(store, task))
+    task.extra["allow_empty_reading_list"] = True
+    assert brief_gaps(store, task) == []
+
+
+def test_brief_reads_product_files_from_the_base_commit(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    repo = store.config.product_repo(task.product)
+    assert isinstance(repo, Path)
+    task.reading = ["README.md"]
+    (repo / "README.md").write_text("# dirty\n")
+    brief = build_brief(store, task, base="main")
+    assert "# demo" in brief.text
+    assert "# dirty" not in brief.text
 
 
 # ---- resolve_reading refuses absolute and parent-escaping paths (CG-239) ----

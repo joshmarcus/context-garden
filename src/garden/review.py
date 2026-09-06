@@ -31,7 +31,8 @@ Check, in this order:
    the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
    "Author's verification" below; check each claim against the diff rather than taking it on
    trust. A criterion with no evidence, or one the author marked not done without a reason you
-   accept, is `met: false` and a blocking finding.
+   accept, is `met: false` and a blocking finding. If the task has no criteria, judge its Goal
+   on the author's evidence and return `criteria: []`.
 2. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
 3. **Scope.** Changes outside the task, or task work that is missing.
 4. **PR description.** It must give a reader without the task file the broader context:
@@ -95,12 +96,23 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False) -> str:
     task_brief = build_brief(store, task, include_rules=False)
+    amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
+                  if isinstance(a, dict) and isinstance(a.get("index"), int)}
+    criteria_note = ""
+    if amendments:
+        lines = ["## Amended acceptance criteria\n"]
+        for index, criterion in enumerate(parse_criteria(task.body)):
+            if index in amendments:
+                lines.append(f"- **{criterion}** *(amended — {amendments[index].get('reason', '')})*")
+        criteria_note = "\n".join(lines) + "\n"
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if criteria_note:
+        parts.append(criteria_note)
     verification = _verification_brief(task, verified)
     if verification:
         parts.append(verification)
