@@ -56,7 +56,7 @@ class CheckRunMixin:
         reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
         runner = self.runner_for(task, "local")
-        run = self.runs.new_run(task.id, "local", mode="check")
+        run = self._new_local_run(task.id, "check", f"{stage} check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
@@ -91,25 +91,36 @@ class CheckRunMixin:
         if not run_id:
             return False
         run = self._run_by_id(task, run_id)
-        if run is None or run.status != "running":
+        if run is None:
             st["check_run"] = {}
             return False
-        runner = self.runner_for(task, run.runner, run.harness)
-        if not self._finished_or_timed_out(run, runner):
-            return False
-        st["check_run"] = {}
-        results = self._collect_check_results(run)
-        run.exit_code = run.read_exit_code()
-        run.finished_at = now_iso()
-        run.cost_usd = 0.0
-        run.result = {"checks": results}
-        run.status = "done" if run.status != "timeout" else "timeout"
-        run.save()
         stage = str(info.get("stage") or "pre_pr")
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="check", status=run.status, cost_usd=0.0, usage={})
-        for r in results:
-            self.events.emit("check", task.id, stage=_EVENT_STAGE.get(stage, "pre_pr"),
-                             name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+        if run.status == "running":
+            runner = self.runner_for(task, run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                return False
+            results = self._collect_check_results(run)
+            run.exit_code = run.read_exit_code()
+            run.finished_at = now_iso()
+            run.cost_usd = 0.0
+            run.result = {"checks": results}
+            run.status = "done" if run.status != "timeout" else "timeout"
+            run.save()
+            # Keep this continuation until its handler succeeds. In particular, a handler
+            # that wants to launch the next check may be deferred by resource pressure; the
+            # next tick must route these stored results again rather than lose the chain.
+            info["collected"] = True
+            st["check_run"] = info
+            self.state.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="check", status=run.status, cost_usd=0.0, usage={})
+            for r in results:
+                self.events.emit("check", task.id, stage=_EVENT_STAGE.get(stage, "pre_pr"),
+                                 name=r.get("name"), status=r.get("status"), summary=r.get("summary", ""))
+        elif info.get("collected") and run.status in {"done", "timeout"}:
+            results = list((run.result or {}).get("checks") or [])
+        else:
+            st["check_run"] = {}
+            return False
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for r in results:
             name = str(r.get("name") or "")
@@ -133,8 +144,11 @@ class CheckRunMixin:
         }.get(stage)
         if handler is None:
             self.log(f"{task.id}: unknown check stage {stage!r}; results dropped")
+            st["check_run"] = {}
             return True
         handler(task, run, results, cont, rep)
+        if (st.get("check_run") or {}).get("run_id") == run.run_id:
+            st["check_run"] = {}
         return True
 
     @staticmethod

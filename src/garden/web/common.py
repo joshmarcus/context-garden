@@ -195,6 +195,7 @@ class Site:
         active = sched.operating_profile_name()
         run_store = sched.runs
         totals = run_store.totals()
+        resources = sched.resource_status()
         return {
             "request": request,
             "page": page,
@@ -213,6 +214,7 @@ class Site:
             "reviews_running": len(sched.review_runs_active()),
             "max_parallel": sched.effective_max_parallel(),
             "review_parallel": sched.review_parallel_limit(),
+            "resource_status": resources,
             "totals": totals,
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,

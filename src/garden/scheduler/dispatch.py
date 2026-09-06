@@ -85,13 +85,15 @@ class DispatchMixin:
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
-            if self.slots_free() <= 0:
-                break
             if self.budget_exceeded(task):
                 continue
             runner = self.runner_for(task)
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
+            if self.slots_free() <= 0:
+                break
+            if runner.name == "local" and self.local_slots_free() <= 0:
+                continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             try:
@@ -312,7 +314,8 @@ class DispatchMixin:
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
-        run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id)
+        run = (self._new_local_run(task.id, mode, mode, run_id=run_id)
+               if runner.name == "local" else self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id))
         self._dispatching_run = run
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)

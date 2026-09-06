@@ -19,7 +19,7 @@ root = Path('.pytest_cache/now2-live-fixture').resolve()
 if root.exists():
     shutil.rmtree(root)
 root.mkdir(parents=True)
-(root / 'garden.yaml').write_text(yaml.safe_dump({'name': 'Now 2 · demonstration', 'max_parallel': 4, 'review_parallel': 2, 'harness': 'codex', 'products': {'demo': {'repo': str(root), 'base_branch': 'main'}}}))
+(root / 'garden.yaml').write_text(yaml.safe_dump({'name': 'Now 2 · demonstration', 'max_parallel': 4, 'review_parallel': 2, 'resources': {'max_parallel': 2}, 'harness': 'codex', 'products': {'demo': {'repo': str(root), 'base_branch': 'main'}}}))
 (root / 'demo').mkdir()
 (root / 'demo/product.md').write_text('# Demo\nSynthetic capture fixture.\n')
 phase = root / 'demo/phase-05'

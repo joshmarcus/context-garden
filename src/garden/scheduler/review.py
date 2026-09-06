@@ -281,7 +281,7 @@ class ReviewMixin:
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
                             checks=check_results, reask_missing_fixes=reask_missing_fixes)
-        run = self.runs.new_run(task.id, runner.name, mode="review")
+        run = self._new_local_run(task.id, "review", "review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from

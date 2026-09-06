@@ -89,10 +89,10 @@ class LocalRunner(Runner):
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
-            f"2> {shlex.quote(str(d / 'stderr.log'))}; echo $? > {shlex.quote(str(d / 'exit_code'))}"
+            f"2> {shlex.quote(str(d / 'stderr.log'))}"
         )
         proc = subprocess.Popen(
-            ["sh", "-c", script], cwd=str(worktree), env=env,
+            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -113,11 +113,10 @@ class LocalRunner(Runner):
         (d / "checks_input.json").write_text(json.dumps(payload))
         script = (
             f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(d))} "
-            f"> {shlex.quote(str(d / 'stdout.json'))} 2> {shlex.quote(str(d / 'stderr.log'))}; "
-            f"echo $? > {shlex.quote(str(d / 'exit_code'))}"
+            f"> {shlex.quote(str(d / 'stdout.json'))} 2> {shlex.quote(str(d / 'stderr.log'))}"
         )
         proc = subprocess.Popen(
-            ["sh", "-c", script], cwd=str(worktree), env=env,
+            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )

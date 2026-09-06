@@ -102,9 +102,12 @@ have had to make:
 
 ### 2. Starting the process (the runner, in `start`)
 
-The local runner writes the brief to `brief.md` in the run directory and starts one shell
-command, detached in its own session (`start_new_session=True`, stdin closed), so it
-survives the scheduler exiting:
+The local runner writes the brief to `brief.md` in the run directory and starts a small
+supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
+survives the scheduler exiting. On Linux the supervisor is a child subreaper: even a test
+process that creates another session remains owned by the run. It writes `exit_code` only
+after the harness and all adopted descendants exit, and forwards a stop to the entire tree.
+The supervised command is equivalent to:
 
 ```sh
 cd /garden/.garden/worktrees/WID-003 && timeout 5400 \

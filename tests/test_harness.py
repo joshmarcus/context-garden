@@ -59,6 +59,13 @@ def test_ordinary_error_is_not_a_quota_env_error():
     assert out["env_error"] is False and out["env_kind"] == ""
 
 
+def test_process_resource_exhaustion_is_an_environment_error():
+    h = Harness("test", {"output": "plain"})
+    out = h.parse("", "fatal: No space left on device")
+    assert out["env_error"] is True
+    assert out["env_kind"] == "resource"
+
+
 def test_quota_patterns_are_configurable_per_harness():
     h = Harness("claude", {"quota_patterns": ["custom limit reached"]})
     stdout = json.dumps({"type": "result", "subtype": "error", "is_error": True,

@@ -20,7 +20,7 @@ class AuxMixin:
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner = self.runner_for(probe, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
-        run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
+        run = self._new_local_run(probe.id if task else f"_{kind}", kind, kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
         if kind in ("persona", "compare"):

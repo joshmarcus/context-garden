@@ -50,6 +50,7 @@ from .quota import QuotaMixin
 from .reap import ReapMixin
 from .rebase import RebaseMixin
 from .report import TickReport
+from .resources import ResourceMixin
 from .retro import RetroMixin
 from .review import ReviewMixin
 from .state import State, _TaskState
@@ -78,6 +79,7 @@ CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge che
 
 class Scheduler(
     BudgetMixin,
+    ResourceMixin,
     ReapMixin,
     CheckRunMixin,
     QueueMixin,
@@ -307,14 +309,16 @@ class Scheduler(
         return [r for r in self.active_runs() if r.mode in CHECK_MODES]
 
     def slots_free(self) -> int:
-        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active()))
+        queue_free = self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active())
+        return max(0, queue_free)
 
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
 
     def review_slots_free(self) -> int:
-        return max(0, self.review_parallel_limit() - len(self.review_runs_active()))
+        queue_free = self.review_parallel_limit() - len(self.review_runs_active())
+        return max(0, min(queue_free, self.local_slots_free()))
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:
@@ -521,6 +525,7 @@ class Scheduler(
     def _tick_body(self, rep: TickReport, dispatch: bool | None) -> None:
         with self._step(rep, "reap"):
             self._reap_all(rep)
+        self.refresh_resource_pressure()
         self.store.invalidate_tasks()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):

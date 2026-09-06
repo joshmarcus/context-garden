@@ -49,6 +49,7 @@ def test_stop_does_not_trust_stale_exit_file(sched, monkeypatch):
     active.pid = 987654
     (active.path / "exit_code").write_text("0")
     monkeypatch.setattr("garden.runs._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("garden.runs._process_group_alive", lambda _pid: True)
     monkeypatch.setattr("garden.runs.os.killpg", lambda *_args: None)
     monkeypatch.setattr("garden.runs.os.kill", lambda *_args: None)
     assert active.stop(timeout=0) is False

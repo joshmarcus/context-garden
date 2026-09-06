@@ -123,10 +123,18 @@ class Run:
         return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
 
     def process_finished(self) -> bool:
+        if self.pid == os.getpid():
+            return (self.path / "exit_code").exists()
+        if self.pid is None:
+            return (self.path / "exit_code").exists()
+        # Local wrappers are session leaders, so their pid is also the process-group id.
+        # The wrapper may exit after a harness leaves children behind. Keep the run active
+        # until that entire owned group is gone; otherwise cleanup and slot accounting can
+        # race a detached test suite that is still consuming the host.
+        if self.runner == "local":
+            return not _process_group_alive(self.pid)
         if (self.path / "exit_code").exists():
             return True
-        if self.pid is None:
-            return False  # human-driven run: only `garden finish` completes it
         return not _pid_alive(self.pid)
 
     def read_exit_code(self) -> int | None:
@@ -177,7 +185,7 @@ class Run:
         # Never let a corrupt or synthetic run record terminate the process doing the reap.
         if self.pid == os.getpid():
             return
-        if self.pid and _pid_alive(self.pid):
+        if self.pid and (self.runner == "local" and _process_group_alive(self.pid) or _pid_alive(self.pid)):
             try:
                 os.killpg(self.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
@@ -197,11 +205,12 @@ class Run:
             return False  # No safely identifiable process to terminate.
         self.kill()
         deadline = time.monotonic() + timeout
+        alive = _process_group_alive if self.runner == "local" else _pid_alive
         while time.monotonic() < deadline:
-            if not _pid_alive(self.pid):
+            if not alive(self.pid):
                 return True
             time.sleep(0.05)
-        if self.pid and _pid_alive(self.pid):
+        if self.pid and alive(self.pid):
             try:
                 os.killpg(self.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -211,10 +220,10 @@ class Run:
                     pass
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if not _pid_alive(self.pid):
+            if not alive(self.pid):
                 return True
             time.sleep(0.05)
-        return not _pid_alive(self.pid)
+        return not alive(self.pid)
 
     def stdout_text(self) -> str:
         p = self.path / "stdout.json"
@@ -272,6 +281,29 @@ def _pid_alive(pid: int) -> bool:
         return state != "Z"
     except OSError:
         return True
+
+
+def _process_group_alive(pgid: int) -> bool:
+    """Whether any process remains in a local run's session/process group."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                fields = (entry / "stat").read_text().split(")", 1)[1].split()
+                if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
+                    return True
+            return False
+        except (OSError, ValueError):
+            pass
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:

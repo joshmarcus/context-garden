@@ -73,7 +73,7 @@ class EditsMixin:
         runner = self.runner_for(task, "local", harness_name)
         runner.config = {**runner.config, "setup": {}}  # a text edit needs no product env
         text = edit_brief(self.store, task, pending_suggestions(task.body))
-        run = self.runs.new_run(task.id, runner.name, mode="edit")
+        run = self._new_local_run(task.id, "edit", "edit")
         difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if difficulty not in DIFFICULTIES:
             difficulty = "medium"
