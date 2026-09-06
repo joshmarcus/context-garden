@@ -62,6 +62,12 @@ def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, mo
     assert "super-secret-value" not in rendered
     assert any("DEPLOY_TOKEN" in item and "configure by hand" in item for item in first.configure_by_hand)
     assert any("file not read" in item for item in first.configure_by_hand)
+    assert {
+        "package.json", "package-lock.json", "src/index.js", ".github/workflows/ci.yml",
+    }.issubset(first.read)
+    assert ".env" not in first.read
+    assert first.trusted_authors == ["maintainer"]
+    assert "platform" not in first.trusted_authors
 
 
 def test_discovery_uses_manifest_name_in_a_worktree_directory(tmp_path):
@@ -108,6 +114,9 @@ def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkey
     report = (garden / "sample-web" / "docs" / "onboarding.md").read_text()
     assert all(section in report for section in ("## Read", "## Inferences and provenance", "## Could not determine", "## Decisions to make"))
     assert "trusted author @maintainer from CODEOWNERS" in report
+    assert "trusted author @platform" not in report
+    assert "`.github/workflows/ci.yml`" in report
+    assert "`src/index.js`" in report
     assert "backlog item from `TODO.md`: Add structured logging" in report
     assert "backlog item from `src/index.js`: add a health endpoint" in report
     assert "project name `sample-web` from repository directory" in report

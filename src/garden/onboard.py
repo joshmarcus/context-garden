@@ -47,6 +47,12 @@ class ProjectDiscovery:
 _SECRET_FILES = {".env", ".env.local", ".env.production", ".npmrc", ".pypirc"}
 _SKIP_DIRS = {".git", ".garden", "node_modules", ".venv", "venv", "dist", "build", "target"}
 _DOC_NAMES = {"readme", "contributing", "architecture", "agents", "todo", "roadmap", "codeowners"}
+_SOURCE_EXTENSIONS = {".py", ".js", ".ts", ".go", ".rs", ".java", ".rb"}
+_ENVIRONMENT_FILES = {
+    "pyproject.toml", "uv.lock", "package.json", "package-lock.json", "go.mod", "go.sum",
+    "Cargo.toml", "Cargo.lock", "pom.xml", "Gemfile", "Gemfile.lock", "Makefile", "justfile",
+    "Taskfile.yml", "Taskfile.yaml", "Dockerfile", ".pre-commit-config.yaml",
+}
 
 
 def _text(path: Path, limit: int = 80_000) -> str:
@@ -257,6 +263,19 @@ def _project_name(repo: Path, rels: dict[str, Path]) -> tuple[str, str]:
     return repo.name, "repository directory"
 
 
+def _individual_codeowners(codeowners: str) -> list[str]:
+    """Return individual GitHub logins, never the owner portion of an org/team token."""
+    authors: set[str] = set()
+    for line in codeowners.splitlines():
+        for token in line.split("#", 1)[0].split()[1:]:
+            if not token.startswith("@") or "/" in token:
+                continue
+            login = token.removeprefix("@")
+            if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", login):
+                authors.add(login)
+    return sorted(authors)
+
+
 def discover_project(repo: Path) -> ProjectDiscovery:
     """Inspect a local checkout without network or model calls."""
     repo = repo.resolve()
@@ -307,20 +326,22 @@ def discover_project(repo: Path) -> ProjectDiscovery:
         if path.name in _SECRET_FILES or path.name.startswith(".env."):
             result.configure_by_hand.append(f"Secret file {rel} exists; configure its values by hand (file not read).")
 
-    source_exts = {".py", ".js", ".ts", ".go", ".rs", ".java", ".rb"}
     for path in files:
-        if path.suffix in source_exts:
+        if path.suffix in _SOURCE_EXTENSIONS:
+            result.read.append(path.relative_to(repo).as_posix())
             for match in re.finditer(r"\b(?:TODO|FIXME)(?:\(([^)]+)\))?[: ]+([^\n]+)", _text(path, 30_000)):
                 owner = f" ({match.group(1)})" if match.group(1) else ""
                 source = path.relative_to(repo).as_posix()
                 result.backlog.append((f"{match.group(2).strip()}{owner} — {source}", source))
 
-    ci_text = "\n".join(_text(p) for rel, p in rels.items() if rel.startswith(".github/workflows/"))
+    workflows = [p for rel, p in rels.items() if rel.startswith(".github/workflows/")]
+    result.read.extend(path.relative_to(repo).as_posix() for path in workflows)
+    ci_text = "\n".join(_text(path) for path in workflows)
     for env_name in sorted(set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", ci_text))):
         result.configure_by_hand.append(f"Environment variable {env_name} is referenced by CI; configure by hand.")
     codeowners = next((p for rel, p in rels.items() if p.name == "CODEOWNERS"), None)
     if codeowners:
-        result.trusted_authors = sorted(set(re.findall(r"(?<!\w)@([\w.-]+)", _text(codeowners))))
+        result.trusted_authors = _individual_codeowners(_text(codeowners))
     result.module_map = sorted(
         p.name + ("/" if p.is_dir() else "") for p in repo.iterdir()
         if p.name not in _SKIP_DIRS and not p.name.startswith(".")
@@ -332,7 +353,7 @@ def discover_project(repo: Path) -> ProjectDiscovery:
     ]
     environment_inputs = [
         rel for rel in rels
-        if rel in {"Makefile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Dockerfile", ".pre-commit-config.yaml"}
+        if rel in _ENVIRONMENT_FILES
         or rel.startswith(".devcontainer/")
     ]
     result.read.extend(environment_inputs)
