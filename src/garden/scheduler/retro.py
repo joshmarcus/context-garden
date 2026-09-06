@@ -584,6 +584,11 @@ class RetroMixin:
             "phase": phase.key, "verdict": verdict, "at": at, "next_phase": next_phase,
             "followup_ids": [f["task_id"] for f in followups if f.get("task_id")],
             "blocking_ids": [b["task_id"] for b in blocking if b.get("task_id")],
+            "brief_gaps": {
+                b["task_id"]: "; ".join(b["brief_gaps"])
+                for b in blocking
+                if b.get("task_id") and b.get("brief_gaps")
+            },
             "pr": pr_url, "note": "", "accepted_by": "", "accepted_at": "", "status": "recorded",
         }
         if verdict in ("close", "close_with_followups"):

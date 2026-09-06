@@ -230,6 +230,13 @@ def test_reopen_uses_the_approval_gate_and_tick_closes_after_the_last_blocker(tm
     sched = _run_retro(root, store, fake_github)
     complete, incomplete = sched.retro_verdict("gdn/p1")["blocking_ids"]
 
+    # The decision card identifies the incomplete blocker before anyone attempts to accept
+    # the verdict, so the operator knows which brief needs repair.
+    from garden.inbox import build_inbox
+
+    card = next(item for item in build_inbox(Store(root), sched) if item["group"] == "retro_verdict")
+    assert incomplete in card["why"] and "brief needed" in card["why"]
+
     result = _cli(root, "retro-decide", "gdn/p1", "reopen")
     assert result.exit_code == 0, result.output
     assert Store(root).task(complete).status.value == "ready"
@@ -240,7 +247,6 @@ def test_reopen_uses_the_approval_gate_and_tick_closes_after_the_last_blocker(tm
     verdict = Scheduler(Store(root), github=fake_github, log=print).retro_verdict("gdn/p1")
     assert verdict["status"] == "pending"
     assert incomplete in verdict["brief_gaps"]
-    from garden.inbox import build_inbox
 
     card = next(item for item in build_inbox(Store(root), Scheduler(Store(root), github=fake_github, log=print))
                 if item["group"] == "retro_verdict")
