@@ -377,7 +377,11 @@ def ask_once(call: Call) -> bool:
 def nothing_to_change(call: Call) -> bool:
     if not call.revise:
         return False
-    print(result_json('Nothing to change.\nGARDEN_RESULT: {"status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b"}', {}, 0.01))
+    result = {
+        "status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b",
+        "pre_flight": preflight_rows(),
+    }
+    print(result_json("Nothing to change.\nGARDEN_RESULT: " + json.dumps(result), {}, 0.01))
     return True
 
 
@@ -557,20 +561,24 @@ def commit_counter(call: Call) -> None:
     git_commit(f"fake change {n} ({tag})", call.cwd, call.env)
 
 
-def done_result(call: Call) -> dict:
+def preflight_rows() -> list[dict[str, str]]:
     pre_flight_items = [
         "A test or stated reason for every acceptance criterion", "Lint is clean",
         "No conflict markers remain", "UI changes have 1280px and 390px captures",
         "The PR description states the goal and outcome without process history",
         "Every acceptance criterion is addressed by name",
     ]
+    return [{"item": item, "status": "pass", "evidence": "fake check"} for item in pre_flight_items]
+
+
+def done_result(call: Call) -> dict:
     return {
         "status": "done",
         "summary": "revised per feedback" if call.revise else ("resumed and finished" if call.resumed else "implemented the thing"),
         "pr_title": "Fake: implemented the thing",
         "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
         "verified": verified_for(call),
-        "pre_flight": [{"item": item, "status": "pass", "evidence": "fake check"} for item in pre_flight_items],
+        "pre_flight": preflight_rows(),
         "notes": "",
     }
 
