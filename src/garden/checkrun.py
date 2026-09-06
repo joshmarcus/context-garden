@@ -81,6 +81,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_dir = Path(argv[0])
+    exit_code = 0
     try:
         payload = json.loads((run_dir / "checks_input.json").read_text())
         results = run_check_job(payload)
@@ -92,10 +93,11 @@ def main(argv: list[str] | None = None) -> int:
             "name": "checks",
             "status": "error",
             "summary": f"check runner crashed: {type(e).__name__}: {e}",
-            "details": traceback.format_exc(),
+            "details": f"{type(e).__name__}: {e}",
         }]
+        exit_code = 1
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

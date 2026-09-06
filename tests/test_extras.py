@@ -120,6 +120,21 @@ def test_check_failure_card_keeps_full_diagnostic(garden):
     assert view is not None
     assert "Traceback (most recent call last):" in "\n".join(view["evidence"])
     assert "RuntimeError: contention" in "\n".join(view["evidence"])
+def test_checkrun_main_writes_a_result_when_the_job_crashes(tmp_path, monkeypatch):
+    """A detached job exception remains actionable when its scheduler reaps the run."""
+    from garden import checkrun
+
+    (tmp_path / "checks_input.json").write_text("{}")
+
+    def crash(_payload):
+        raise RuntimeError("broken plugin")
+
+    monkeypatch.setattr(checkrun, "run_check_job", crash)
+    assert checkrun.main([str(tmp_path)]) == 1
+    assert json.loads((tmp_path / "checks.json").read_text()) == [{
+        "name": "checks", "status": "error", "summary": "check runner crashed",
+        "details": "RuntimeError: broken plugin",
+    }]
 
 
 def test_command_check_retry_command_comes_only_from_config(tmp_path):
