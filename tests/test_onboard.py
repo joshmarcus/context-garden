@@ -340,3 +340,20 @@ def test_init_scaffolds_onboard_skill(tmp_path):
     skill = tmp_path / ".claude" / "skills" / "garden-onboard" / "SKILL.md"
     assert skill.exists()
     assert "garden onboard <path-or-url>" in skill.read_text()
+
+
+def test_onboard_preserves_existing_trusted_authors(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["github"]["trusted_authors"] = ["existing-owner"]
+    config_path.write_text(yaml.safe_dump(config))
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    config = yaml.safe_load(config_path.read_text())
+    assert config["github"]["trusted_authors"] == ["existing-owner", "maintainer"]

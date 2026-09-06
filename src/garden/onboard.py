@@ -496,7 +496,8 @@ def onboard_project(
         ],
     }
     if info.trusted_authors:
-        config.setdefault("github", {})["trusted_authors"] = info.trusted_authors
+        github = config.setdefault("github", {})
+        github["trusted_authors"] = sorted(set(github.get("trusted_authors") or []) | set(info.trusted_authors))
     cfg_path.write_text(yaml.safe_dump(config, sort_keys=False))
     created.append(cfg_path)
 
