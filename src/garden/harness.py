@@ -8,6 +8,7 @@ and an output format. `claude` and `codex` are built in; override or add more un
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -337,6 +338,7 @@ class Harness:
             out["env_kind"] = "auth"
             if not out["error"]:
                 out["error"] = "not logged in"
+        out.pop("_parsed_agent_message", None)
         return out
 
     @staticmethod
@@ -345,13 +347,19 @@ class Harness:
         message is short and arrives on stderr or as the error text; a worker whose long
         report merely discusses a login outage is not a login failure (four persona reviews
         of phase 04 were discarded that way)."""
+        # A parsed result is evidence that the CLI completed a worker turn. Its error
+        # text can quote the marker as part of the worker's report, so it must take
+        # precedence over the generic error-text check below.
+        if out.get("result"):
+            return False
+        if out.get("_parsed_agent_message"):
+            return False
         err_text = f"{stderr} {out.get('error') or ''}".lower()
         if any(marker in err_text for marker in AUTH_FAILURE_MARKERS):
             return True
-        final = str(out.get("final_text") or "")
-        if len(final.strip()) >= 2000 or out.get("result"):
+        if len(stdout.strip()) >= 2000 or out.get("result") or re.search(r"\bGARDEN_[A-Z0-9_]+:", stdout):
             return False
-        blob = f"{final} {stdout}".lower()
+        blob = stdout.lower()
         return any(marker in blob for marker in AUTH_FAILURE_MARKERS)
 
 
@@ -459,6 +467,7 @@ def _parse_codex(stdout: str, out: dict[str, Any], prices: dict[str, Any] | None
             item = ev.get("item") or {}
             if item.get("type") == "agent_message" and item.get("text"):
                 last_msg = str(item["text"])
+                out["_parsed_agent_message"] = True
         elif t == "turn.completed":
             u = ev.get("usage") or {}
             out["usage"] = {
