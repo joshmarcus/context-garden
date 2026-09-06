@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 from garden.model import Status
+from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from tests import fake_claude
@@ -355,7 +356,10 @@ def test_manual_take_and_finish(sched, fake_github):
         f.write("hi\n")
     subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"], cwd=wt, check=True)
     subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "manual work"], cwd=wt, check=True)
-    sched.finish_manual(sched.store.task("DM-001"), {"status": "done", "summary": "by hand", "pr_title": "manual PR"})
+    sched.finish_manual(sched.store.task("DM-001"), {
+        "status": "done", "summary": "by hand", "pr_title": "manual PR",
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked by hand"} for item in PREFLIGHT_ITEMS],
+    })
     assert statuses(sched)["DM-001"] == "in_review"
     assert fake_github.created[-1]["title"] == "manual PR"
 
@@ -384,7 +388,10 @@ def test_manual_finish_without_worktree_still_dispatches_review(sched, fake_gith
     # the human already opened the PR on GitHub themselves
     pr = fake_github.create_pr("test/demo", branch, "main", "manual PR", "body")
 
-    sched.finish_manual(sched.store.task("DM-001"), {"status": "done", "summary": "by hand", "pr": pr.url})
+    sched.finish_manual(sched.store.task("DM-001"), {
+        "status": "done", "summary": "by hand", "pr": pr.url,
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked by hand"} for item in PREFLIGHT_ITEMS],
+    })
     assert statuses(sched)["DM-001"] == "in_review"
     st = sched.state.get("DM-001")
     assert st.get("review_run"), "the automated reviewer must still be dispatched"
