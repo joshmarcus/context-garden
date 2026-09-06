@@ -1,5 +1,6 @@
 """Trials, persona reviews, and token-free checks."""
 
+import json
 import os
 from pathlib import Path
 
@@ -54,6 +55,23 @@ def test_run_check_signalled_json_output_is_not_a_pass(tmp_path):
     killed = run_check({"name": "tests", "command": "printf '{\"status\":\"pass\",\"summary\":\"done\"}'; kill -TERM $$"}, {}, cwd=tmp_path)
     assert killed["status"] == "error" and "check did not finish" in killed["summary"]
     assert "SIGTERM" in killed["summary"]
+
+
+def test_checkrun_main_writes_a_result_when_the_job_crashes(tmp_path, monkeypatch):
+    """A detached job exception remains actionable when its scheduler reaps the run."""
+    from garden import checkrun
+
+    (tmp_path / "checks_input.json").write_text("{}")
+
+    def crash(_payload):
+        raise RuntimeError("broken plugin")
+
+    monkeypatch.setattr(checkrun, "run_check_job", crash)
+    assert checkrun.main([str(tmp_path)]) == 1
+    assert json.loads((tmp_path / "checks.json").read_text()) == [{
+        "name": "checks", "status": "error", "summary": "check runner crashed",
+        "details": "RuntimeError: broken plugin",
+    }]
 
 
 def test_command_check_retry_command_comes_only_from_config(tmp_path):
