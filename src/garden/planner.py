@@ -204,9 +204,10 @@ def import_plan(
                 t.log(f"supersedes references unknown task {sid!r}; ignored")
                 store.save(t)
             elif not sup.status.terminal:
-                sup.status = Status.CANCELLED
-                sup.log(f"superseded by {t.id}")
-                store.save(sup)
+                # The scheduler owns task state changes, including planner supersedes.
+                from .scheduler import Scheduler
+
+                Scheduler(store).cancel(sup, f"superseded by {t.id}")
     # fourth pass: promote draft -> ready through the same brief gate `approve` uses
     # (`brief_gaps`) when the caller asked for ready tasks; a generated brief with
     # placeholder acceptance criteria or a dangling reading path is left a draft instead of
@@ -217,8 +218,10 @@ def import_plan(
             if gaps:
                 t.log("left as draft; incomplete brief: " + "; ".join(gaps))
             else:
-                t.status = Status.READY
-                t.log("approved (planner)")
+                # The scheduler owns task status changes, including planner approval.
+                from .scheduler import Scheduler
+
+                Scheduler(store)._transition(t, Status.READY, "approved (planner)")
             store.save(t)
     store.invalidate()
     return created

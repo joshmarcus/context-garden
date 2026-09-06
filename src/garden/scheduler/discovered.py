@@ -140,7 +140,7 @@ class DiscoveredMixin:
             # so it shows up in the approve queue with the gap flagged, same as any other draft.
             gaps = brief_gaps(self.store, t) if want_ready else []
             if gaps:
-                t.status = Status.DRAFT
+                self._transition(t, Status.DRAFT, "held as draft: incomplete brief")
             note = f"discovered by {task.id}"
             if deferred:
                 note += "; deferred by the freeze"

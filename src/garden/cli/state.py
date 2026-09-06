@@ -119,9 +119,11 @@ def set_status(task_id: str, new_status: str, note: str = typer.Option("", help=
         _scheduler(store).mark_wont_do(t, reason=reason or note)
         console.print(f"{t.id} -> wont_do")
         return
-    t.status = s
-    t.log(note or f"status forced to {s.value}")
-    store.save(t)
+    sched = _scheduler(store)
+    if s == Status.DONE:
+        sched.mark_done(t, note or "status forced to done", force=force)
+    else:
+        sched._transition(t, s, note or f"status forced to {s.value}")
     console.print(f"{t.id} -> {s.value}")
 
 

@@ -26,7 +26,7 @@ def run(garden, *args):
 
 def finish_all(garden):
     for tid in ("DM-001", "DM-002"):
-        assert run(garden, "set-status", tid, "done").exit_code == 0
+        assert run(garden, "set-status", tid, "done", "--force").exit_code == 0
 
 
 def test_close_phase_refuses_open_tasks_and_force_overrides(garden):

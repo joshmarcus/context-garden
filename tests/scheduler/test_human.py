@@ -110,6 +110,20 @@ def test_wont_do_clears_needs_human_and_automerge_blocked(sched, fake_github):
     assert not st.get("automerge_blocked")
 
 
+def test_mark_done_requires_pr_commits_on_the_base_unless_forced(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    sched.store.save(task)
+    monkeypatch.setattr(sched, "_pr_commits_on_base", lambda _: False)
+
+    with pytest.raises(RuntimeError, match="commits are not on its base branch"):
+        sched.mark_done(task)
+    assert statuses(sched)["DM-001"] == "ready"
+
+    sched.mark_done(task, force=True)
+    assert statuses(sched)["DM-001"] == "done"
+
+
 def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):
     """CG-195: a task that reached done/cancelled/wont_do before `_transition` cleared these
     fields (or through a path that bypassed it, e.g. a hand-edited state.json) must not keep

@@ -87,6 +87,28 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
+def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
+    from garden.model import Status
+    from garden.store import Store
+
+    task = Store(garden).task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    Store(garden).save(task)
+    c = client(garden)
+    task_page = c.get("/tasks/DM-001").text
+    inbox = c.get("/").text
+
+    assert "Mark done without merging" in task_page
+    assert "Mark this task done without merging its PR?" in task_page
+    assert 'action="/tasks/DM-001/done"' in inbox
+    assert "Mark done without merging" in inbox
+    assert "Mark this task done without merging its PR?" in inbox
+    primary_actions, escape_hatch = inbox.split('class="escape-hatch"')
+    assert 'action="/tasks/DM-001/done"' not in primary_actions
+    assert 'action="/tasks/DM-001/done"' in escape_hatch
+
+
 def test_task_page_lists_stashed_changes(garden):
     """CG-198: the named stash a dispatch set aside on a dirty worktree is listed on the task
     page so a person can recover it."""
