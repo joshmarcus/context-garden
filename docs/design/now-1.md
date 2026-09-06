@@ -542,7 +542,7 @@ Every state, where it shows, and what a person sees:
 | longer than usual | the clock reads on, the dashed line grows past the end mark, `· longer than usual` after the typical, no colour | | | |
 | stream down | the region head says `connection lost · retrying`; clocks keep ticking | as last fetched | as last fetched | as last fetched |
 | no open phase | | | the herbarium row and `no open phase: garden new-phase starts the next` | window falls back to `last 24 hours` |
-| no runs in the window | | | | `No runs finished in this window.` with the window links |
+| nothing recorded in the window | | | | `Nothing recorded in this window: no run finished, no merge, no hand step, no ledger entry.` with the window links. A window with only the operator's ledger entries, a hand step or a profile change is not empty: the figures show the operator's spend as the whole cost, `no run finished` under it, and the By hand block and its marks as usual |
 
 The empty states are drawn, not blank: the empty mount sheet uses the same `.specimen`
 with its tape and a typed label, so a quiet garden still looks like the herbarium.

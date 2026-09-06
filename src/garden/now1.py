@@ -518,20 +518,29 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     series = cost_series(events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
     buckets = [b["bucket"] for b in series.get("buckets") or []]
     per_bucket = Counter(bucket_key(e["at"], bucket) for e in finished)
+    hand_steps = [e for e in window if e.get("kind") in HAND_KINDS]
+    annotations = [e for e in window if e.get("kind") in ("profile_changed", "config_reloaded")]
+    # The window is quiet only when nothing at all was recorded in it. A window with only the
+    # operator's ledger entries, a hand step or a profile change still shows its figures, so
+    # the operator's spend and share are never hidden behind "no runs".
+    quiet = not (finished or done_at or op_window or hand_steps or annotations)
     return {
-        "since": since, "bucket": bucket, "merged": len(done_at), "merged_ids": sorted(done_at),
+        "since": since, "bucket": bucket, "quiet": quiet, "merged": len(done_at), "merged_ids": sorted(done_at),
         "first_pass": {"approved": approved, "reviewed": len(reviewed)},
         "cost": round(cost, 2), "per_accepted": round(accepted_cost / len(done_at), 2) if done_at else None,
-        "runs": len(finished), "hand_steps": sum(1 for e in window if e.get("kind") in HAND_KINDS),
-        "hand_kinds": dict(Counter(e["kind"] for e in window if e.get("kind") in HAND_KINDS)),
+        "runs": len(finished), "hand_steps": len(hand_steps),
+        "hand_kinds": dict(Counter(e["kind"] for e in hand_steps)),
         "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
         "rebase": rebase_rounds(window, tasks), "operator": operator_share(op_window, cost),
         "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
         "annotations": [{"at": e["at"], "from": e.get("from") or "", "to": e.get("to") or "", "kind": e["kind"], "changed": e.get("keys") or []}
-                        for e in window if e.get("kind") in ("profile_changed", "config_reloaded")],
+                        for e in annotations],
     }
+
+
+QUIET_PERIOD = "Nothing recorded in this window: no run finished, no merge, no hand step, no ledger entry."
 
 
 # ---- the snapshot ---------------------------------------------------------------------
@@ -697,13 +706,14 @@ def render_text(snap: dict[str, Any]) -> str:
     w = snap["period"]
     label = dict(WINDOWS).get(snap["window"], snap["window"])
     out.append(f"THE LAST PERIOD  {label} (since {w['since'][:16]}Z)")
-    if not (w["runs"] or w["merged"]):
-        out.append("  No runs finished in this window.")
+    if w["quiet"]:
+        out.append(f"  {QUIET_PERIOD}")
         return "\n".join(out) + "\n"
     fp = w["first_pass"]
     first = f"{round(100 * fp['approved'] / fp['reviewed'])} % ({fp['approved']} of {fp['reviewed']})" if fp["reviewed"] else "—"
     out.append(f"  merged {w['merged']}" + (f" ({', '.join(w['merged_ids'][:4])}{' and more' if len(w['merged_ids']) > 4 else ''})" if w["merged_ids"] else ""))
-    out.append(f"  first-pass approval {first} · cost {money(w['cost'])} over {w['runs']} runs · per accepted task {money(w['per_accepted'])}")
+    over = f"over {w['runs']} runs" if w["runs"] else "with no run finished"
+    out.append(f"  first-pass approval {first} · cost {money(w['cost'])} {over} · per accepted task {money(w['per_accepted'])}")
     out += [f"  {line}" for line in hand_lines(w)]
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))

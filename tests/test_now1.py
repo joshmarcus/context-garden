@@ -283,7 +283,7 @@ def test_now1_page_renders_the_four_regions_and_the_nav(garden):
     assert '<a class="lt" href="/tasks/DM-001">First task</a>' in page
     assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
     assert "p1, seed" in page and "0 of 2 merged" in page
-    assert "No runs finished in this window." in page
+    assert now1.QUIET_PERIOD in page
     for region in ("head", "now", "next", "where", "period"):
         assert _client(garden).get(f"/partials/now1/{region}").status_code == 200
     assert _client(garden).get("/partials/now1/nope").status_code == 404
@@ -537,6 +537,44 @@ def test_last_period_says_when_no_hand_merge_and_no_ledger_entry(garden):
     assert now1.hand_lines(p)[0] == "hand merges 0 of 1" and now1.hand_lines(p)[-1] == "operator: no ledger entry in this window"
 
 
+def test_last_period_is_quiet_only_when_nothing_at_all_was_recorded(garden):
+    """A window with no run and no merge still shows its figures when the operator's ledger,
+    a hand step or a profile change recorded something in it: the operator's spend is the
+    whole cost and its share reads 100 %, on the page and in text. Only a window with nothing
+    recorded at all is the empty state."""
+    store = Store(garden)
+    since = "2026-09-06T00:00:00+00:00"
+    at = "2026-09-06T00:30:00+00:00"
+    assert now1.period([], [], store.tasks(), since, "hour")["quiet"] is True
+    only_operator = now1.period([], [{"kind": "cost", "at": at, "cost_usd": 2.5, "session": "sess-a", "activity": "operator"}],
+                                store.tasks(), since, "hour")
+    assert only_operator["quiet"] is False and only_operator["runs"] == 0 and only_operator["cost"] == 2.5
+    assert only_operator["operator"] == {"spend": 2.5, "share": 1.0, "sessions": 1}
+    assert now1.hand_lines(only_operator)[-1] == "operator $2.50 · 100 % of the window's spend"
+    only_change = now1.period([{"kind": "profile_changed", "at": at, "from": "steady", "to": "fast"}], [], store.tasks(), since, "hour")
+    assert only_change["quiet"] is False and only_change["annotations"][0]["to"] == "fast"
+    only_hand = now1.period([{"kind": "answer", "task": "DM-001", "at": at}], [], store.tasks(), since, "hour")
+    assert only_hand["quiet"] is False and only_hand["hand_kinds"] == {"answer": 1}
+
+    # the live page and garden now, over the last hour: a ledger entry and a profile change, no run
+    now = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
+    log = EventLog(store.config.garden_dir / "events.jsonl")
+    log.emit("profile_changed", "", **{"from": "steady", "to": "fast"})
+    log.path.write_text(json.dumps({**json.loads(log.path.read_text()), "at": now}) + "\n")
+    ledger = garden / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"at": now, "session": "sess-a", "list_price_usd": 2.5, "turns": 3, "avg_context": 100}) + "\n")
+    page = _client(garden).get("/now1?window=hour").text
+    assert now1.QUIET_PERIOD not in page
+    assert '<div class="v">$2.50<small>no run finished</small></div><div class="l">cost</div>' in page
+    assert '<b>$2.50 <span class="unit">· 100 % of the window\'s spend</span></b><small>1 session in the ledger' in page
+    assert "profile changed: steady → fast" in page and 'class="annotation"' in page
+    assert "No model did work in this window." in page
+    text = now1.render_text(now1.snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda m: None)))
+    assert "  merged 0\n  first-pass approval — · cost $2.50 with no run finished · per accepted task —\n" in text
+    assert "  operator $2.50 · 100 % of the window's spend\n" in text and "profile changed: steady → fast" in text
+
+
 # ---- the stream ------------------------------------------------------------------------
 
 def _sse(text: str) -> list[tuple[str, dict]]:
@@ -632,7 +670,7 @@ def test_garden_now_prints_the_four_regions(garden):
         assert head in r.output
     assert "DM-001   work     claude sonnet" in r.output
     assert "1. DM-001" in r.output and "priority 1 · work · medium → claude sonnet" in r.output  # DM-002 waits on it
-    assert "No runs finished in this window." in r.output
+    assert now1.QUIET_PERIOD in r.output
 
 
 def test_garden_now_page_2_says_so_when_now_2_is_not_built(garden):

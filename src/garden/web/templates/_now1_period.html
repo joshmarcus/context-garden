@@ -5,11 +5,14 @@
 <div id="period-body">
   <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
     <span class="right filters" style="margin-bottom:0">{% for key, label in snap.windows %}<a href="/now1?window={{ key }}#period" class="{{ 'on' if key == snap.window }}">{{ label }}</a>{% endfor %}</span></div>
-  {% if w.runs or w.merged %}
+  {#- The window is quiet only when nothing at all was recorded in it (`period` decides): a
+      window with only the operator's ledger entries or a profile change still shows its
+      figures, so the operator's spend and share are never hidden behind "no runs". -#}
+  {% if not w.quiet %}
   <div class="figures">
     <div class="fig"><div class="v">{{ w.merged }}</div><div class="l">merged{% if w.merged_ids %} · {{ w.merged_ids[:4] | join(', ') }}{% if w.merged_ids | length > 4 %} and {{ w.merged_ids | length - 4 }} more{% endif %}{% endif %}</div></div>
     <div class="fig"><div class="v">{% if w.first_pass.reviewed %}{{ (100 * w.first_pass.approved / w.first_pass.reviewed) | round | int }} %<small>{{ w.first_pass.approved }} of {{ w.first_pass.reviewed }}</small>{% else %}—{% endif %}</div><div class="l">first-pass approval</div></div>
-    <div class="fig"><div class="v">${{ '%.2f' % w.cost }}<small>{{ w.runs }} runs {% if w.throughput | length > 1 %}{{ f.spark(w.throughput) }}{% endif %}</small></div><div class="l">cost{% if w.throughput | length > 1 %} · runs finished per {{ w.bucket }}{% endif %}</div></div>
+    <div class="fig"><div class="v">${{ '%.2f' % w.cost }}<small>{% if w.runs %}{{ w.runs }} run{{ 's' if w.runs != 1 }} {% if w.throughput | length > 1 %}{{ f.spark(w.throughput) }}{% endif %}{% else %}no run finished{% endif %}</small></div><div class="l">cost{% if w.runs and w.throughput | length > 1 %} · runs finished per {{ w.bucket }}{% endif %}</div></div>
     <div class="fig"><div class="v">{{ f.money(w.per_accepted) }}</div><div class="l">per accepted task</div></div>
   </div>
   <div class="period-grid">
@@ -48,5 +51,5 @@
     </div>
     {% else %}<p class="lead">No model did work in this window.</p>{% endif %}
   </div>
-  {% else %}<div class="empty">No runs finished in this window.</div>{% endif %}
+  {% else %}<div class="empty">{{ f.quiet_period }}</div>{% endif %}
 </div>
