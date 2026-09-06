@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from garden.store import Store
@@ -770,6 +772,43 @@ def test_inbox_shows_a_paused_harness_notice(garden):
     c = client(garden)
     home = c.get("/").text
     assert "Harness paused" in home and "claude" in home and "quota limit hit on claude" in home
+
+
+def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden):
+    """A long run id must not squeeze the decision text under an action column."""
+    from garden.model import Status
+    from garden.runs import RunStore
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.FAILED
+    task.pr = "https://github.com/test/demo/pull/312"
+    task.body += "\n## Log\n\n- the worker failed after a long reason about the configuration reload\n"
+    store.save(task)
+    run = RunStore(store.config.garden_dir).new_run(
+        task.id, "local", run_id="20260906T010102Z-revise-with-an-unusually-long-suffix"
+    )
+    run.status = "failed"
+    run.error = "The configuration change could not be trusted until the active worker finishes."
+    run.save()
+
+    inbox = client(garden).get("/").text
+    card = inbox[inbox.index('<div class="item'):inbox.index("</section>", inbox.index('<div class="item'))]
+    assert run.run_id in card and "Continue the loop" in card and "Open PR" in card
+    assert card.index('class="what decision-content"') < card.index('class="decision-evidence"')
+    assert card.index('class="decision-evidence"') < card.index('class="card-actions decision-actions"')
+    assert 'class="decision-action"' in card
+
+    task_page = client(garden).get("/tasks/DM-001").text
+    assert 'class="panel decision-card"' in task_page
+    assert 'class="decision-evidence"' in task_page
+    assert 'class="decision-actions"' in task_page
+
+    base = (Path(__file__).parents[1] / "src/garden/web/templates/base.html").read_text()
+    decision_layout = base[base.index(".decision-card"):base.index("/* ---- trellis")]
+    assert "position:absolute" not in decision_layout
+    assert "grid-template-columns:34px minmax(0,1fr)" in base
+    assert "@media (max-width:600px)" in base
 
 
 def test_stdout_partial(garden):
