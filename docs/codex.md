@@ -110,6 +110,36 @@ its own checkout. Preserve its machine overlays and any intentional dispatch pau
 
 ## From context to reviewed code
 
+### Keeping a local operator machine responsive
+
+Put machine-specific limits in the gitignored `garden.local.yaml`. This conservative
+profile is suitable for an 8 GiB WSL instance whose `/tmp` is a 3 GiB tmpfs:
+
+```yaml
+max_parallel: 1
+review_parallel: 1
+resources:
+  max_parallel: 2               # all local workers, reviews, personas and checks together
+  min_memory_available_mb: 1536 # defer new processes below this headroom
+  min_temp_free_mb: 1024        # measured on work_dir/tmp, not the system /tmp
+```
+
+All scheduler and direct CLI launches consult the same run records and limits, so
+`garden dispatch` and `garden review` cannot create extra local concurrency outside the
+served loop. A pressure stop never kills or fails existing work: reaping continues, new
+local launches wait, and admission resumes when a run finishes or headroom returns. The
+web rail and `garden observe` show the effective local limit, the measured pressure and
+the recovery action. `garden pause --reason "resource pressure"` is available when an
+operator also wants to hold ordinary dispatch while the current work drains.
+
+Per-run temporary directories live below `work_dir/tmp`, receive both `TMPDIR` and
+`PYTEST_DEBUG_TEMPROOT`, and are removed only after their run record is terminal. Keep
+`work_dir` on disk rather than tmpfs. Process-level CPU and memory ceilings remain an OS
+responsibility; when running `garden serve` as a user service, use persistent systemd
+settings such as `CPUQuota=200%`, `CPUWeight=20`, `MemoryHigh=3G`, `MemoryMax=4G` and
+`MemorySwapMax=512M`. The garden admission gate is still required because it covers
+direct CLI launches and automatic base probes that a service-only process count misses.
+
 1. Create a product and phase with `garden new-product widget --repo ../widget` and
    `garden new-phase widget phase-01`.
 2. Write the principles digest, product overview (including test commands), phase
