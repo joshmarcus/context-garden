@@ -690,7 +690,7 @@ def test_walkthrough_captures_now1(garden):
 
     store = Store(garden)
     ph = store.phase("demo", "p1")
-    assert "/now1" in [p.url for p in pages_for(store, ph)]
+    assert [p.url for p in pages_for(store, ph)][:3] == ["/now2", "/", "/now1"]
     out = Path(garden) / "cap"
     result = capture(store, ph, out, screenshots=False)
     now_page = next(pr for pr in result.pages if pr.spec.slug == "now1")
