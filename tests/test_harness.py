@@ -315,6 +315,27 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
     assert done["env_error"] is False
 
 
+def test_quota_pattern_quoted_in_a_long_transcript_is_not_a_quota_error():
+    """A worker that reads harness.py prints the quota pattern into its transcript; that is
+    not a limit. The pattern counts in the error text, on stderr, or as a short output with
+    no result block (the CLI's own message)."""
+    h = Harness("claude", {"output_format": "stream-json"})
+    quoted = '"quota_patterns": ["you\'ve hit your monthly spend limit"],'
+    lines = "\n".join([
+        json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": [{"type": "text", "text": quoted}]}]}}),
+        json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                    "result": ("Read the harness module and its patterns. " * 60) + '\nGARDEN_RESULT: {"status": "done", "summary": "s"}',
+                    "usage": {"input_tokens": 1}, "total_cost_usd": 0.3}),
+    ])
+    out = h.parse(lines)
+    assert out["env_error"] is False and out["env_kind"] == "" and out["result"]["status"] == "done"
+
+    real = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                       "result": "You've hit your monthly spend limit.", "usage": {}, "total_cost_usd": 0.0})
+    assert h.parse(real)["env_kind"] == "quota"
+    assert h.parse("", "You've hit your monthly spend limit\n")["env_kind"] == "quota"
+
+
 def test_login_probe_and_check_login():
     h = Harness("claude", {"bin": "/x/claude"})
     cmd, stdin_text = h.login_probe()
