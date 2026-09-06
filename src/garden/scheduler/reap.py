@@ -259,7 +259,7 @@ class ReapMixin:
         run.save()
         self._apply_criteria_amendments(task, run, result)
         if not resumed:
-            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
+            self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model, pool_member=run.pool_member,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
                              cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
 

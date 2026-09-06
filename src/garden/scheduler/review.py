@@ -188,13 +188,19 @@ class ReviewMixin:
             if runner_name == "local" and self.local_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            if self.is_harness_paused(harness_name):
+            tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+            member = self.select_pool_member(task, tier, review=True)
+            review_harness = (member or {}).get("harness") or harness_name
+            if self.pool_members(tier, review=True) and member is None:
+                deferred.append(item)
+                continue
+            if self.is_harness_paused(review_harness):
                 deferred.append(item)
                 continue
             kind = item["kind"]
             try:
                 if kind == "review":
-                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
+                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)), member=member)
                     if run.mode == "review":
                         rep.dispatched.append(f"{task.id}(review)")
                         self.log(f"{task.id}: review run {run.run_id} started")
@@ -544,10 +550,18 @@ class ReviewMixin:
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
                         reask_missing_fixes: bool = False,
                         clarify_unverified: list[str] | None = None,
-                        clarifies_review_run: str = "") -> Run:
+                        clarifies_review_run: str = "",
+                        member: dict[str, Any] | None = None) -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
+        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
+        if self.pool_members(review_tier, review=True) and member is None:
+            raise RuntimeError("every review pool member is paused")
+        if member is not None:
+            harness_name = str(member.get("harness") or "")
+            ladder_model = None
         runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
         runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
@@ -788,10 +802,15 @@ class ReviewMixin:
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
+        run.harness = runner.harness.name if runner.harness else ""
         run.model = self.model_for(task, runner, review_difficulty)
         if ladder_model:
             run.model = ladder_model
+        elif member is not None and "model" in member:
+            run.model = str(member["model"])
+        run.pool_member = str((member or {}).get("label") or "")
         elif runner.harness and runner.harness.cfg.get("review_model"):
+            run.model = str(runner.harness.cfg["review_model"])
             run.model = str(runner.harness.cfg["review_model"])
         if ladder_model and writer:
             run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
@@ -814,7 +833,8 @@ class ReviewMixin:
         if ladder_model and writer:
             task.log(f"reviewed by {run.model}, one above {writer.model}")
             self.store.save(task)
-        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
+        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness,
+                         pool_member=run.pool_member)
         self.state.save()
         return run
 
