@@ -20,11 +20,11 @@ from typing import Any
 from .model import Task
 
 # The fixed activity vocabulary the costs chart names in order (CG-214): every other mode
-# a run can carry (resume, trial, compare, edit, and any future one) folds into "other"
+# a run can carry (trial, compare, edit, and any future one) folds into "other"
 # rather than growing the chart's own categorical order. "operator" (CG-223) is not a
 # scheduler run mode: it is synthesized from docs/operator-spend.jsonl by
 # `operator_spend.to_cost_events` before the events reach `cost_series`.
-ACTIVITIES = ("work", "revise", "rebase", "review", "persona", "retro", "check", "operator")
+ACTIVITIES = ("work", "resume", "revise", "rebase", "review", "persona", "retro", "check", "operator")
 GROUP_BY_CHOICES = ("activity", "difficulty", "model", "harness", "phase", "task", "session")
 BUCKET_CHOICES = ("hour", "day")
 

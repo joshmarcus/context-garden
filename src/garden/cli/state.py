@@ -22,7 +22,7 @@ from .common import (
 
 
 # --------------------------------------------------------------------------- move
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def move(task_id: str, target: str = typer.Argument(..., help="product/phase")):
     """Move a task to another phase of the same product, keeping its id, history and state."""
     store = _store()
