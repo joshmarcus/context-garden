@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,16 @@ def register(app: FastAPI, site: Site) -> None:
         run = next((r for r in RunStore(hub.store.config.garden_dir).all_runs() if r.run_id == run_id), None)
         if run is None or run.runner != "remote":
             raise HTTPException(404, "remote run not found")
+        return run
+
+    def claimed_run(run_id: str, host: dict[str, Any], lease_token: str):
+        run = run_for(run_id)
+        if run.host != host.get("name"):
+            raise HTTPException(409, "run is leased to another host")
+        if not lease_token or not secrets.compare_digest(run.lease_token, lease_token):
+            raise HTTPException(409, "run lease has been replaced")
+        if not leased(run):
+            raise HTTPException(409, "run lease has expired")
         return run
 
     @app.get("/api/tasks")
@@ -93,6 +104,7 @@ def register(app: FastAPI, site: Site) -> None:
                 run.host = str(body["host"])
                 run.claimed_at = now.isoformat()
                 run.lease_expires_at = (now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
+                run.lease_token = secrets.token_urlsafe(32)
                 run.save()
                 task = hub.fresh().task(run.task_id)
                 harness = hub.store.config.harness(run.harness) if run.harness else None
@@ -109,6 +121,7 @@ def register(app: FastAPI, site: Site) -> None:
                         pass
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
+                    "lease_token": run.lease_token,
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "repo": repo_value,
@@ -124,17 +137,29 @@ def register(app: FastAPI, site: Site) -> None:
                 if checks.exists():
                     check_payload = json.loads(checks.read_text())
                     # Host-local paths and the scheduler config never cross the boundary.
-                    payload["checks"] = {k: v for k, v in check_payload.items() if k in {"specs", "timeout", "extra"}}
+                    ctx = dict(check_payload.get("ctx") or {})
+                    # Scheduler-local checkout paths have no meaning on an independent host.
+                    # The worker replaces these two with its clone; all other context (PR,
+                    # branch, head and failed checks) is required by check plugins.
+                    ctx.pop("exec_root", None)
+                    ctx.pop("worktree", None)
+                    payload["checks"] = {
+                        "specs": list(check_payload.get("specs") or []),
+                        "ctx": ctx,
+                        "timeout": int(check_payload.get("timeout") or 600),
+                        "config": {"worker_env": {
+                            "pass": list(((check_payload.get("config") or {}).get("worker_env") or {}).get("pass") or [])
+                        }},
+                        **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
+                    }
                 return JSONResponse(payload)
         return JSONResponse({}, status_code=204)
 
     @app.post("/api/runs/{run_id}/heartbeat")
     async def heartbeat(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
-        run = run_for(run_id)
-        if run.host != host.get("name"):
-            raise HTTPException(409, "run is leased to another host")
         body = await request.json()
+        run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
         chunk = str(body.get("transcript") or "")
         if chunk:
             with (run.path / "stdout.json").open("a") as f:
@@ -146,10 +171,8 @@ def register(app: FastAPI, site: Site) -> None:
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
-        run = run_for(run_id)
-        if run.host != host.get("name"):
-            raise HTTPException(409, "run is leased to another host")
         body = await request.json()
+        run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
         run.pushed_head = str(body.get("pushed_head") or "")
         final = str(body.get("final_text") or "")
         (run.path / "final.md").write_text(final)

@@ -76,29 +76,41 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient) -> None
         subprocess.run(str(setup["command"]), shell=True, cwd=repo, env=env,
                        timeout=int(setup.get("timeout_seconds") or 600), check=True)
     if run.get("mode") == "check":
-        from .checks import run_checks
+        from .checkrun import run_check_job
 
         check_data = dict(run.get("checks") or {})
-        results = run_checks(list(check_data.get("specs") or []), {"cwd": str(repo)}, cwd=repo,
-                             timeout=int(check_data.get("timeout") or 600))
+        ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
+        results = run_check_job({**check_data, "ctx": ctx, "cwd": str(repo), "setup": setup})
         final, parsed, usage, cost, error, rc = "", {"checks": results}, {}, 0.0, "", 0
     else:
         harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
         final_path = repo.parent / f"{run['id']}-final.md"
         argv = harness.command(str(run.get("model") or ""), final_path,
                                difficulty=str(run.get("difficulty") or "medium"), worktree=repo)
-        with tempfile.TemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
+        with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
                                     text=True, cwd=repo, env=env)
             assert proc.stdin is not None
             proc.stdin.write(str(run.get("brief") or ""))
             proc.stdin.close()
+            transcript_offset = 0
             while proc.poll() is None:
                 time.sleep(10)
-                client.post(f"/api/runs/{run['id']}/heartbeat", {})
+                stdout_file.flush()
+                with open(stdout_file.name) as transcript_file:
+                    transcript_file.seek(transcript_offset)
+                    chunk = transcript_file.read()
+                    transcript_offset = transcript_file.tell()
+                client.post(f"/api/runs/{run['id']}/heartbeat",
+                            {"lease_token": run["lease_token"], "transcript": chunk})
+            stdout_file.flush()
             stdout_file.seek(0)
             stderr_file.seek(0)
             stdout, stderr = stdout_file.read(), stderr_file.read()
+            tail = stdout[transcript_offset:]
+            if tail:
+                client.post(f"/api/runs/{run['id']}/heartbeat",
+                            {"lease_token": run["lease_token"], "transcript": tail})
         collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
         final = str(collected.get("final_text") or "")
         parsed = collected.get("result") or parse_result(final) or {}
@@ -108,7 +120,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient) -> None
         subprocess.run(["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost", "commit", "-m", f"{run['task_id']}: remote worker changes"], cwd=repo, check=False)
     subprocess.run(["git", "push", "--force-with-lease", "-u", "origin", f"HEAD:{branch}"], cwd=repo, check=rc == 0)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
-    client.post(f"/api/runs/{run['id']}/finish", {"exit_code": rc, "final_text": final, "result": parsed,
+    client.post(f"/api/runs/{run['id']}/finish", {"lease_token": run["lease_token"],
+                "exit_code": rc, "final_text": final, "result": parsed,
                 "usage": usage, "cost_usd": cost, "error": error, "pushed_head": head})
 
 
