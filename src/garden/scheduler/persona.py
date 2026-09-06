@@ -68,7 +68,8 @@ class PersonaMixin:
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
-                            required_evidence: bool = False) -> Run:
+                            required_evidence: bool = False,
+                            member: dict[str, Any] | None = None) -> Run:
         ensure_open(task)
         valid_name(name)
         if not task.pr and not task.branch:
@@ -106,8 +107,10 @@ class PersonaMixin:
                         int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes,
                                                          "required_evidence": required_evidence},
-                                 harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
-                                 prepared_run=run)
+                                 harness_name=str((member or {}).get("harness") or self.cfg.get("review.harness") or ""),
+                                 difficulty=str(self.effective("retro.difficulty") or "hard"),
+                                 model_override=(member["model"] if member is not None and "model" in member else None),
+                                 pool_member=str((member or {}).get("label") or ""), prepared_run=run)
 
     def _finding_target_phase(self, phase: Phase) -> Phase:
         """Where a persona finding is filed: the reviewed phase, unless it is frozen or closed
