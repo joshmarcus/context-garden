@@ -586,16 +586,17 @@ and one line per review-waiting gate, so every state is on one screen.
 ### Captures
 
 The mock was captured with the Edge recipe from the product overview (headless Edge on
-Windows, reading the file from the Windows temp folder with the plates beside it) and each
-capture was read back before the design was called done:
+Windows, reading the file from the Windows temp folder with the plates beside it), each
+capture was read back before the design was called done, and the captures are committed
+under `docs/design/captures/`:
 
 | capture | what it is | what it showed |
 |---|---|---|
 | `now1-1280-light.png`, `now1-1280-dark.png` | the page at 1280, last hour, both palettes | the hierarchy holds: strips, then Next beside the sheet, then the ledger; the dark palette keeps the plate on paper and the tables legible |
-| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe wrapper (`phone-*.html`), because a desktop Edge window will not open narrower than about 500 and quietly lays out wider than it captures; the recipe's plain 390 window cut the right edge of every line | one column, the rail folded to wordmark and nav, strips on four lines, the sheet's label under the plant, the figures two by two |
-| `now1-1280-24h-light.png`, `now1-1280-24h-dark.png`, `tables-24h-*.png` (a crop through an offset iframe) | the 24-hour window, where the tables have rows with two or more solid cells | the green-to-red grounds, the ▲ ▽ marks and the faint `~n 1` cells read in both palettes; the seven-model rows overflowed the two-abreast layout, which is why more than five models now stack the tables full width |
-| `phone-tables-light.png`, `phone-tables-dark.png` | the tables at 390 | each table scrolls sideways inside its box; the first four columns and the marks are readable without scrolling |
-| `now1-1280-gallery-light.png` | the states gallery | every strip state, the two empty sheets and the seven waiting-reason lines on one screen |
+| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe in a 500-wide window (the grey band on the right is the frame's margin), because a desktop Edge window will not open narrower than about 500 and quietly lays out wider than it captures; the recipe's plain 390 window cut the right edge of every line | one column, the rail folded to wordmark and nav, strips on four lines with the title first, the sheet's label under the plant, the figures two by two |
+| `now1-1280-24h-light.png`, `now1-1280-24h-dark.png` | the 24-hour window, where the tables have rows with two or more solid cells | the green-to-red grounds, the ▲ ▽ marks and the faint `~n 1` cells read in both palettes; the seven-model rows overflowed the two-abreast layout, which is why more than five models now stack the tables full width |
+| `now1-390-tables-light.png`, `now1-390-tables-dark.png` | the ledger's tables at 390 (the same frame, scrolled to the tables) | each table scrolls sideways inside its box; the first four columns, the captions and the marks are readable without scrolling |
+| `now1-1280-gallery-light.png` | the states gallery | every strip state, the two empty sheets, the paused header, the seven waiting-reason lines and the no-runs ledger on one screen |
 
 Three earlier findings from the captures are already in the design: the Next list needs
 the title on its own row, or the harness column squeezes every title into four lines; run
