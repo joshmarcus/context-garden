@@ -7,306 +7,6 @@
   },
   "events": [
     {
-      "at": "2026-09-05T20:34:49+00:00",
-      "cost_usd": 0.3478172,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T203008Z-review",
-      "status": "approve",
-      "task": "CG-232",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:34:49+00:00",
-      "blocking": 0,
-      "criteria_met": 4,
-      "criteria_total": 4,
-      "description_ok": true,
-      "kind": "review",
-      "run": "20260905T203008Z-review",
-      "summary": "The --again reset, branch naming, and trial-history backfill are all correctly implemented and verified against a full test run (910 passed) and lint; no correctness, scope, or description issues found.",
-      "task": "CG-232",
-      "verdict": "approve"
-    },
-    {
-      "at": "2026-09-05T20:34:58+00:00",
-      "kind": "automerged",
-      "method": "merge",
-      "pr": "https:<path>",
-      "review_rounds": 3,
-      "review_run": "20260905T203008Z-review",
-      "task": "CG-232",
-      "verdict": "approve"
-    },
-    {
-      "at": "2026-09-05T20:36:25+00:00",
-      "cost_usd": 1.0964036,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T203030Z-revise",
-      "status": "done",
-      "task": "CG-212",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:36:26+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T203626Z-check",
-      "stage": "pre_pr",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:36:30+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "PR merged by the garden: https:<path>",
-      "task": "CG-232",
-      "to": "done"
-    },
-    {
-      "at": "2026-09-05T20:37:55+00:00",
-      "keys": [
-        "review"
-      ],
-      "kind": "config_reloaded",
-      "task": ""
-    },
-    {
-      "at": "2026-09-05T20:37:59+00:00",
-      "cost_usd": 0.0,
-      "how": "mechanical",
-      "kind": "run_finished",
-      "mode": "rebase",
-      "run": "20260905T203758Z-rebase",
-      "status": "done",
-      "task": "CG-227",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:37:59+00:00",
-      "base": "garden/cg-212-a-usage-or-spend-limit-error-from-a-harness-paus",
-      "files": [],
-      "how": "mechanical",
-      "kind": "rebase",
-      "resolved": true,
-      "run": "20260905T203758Z-rebase",
-      "task": "CG-227"
-    },
-    {
-      "at": "2026-09-05T20:37:59+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T203759Z-check",
-      "stage": "merge_rebase",
-      "task": "CG-227"
-    },
-    {
-      "at": "2026-09-05T20:39:26+00:00",
-      "keys": [
-        "harnesses"
-      ],
-      "kind": "config_reloaded",
-      "task": ""
-    },
-    {
-      "at": "2026-09-05T20:39:26+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T203626Z-check",
-      "status": "done",
-      "task": "CG-212",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:39:26+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:39:26+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:39:28+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "pushed revision to https:<path> Rebased onto main (bringing in CG-229's inconclusive-trial-on-env_failed changes) and reconciled it with CG-212's paused-trial-contender retry logic: a trial keeps waiting to redispatch a paused contender only while no other contender has a PR yet; once a survivor's PR exists, the paused contender is handed to CG-229's env_failed/inconclusive path instead of blocking on a retry. Full suite (931 passed, 3 skipped) and ruff are clean. cost=$1.10",
-      "task": "CG-212",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:39:28+00:00",
-      "items": 1,
-      "kind": "friction",
-      "phase": "context-garden/phase-04",
-      "run": "20260905T203030Z-revise",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:39:28+00:00",
-      "kind": "needs_human",
-      "reason": "4 automated review round(s) used; this PR is yours",
-      "stop_kind": "review_cap",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:39:31+00:00",
-      "base": "main",
-      "files": [
-        "src/garden/scheduler/trials.py"
-      ],
-      "how": "agent",
-      "kind": "rebase",
-      "resolved": false,
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T20:39:31+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/scheduler/trials.py); a rebase agent will resolve it",
-      "task": "CG-212",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T20:40:56+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T203759Z-check",
-      "status": "done",
-      "task": "CG-227",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:40:56+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-227"
-    },
-    {
-      "at": "2026-09-05T20:40:56+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-227"
-    },
-    {
-      "at": "2026-09-05T20:40:56+00:00",
-      "kind": "rebase",
-      "patch_id_after": "110e697f7fea18e6e452f009339407c7b703d3e1",
-      "patch_id_before": "90e921628f602895389f0af39aca67904259822f",
-      "run": "20260905T203758Z-rebase",
-      "task": "CG-227",
-      "verdict_kept": false
-    },
-    {
-      "at": "2026-09-05T20:40:57+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-fable-5-1",
-      "run": "20260905T204057Z-review",
-      "task": "CG-227"
-    },
-    {
-      "at": "2026-09-05T20:41:32+00:00",
-      "base": "main",
-      "harness": "codex",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "resumed": false,
-      "run": "20260905T204117Z-work",
-      "task": "CG-234"
-    },
-    {
-      "at": "2026-09-05T20:41:32+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260905T204117Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~13559 tokens)",
-      "task": "CG-234",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T20:44:09+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "reset to ready by hand",
-      "task": "CG-234",
-      "to": "ready"
-    },
-    {
-      "at": "2026-09-05T20:44:13+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "claude-fable-5-1",
-      "resumed": false,
-      "run": "20260905T204413Z-work",
-      "task": "CG-234"
-    },
-    {
-      "at": "2026-09-05T20:44:13+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260905T204413Z-work via local [claude model=claude-fable-5-1] (fresh session, base main, ~13609 tokens)",
-      "task": "CG-234",
-      "to": "running"
-    },
-    {
       "at": "2026-09-05T20:45:41+00:00",
       "keys": [
         "harnesses"
@@ -29678,6 +29378,322 @@
       "run": "20260906T203138Z-check",
       "stage": "pre_pr",
       "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:31:41+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "resumed": false,
+      "run": "20260906T203139Z-revise",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:31:41+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260906T203139Z-revise via local [codex model=gpt-5.6-terra] (fresh session, base main, rebase round 7 (not counted), ~10926 tokens)",
+      "task": "CG-293",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:32:42+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T203138Z-check",
+      "status": "done",
+      "task": "CG-322",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:32:42+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "fail",
+      "summary": "exit 1",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:32:42+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:32:43+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T203243Z-check",
+      "stage": "base_probe",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:33:48+00:00",
+      "cost_usd": 0.53054,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T203034Z-review",
+      "status": "request_changes",
+      "task": "CG-358",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:33:48+00:00",
+      "blocking": 5,
+      "criteria_met": 1,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T203034Z-review",
+      "summary": "Recovery dispatch remains synchronous, dependent on task discovery, and vulnerable to races with the scheduler; the claimed end-to-end incident validation is absent. The branch also contains a large unrelated generated snapshot rewrite.",
+      "task": "CG-358",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T20:33:52+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203352Z-review",
+      "task": "CG-358"
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T203243Z-check",
+      "status": "done",
+      "task": "CG-322",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "base_probe",
+      "status": "error",
+      "summary": "check did not finish (killed by SIGTERM)",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "base": "c1f75cb08e47c8895c8365bc168a4fe33cd69809",
+      "checks": "test",
+      "kind": "check_base",
+      "moved": false,
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "kind": "needs_human",
+      "reason": "base branch `main` is itself broken \u2014 pre-PR check(s) test fail at its own commit c1f75cb08e47, not because of this branch",
+      "stop_kind": "base_broken",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "base branch `main` is itself broken \u2014 pre-PR check(s) test fail at its own commit c1f75cb08e47, not because of this branch; waiting for the base to go green, no revise round cost=$0.02",
+      "task": "CG-322",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "cost_usd": 0.44580880000000006,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T203352Z-review",
+      "status": "request_changes",
+      "task": "CG-358",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:37:20+00:00",
+      "blocking": 4,
+      "criteria_met": 1,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T203352Z-review",
+      "summary": "Health and pause use a bounded read path, and preparation records improve restart reconciliation. However, recovery dispatch remains synchronous without a client-visible idempotency identity, the claimed integration scenario is only an in-process unit simulation, and the PR includes an unrelated runtime snapshot.",
+      "task": "CG-358",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T20:37:21+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "automated review requested changes: Health and pause use a bounded read path, and preparation records improve restart reconciliation. However, recovery dispatch remains synchronous without a client-visible idempotency identity, the claimed integration scenario is only an in-process unit simulation, and the PR includes an unrelated runtime snapshot. cost=$0.45",
+      "task": "CG-358",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:37:25+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "resumed": false,
+      "run": "20260906T203723Z-revise",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:37:25+00:00",
+      "from": "changes_requested",
+      "kind": "transition",
+      "note": "dispatched revise run 20260906T203723Z-revise via local [codex model=gpt-5.6-sol] (fresh session, base main, ~10078 tokens)",
+      "task": "CG-337",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T20:40:08+00:00",
+      "kind": "resumed",
+      "reason": "base branch `main` is itself broken \u2014 pre-PR check(s) test fail at its own commit c1f75cb08e47, not because of this branch",
+      "stop_kind": "base_broken",
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:40:31+00:00",
+      "kind": "needs_human",
+      "reason": "stuck: no feedback recorded to revise against",
+      "stuck": true,
+      "task": "CG-322"
+    },
+    {
+      "at": "2026-09-06T20:41:31+00:00",
+      "cost_usd": 0.5495112,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T203139Z-revise",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:41:33+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T204133Z-check",
+      "stage": "pre_pr",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:43:39+00:00",
+      "cost_usd": 0.8662984,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203723Z-revise",
+      "status": "done",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:43:40+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T204340Z-check",
+      "stage": "pre_pr",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T20:44:44+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T204133Z-check",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:44:44+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:44+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:46+00:00",
+      "base": "main",
+      "draft": false,
+      "kind": "pr_opened",
+      "pr": "https:<path>",
+      "stacked_on": "",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:46+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "opened https:<path> (base main): Updated the successful web task-creation fixture so its approve-now request includes a resolvable reading list, matching the brief-completeness gate. Committed as feb1e06. cost=$0.55",
+      "task": "CG-293",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T20:44:47+00:00",
+      "items": 1,
+      "kind": "friction",
+      "phase": "context-garden/phase-05",
+      "run": "20260906T203139Z-revise",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:47+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T204447Z-review",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:52+00:00",
+      "base": "main",
+      "files": [
+        "src/garden/brief.py"
+      ],
+      "how": "agent",
+      "kind": "rebase",
+      "resolved": false,
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:44:52+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "PR conflicts with main; rebase onto main conflicts (src/garden/brief.py); a rebase agent will resolve it",
+      "task": "CG-293",
+      "to": "changes_requested"
     }
   ],
   "metrics": {
@@ -29695,48 +29711,48 @@
         "done": 104,
         "first_pass_approve": 80,
         "first_pass_rate": 0.81,
-        "mean_cost_usd": 0.8944,
+        "mean_cost_usd": 0.8928,
         "reviewed": 99,
         "revisions": 92,
-        "runs": 557,
+        "runs": 558,
         "tasks": 115
       },
       "hard": {
         "accepted": 16,
         "accepted_cost_usd": 348.7418,
         "avg_lead_hours": 3.65,
-        "avg_revisions": 1.45,
+        "avg_revisions": 1.5,
         "cost_per_accepted_task": 21.7964,
-        "cost_usd": 387.2701,
-        "criteria_met": 46,
-        "criteria_rate": 0.57,
-        "criteria_total": 81,
+        "cost_usd": 389.1128,
+        "criteria_met": 47,
+        "criteria_rate": 0.55,
+        "criteria_total": 85,
         "done": 16,
         "first_pass_approve": 8,
-        "first_pass_rate": 0.42,
-        "mean_cost_usd": 2.1635,
-        "reviewed": 19,
-        "revisions": 32,
-        "runs": 179,
+        "first_pass_rate": 0.4,
+        "mean_cost_usd": 2.138,
+        "reviewed": 20,
+        "revisions": 33,
+        "runs": 182,
         "tasks": 22
       },
       "medium": {
         "accepted": 89,
         "accepted_cost_usd": 723.2768,
         "avg_lead_hours": 2.48,
-        "avg_revisions": 1.02,
+        "avg_revisions": 1.03,
         "cost_per_accepted_task": 8.1267,
-        "cost_usd": 760.0492,
+        "cost_usd": 760.5987,
         "criteria_met": 117,
         "criteria_rate": 0.87,
         "criteria_total": 135,
         "done": 89,
         "first_pass_approve": 58,
         "first_pass_rate": 0.66,
-        "mean_cost_usd": 1.0705,
+        "mean_cost_usd": 1.0668,
         "reviewed": 88,
-        "revisions": 103,
-        "runs": 710,
+        "revisions": 104,
+        "runs": 713,
         "tasks": 101
       }
     },
@@ -29936,7 +29952,7 @@
               },
               "gpt-5.6-sol": {
                 "best": false,
-                "n": 7,
+                "n": 8,
                 "rank": 1.0,
                 "thin": false,
                 "value": 0.0,
@@ -30048,7 +30064,7 @@
               "claude-opus-4-8": {
                 "best": false,
                 "n": 2,
-                "rank": 0.631,
+                "rank": 0.634,
                 "thin": true,
                 "value": 6.243,
                 "worst": false
@@ -30071,10 +30087,10 @@
               },
               "gpt-5.6-sol": {
                 "best": true,
-                "n": 26,
+                "n": 27,
                 "rank": 0.0,
                 "thin": false,
-                "value": 1.976,
+                "value": 1.935,
                 "worst": false
               },
               "gpt-6-astra": {
@@ -30088,7 +30104,7 @@
               "sonnet": {
                 "best": false,
                 "n": 1,
-                "rank": 0.193,
+                "rank": 0.198,
                 "thin": true,
                 "value": 3.282,
                 "worst": false
@@ -30114,23 +30130,23 @@
               "claude-sonnet-5": {
                 "best": false,
                 "n": 41,
-                "rank": 0.466,
+                "rank": 0.467,
                 "thin": false,
                 "value": 2.325,
                 "worst": false
               },
               "gpt-5.6-terra": {
                 "best": true,
-                "n": 69,
+                "n": 70,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.9,
+                "value": 0.895,
                 "worst": false
               },
               "sonnet": {
                 "best": false,
                 "n": 24,
-                "rank": 0.302,
+                "rank": 0.303,
                 "thin": false,
                 "value": 1.823,
                 "worst": false
@@ -30425,12 +30441,12 @@
         "accepted": 30,
         "accepted_cost_usd": 233.2075,
         "cost_per_accepted_task": 7.7736,
-        "cost_usd": 211.8757,
+        "cost_usd": 213.2915,
         "first_pass_approve": 4,
         "first_pass_rate": 0.11,
-        "mean_cost_usd": 1.316,
-        "reviewed": 36,
-        "runs": 161,
+        "mean_cost_usd": 1.3085,
+        "reviewed": 37,
+        "runs": 163,
         "tasks": 47
       },
       "human": {
@@ -30449,12 +30465,12 @@
         "accepted": 7,
         "accepted_cost_usd": 94.4228,
         "cost_per_accepted_task": 13.489,
-        "cost_usd": 298.6207,
+        "cost_usd": 299.597,
         "first_pass_approve": 4,
         "first_pass_rate": 0.57,
-        "mean_cost_usd": 0.314,
+        "mean_cost_usd": 0.3134,
         "reviewed": 7,
-        "runs": 951,
+        "runs": 956,
         "tasks": 7
       }
     },
@@ -30523,24 +30539,24 @@
         "accepted": 4,
         "accepted_cost_usd": 26.3994,
         "cost_per_accepted_task": 6.5998,
-        "cost_usd": 51.3804,
+        "cost_usd": 52.2467,
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
-        "mean_cost_usd": 1.9762,
-        "reviewed": 7,
-        "runs": 26,
+        "mean_cost_usd": 1.9351,
+        "reviewed": 8,
+        "runs": 27,
         "tasks": 9
       },
       "gpt-5.6-terra": {
         "accepted": 17,
         "accepted_cost_usd": 96.4364,
         "cost_per_accepted_task": 5.6727,
-        "cost_usd": 62.111,
+        "cost_usd": 62.6605,
         "first_pass_approve": 1,
         "first_pass_rate": 0.05,
-        "mean_cost_usd": 0.9002,
+        "mean_cost_usd": 0.8952,
         "reviewed": 19,
-        "runs": 69,
+        "runs": 70,
         "tasks": 25
       },
       "gpt-6-astra": {
@@ -30583,12 +30599,12 @@
         "accepted": 18,
         "accepted_cost_usd": 104.0721,
         "cost_per_accepted_task": 5.7818,
-        "cost_usd": 298.6207,
+        "cost_usd": 299.597,
         "first_pass_approve": 12,
         "first_pass_rate": 0.71,
-        "mean_cost_usd": 0.3075,
+        "mean_cost_usd": 0.307,
         "reviewed": 17,
-        "runs": 971,
+        "runs": 976,
         "tasks": 19
       }
     },
@@ -36301,7 +36317,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 6.7141,
+        "cost_usd": 7.2636,
         "criteria_met": 0,
         "criteria_total": 0,
         "difficulty": "medium",
@@ -36314,8 +36330,8 @@
           "gpt-5.6-terra"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 5,
-        "runs": 31,
+        "revisions": 6,
+        "runs": 34,
         "status": "changes_requested"
       },
       {
@@ -36742,8 +36758,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 2,
-        "status": "running"
+        "runs": 3,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -36844,7 +36860,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 8.2821,
+        "cost_usd": 9.1484,
         "criteria_met": 2,
         "criteria_total": 4,
         "difficulty": "hard",
@@ -36857,9 +36873,9 @@
           "gpt-5.6-sol"
         ],
         "phase": "context-garden/phase-05",
-        "revisions": 2,
-        "runs": 14,
-        "status": "changes_requested"
+        "revisions": 3,
+        "runs": 16,
+        "status": "running"
       },
       {
         "accepted": false,
@@ -36964,11 +36980,11 @@
       },
       {
         "accepted": false,
-        "cost_usd": 7.0005,
-        "criteria_met": 0,
-        "criteria_total": 0,
+        "cost_usd": 7.9769,
+        "criteria_met": 1,
+        "criteria_total": 4,
         "difficulty": "hard",
-        "first_review": "",
+        "first_review": "request_changes",
         "harness": [
           "codex"
         ],
@@ -36978,8 +36994,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 0,
-        "runs": 3,
-        "status": "in_review"
+        "runs": 4,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -37107,51 +37123,11 @@
   "runs": [
     {
       "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T203008Z-review",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "claude",
-      "mode": "revise",
-      "model": "claude-sonnet-5",
-      "run": "20260905T203030Z-revise",
-      "status": "done",
-      "task": "CG-212"
-    },
-    {
-      "harness": "claude",
       "mode": "work",
       "model": "claude-sonnet-5",
       "run": "20260905T203030Z-work",
       "status": "done",
       "task": "CG-233"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T203626Z-check",
-      "status": "done",
-      "task": "CG-212"
-    },
-    {
-      "harness": "",
-      "mode": "rebase",
-      "model": "",
-      "run": "20260905T203758Z-rebase",
-      "status": "done",
-      "task": "CG-227"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T203759Z-check",
-      "status": "done",
-      "task": "CG-227"
     },
     {
       "harness": "claude",
@@ -37160,14 +37136,6 @@
       "run": "20260905T204057Z-review",
       "status": "done",
       "task": "CG-227"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260905T204117Z-work",
-      "status": "cancelled",
-      "task": "CG-234"
     },
     {
       "harness": "claude",
@@ -42366,7 +42334,7 @@
       "mode": "review",
       "model": "gpt-5.6-sol",
       "run": "20260906T203034Z-review",
-      "status": "running",
+      "status": "done",
       "task": "CG-358"
     },
     {
@@ -42374,14 +42342,70 @@
       "mode": "check",
       "model": "",
       "run": "20260906T203138Z-check",
-      "status": "running",
+      "status": "done",
       "task": "CG-322"
     },
     {
-      "harness": "",
+      "harness": "codex",
       "mode": "revise",
-      "model": "",
+      "model": "gpt-5.6-terra",
       "run": "20260906T203139Z-revise",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T203243Z-check",
+      "status": "done",
+      "task": "CG-322"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203352Z-review",
+      "status": "done",
+      "task": "CG-358"
+    },
+    {
+      "harness": "codex",
+      "mode": "revise",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T203723Z-revise",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T204133Z-check",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T204340Z-check",
+      "status": "running",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T204447Z-review",
+      "status": "running",
+      "task": "CG-293"
+    },
+    {
+      "harness": "",
+      "mode": "rebase",
+      "model": "",
+      "run": "20260906T204452Z-rebase",
       "status": "running",
       "task": "CG-293"
     }
@@ -44896,7 +44920,7 @@
       "id": "CG-322",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "changes_requested",
       "title": "A _TaskState written with dict.update or |= is not saved"
     },
     {
@@ -45016,7 +45040,7 @@
       "id": "CG-337",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "changes_requested",
+      "status": "running",
       "title": "Attention cards ask for product decisions, while no-change reports reconcile automatically"
     },
     {
@@ -45112,7 +45136,7 @@
       "id": "CG-358",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "changes_requested",
       "title": "Keep incident control actions responsive and retry-safe during web overload"
     },
     {
