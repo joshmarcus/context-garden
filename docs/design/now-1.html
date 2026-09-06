@@ -1,0 +1,1465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now 1 · context-garden (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --ground:#f2f5f0; --surface:#ffffff; --surface-2:#e9eee7; --label:#ffffff; --line:#d6ded4; --line-strong:#b9c5bb;
+  --ink:#17201b; --muted:#5f6b64; --faint:#8b968f; --accent:#2b7a57; --accent-ink:#ffffff; --accent-soft:#dcefe4; --stamp:#c23b3b; --tape:rgba(224,214,178,.8);
+  --s-draft:#7f8a83; --s-blocked:#b5850f; --s-ready:#1c9c8c; --s-running:#3b62d9; --s-waiting_human:#c2417f; --s-awaiting_triage:#7c5cd6; --s-in_review:#2a8fa3; --s-merged_into_parent:#5b3fa8; --s-changes_requested:#d0702a; --s-done:#2f8a4f; --s-failed:#c23b3b; --s-wont_do:#8a6d3b; --s-cancelled:#9aa39d;
+  --good:#2f8a4f; --warn:#b5850f; --bad:#c23b3b;
+  --viz-1:#2a78d6; --viz-2:#eb6834; --viz-ord-1:#6fbf98; --viz-ord-2:#3f9a6f; --viz-ord-3:#22664a;
+  --viz-cat-3:#1baf7a; --viz-cat-4:#eda100; --viz-cat-5:#e87ba4; --viz-cat-6:#008300; --viz-cat-7:#4a3aa7; --viz-cat-8:#e34948; --viz-cat-9:#0aa8c8;
+  /* pressed-specimen palette used by the plant and stage drawings: moss greens on the old ground */
+  --sp-ink:#24352b; --leaf:#4f9a72; --leaf-tint:#4f9a72; --hatch:#22664a; --vein:#a8d4bd; --petal:#cfa3b9; --petal-tint:#cfa3b9; --petal2:#e6c6d2; --pea:#7fcaa2;
+  --berry:#4a2f45; --berry-tint:#4a2f45; --berry2:#7a4a63; --apple:#c0383a; --poppy:#d95f4a; --seed:#8a6d4e; --wilt:#9c8b6b; --pressed:#6f9a80; --pin:#c23b3b; --paper:#ffffff;
+  --display:"Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --body:"Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono:"Courier Prime", "Courier New", Courier, monospace;
+  --radius:2px; --shadow:0 1px 0 #fff inset, 0 6px 18px -12px rgba(0,0,0,.4);
+  --vine-opacity:.17;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
+  --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-merged_into_parent:#b09ff0; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
+  --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
+  --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --viz-cat-3:#199e70; --viz-cat-4:#c98500; --viz-cat-5:#d55181; --viz-cat-6:#008300; --viz-cat-7:#9085e9; --viz-cat-8:#e66767; --viz-cat-9:#1f9caa;
+  --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
+  --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --apple:#d95252; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
+  --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
+  --vine-opacity:.13;
+}}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground:#121614; --surface:#1a201c; --surface-2:#222a25; --label:#1a201c; --line:#2c3630; --line-strong:#3e4b43;
+  --ink:#e6ece7; --muted:#98a59e; --faint:#6f7c75; --accent:#5cc493; --accent-ink:#0f1a14; --accent-soft:#1f3a2c; --stamp:#ef6b6b; --tape:rgba(224,214,178,.28);
+  --s-draft:#8f9a93; --s-blocked:#d3a02a; --s-ready:#3cc2b0; --s-running:#6f8ff0; --s-waiting_human:#e06aa3; --s-awaiting_triage:#a98cf0; --s-in_review:#5fb8cc; --s-merged_into_parent:#b09ff0; --s-changes_requested:#f09a55; --s-done:#5cc47a; --s-failed:#ef6b6b; --s-wont_do:#b89b6a; --s-cancelled:#7f8a83;
+  --good:#5cc47a; --warn:#d3a02a; --bad:#ef6b6b;
+  --viz-1:#3987e5; --viz-2:#d95926; --viz-ord-1:#7fcaa2; --viz-ord-2:#4fa57e; --viz-ord-3:#2f8a62;
+  --viz-cat-3:#199e70; --viz-cat-4:#c98500; --viz-cat-5:#d55181; --viz-cat-6:#008300; --viz-cat-7:#9085e9; --viz-cat-8:#e66767; --viz-cat-9:#1f9caa;
+  --sp-ink:#cfe3d5; --leaf:#4fa57e; --leaf-tint:#4fa57e; --hatch:#7fcaa2; --vein:#9fd6b8; --petal:#d19bb5; --petal-tint:#d19bb5; --petal2:#e2bfcd; --pea:#7fcaa2;
+  --berry:#6a4a62; --berry-tint:#6a4a62; --berry2:#a06b86; --apple:#d95252; --poppy:#e0715a; --seed:#b08f68; --wilt:#a89a78; --pressed:#6f9a80; --pin:#ef6b6b; --paper:#1a201c;
+  --shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 24px -14px rgba(0,0,0,.7);
+  --vine-opacity:.13;
+}
+* { box-sizing:border-box; }
+html { background:var(--ground); }
+body { margin:0; background:var(--ground); color:var(--ink); font:14.5px/1.45 var(--body); font-variant-numeric: tabular-nums; }
+a { color:inherit; text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:2px; }
+a:hover { text-decoration-color:var(--ink); }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px solid var(--stamp); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+
+/* ---- drawings: pressed specimens and growth-stage glyphs ------------------------ */
+svg.plant, svg.stage { --ink:var(--sp-ink); }
+svg.plant { filter: drop-shadow(1px 2px 1.5px rgba(40,40,20,.28)); transform: scaleY(.97); display:block; }
+svg.stage { --ink:var(--sp-ink); vertical-align:middle; flex:none; }
+.specimen { position:relative; background:var(--label); border:1px solid var(--line); box-shadow:var(--shadow); }
+.specimen .tape { position:absolute; width:72px; height:18px; background:var(--tape); box-shadow:0 1px 1px rgba(0,0,0,.08); }
+.specimen .lbl { position:absolute; background:var(--label); border:1px solid var(--ink); padding:8px 10px; font:11.5px/1.45 var(--mono); width:230px; color:var(--ink); }
+.specimen .lbl b { letter-spacing:.06em; }
+.specimen .plate-mount { display:flex; justify-content:center; padding:12px; background:#f4efe3; border:1px solid var(--line); box-shadow:0 1px 1px rgba(0,0,0,.06) inset; }
+.specimen .plate { display:block; width:auto; height:auto; max-width:100%; max-height:420px; mix-blend-mode:multiply; }
+.stamp { display:inline-block; font:700 10.5px/1.6 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--stamp); border:2px solid var(--stamp); border-radius:3px; padding:1px 7px; transform:rotate(-4deg); opacity:.85; mix-blend-mode:multiply; }
+:root[data-theme="dark"] .stamp { mix-blend-mode:normal; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stamp { mix-blend-mode:normal; } }
+.stamp.ink { color:var(--ink); border-color:var(--ink); }
+.state { display:inline-flex; align-items:center; gap:6px; font:12px/1.4 var(--mono); color:var(--ink); white-space:nowrap; }
+.state::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--c, var(--faint)); flex:none; }
+.state.s-draft{--c:var(--s-draft)} .state.s-blocked{--c:var(--s-blocked)} .state.s-ready{--c:var(--s-ready)} .state.s-running{--c:var(--s-running)} .state.s-waiting_human{--c:var(--s-waiting_human)} .state.s-awaiting_triage{--c:var(--s-awaiting_triage)} .state.s-in_review{--c:var(--s-in_review)} .state.s-merged_into_parent{--c:var(--s-merged_into_parent)} .state.s-changes_requested{--c:var(--s-changes_requested)} .state.s-done{--c:var(--s-done)} .state.s-failed{--c:var(--s-failed)} .state.s-wont_do{--c:var(--s-wont_do)} .state.s-cancelled{--c:var(--s-cancelled)}
+.state .stage-word { color:var(--muted); font-style:italic; font-family:var(--body); font-size:12.5px; }
+
+/* ---- the background vine: fixed to the bottom right, behind everything ------------- */
+svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw); height:auto; z-index:0; pointer-events:none; user-select:none;
+  opacity:var(--vine-opacity); --ink:var(--sp-ink); --leaf:var(--leaf-tint); --vein:var(--vein); --hatch:var(--hatch); }
+@media (max-width: 1000px), print { svg.bg-vine { display:none; } }
+
+/* ---- shell: rail + main ----------------------------------------------------------- */
+.shell { display:grid; grid-template-columns: 236px minmax(0, 1fr); min-height:100vh; position:relative; z-index:1; }
+.rail { position:sticky; top:0; height:100vh; overflow:auto; padding:22px 16px; border-right:1px solid var(--line); background:var(--surface-2); display:flex; flex-direction:column; gap:22px; }
+.wordmark { display:flex; align-items:center; gap:8px; font:700 13px/1.4 var(--mono); letter-spacing:.14em; text-transform:uppercase; text-decoration:none; color:var(--ink); }
+.wordmark svg.mark { flex:none; }
+.wordmark small { display:block; font-weight:400; letter-spacing:.08em; color:var(--muted); font-size:10.5px; text-transform:none; }
+.nav { display:flex; flex-direction:column; gap:2px; }
+.nav a { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:40px; padding:0 8px; text-decoration:none; color:var(--ink); font:13px/1 var(--mono); border-left:3px solid transparent; }
+.nav a:hover { background:var(--label); }
+.nav a.on { border-left-color:var(--ink); background:var(--label); }
+.nav .count { font:11px/1 var(--mono); color:var(--stamp); }
+.nav a.on .count.hot, .nav .count.hot { font-weight:700; }
+.rail h4 { margin:0 0 6px 8px; font:400 10.5px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+.drawer { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid var(--line); border-left:3px solid transparent; background:var(--label); text-decoration:none; color:var(--ink); margin-bottom:8px; }
+.drawer:hover, .drawer.on { border-left-color:var(--ink); }
+.drawer .thumb { width:40px; height:60px; background:var(--label); border:1px solid var(--line); display:flex; justify-content:center; align-items:center; flex:none; }
+.drawer .thumb img { width:38px; height:58px; object-fit:cover; object-position:center top; display:block; background:#f4efe3; }
+.drawer .k { font:11px/1.4 var(--mono); min-width:0; }
+.drawer .k b { display:block; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.drawer .k i { display:block; color:var(--muted); font-style:italic; font-family:var(--body); font-size:12px; }
+.drawer .k span { display:block; color:var(--muted); }
+.running-now { display:flex; flex-direction:column; gap:6px; font:12px/1.4 var(--mono); }
+.running-now .r { display:flex; gap:8px; align-items:center; color:var(--muted); }
+.running-now .dot { width:7px; height:7px; border-radius:50%; background:var(--s-running); flex:none; }
+.running-now .idle { color:var(--warn); }
+.notify { font:12px/1.4 var(--mono); color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+.notify .notify-state { font-size:11px; }
+.rail .foot { margin-top:auto; font:11.5px/1.5 var(--mono); color:var(--faint); display:flex; flex-direction:column; gap:8px; }
+main { padding:26px 32px 60px; max-width:1320px; min-width:0; }  /* min-width:0 so wide content (the board, tables) scrolls inside its container instead of widening the page */
+.page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:18px; }
+.page-head > div:first-child { flex:1; min-width:0; }
+.page-head h1 { margin:0; font:500 30px/1.1 var(--display); letter-spacing:-.01em; text-wrap:balance; }
+.page-head p { margin:4px 0 0; color:var(--muted); max-width:90ch; text-wrap:pretty; }
+.page-head .tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+@media (max-width: 1000px) { .page-head { flex-direction:column; align-items:flex-start; } .page-head .tools { width:100%; } }
+.eyebrow { font:400 11px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+
+/* ---- controls -------------------------------------------------------------------- */
+button, .btn { font:12.5px/1 var(--mono); letter-spacing:.04em; padding:0 13px; min-height:36px; border:1px solid var(--ink); background:var(--label); color:var(--ink); cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:6px; transition:background .12s; }
+button:hover, .btn:hover { background:var(--surface-2); }
+button.primary, .btn.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+button.danger { color:var(--bad); border-color:var(--line-strong); }
+button.quiet, .btn.quiet { border-color:var(--line); background:transparent; color:var(--muted); }
+button.quiet:hover { color:var(--ink); background:var(--label); }
+form.inline { display:inline; }
+input[type=text], input:not([type]), textarea { font:13px/1.4 var(--mono); padding:8px 10px; border:1px solid var(--line-strong); background:var(--label); color:var(--ink); }
+textarea { width:100%; min-height:72px; resize:vertical; }
+label.check { display:inline-flex; gap:6px; align-items:center; color:var(--muted); font-size:13px; }
+
+/* ---- inline edits (CG-190): a value applies itself; this is only ever the "saved"/error mark beside it */
+.autosave-mark { display:inline-flex; align-items:center; gap:6px; font:12px/1 var(--mono); }
+.autosave-mark:empty { display:none; }
+.autosave-mark.ok { color:var(--good); }
+.autosave-mark.err { color:var(--bad); }
+.autosave-mark .undo { min-height:auto; padding:1px 8px; font-size:11px; }
+
+/* ---- surfaces -------------------------------------------------------------------- */
+.panel { background:var(--label); border:1px solid var(--line); padding:14px 16px; }
+.panel + .panel, .stack > * + * { margin-top:14px; }
+.panel h3 { margin:0 0 10px; font:500 15px/1.2 var(--display); color:var(--ink); }
+.grid2 { display:grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap:16px; align-items:start; }
+@media (max-width: 1000px) { .shell { grid-template-columns: 1fr; } .rail { position:static; height:auto; } .grid2 { grid-template-columns:1fr; } }
+.kpis { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+.kpi { background:var(--label); border:1px solid var(--line); padding:10px 12px; }
+.kpi .v { font:500 26px/1.1 var(--display); }
+.kpi .l { font:11px/1.4 var(--mono); color:var(--muted); letter-spacing:.06em; text-transform:uppercase; margin-top:4px; }
+.kpi.hot { border-color:var(--ink); }
+table { border-collapse:collapse; width:100%; }
+.panel > table { display:block; overflow-x:auto; }  /* a bare table in a panel scrolls inside it */
+.scroll { overflow-x:auto; }
+th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font:700 10.5px/1.2 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--ink); border-bottom:2px solid var(--ink); }
+tr:last-child td { border-bottom:none; }
+td .id, td.mono { white-space:nowrap; }
+td.title { min-width:200px; }
+.mono { font-family:var(--mono); font-size:12.5px; }
+.muted { color:var(--muted); }
+.faint { color:var(--faint); }
+.empty { color:var(--faint); padding:18px 0; text-align:center; font-family:var(--mono); font-size:12.5px; }
+.warn { background:color-mix(in srgb, var(--warn) 14%, var(--label)); border:1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); padding:10px 14px; margin-bottom:14px; }
+.flash { background:color-mix(in srgb, var(--bad) 14%, var(--label)); border-color:color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.prose { max-width:70ch; }
+.prose h1,.prose h2,.prose h3 { font-family:var(--display); font-weight:500; margin:1.2em 0 .4em; }
+.prose h2 { font-size:18px; } .prose h3 { font-size:15.5px; }
+.prose pre { background:var(--surface-2); padding:10px 12px; overflow-x:auto; font-size:12.5px; font-family:var(--mono); }
+.prose code { font-family:var(--mono); font-size:12.5px; background:var(--surface-2); padding:1px 4px; }
+.prose pre code { background:none; padding:0; }
+.prose table { font-size:13px; }
+.actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.kv { display:grid; grid-template-columns: 112px 1fr; gap:6px 12px; font-size:13px; }
+.kv dt { color:var(--muted); font:11px/1.6 var(--mono); letter-spacing:.06em; text-transform:uppercase; } .kv dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+details > summary { cursor:pointer; color:var(--muted); list-style:none; font-family:var(--mono); font-size:12.5px; }
+details > summary::before { content:"▸ "; color:var(--faint); }
+details[open] > summary::before { content:"▾ "; }
+.log { font:12px/1.55 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
+pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2); padding:12px 14px; border:1px solid var(--line); }
+
+/* ---- tabs (radio-driven, no JS): a run's brief / transcript / final / stderr ---------- */
+.tabs > input[type=radio] { position:absolute; opacity:0; pointer-events:none; }
+.tab-labels { display:flex; gap:4px; border-bottom:2px solid var(--ink); margin-bottom:14px; flex-wrap:wrap; }
+.tab-labels label { padding:8px 14px; cursor:pointer; font:12.5px/1 var(--mono); color:var(--muted); border:1px solid var(--line); border-bottom:none; background:var(--surface-2); margin-bottom:-2px; }
+.tab-labels label:hover { color:var(--ink); }
+.tab-panel { display:none; }
+#tab-transcript:checked ~ .tab-labels label[for=tab-transcript],
+#tab-brief:checked ~ .tab-labels label[for=tab-brief],
+#tab-final:checked ~ .tab-labels label[for=tab-final],
+#tab-stderr:checked ~ .tab-labels label[for=tab-stderr] { color:var(--ink); background:var(--label); border-bottom:2px solid var(--label); }
+#tab-transcript:checked ~ .tab-panel[data-tab=transcript],
+#tab-brief:checked ~ .tab-panel[data-tab=brief],
+#tab-final:checked ~ .tab-panel[data-tab=final],
+#tab-stderr:checked ~ .tab-panel[data-tab=stderr] { display:block; }
+.tl { list-style:none; padding:0; margin:0; font-size:12.5px; }
+.tl li { display:grid; grid-template-columns: 78px 118px 1fr; gap:10px; padding:5px 0; border-bottom:1px dashed var(--line); }
+.tl .k { font:11.5px/1.6 var(--mono); color:var(--muted); }
+.chart { display:block; overflow:visible; }
+.spark { vertical-align:middle; }
+.filters { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
+.filters a { padding:6px 10px; border:1px solid var(--line); text-decoration:none; font:12px/1 var(--mono); color:var(--muted); background:var(--label); }
+.filters a.on { border-color:var(--ink); color:var(--ink); }
+.id { font:700 12px/1 var(--mono); color:var(--ink); }
+.badge { display:inline-block; font:400 10.5px/1.4 var(--mono); padding:1px 6px; border:1px solid var(--line); color:var(--muted); margin-left:6px; vertical-align:middle; }
+.badge.hot { border-color:var(--stamp); color:var(--stamp); }
+.pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px 2px 6px; font:12px/1.6 var(--mono); color:var(--ink); background:var(--surface-2); white-space:nowrap; }
+.pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--c, var(--faint)); }
+.s-draft{--c:var(--s-draft)} .s-blocked{--c:var(--s-blocked)} .s-ready{--c:var(--s-ready)} .s-running{--c:var(--s-running)} .s-waiting_human{--c:var(--s-waiting_human)} .s-awaiting_triage{--c:var(--s-awaiting_triage)} .s-in_review{--c:var(--s-in_review)} .s-merged_into_parent{--c:var(--s-merged_into_parent)} .s-changes_requested{--c:var(--s-changes_requested)} .s-done{--c:var(--s-done)} .s-failed{--c:var(--s-failed)} .s-wont_do{--c:var(--s-wont_do)} .s-cancelled{--c:var(--s-cancelled)}
+
+/* ---- board ------------------------------------------------------------------------ */
+.board { display:grid; grid-template-columns: repeat(11, minmax(150px, 1fr)); gap:10px; overflow-x:auto; padding-bottom:8px; }
+.col { background:var(--surface); border:1px solid var(--line); min-height:140px; padding:10px; }
+.col h3 { margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; gap:6px; font:700 10.5px/1 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink); }
+.col h3 .n { color:var(--muted); font-weight:400; }
+.card { display:block; text-decoration:none; border:1px solid var(--line); padding:8px 10px; margin-bottom:8px; background:var(--label); transition:border-color .12s; }
+.card:hover { border-color:var(--ink); }
+.card .t { display:block; margin-top:3px; font-size:14px; line-height:1.3; }
+.card .meta { display:block; color:var(--muted); font:11px/1.4 var(--mono); margin-top:5px; }
+.card .q { display:block; color:var(--s-waiting_human); font-size:12.5px; margin-top:5px; font-style:italic; }
+.card .top { display:flex; align-items:center; gap:6px; }
+
+/* ---- board: list view ------------------------------------------------------------- */
+.viewswitch { display:flex; gap:0; }
+.viewswitch a { padding:6px 12px; border:1px solid var(--line); border-left-width:0; text-decoration:none; font:12px/1 var(--mono); color:var(--muted); background:var(--label); }
+.viewswitch a:first-child { border-left-width:1px; }
+.viewswitch a.on { border-color:var(--ink); color:var(--ink); z-index:1; }
+.board-list { display:flex; flex-direction:column; }
+.lgroup { border-top:1px solid var(--line-strong); }
+.lgroup:first-child { border-top:none; }
+.lgroup > h3 { display:flex; align-items:center; gap:8px; margin:0; padding:11px 4px 8px; font:700 11px/1 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink); }
+.lgroup > h3 .lg-name { display:inline-flex; align-items:center; gap:8px; }
+.lgroup > h3 .n { color:var(--muted); font-weight:400; margin-left:auto; }
+.lgroup-empty > h3 { color:var(--muted); }
+.lrows { list-style:none; margin:0; padding:0 0 6px; }
+.lrow { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 14px; padding:7px 6px; border-bottom:1px solid var(--line); }
+.lrow:last-child { border-bottom:none; }
+.lrow-main { display:flex; align-items:baseline; gap:10px; flex:1 1 320px; min-width:0; text-decoration:none; }
+.lrow-main:hover .lt { text-decoration:underline; text-decoration-color:var(--ink); }
+.lrow .lt { font-size:14.5px; overflow-wrap:anywhere; flex:1 1 auto; }
+.lrow .meta { font:11px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.lrow .lfact { font:12px/1.4 var(--mono); color:var(--muted); flex:0 1 auto; min-width:0; overflow-wrap:anywhere; }
+.lrow .lfact.q { color:var(--s-waiting_human); font-style:italic; font-family:var(--body); font-size:13px; }
+
+/* ---- board: backlog view (sections per phase, drag to reorder or move) ------------- */
+.backlog { display:flex; flex-direction:column; gap:18px; }
+.bl-section { border:1px solid var(--line); background:var(--surface); }
+.bl-head { display:flex; align-items:center; gap:10px; margin:0; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); font:500 15px/1.2 var(--display); }
+.bl-head .bl-plant { display:inline-flex; flex:none; }
+.bl-head .bl-name { font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+.bl-head .n { margin-left:auto; color:var(--muted); font:400 12px/1 var(--mono); }
+.bl-rows { list-style:none; margin:0; padding:0; }
+.bl-row { display:flex; align-items:center; gap:12px; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--label); cursor:grab; }
+.bl-row:last-child { border-bottom:none; }
+.bl-row.dragging { opacity:.5; }
+.bl-row .bl-grip { color:var(--faint); cursor:grab; flex:none; font-size:13px; }
+.bl-row .bl-main { display:flex; align-items:baseline; gap:10px; flex:1 1 320px; min-width:0; text-decoration:none; }
+.bl-row .bl-main:hover .lt { text-decoration:underline; text-decoration-color:var(--ink); }
+.bl-row .lt { font-size:14.5px; overflow-wrap:anywhere; }
+.bl-row .meta { font:11px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.bl-row .bl-ctrls { display:flex; align-items:center; gap:6px; flex:none; }
+.bl-row .bl-ctrls button { min-height:28px; padding:0 8px; }
+.bl-row .bl-ctrls select { padding:5px 6px; font-size:12px; }
+.bl-row[data-movable="0"] { cursor:default; }
+.bl-empty { padding:12px; font:12.5px/1.4 var(--mono); }
+
+/* ---- inbox --------------------------------------------------------------------------- */
+.group { margin-bottom:20px; border:1px solid var(--line); background:var(--label); }
+.group > header { display:flex; align-items:center; gap:12px; padding:8px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); }
+.group > header h2 { margin:0; font:500 17px/1.2 var(--display); }
+.group > header p { margin:0; color:var(--muted); font-size:13px; }
+.group.notice { opacity:.75; }
+.group.notice > header h2 { font:400 15px/1.2 var(--display); color:var(--muted); }
+.item { display:grid; grid-template-columns: 34px 140px minmax(0,1fr) auto; gap:14px; align-items:center; padding:11px 12px; border-bottom:1px solid var(--line); }
+.item:last-child { border-bottom:none; }
+.item .who { display:flex; flex-direction:column; gap:3px; }
+.item .who .age { font:11px/1.4 var(--mono); color:var(--faint); }
+.item .what .t { font-size:16px; }
+.item .what .why { color:var(--muted); font:12px/1.5 var(--mono); margin-top:2px; }
+.item .what .q { margin-top:6px; font-style:italic; font-size:14.5px; }
+.item .do { display:flex; flex-direction:column; gap:6px; align-items:flex-end; min-width:190px; }
+.item .do form { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.item .do input[type=text] { width:200px; padding:7px 8px; font-size:12px; }
+.item.q-open .do { align-items:stretch; }
+.inbox-zero { padding:36px; text-align:center; color:var(--muted); background:var(--label); border:1px dashed var(--line-strong); }
+.inbox-zero b { font:500 20px/1.3 var(--display); color:var(--ink); display:block; margin-bottom:4px; }
+
+/* ---- trellis ---------------------------------------------------------------------------- */
+.trellis .lattice line { stroke:var(--line); stroke-width:.8; stroke-dasharray:2 3; }
+.trellis .post { stroke:var(--line-strong); stroke-width:2; stroke-dasharray:4 3; }
+.trellis .vine path { fill:none; stroke:var(--sp-ink); stroke-width:2.6; stroke-linecap:round; opacity:.9; }
+.trellis .vine .tendril { stroke-width:1.4; stroke-dasharray:5 4; }
+.trellis a { text-decoration:none; }
+.trellis .halo { fill:var(--label); stroke:var(--ink); stroke-width:.8; }
+.trellis text { paint-order:stroke; stroke:var(--label); stroke-width:4px; stroke-linejoin:round; }
+.trellis .nid { font:700 11px var(--mono); fill:var(--ink); }
+.trellis .ntitle { font:12px var(--body); fill:var(--ink); }
+.trellis .nstate { font:10px var(--mono); fill:var(--muted); letter-spacing:.04em; }
+.trellis a:hover .halo { stroke-width:1.6; }
+</style>
+<style>
+/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+.now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
+.now-five a { text-decoration-color:var(--line-strong); }
+.now-five .pause { color:var(--stamp); }
+.region { margin-top:30px; scroll-margin-top:16px; }
+.region-head { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.region-head .lead { font:italic 14px/1.4 var(--display); color:var(--muted); }
+.region-head .right { margin-left:auto; font:12px/1.4 var(--mono); color:var(--muted); display:flex; gap:4px 14px; align-items:center; flex-wrap:wrap; }
+.region-head .right .tick { white-space:nowrap; }
+.region-head .stamp { transform:rotate(-3deg); }
+.now-grid { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(300px, 1fr); gap:28px; align-items:start; }
+/* a run is a mount card on its side */
+.strip { display:grid; grid-template-columns:36px minmax(0, 1fr) auto; gap:5px 14px; padding:14px 18px 13px 14px; margin-bottom:12px; border-left:3px solid var(--line); transition:border-left-color 1.2s, opacity .5s, transform .36s cubic-bezier(.2,.7,.2,1); }
+.strip.new { border-left-color:var(--accent); }
+.strip .tape { left:50%; top:-7px; width:54px; height:14px; transform:translateX(-50%) rotate(-2deg); }
+.strip .glyphs { grid-row:1 / span 3; display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:2px; }
+.strip .glyphs .state::before { width:8px; height:8px; }
+.strip .head { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.strip .head .id { flex:none; }
+.strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
+.strip .bar { grid-column:2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
+.strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); }
+.strip .bar .spend.faint { color:var(--faint); }
+.strip .bar .verdict { font-weight:700; }
+/* the elapsed scale: a plate's scale bar. The track is the typical duration; the fill grows
+   along it; past the end mark a dashed line grows on, to at most half a track more. */
+.scale { --track:160px; position:relative; width:calc(var(--track) * 1.5); height:11px; flex:none; }
+.scale .track { position:absolute; left:0; width:var(--track); top:5px; height:1px; background:var(--line-strong); }
+.scale .track::before { content:""; position:absolute; left:0; top:-4px; width:1px; height:9px; background:var(--ink); }
+.scale .fill { position:absolute; left:0; top:3px; height:5px; width:calc(var(--track) * var(--r)); background:var(--accent); transition:width 15s linear; }
+.scale .end { position:absolute; left:var(--track); top:1px; width:1px; height:9px; background:var(--ink); }
+.scale .over { position:absolute; left:calc(var(--track) + 1px); width:calc(var(--track) * var(--o)); top:5px; height:0; border-top:1px dashed var(--ink); }
+.strip .said { grid-column:2 / span 2; font:italic 14.5px/1.4 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .said.reason { font-style:normal; font:13.5px/1.45 var(--body); white-space:normal; color:var(--ink); }
+.strip.st-held, .strip.st-paused, .strip.st-needs_you, .strip.st-failed { border-left-style:dashed; }
+.strip.st-no_process { border-left-style:dotted; }
+.strip.st-no_process .glyphs svg, .strip.st-no_process .t { opacity:.55; }
+.strip.leaving { opacity:0; transform:translateY(-6px); }
+/* the empty mount sheet */
+.empty-sheet { padding:26px 22px 22px; text-align:center; }
+.empty-sheet .tape { left:50%; top:-7px; transform:translateX(-50%) rotate(-3deg); }
+.empty-sheet b { display:block; font:500 19px/1.3 var(--display); margin-bottom:4px; }
+.empty-sheet p { margin:0; color:var(--muted); font:13.5px/1.5 var(--body); }
+/* next */
+.queue { list-style:none; margin:0; padding:0; }
+.queue li { display:grid; grid-template-columns:26px 22px 68px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); }
+.queue .pos { font:12px/1.4 var(--mono); color:var(--faint); text-align:right; }
+.queue .lt { font:15px/1.35 var(--display); overflow-wrap:anywhere; }
+.queue .why { grid-column:4; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .why .skip { color:var(--warn); font-weight:700; }
+.queue-more { display:block; margin:8px 4px 0; font:12px/1.4 var(--mono); }
+.sub { margin-top:20px; }
+.sub h3 { margin:0 0 6px; font:500 15px/1.3 var(--display); }
+.sub p, .sub li { margin:0; font:13.5px/1.5 var(--body); }
+.sub ul { list-style:none; padding:0; margin:0; }
+.sub li { padding:6px 4px; border-bottom:1px dashed var(--line); display:grid; grid-template-columns:68px minmax(0, 1fr); gap:2px 10px; align-items:baseline; }
+.sub li .id { padding-top:2px; }
+.sub li .fact { grid-column:2; font:12px/1.4 var(--mono); color:var(--muted); }
+.sub li .fact.held { color:var(--ink); }
+.sub li.faint { display:block; }
+/* where we are: the sheet grows */
+.sheet.big { padding:26px 18px 132px; min-height:520px; }
+.sheet .t1 { left:46%; top:150px; transform:rotate(-8deg); }
+.sheet .t2 { left:18%; top:392px; transform:rotate(11deg); }
+.sheet .mount { position:relative; display:flex; justify-content:center; }
+.sheet .mount .ghost { opacity:.14; filter:grayscale(1); }
+.sheet .mount .inked { position:absolute; inset:12px auto auto 50%; transform:translateX(-50%); clip-path:inset(calc(100% - var(--grown)) 0 0 0); transition:clip-path 1.2s cubic-bezier(.2,.7,.2,1); }
+.sheet .mount .inked.fresh { filter:drop-shadow(0 0 6px var(--accent)); }
+.sheet .mount img { max-height:420px; }
+.sheet .mount span svg { display:block; }
+.sheet .lbl { right:16px; bottom:16px; }
+.sheet .stamps { position:absolute; left:18px; bottom:32px; display:flex; gap:8px; }
+.sheet.small { display:grid; grid-template-columns:52px 1fr; gap:10px; padding:10px 12px; align-items:center; }
+.sheet.small .mount { padding:2px; }
+.sheet.small .mount img { max-height:70px; }
+.sheet.small .mount .inked { inset:2px auto auto 50%; }
+.sheet.small .tape { display:none; }
+.sheet.small .lbl { position:static; width:auto; border:none; padding:0; font-size:11px; }
+.sheet.small .stamps { position:static; margin-top:4px; }
+.sheet.small .stamp { font-size:9px; padding:0 5px; }
+.goals { list-style:none; margin:14px 0 0; padding:0; }
+.goals li { display:grid; grid-template-columns:22px minmax(0, 1fr) auto; gap:10px; align-items:baseline; padding:6px 2px; border-bottom:1px dashed var(--line); font:14px/1.4 var(--body); }
+.goals .n { font:12px/1.4 var(--mono); color:var(--faint); }
+.goals .fr { font:11.5px/1.4 var(--mono); color:var(--muted); white-space:nowrap; }
+.goals .fr.unlinked { color:var(--faint); font-style:italic; }
+.others { display:grid; gap:8px; margin-top:14px; }
+.closed-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:14px; }
+.closed-row a { display:flex; flex-direction:column; align-items:center; gap:4px; width:104px; text-decoration:none; font:11px/1.3 var(--mono); color:var(--muted); text-align:center; }
+.closed-row .thumb { width:44px; height:64px; border:1px solid var(--line); background:#f4efe3; overflow:hidden; display:flex; justify-content:center; }
+.closed-row img { height:64px; }
+.closed-row .stamp { font-size:8.5px; padding:0 4px; border-width:1.5px; }
+/* the last period */
+.figures { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:18px; margin:6px 0 18px; }
+.fig .v { font:500 32px/1.1 var(--display); display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; white-space:nowrap; }
+.fig .v small { font:400 14px/1.4 var(--display); color:var(--muted); padding-bottom:4px; display:inline-flex; gap:8px; align-items:center; }
+.fig .v .spark { margin-left:4px; }
+.fig .l { font:11px/1.4 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-top:4px; }
+.period-grid { display:grid; grid-template-columns:minmax(0, 1.6fr) minmax(280px, 1fr); gap:24px; align-items:start; }
+.period-grid table { font-size:12.5px; }
+.period-grid td, .period-grid th { padding:5px 7px; }
+.period-grid .chart-box { min-width:0; }
+.chart-narrow { display:none; }
+.hand { margin-top:14px; font:12.5px/1.5 var(--mono); color:var(--muted); }
+/* live region for a screen reader */
+.now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+/* the rail on this page: the page is the Running now block, so the rail does not repeat it */
+body.page-now .rail-running { display:none; }
+/* gallery: not part of the page */
+.gallery { margin-top:48px; padding-top:18px; border-top:2px dashed var(--line-strong); }
+.gallery h2 { font:500 20px/1.2 var(--display); margin:0 0 4px; }
+.gallery > p { margin:0 0 16px; color:var(--muted); }
+.gallery .g { margin-bottom:22px; }
+.gallery .g h4 { margin:0 0 8px; font:400 11px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.mock-tools { display:flex; gap:8px; align-items:center; }
+/* the phone: one column, the rail folded to wordmark and nav */
+@media (max-width:1000px) {
+  body.page-now .rail { padding:12px 14px; gap:10px; flex-direction:row; flex-wrap:wrap; align-items:center; height:auto; }
+  body.page-now .rail > :not(.wordmark):not(.nav) { display:none; }
+  body.page-now .nav { flex-direction:row; flex-wrap:wrap; gap:0 2px; }
+  body.page-now .nav a { min-height:32px; padding:0 8px; border-left:none; border-bottom:2px solid transparent; }
+  body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
+  body.page-now main { padding:18px 14px 48px; }
+  .now-five { font-size:17px; }
+  .region-head .right { margin-left:0; width:100%; }
+  .now-grid, .period-grid { grid-template-columns:1fr; }
+  .strip { grid-template-columns:28px minmax(0, 1fr); padding:12px 12px 11px 10px; }
+  .strip .glyphs { grid-row:1 / span 4; }
+  .strip .head { flex-wrap:wrap; gap:4px 10px; }
+  .strip .t { white-space:normal; }
+  .strip .meta { grid-column:2; text-align:left; white-space:normal; }
+  .strip .bar { grid-column:2; }
+  .strip .said { grid-column:2; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .scale { --track:110px; }
+  .queue li { grid-template-columns:22px 20px minmax(0, 1fr); }
+  .queue .id { grid-column:3; }
+  .queue .lt, .queue .why { grid-column:3; }
+  .sheet.big { padding:18px 12px 18px; min-height:0; }
+  .sheet .t1 { top:120px; } .sheet .t2 { display:none; }
+  .sheet .mount img { max-height:300px; }
+  .sheet.big .lbl { position:static; width:auto; margin:14px 0 10px; }
+  .sheet.big .stamps { position:static; }
+  .figures { grid-template-columns:1fr 1fr; gap:14px; }
+  .fig .v { font-size:28px; gap:6px; }
+  .fig .l { letter-spacing:.03em; }
+  .chart-wide { display:none; } .chart-narrow { display:block; }
+}
+</style>
+</head>
+<body class="page-now">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
+<pattern id="hatch2" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(-40)"><rect width="4" height="4" fill="var(--petal-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.6"/></pattern>
+<pattern id="hatch3" patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(60)"><rect width="3" height="3" fill="var(--berry-tint)"/><line x1="0" y1="0" x2="0" y2="3" stroke="var(--hatch)" stroke-width="0.6"/></pattern>
+<filter id="wobble" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="3" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="2.2" xChannelSelector="R" yChannelSelector="G"/></filter>
+<filter id="wash" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.4"/></filter>
+
+<g id="lf"><path d="M0 0 C6 -11 24 -13 34 0 C24 13 6 11 0 0 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1" stroke-linejoin="round"/><path d="M2 0 L31 0" stroke="var(--ink)" stroke-width="0.7" fill="none"/><path d="M8 -1 L13 -6 M14 -1 L20 -8 M20 -1 L26 -6 M8 1 L13 6 M14 1 L20 8 M20 1 L26 6" stroke="var(--vein)" stroke-width="0.5" fill="none"/></g>
+<g id="tendril"><path d="M0 0 c14 -8 26 -4 26 6 c0 9 -12 11 -14 3 c-1 -6 7 -8 9 -2" fill="none" stroke="var(--ink)" stroke-width="0.9" stroke-linecap="round"/></g>
+<g id="peaflower"><path d="M0 0 C-14 -6 -16 -28 -2 -32 C12 -28 12 -6 0 0 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><path d="M-3 -2 C-11 -8 -7 -20 -1 -15 Z M3 -2 C11 -8 7 -20 1 -15 Z" fill="var(--petal2)" stroke="var(--ink)" stroke-width="0.8"/><path d="M-2 0 C-1 5 1 5 2 0" stroke="var(--ink)" stroke-width="0.8" fill="none"/></g>
+<g id="pod"><path d="M0 0 C10 -6 34 -2 46 14 C30 20 8 14 0 0 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1"/><circle cx="12" cy="6" r="3.2" fill="var(--pea)" stroke="var(--ink)" stroke-width=".6"/><circle cx="22" cy="8.5" r="3.2" fill="var(--pea)" stroke="var(--ink)" stroke-width=".6"/><circle cx="32" cy="11" r="3.2" fill="var(--pea)" stroke="var(--ink)" stroke-width=".6"/></g>
+<g id="pea">
+  <path d="M100 292 C92 250 112 214 102 176 C94 146 112 118 100 84 C94 66 100 48 104 30" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M97 288 C90 250 109 214 99 178" fill="none" stroke="var(--hatch)" stroke-width="0.6" stroke-dasharray="1.5 2"/>
+  <use href="#lf" transform="translate(101 252) rotate(-28)"/><use href="#lf" transform="translate(101 252) scale(-1 1) rotate(-28)"/>
+  <use href="#lf" transform="translate(105 220) rotate(-22) scale(.95)"/><use href="#lf" transform="translate(105 220) scale(-1 1) rotate(-22) scale(.95)"/>
+  <use href="#pod" transform="translate(104 198) rotate(20)"/>
+  <use href="#lf" transform="translate(98 186) rotate(-30) scale(.9)"/><use href="#lf" transform="translate(98 186) scale(-1 1) rotate(-30) scale(.9)"/>
+  <use href="#peaflower" transform="translate(84 168) rotate(-30) scale(.9)"/>
+  <use href="#lf" transform="translate(103 150) rotate(-26) scale(.85)"/><use href="#lf" transform="translate(103 150) scale(-1 1) rotate(-26) scale(.85)"/>
+  <use href="#peaflower" transform="translate(118 132) rotate(25) scale(.85)"/>
+  <use href="#tendril" transform="translate(106 118) rotate(-10)"/>
+  <use href="#lf" transform="translate(99 92) rotate(-30) scale(.75)"/><use href="#lf" transform="translate(99 92) scale(-1 1) rotate(-30) scale(.75)"/>
+  <use href="#lf" transform="translate(103 60) rotate(-34) scale(.6)"/><use href="#lf" transform="translate(103 60) scale(-1 1) rotate(-34) scale(.6)"/>
+  <use href="#tendril" transform="translate(103 44) rotate(-30) scale(.8)"/><use href="#tendril" transform="translate(103 40) scale(-1 1) rotate(-50) scale(.7)"/>
+</g>
+
+<g id="bleaf"><path d="M16 2 C4 0 -3 -14 1 -24 C4 -32 10 -37 16 -41 C22 -37 28 -32 31 -24 C35 -14 28 0 16 2 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1" stroke-linejoin="round"/><path d="M16 -38 L16 0" stroke="var(--ink)" stroke-width=".6"/><path d="M16 -28 L7 -20 M16 -20 L5 -12 M16 -12 L8 -5 M16 -28 L25 -20 M16 -20 L27 -12 M16 -12 L24 -5" stroke="var(--vein)" stroke-width=".45" fill="none"/><path d="M1 -24 C4 -32 10 -37 16 -41 C22 -37 28 -32 31 -24" fill="none" stroke="var(--ink)" stroke-width="1.2" stroke-dasharray="1.6 1.4"/></g>
+<g id="thorn"><path d="M0 0 l7 -3 l-2.5 6.5 z" fill="var(--ink)"/></g>
+<g id="berry"><circle cx="0" cy="0" r="3.4" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="6" cy="1" r="3.4" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="3" cy="6" r="3.4" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="-3.5" cy="5" r="3.2" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="2" cy="-5" r="3.1" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="-4" cy="-2" r="3" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="8" cy="7" r="2.9" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><circle cx="1" cy="11" r="2.9" fill="var(--berry)" stroke="var(--ink)" stroke-width=".6"/><path d="M-1 -8 l-4 -5 M1 -8 l1 -6 M3 -8 l5 -4" stroke="var(--ink)" stroke-width=".7" fill="none"/></g>
+<g id="bramble">
+  <path d="M24 292 C40 220 70 160 130 128 C170 108 196 84 190 44" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M62 292 C70 250 58 210 92 178 C110 162 130 156 146 150" fill="none" stroke="var(--ink)" stroke-width="1.4" stroke-linecap="round"/>
+  <use href="#thorn" transform="translate(34 262) rotate(-70)"/><use href="#thorn" transform="translate(46 236) rotate(-65)"/><use href="#thorn" transform="translate(64 204) rotate(-55)"/><use href="#thorn" transform="translate(86 172) rotate(-40)"/><use href="#thorn" transform="translate(112 144) rotate(-25)"/><use href="#thorn" transform="translate(150 118) rotate(-15)"/><use href="#thorn" transform="translate(176 100) rotate(-10)"/><use href="#thorn" transform="translate(68 240) rotate(-80)"/><use href="#thorn" transform="translate(74 200) rotate(-60)"/>
+  <g transform="translate(100 162) scale(1.35)"><use href="#bleaf" transform="rotate(-42)"/><use href="#bleaf" transform="rotate(-2)"/><use href="#bleaf" transform="rotate(38)"/></g>
+  <g transform="translate(160 106) scale(1.05)"><use href="#bleaf" transform="rotate(-50)"/><use href="#bleaf" transform="rotate(-8)"/><use href="#bleaf" transform="rotate(34)"/></g>
+  <g transform="translate(56 230) scale(.9)"><use href="#bleaf" transform="rotate(-70)"/><use href="#bleaf" transform="rotate(-25)"/></g>
+  <use href="#berry" transform="translate(178 74)"/><use href="#berry" transform="translate(140 138) scale(.9)"/><g style="--berry:var(--berry2)"><use href="#berry" transform="translate(120 128) scale(.7)"/></g>
+  <path d="M186 52 c-2 -8 4 -14 8 -12" stroke="var(--ink)" stroke-width="1" fill="none"/>
+</g>
+
+<g id="bell"><path d="M0 0 C-7 10 -9 24 -3 34 C1 37 7 37 11 34 C17 24 15 10 8 0 C5 -2 3 -2 0 0 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><circle cx="3" cy="26" r="1" fill="var(--ink)"/><circle cx="7.5" cy="22" r="1" fill="var(--ink)"/><circle cx="4" cy="18" r=".9" fill="var(--ink)"/><circle cx="8" cy="30" r=".9" fill="var(--ink)"/></g>
+<g id="foxglove">
+  <path d="M100 292 C100 240 102 180 100 120 C99 90 100 60 100 34" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M100 282 C72 266 40 272 32 298 C60 302 90 298 100 282 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1"/><path d="M100 282 C128 266 160 272 168 298 C140 302 110 298 100 282 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1"/><path d="M98 284 L42 292 M102 284 L158 292" stroke="var(--ink)" stroke-width=".6"/>
+  <path d="M100 262 C82 250 60 256 54 274 C74 276 92 272 100 262 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M100 262 C118 250 140 256 146 274 C126 276 108 272 100 262 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/>
+  <use href="#bell" transform="translate(100 226) rotate(-95)"/><use href="#bell" transform="translate(100 206) rotate(95) scale(-1 1) scale(.95)"/>
+  <use href="#bell" transform="translate(100 186) rotate(-92) scale(.9)"/><use href="#bell" transform="translate(100 168) rotate(92) scale(-1 1) scale(.85)"/>
+  <use href="#bell" transform="translate(100 150) rotate(-88) scale(.8)"/><use href="#bell" transform="translate(100 134) rotate(88) scale(-1 1) scale(.72)"/>
+  <use href="#bell" transform="translate(100 118) rotate(-84) scale(.64)"/><use href="#bell" transform="translate(100 104) rotate(84) scale(-1 1) scale(.56)"/>
+  <use href="#bell" transform="translate(100 92) rotate(-80) scale(.48)"/><use href="#bell" transform="translate(100 82) rotate(80) scale(-1 1) scale(.4)"/>
+  <ellipse cx="96" cy="66" rx="3" ry="5.5" transform="rotate(-20 96 66)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".8"/><ellipse cx="104" cy="56" rx="2.6" ry="5" transform="rotate(20 104 56)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".8"/><ellipse cx="100" cy="44" rx="2.2" ry="4.4" fill="var(--petal)" stroke="var(--ink)" stroke-width=".8"/>
+</g>
+
+<g id="pinna"><path d="M0 0 C4 -3 8 -4 12 -3 C16 -5 20 -6 24 -4 C28 -6 32 -6 36 -3 C40 -5 44 -4 48 -2 C52 -3 56 -1 60 0 C56 1 52 3 48 2 C44 4 40 5 36 3 C32 6 28 6 24 4 C20 6 16 5 12 3 C8 4 4 3 0 0 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width=".9" stroke-linejoin="round"/><path d="M0 0 L58 0" stroke="var(--ink)" stroke-width=".55"/></g>
+<g id="fern">
+  <path d="M60 292 C70 230 90 170 120 110 C135 82 150 60 170 40" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-linecap="round"/>
+  <use href="#pinna" transform="translate(64 268) rotate(-50) scale(1.05)"/><use href="#pinna" transform="translate(64 268) rotate(-130) scale(-1 1) scale(1.05)"/>
+  <use href="#pinna" transform="translate(70 244) rotate(-52) scale(1.1)"/><use href="#pinna" transform="translate(70 244) rotate(-128) scale(-1 1) scale(1.1)"/>
+  <use href="#pinna" transform="translate(78 218) rotate(-52) scale(1.05)"/><use href="#pinna" transform="translate(78 218) rotate(-128) scale(-1 1) scale(1.05)"/>
+  <use href="#pinna" transform="translate(88 194) rotate(-54) scale(1)"/><use href="#pinna" transform="translate(88 194) rotate(-126) scale(-1 1) scale(1)"/>
+  <use href="#pinna" transform="translate(100 170) rotate(-56) scale(.9)"/><use href="#pinna" transform="translate(100 170) rotate(-124) scale(-1 1) scale(.9)"/>
+  <use href="#pinna" transform="translate(112 146) rotate(-58) scale(.8)"/><use href="#pinna" transform="translate(112 146) rotate(-122) scale(-1 1) scale(.8)"/>
+  <use href="#pinna" transform="translate(124 122) rotate(-60) scale(.68)"/><use href="#pinna" transform="translate(124 122) rotate(-120) scale(-1 1) scale(.68)"/>
+  <use href="#pinna" transform="translate(136 100) rotate(-62) scale(.55)"/><use href="#pinna" transform="translate(136 100) rotate(-118) scale(-1 1) scale(.55)"/>
+  <use href="#pinna" transform="translate(148 80) rotate(-64) scale(.42)"/><use href="#pinna" transform="translate(148 80) rotate(-116) scale(-1 1) scale(.42)"/>
+  <use href="#pinna" transform="translate(158 62) rotate(-66) scale(.3)"/><use href="#pinna" transform="translate(158 62) rotate(-114) scale(-1 1) scale(.3)"/>
+  <path d="M170 40 c6 -8 2 -16 -6 -14 c-6 2 -4 10 2 10" fill="none" stroke="var(--ink)" stroke-width="1"/>
+</g>
+
+<g id="petal"><path d="M0 0 C-30 -6 -40 -40 -12 -46 C0 -50 14 -44 16 -30 C18 -14 12 -2 0 0 Z" fill="var(--poppy)" stroke="var(--ink)" stroke-width="1"/><path d="M-6 -8 C-16 -18 -20 -30 -14 -40" stroke="var(--hatch)" stroke-width=".5" fill="none"/></g>
+<g id="poppy">
+  <path d="M120 292 C118 250 124 200 112 150 C106 126 110 100 116 80" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M116 260 l-4 -2 M118 230 l-4 -1 M114 200 l-4 -2 M112 170 l-4 -1 M110 140 l-4 -2 M112 112 l-4 -1" stroke="var(--ink)" stroke-width=".7"/>
+  <path d="M120 292 C124 250 140 220 150 190 C156 172 152 154 146 140" fill="none" stroke="var(--ink)" stroke-width="1.2" stroke-linecap="round"/>
+  <ellipse cx="146" cy="128" rx="9" ry="13" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M137 122 c3 -3 15 -3 18 0 M140 116 c3 -2 9 -2 12 0" stroke="var(--ink)" stroke-width=".8" fill="none"/><path d="M142 115 l-2 -5 M146 114 l0 -5 M150 115 l2 -5" stroke="var(--ink)" stroke-width=".8"/>
+  <path d="M60 292 C70 250 62 200 90 170 C100 158 104 150 96 140" fill="none" stroke="var(--ink)" stroke-width="1.2" stroke-linecap="round"/><ellipse cx="94" cy="134" rx="5" ry="8" transform="rotate(-30 94 134)" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/>
+  <path d="M96 236 C84 232 70 236 62 250 C76 254 90 250 96 236 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M124 210 C136 204 150 206 158 220 C144 226 130 222 124 210 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/>
+  <g transform="translate(116 82)"><use href="#petal" transform="rotate(10) scale(1.05)"/><use href="#petal" transform="rotate(100) scale(1.05)"/><use href="#petal" transform="rotate(190) scale(1.05)"/><use href="#petal" transform="rotate(280) scale(1.05)"/><circle cx="0" cy="0" r="7" fill="var(--ink)"/><circle cx="0" cy="0" r="3" fill="var(--seed)"/><path d="M-11 -4 l-4 -3 M11 -4 l4 -3 M-8 8 l-3 5 M8 8 l3 5 M-12 3 l-5 1 M12 3 l5 1" stroke="var(--ink)" stroke-width=".8"/></g>
+</g>
+
+<!-- generic sprig: the pre-scan placeholder for a plant with a plate but no bespoke drawing -->
+<g id="sprig">
+  <path d="M100 292 C98 240 102 190 100 140 C99 110 100 80 100 50" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linecap="round"/>
+  <use href="#lf" transform="translate(100 230) rotate(-28) scale(1.05)"/><use href="#lf" transform="translate(100 230) scale(-1 1) rotate(-28) scale(1.05)"/>
+  <use href="#lf" transform="translate(100 178) rotate(-25) scale(.95)"/><use href="#lf" transform="translate(100 178) scale(-1 1) rotate(-25) scale(.95)"/>
+  <use href="#lf" transform="translate(100 126) rotate(-30) scale(.82)"/><use href="#lf" transform="translate(100 126) scale(-1 1) rotate(-30) scale(.82)"/>
+  <use href="#bell" transform="translate(100 80) rotate(-90) scale(.7)"/>
+</g>
+
+<!-- growth-stage glyphs: 24x24 -->
+<g id="st-seed"><ellipse cx="12" cy="13" rx="5" ry="7.5" transform="rotate(-25 12 13)" fill="var(--seed)" stroke="var(--ink)" stroke-width="1.1"/><path d="M9.5 9 c1.2 2 1.2 6 0 8" stroke="var(--ink)" stroke-width=".8" fill="none"/></g>
+<g id="st-sprout"><path d="M12 21 V12" stroke="var(--ink)" stroke-width="1.2" fill="none"/><path d="M12 13 C6 13 5 8 4 6 C9 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M12 13 C18 13 19 8 20 6 C15 6 12 9 12 13 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1"/><path d="M6 21 H18" stroke="var(--ink)" stroke-width="1"/></g>
+<g id="st-leaf"><path d="M4 20 C4 8 14 4 20 4 C20 12 14 20 4 20 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width="1.1"/><path d="M5 19 L17 7" stroke="var(--ink)" stroke-width=".7"/></g>
+<g id="st-bud"><path d="M12 22 V14" stroke="var(--ink)" stroke-width="1.2"/><path d="M12 14 C7 14 7 5 12 3 C17 5 17 14 12 14 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><path d="M12 14 C9 12 9 8 12 6 M12 14 C15 12 15 8 12 6" stroke="var(--ink)" stroke-width=".7" fill="none"/><path d="M12 14 C9 15 7 13 7 11 M12 14 C15 15 17 13 17 11" stroke="var(--ink)" stroke-width=".8" fill="none"/></g>
+<g id="st-flower"><ellipse cx="12" cy="6" rx="3" ry="5" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(72 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(144 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(216 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><ellipse cx="12" cy="6" rx="3" ry="5" transform="rotate(288 12 12)" fill="var(--petal)" stroke="var(--ink)" stroke-width=".9"/><circle cx="12" cy="12" r="2.6" fill="var(--ink)"/></g>
+<g id="st-cut"><circle cx="12" cy="12" r="7.5" fill="none" stroke="var(--ink)" stroke-width="1" stroke-dasharray="2 1.6"/><circle cx="12" cy="12" r="2.4" fill="var(--ink)"/><path d="M4 4 l4 4 M20 4 l-4 4" stroke="var(--ink)" stroke-width="1"/></g>
+<g id="st-fruit"><path d="M12 7 C16 5 21 9 21 15 C21 20 17 22 12 22 C7 22 3 20 3 15 C3 9 8 5 12 7 Z" fill="var(--apple)" stroke="var(--ink)" stroke-width=".9"/><path d="M12 7 C11 9 11 12 12 14" stroke="var(--ink)" stroke-width=".6" fill="none"/><path d="M12 7 L13 3" stroke="var(--ink)" stroke-width="1" stroke-linecap="round" fill="none"/><path d="M13 4 C16 1 20 2 20 6 C20 8 15 8 13 5 Z" fill="var(--leaf)" stroke="var(--ink)" stroke-width=".7"/></g>
+<g id="st-wilt"><path d="M8 22 C8 14 10 10 14 8 C18 6 18 10 14 12" stroke="var(--ink)" stroke-width="1.2" fill="none"/><path d="M14 12 C18 10 21 14 17 17 C14 18 13 15 14 12 Z" fill="var(--wilt)" stroke="var(--ink)" stroke-width=".9"/><path d="M5 22 H12" stroke="var(--ink)" stroke-width="1"/></g>
+<g id="st-pressed"><path d="M5 19 C5 9 13 5 19 5 C19 13 13 19 5 19 Z" fill="var(--pressed)" stroke="var(--ink)" stroke-width="1"/><path d="M6 18 L17 7" stroke="var(--ink)" stroke-width=".6"/><circle cx="18.5" cy="5.5" r="2.2" fill="var(--pin)" stroke="var(--ink)" stroke-width=".6"/></g>
+<g id="st-tag"><path d="M10 22 V13" stroke="var(--ink)" stroke-width="1.2"/><path d="M10 13 C6 13 6 6 10 4 C14 6 14 13 10 13 Z" fill="var(--petal)" stroke="var(--ink)" stroke-width="1"/><path d="M12 8 l9 -3.5 v6 l-9 3.5 z" fill="var(--paper)" stroke="var(--ink)" stroke-width=".9" stroke-linejoin="round"/><text x="14.6" y="10.6" font-size="5" font-family="serif" font-weight="700" fill="var(--ink)">?</text></g>
+<!-- wont_do: seeds saved back into a labelled packet, set aside rather than sown -->
+<g id="st-fallow"><rect x="5" y="6.5" width="14" height="12" rx="1" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.1"/><path d="M5 10 H19" stroke="var(--ink)" stroke-width=".8"/><path d="M8 13 H16 M8 15.5 H13" stroke="var(--ink)" stroke-width=".7"/><ellipse cx="15.5" cy="15.5" rx="1.4" ry="2" transform="rotate(-25 15.5 15.5)" fill="var(--seed)" stroke="var(--ink)" stroke-width=".5"/></g>
+</defs></svg>
+
+<svg class="bg-vine" viewBox="0 0 300 440" width="500" height="733" aria-hidden="true" focusable="false"><path class="stem" d="M292 440 C312 352 228 300 246 226 C266 152 156 44 44 58" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round"/><path d="M292 440 C312 352 228 300 246 226 C266 152 156 44 44 58" fill="none" stroke="var(--hatch)" stroke-width="0.6" stroke-dasharray="1.5 2.5" transform="translate(-3 0)"/><use href="#lf" transform="translate(295.1 409.8) rotate(-153.4) scale(1.55)"/><use href="#lf" transform="translate(289.9 376.9) rotate(-43.7) scale(1.47)"/><use href="#lf" transform="translate(278.7 346.6) rotate(-176.1) scale(1.38)"/><use href="#lf" transform="translate(264.9 317.8) rotate(-53.9) scale(1.30)"/><use href="#tendril" transform="translate(264.9 317.8) rotate(-155.9) scale(1.04)"/><use href="#lf" transform="translate(252.3 289.5) rotate(-172.9) scale(1.22)"/><use href="#lf" transform="translate(244.4 260.8) rotate(-36.2) scale(1.13)"/><use href="#lf" transform="translate(245.0 230.4) rotate(-141.2) scale(1.05)"/><use href="#lf" transform="translate(247.7 197.4) rotate(-35.2) scale(0.97)"/><use href="#lf" transform="translate(236.7 162.5) rotate(-178.4) scale(0.88)"/><use href="#tendril" transform="translate(236.7 162.5) rotate(-76.4) scale(0.71)"/><use href="#lf" transform="translate(213.9 128.6) rotate(-68.7) scale(0.80)"/><use href="#lf" transform="translate(181.5 98.4) rotate(-205.0) scale(0.72)"/><use href="#lf" transform="translate(141.8 74.6) rotate(-93.2) scale(0.63)"/><use href="#lf" transform="translate(97.1 60.0) rotate(-231.0) scale(0.55)"/><use href="#tendril" transform="translate(44.0 58.0) rotate(152.9) scale(1.1)"/><use href="#tendril" transform="translate(44.0 58.0) scale(-1 1) rotate(-322.9) scale(0.8)"/></svg>
+<div class="shell">
+<aside class="rail">
+  <a class="wordmark" href="/"><svg class="mark" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><span>context-garden<small>context garden</small></span></a>
+  <nav class="nav">
+    <a href="/now1" class="on">Now 1</a>
+    <a href="/now2">Now 2</a>
+    <a href="/">Inbox <span class="count ">0</span></a>
+    <a href="/board">Board</a>
+    <a href="/trellis">Trellis</a>
+    <a href="/events">Timeline</a>
+    <a href="/trials">Trials</a>
+    <a href="/runs">Runs</a>
+    <a href="/costs">Costs</a>
+    <a href="/config">Config</a>
+  </nav>
+  <div>
+    <h4>Phases</h4>
+    <a class="drawer" href="/phases/context-garden/phase-05"><span class="thumb"><img src="../../src/garden/web/static/plates/poppy-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-05</b><i>Plate V · Papaver argemone</i><span>context-garden · 41 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-04"><span class="thumb"><img src="../../src/garden/web/static/plates/fern-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-04 <span class="badge hot">frozen</span></b><i>Plate IV · Dryopteris filix-mas</i><span>context-garden · 62 tasks</span></span></a><a class="drawer" href="/phases/context-garden/phase-06"><span class="thumb"><img src="../../src/garden/web/static/plates/peony-thumb.webp" alt="" width="38" height="58"></span><span class="k"><b>phase-06</b><i>Plate VI · Paeonia mascula</i><span>context-garden · 1 tasks</span></span></a>
+    <a class="drawer" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>3 closed phases</span></span></a>
+  </div>
+  <div class="rail-running">
+    <h4>Running now</h4>
+    <div class="running-now"><div class="r"><span class="dot"></span><a href="/tasks/CG-292">CG-292</a><span>check · 31 s</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-307">CG-307</a><span>trial · claude-fable-5-1 · 17 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-249">CG-249</a><span>revise · 65 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-242">CG-242</a><span>revise · 69 min</span></div><div class="r"><span class="dot"></span><a href="/tasks/CG-245">CG-245</a><span>revise · 69 min</span></div></div>
+  </div>
+  <div class="foot"><span>scheduler loop on · tick 02:09:57Z</span></div>
+</aside>
+<main>
+<div class="page-head">
+  <div><h1>Now</h1></div>
+  <div class="tools mock-tools"><span class="badge">mock · snapshot 2026-09-06T02:10Z</span><button class="quiet" type="button" data-theme-toggle>dark / light</button><button class="quiet" type="button" data-gallery-toggle>states</button></div>
+</div>
+<p class="now-five"><a href="#now">5 runs in flight</a> on 5 of 5 worker slots (3 without a process) and 0 of 3 review slots. <a href="#next">Next</a>: CG-242, then CG-237. <a href="#where">phase-05</a>: 9 of 41 merged.
+  <a href="#period">Last hour</a>: 7 merged, $16.20.
+</p>
+<div class="now-live" aria-live="polite"></div>
+
+<section class="region" id="now">
+  <div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span>
+    <span class="right">5 of 5 worker slots · 0 of 3 review slots</span></div>
+  <article class="specimen strip new st-running" data-task="CG-292" data-run="20260906T020957Z-check">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-ready" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in bud"><title>in bud</title><use href="#st-bud"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-292">CG-292</a>
+    <span class="t">Every status write goes through _transition: Scheduler.mark_done and unapprove, and a source-grep test</span>
+  </div>
+  <div class="meta">
+    check · rebase_recheck
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:0.202;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
+      <span>31 s · typically 3 min</span>
+    
+    <span class="spend faint">token-free</span>
+    
+  </div>
+  <div class="said"><span class="faint">no words yet</span></div>
+  
+</article><article class="specimen strip  st-running" data-task="CG-307" data-run="20260906T015311Z-trial">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-307">CG-307</a>
+    <span class="t">Design the Now page: information architecture, visual system, motion, and a static mock of every state</span>
+  </div>
+  <div class="meta">
+    trial · claude claude-fable-5-1
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span>17 min · typically 9 min</span>
+    
+    <span class="spend">18.6M tokens so far</span>
+    
+  </div>
+  <div class="said">“The rm was blocked by the guard on variable-expanded paths. I&#39;ll skip the cleanup (new names don&#39;t collide) and run the…”</div>
+  
+</article><article class="specimen strip  st-no_process" data-task="CG-249" data-run="20260906T010518Z-revise">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-" title="no process"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-249">CG-249</a>
+    <span class="t">`garden dispatch &lt;id&gt;` (CLI) allows dispatching a draft directly</span>
+  </div>
+  <div class="meta">
+    revise
+    
+  </div>
+  
+  <div class="bar"><span class="faint">no process recorded · started 01:05Z · a slot is held until a tick reaps it</span></div>
+  
+</article><article class="specimen strip  st-no_process" data-task="CG-242" data-run="20260906T010102Z-revise">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-" title="no process"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-242">CG-242</a>
+    <span class="t">Hold untrusted config changes before live reload</span>
+  </div>
+  <div class="meta">
+    revise
+    
+  </div>
+  
+  <div class="bar"><span class="faint">no process recorded · started 01:01Z · a slot is held until a tick reaps it</span></div>
+  
+</article><article class="specimen strip  st-no_process" data-task="CG-245" data-run="20260906T010102Z-revise">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-" title="no process"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-245">CG-245</a>
+    <span class="t">Isolate planner execution from operator state</span>
+  </div>
+  <div class="meta">
+    revise
+    
+  </div>
+  
+  <div class="bar"><span class="faint">no process recorded · started 01:01Z · a slot is held until a tick reaps it</span></div>
+  
+</article>
+  
+  
+</section>
+
+<div class="now-grid">
+<section class="region" id="next">
+  <div class="region-head"><span class="eyebrow">Next</span><span class="lead">the order the tick will take</span>
+    <span class="right"><span class="tick">next tick in <span data-countdown>60</span> s</span><span>no slot free: the first line waits for a run to finish</span></span></div>
+  
+  <ol class="queue">
+    
+    <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><a class="id" href="/tasks/CG-242">CG-242</a><span class="lt">Hold untrusted config changes before live reload</span>
+      <span class="why">revise round 2 of 3 · revise · medium → codex gpt-5.6-terra</span></li>
+    
+    <li><span class="pos">2</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-237">CG-237</a><span class="lt">The not-logged-in check reads a worker&#39;s prose as an auth failure: match the CLI&#39;s own error, not the report text</span>
+      <span class="why">priority 1 · work · easy → codex gpt-5.6-luna</span></li>
+    
+    <li><span class="pos">3</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-310">CG-310</a><span class="lt">Worker temp files live on disk and are pruned: TMPDIR under the work root, per-run cleanup at reap, and a sweep of finished tasks&#39; worktree venvs and caches</span>
+      <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
+    
+    <li><span class="pos">4</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-311">CG-311</a><span class="lt">The task page shows the decision a worker&#39;s no-change or question report needs: the same card and actions as the Inbox, right where the notification sends you</span>
+      <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
+    
+    <li><span class="pos">5</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-312">CG-312</a><span class="lt">Inbox decision cards lay out at full width: the text column no longer collapses to one word per line and the action buttons no longer overlap the evidence list</span>
+      <span class="why">priority 1 · work · medium → codex gpt-5.6-terra</span></li>
+    
+    <li><span class="pos">6</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-314">CG-314</a><span class="lt">Design Now 2: astra&#39;s take on the Now page, information architecture, visual system, motion, and a static mock of every state</span>
+      <span class="why">priority 1 · work · hard → codex gpt-6-astra</span></li>
+    
+    <li><span class="pos">7</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-215">CG-215</a><span class="lt">Onboarding skill and command: analyse an existing project and its environment to create a garden product, principles, setup config and a first phase</span>
+      <span class="why">priority 2 · work · hard → codex gpt-5.6-sol</span></li>
+    
+    <li><span class="pos">8</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-253">CG-253</a><span class="lt">The retro captures its own walkthrough, and hand merges and tick duration are in garden metrics and the rail</span>
+      <span class="why">priority 2 · work · easy → codex gpt-5.6-luna</span></li>
+    
+  </ol>
+  <a class="queue-more" href="/board?view=backlog">and 18 more →</a>
+  
+  
+  <div class="sub">
+    <h3>Merge queue</h3>
+    <ul>
+      
+      
+      
+      <li class="faint">no open PR</li>
+    </ul>
+    
+  </div>
+  
+</section>
+
+<section class="region" id="where">
+  <div class="region-head"><span class="eyebrow">Where we are</span><span class="lead">phase-05, seed</span></div>
+  
+  <div class="specimen sheet big">
+  <span class="tape t1"></span>
+  <div class="mount plate-mount" style="--grown:21.9%">
+    <img class="plate ghost" src="../../src/garden/web/static/plates/poppy.webp" alt=""><img class="plate inked" src="../../src/garden/web/static/plates/poppy.webp" alt="Papaver argemone, inked to 22 percent">
+    
+  </div>
+  <span class="tape t2"></span>
+  <div class="lbl"><b>context-garden · plate V</b><br><a href="/phases/context-garden/phase-05">phase-05</a><br><i>Papaver argemone</i> — prickly poppy<br>9 of 41 merged · 1 PRs open · 4 running<br>seed · spent $60.18</div>
+  <div class="stamps"><span class="stamp">open</span></div>
+</div>
+  
+  <ol class="goals">
+    <li><span class="n">1</span><span>Onboarding</span><span class="fr"><svg class="stage" viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="seed"><title>seed</title><use href="#st-seed"/></svg> 0 of 1 · not started</span></li><li><span class="n">2</span><span>Any model, at the right price</span><span class="fr"><svg class="stage" viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="seed"><title>seed</title><use href="#st-seed"/></svg> 0 of 1 · not started</span></li><li><span class="n">3</span><span>Shared quotas</span><span class="fr"><svg class="stage" viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="seed"><title>seed</title><use href="#st-seed"/></svg> 0 of 1 · not started</span></li><li><span class="n">4</span><span>Any machine</span><span class="fr"><svg class="stage" viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="seed"><title>seed</title><use href="#st-seed"/></svg> 0 of 1 · not started</span></li><li><span class="n">5</span><span>What the phase-04 retro adds</span><span class="fr"><svg class="stage" viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg> 3 of 4 · in flight</span></li>
+  </ol>
+  
+  <div class="others"><div class="specimen sheet small">
+  <span class="tape t1"></span>
+  <div class="mount plate-mount" style="--grown:98.4%">
+    <img class="plate ghost" src="../../src/garden/web/static/plates/fern.webp" alt=""><img class="plate inked" src="../../src/garden/web/static/plates/fern.webp" alt="Dryopteris filix-mas, inked to 98 percent">
+    
+  </div>
+  
+  <div class="lbl"><b>context-garden · plate IV</b><br><a href="/phases/context-garden/phase-04">phase-04</a><br><i>Dryopteris filix-mas</i> — male fern<br>61 of 62 merged · 1 PRs open · 1 running<br>in bud · spent $502.52</div>
+  <div class="stamps"><span class="stamp">frozen</span><span class="stamp">reopen</span></div>
+</div><div class="specimen sheet small">
+  <span class="tape t1"></span>
+  <div class="mount plate-mount" style="--grown:0.0%">
+    <img class="plate ghost" src="../../src/garden/web/static/plates/peony.webp" alt=""><img class="plate inked" src="../../src/garden/web/static/plates/peony.webp" alt="Paeonia mascula, inked to 0 percent">
+    
+  </div>
+  
+  <div class="lbl"><b>context-garden · plate VI</b><br><a href="/phases/context-garden/phase-06">phase-06</a><br><i>Paeonia mascula</i> — peony<br>0 of 1 merged · 0 PRs open · 0 running<br>seed</div>
+  <div class="stamps"><span class="stamp">open</span></div>
+</div></div>
+  <div class="closed-row"><a href="/phases/context-garden/phase-03"><span class="thumb"><img src="../../src/garden/web/static/plates/foxglove-thumb.webp" alt=""></span><span>phase-03 · III</span><span class="stamp ink">pressed</span></a><a href="/phases/context-garden/phase-01-bootstrap"><span class="thumb"><img src="../../src/garden/web/static/plates/pea-thumb.webp" alt=""></span><span>phase-01-bootstrap · I</span><span class="stamp ink">pressed</span></a><a href="/phases/context-garden/phase-02-friction"><span class="thumb"><img src="../../src/garden/web/static/plates/bramble-thumb.webp" alt=""></span><span>phase-02-friction · II</span><span class="stamp ink">pressed</span></a></div>
+</section>
+</div>
+
+<section class="region" id="period">
+  <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
+    <span class="right filters" style="margin-bottom:0"><a href="?window=hour" data-window="hour" class="on">last hour</a><a href="?window=today" data-window="today" class="">today</a><a href="?window=24h" data-window="24h" class="">last 24 hours</a><a href="?window=phase" data-window="phase" class="">this phase</a></span></div>
+  
+  <div class="window" data-window-panel="24h" hidden>
+    
+    <div class="figures">
+      <div class="fig"><div class="v">103</div><div class="l">merged · CG-030, CG-074, CG-079, CG-086 and 99 more</div></div>
+      <div class="fig"><div class="v">78 %<small>79 of 101</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$890.02<small>774 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,20.9 5.0,20.8 10.0,16.2 15.0,15.7 20.0,21.7 25.0,20.9 30.0,21.9 35.0,3.0 40.0,11.9 45.0,8.9 50.0,17.3 55.0,14.0 60.0,16.2 65.0,19.3 70.0,18.1 75.0,16.8 80.0,21.1 85.0,21.3 90.0,11.9 95.0,20.5 100.0,21.9"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$7.67</div><div class="l">per accepted task</div></div>
+    </div>
+    <div class="period-grid">
+      <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="624" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="624" y1="121.0" y2="121.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$72</text>
+<line x1="40" x2="624" y1="52.0" y2="52.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$145</text>
+<rect x="43.9" y="187.2" width="20.0" height="2.8" fill="var(--viz-2)"><title>2026-09-05T02:00 · revise: $2.93</title></rect>
+<rect x="43.9" y="184.2" width="20.0" height="3.0" fill="var(--viz-cat-4)"><title>2026-09-05T02:00 · review: $3.17</title></rect>
+<rect x="43.9" y="153.9" width="20.0" height="30.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
+<rect x="43.9" y="150.4" width="20.0" height="3.5" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
+<rect x="71.7" y="161.4" width="20.0" height="28.6" fill="var(--viz-1)"><title>2026-09-05T03:00 · work: $30.00</title></rect>
+<rect x="71.7" y="157.1" width="20.0" height="4.3" fill="var(--viz-cat-4)"><title>2026-09-05T03:00 · review: $4.54</title></rect>
+<rect x="71.7" y="143.8" width="20.0" height="13.2" fill="var(--viz-cat-5)"><title>2026-09-05T03:00 · persona: $13.89</title></rect>
+<rect x="71.7" y="141.3" width="20.0" height="2.5" fill="var(--viz-cat-6)"><title>2026-09-05T03:00 · retro: $2.63</title></rect>
+<rect x="99.5" y="124.3" width="20.0" height="65.7" fill="var(--viz-1)"><title>2026-09-05T04:00 · work: $68.96</title></rect>
+<rect x="99.5" y="109.6" width="20.0" height="14.7" fill="var(--viz-2)"><title>2026-09-05T04:00 · revise: $15.41</title></rect>
+<rect x="99.5" y="94.2" width="20.0" height="15.4" fill="var(--viz-cat-4)"><title>2026-09-05T04:00 · review: $16.11</title></rect>
+<rect x="127.3" y="170.6" width="20.0" height="19.4" fill="var(--viz-1)"><title>2026-09-05T05:00 · work: $20.33</title></rect>
+<rect x="127.3" y="169.3" width="20.0" height="1.3" fill="var(--viz-cat-3)"><title>2026-09-05T05:00 · rebase: $1.35</title></rect>
+<rect x="127.3" y="155.4" width="20.0" height="14.0" fill="var(--viz-cat-4)"><title>2026-09-05T05:00 · review: $14.65</title></rect>
+<rect x="155.1" y="176.6" width="20.0" height="13.4" fill="var(--viz-1)"><title>2026-09-05T09:00 · work: $14.02</title></rect>
+<rect x="155.1" y="175.5" width="20.0" height="1.1" fill="var(--viz-cat-4)"><title>2026-09-05T09:00 · review: $1.15</title></rect>
+<rect x="182.9" y="187.7" width="20.0" height="2.3" fill="var(--viz-1)"><title>2026-09-05T10:00 · work: $2.41</title></rect>
+<rect x="182.9" y="184.8" width="20.0" height="2.9" fill="var(--viz-cat-4)"><title>2026-09-05T10:00 · review: $3.06</title></rect>
+<rect x="182.9" y="158.1" width="20.0" height="26.7" fill="var(--viz-cat-5)"><title>2026-09-05T10:00 · persona: $28.02</title></rect>
+<rect x="182.9" y="156.4" width="20.0" height="1.7" fill="var(--viz-cat-6)"><title>2026-09-05T10:00 · retro: $1.74</title></rect>
+<rect x="210.8" y="151.5" width="20.0" height="38.5" fill="var(--viz-1)"><title>2026-09-05T11:00 · work: $40.43</title></rect>
+<rect x="210.8" y="148.8" width="20.0" height="2.6" fill="var(--viz-2)"><title>2026-09-05T11:00 · revise: $2.77</title></rect>
+<rect x="210.8" y="142.2" width="20.0" height="6.6" fill="var(--viz-cat-4)"><title>2026-09-05T11:00 · review: $6.90</title></rect>
+<rect x="238.6" y="86.9" width="20.0" height="103.1" fill="var(--viz-1)"><title>2026-09-05T12:00 · work: $108.17</title></rect>
+<rect x="238.6" y="82.8" width="20.0" height="4.1" fill="var(--viz-2)"><title>2026-09-05T12:00 · revise: $4.31</title></rect>
+<rect x="238.6" y="80.5" width="20.0" height="2.2" fill="var(--viz-cat-3)"><title>2026-09-05T12:00 · rebase: $2.36</title></rect>
+<rect x="238.6" y="52.0" width="20.0" height="28.5" fill="var(--viz-cat-4)"><title>2026-09-05T12:00 · review: $29.92</title></rect>
+<rect x="266.4" y="148.8" width="20.0" height="41.2" fill="var(--viz-1)"><title>2026-09-05T13:00 · work: $43.27</title></rect>
+<rect x="266.4" y="147.6" width="20.0" height="1.2" fill="var(--viz-2)"><title>2026-09-05T13:00 · revise: $1.23</title></rect>
+<rect x="266.4" y="147.3" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T13:00 · rebase: $0.25</title></rect>
+<rect x="266.4" y="142.8" width="20.0" height="4.6" fill="var(--viz-cat-4)"><title>2026-09-05T13:00 · review: $4.79</title></rect>
+<rect x="294.2" y="172.4" width="20.0" height="17.6" fill="var(--viz-1)"><title>2026-09-05T15:00 · work: $18.49</title></rect>
+<rect x="294.2" y="165.5" width="20.0" height="6.9" fill="var(--viz-2)"><title>2026-09-05T15:00 · revise: $7.26</title></rect>
+<rect x="294.2" y="159.3" width="20.0" height="6.1" fill="var(--viz-cat-3)"><title>2026-09-05T15:00 · rebase: $6.42</title></rect>
+<rect x="294.2" y="147.9" width="20.0" height="11.4" fill="var(--viz-cat-4)"><title>2026-09-05T15:00 · review: $11.99</title></rect>
+<rect x="322.0" y="181.2" width="20.0" height="8.8" fill="var(--viz-1)"><title>2026-09-05T16:00 · work: $9.27</title></rect>
+<rect x="322.0" y="174.1" width="20.0" height="7.0" fill="var(--viz-2)"><title>2026-09-05T16:00 · revise: $7.37</title></rect>
+<rect x="322.0" y="168.0" width="20.0" height="6.2" fill="var(--viz-cat-4)"><title>2026-09-05T16:00 · review: $6.47</title></rect>
+<rect x="349.8" y="157.7" width="20.0" height="32.3" fill="var(--viz-1)"><title>2026-09-05T17:00 · work: $33.88</title></rect>
+<rect x="349.8" y="148.0" width="20.0" height="9.7" fill="var(--viz-2)"><title>2026-09-05T17:00 · revise: $10.21</title></rect>
+<rect x="349.8" y="146.6" width="20.0" height="1.3" fill="var(--viz-cat-3)"><title>2026-09-05T17:00 · rebase: $1.41</title></rect>
+<rect x="349.8" y="135.4" width="20.0" height="11.3" fill="var(--viz-cat-4)"><title>2026-09-05T17:00 · review: $11.81</title></rect>
+<rect x="377.6" y="181.0" width="20.0" height="9.0" fill="var(--viz-1)"><title>2026-09-05T18:00 · work: $9.43</title></rect>
+<rect x="377.6" y="178.6" width="20.0" height="2.4" fill="var(--viz-2)"><title>2026-09-05T18:00 · revise: $2.55</title></rect>
+<rect x="377.6" y="175.4" width="20.0" height="3.2" fill="var(--viz-cat-3)"><title>2026-09-05T18:00 · rebase: $3.30</title></rect>
+<rect x="377.6" y="168.8" width="20.0" height="6.7" fill="var(--viz-cat-4)"><title>2026-09-05T18:00 · review: $7.00</title></rect>
+<rect x="377.6" y="166.3" width="20.0" height="2.5" fill="var(--viz-cat-9)"><title>2026-09-05T18:00 · other: $2.61</title></rect>
+<rect x="405.4" y="180.9" width="20.0" height="9.1" fill="var(--viz-1)"><title>2026-09-05T19:00 · work: $9.56</title></rect>
+<rect x="405.4" y="177.8" width="20.0" height="3.1" fill="var(--viz-2)"><title>2026-09-05T19:00 · revise: $3.22</title></rect>
+<rect x="405.4" y="177.6" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T19:00 · rebase: $0.23</title></rect>
+<rect x="405.4" y="172.8" width="20.0" height="4.8" fill="var(--viz-cat-4)"><title>2026-09-05T19:00 · review: $5.05</title></rect>
+<rect x="405.4" y="167.7" width="20.0" height="5.0" fill="var(--viz-cat-9)"><title>2026-09-05T19:00 · other: $5.29</title></rect>
+<rect x="433.2" y="170.2" width="20.0" height="19.8" fill="var(--viz-1)"><title>2026-09-05T20:00 · work: $20.72</title></rect>
+<rect x="433.2" y="166.9" width="20.0" height="3.4" fill="var(--viz-2)"><title>2026-09-05T20:00 · revise: $3.55</title></rect>
+<rect x="433.2" y="165.3" width="20.0" height="1.5" fill="var(--viz-cat-3)"><title>2026-09-05T20:00 · rebase: $1.59</title></rect>
+<rect x="433.2" y="161.9" width="20.0" height="3.4" fill="var(--viz-cat-4)"><title>2026-09-05T20:00 · review: $3.60</title></rect>
+<rect x="433.2" y="157.1" width="20.0" height="4.8" fill="var(--viz-cat-9)"><title>2026-09-05T20:00 · other: $5.03</title></rect>
+<rect x="461.0" y="186.4" width="20.0" height="3.6" fill="var(--viz-1)"><title>2026-09-05T21:00 · work: $3.81</title></rect>
+<rect x="461.0" y="182.9" width="20.0" height="3.5" fill="var(--viz-2)"><title>2026-09-05T21:00 · revise: $3.69</title></rect>
+<rect x="461.0" y="180.3" width="20.0" height="2.6" fill="var(--viz-cat-3)"><title>2026-09-05T21:00 · rebase: $2.68</title></rect>
+<rect x="461.0" y="170.6" width="20.0" height="9.7" fill="var(--viz-cat-4)"><title>2026-09-05T21:00 · review: $10.18</title></rect>
+<rect x="488.8" y="189.7" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T22:00 · rebase: $0.30</title></rect>
+<rect x="488.8" y="188.1" width="20.0" height="1.6" fill="var(--viz-cat-4)"><title>2026-09-05T22:00 · review: $1.71</title></rect>
+<rect x="488.8" y="151.8" width="20.0" height="36.3" fill="var(--viz-cat-5)"><title>2026-09-05T22:00 · persona: $38.03</title></rect>
+<rect x="516.7" y="182.6" width="20.0" height="7.4" fill="var(--viz-1)"><title>2026-09-05T23:00 · work: $7.72</title></rect>
+<rect x="516.7" y="181.8" width="20.0" height="0.8" fill="var(--viz-2)"><title>2026-09-05T23:00 · revise: $0.86</title></rect>
+<rect x="516.7" y="180.3" width="20.0" height="1.5" fill="var(--viz-cat-4)"><title>2026-09-05T23:00 · review: $1.55</title></rect>
+<rect x="516.7" y="173.0" width="20.0" height="7.3" fill="var(--viz-cat-5)"><title>2026-09-05T23:00 · persona: $7.65</title></rect>
+<rect x="516.7" y="169.6" width="20.0" height="3.5" fill="var(--viz-cat-6)"><title>2026-09-05T23:00 · retro: $3.67</title></rect>
+<rect x="544.5" y="157.9" width="20.0" height="32.1" fill="var(--viz-1)"><title>2026-09-06T00:00 · work: $33.62</title></rect>
+<rect x="544.5" y="156.0" width="20.0" height="2.0" fill="var(--viz-2)"><title>2026-09-06T00:00 · revise: $2.08</title></rect>
+<rect x="544.5" y="155.7" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T00:00 · rebase: $0.26</title></rect>
+<rect x="544.5" y="147.3" width="20.0" height="8.5" fill="var(--viz-cat-4)"><title>2026-09-06T00:00 · review: $8.86</title></rect>
+<rect x="544.5" y="143.4" width="20.0" height="3.9" fill="var(--viz-cat-9)"><title>2026-09-06T00:00 · other: $4.10</title></rect>
+<rect x="572.3" y="186.1" width="20.0" height="3.9" fill="var(--viz-1)"><title>2026-09-06T01:00 · work: $4.12</title></rect>
+<rect x="572.3" y="184.9" width="20.0" height="1.2" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="572.3" y="183.0" width="20.0" height="1.9" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
+<rect x="572.3" y="165.9" width="20.0" height="17.1" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
+<rect x="600.1" y="189.5" width="20.0" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="600.1" y="187.7" width="20.0" height="1.8" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-05T02:00</text>
+<text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($478.23)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($68.68)</text>
+<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($20.63)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($156.43)</text>
+<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">persona ($119.36)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-6)"/><text x="54" y="28">retro ($11.72)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-7)"/><text x="162" y="28">check ($0.00)</text>
+<rect x="256" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="270" y="28">other ($34.99)</text>
+</g>
+</svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="344" y1="137.0" y2="137.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="141.0" text-anchor="end" fill="var(--muted)" font-size="11">$72</text>
+<line x1="40" x2="344" y1="84.0" y2="84.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="88.0" text-anchor="end" fill="var(--muted)" font-size="11">$145</text>
+<rect x="42.0" y="187.9" width="10.4" height="2.1" fill="var(--viz-2)"><title>2026-09-05T02:00 · revise: $2.93</title></rect>
+<rect x="42.0" y="185.5" width="10.4" height="2.3" fill="var(--viz-cat-4)"><title>2026-09-05T02:00 · review: $3.17</title></rect>
+<rect x="42.0" y="162.3" width="10.4" height="23.3" fill="var(--viz-cat-5)"><title>2026-09-05T02:00 · persona: $31.77</title></rect>
+<rect x="42.0" y="159.6" width="10.4" height="2.7" fill="var(--viz-cat-6)"><title>2026-09-05T02:00 · retro: $3.68</title></rect>
+<rect x="56.5" y="168.0" width="10.4" height="22.0" fill="var(--viz-1)"><title>2026-09-05T03:00 · work: $30.00</title></rect>
+<rect x="56.5" y="164.7" width="10.4" height="3.3" fill="var(--viz-cat-4)"><title>2026-09-05T03:00 · review: $4.54</title></rect>
+<rect x="56.5" y="154.5" width="10.4" height="10.2" fill="var(--viz-cat-5)"><title>2026-09-05T03:00 · persona: $13.89</title></rect>
+<rect x="56.5" y="152.6" width="10.4" height="1.9" fill="var(--viz-cat-6)"><title>2026-09-05T03:00 · retro: $2.63</title></rect>
+<rect x="71.0" y="139.5" width="10.4" height="50.5" fill="var(--viz-1)"><title>2026-09-05T04:00 · work: $68.96</title></rect>
+<rect x="71.0" y="128.2" width="10.4" height="11.3" fill="var(--viz-2)"><title>2026-09-05T04:00 · revise: $15.41</title></rect>
+<rect x="71.0" y="116.4" width="10.4" height="11.8" fill="var(--viz-cat-4)"><title>2026-09-05T04:00 · review: $16.11</title></rect>
+<rect x="85.5" y="175.1" width="10.4" height="14.9" fill="var(--viz-1)"><title>2026-09-05T05:00 · work: $20.33</title></rect>
+<rect x="85.5" y="174.1" width="10.4" height="1.0" fill="var(--viz-cat-3)"><title>2026-09-05T05:00 · rebase: $1.35</title></rect>
+<rect x="85.5" y="163.4" width="10.4" height="10.7" fill="var(--viz-cat-4)"><title>2026-09-05T05:00 · review: $14.65</title></rect>
+<rect x="99.9" y="179.7" width="10.4" height="10.3" fill="var(--viz-1)"><title>2026-09-05T09:00 · work: $14.02</title></rect>
+<rect x="99.9" y="178.9" width="10.4" height="0.8" fill="var(--viz-cat-4)"><title>2026-09-05T09:00 · review: $1.15</title></rect>
+<rect x="114.4" y="188.2" width="10.4" height="1.8" fill="var(--viz-1)"><title>2026-09-05T10:00 · work: $2.41</title></rect>
+<rect x="114.4" y="186.0" width="10.4" height="2.2" fill="var(--viz-cat-4)"><title>2026-09-05T10:00 · review: $3.06</title></rect>
+<rect x="114.4" y="165.5" width="10.4" height="20.5" fill="var(--viz-cat-5)"><title>2026-09-05T10:00 · persona: $28.02</title></rect>
+<rect x="114.4" y="164.2" width="10.4" height="1.3" fill="var(--viz-cat-6)"><title>2026-09-05T10:00 · retro: $1.74</title></rect>
+<rect x="128.9" y="160.4" width="10.4" height="29.6" fill="var(--viz-1)"><title>2026-09-05T11:00 · work: $40.43</title></rect>
+<rect x="128.9" y="158.4" width="10.4" height="2.0" fill="var(--viz-2)"><title>2026-09-05T11:00 · revise: $2.77</title></rect>
+<rect x="128.9" y="153.3" width="10.4" height="5.0" fill="var(--viz-cat-4)"><title>2026-09-05T11:00 · review: $6.90</title></rect>
+<rect x="143.4" y="110.8" width="10.4" height="79.2" fill="var(--viz-1)"><title>2026-09-05T12:00 · work: $108.17</title></rect>
+<rect x="143.4" y="107.6" width="10.4" height="3.2" fill="var(--viz-2)"><title>2026-09-05T12:00 · revise: $4.31</title></rect>
+<rect x="143.4" y="105.9" width="10.4" height="1.7" fill="var(--viz-cat-3)"><title>2026-09-05T12:00 · rebase: $2.36</title></rect>
+<rect x="143.4" y="84.0" width="10.4" height="21.9" fill="var(--viz-cat-4)"><title>2026-09-05T12:00 · review: $29.92</title></rect>
+<rect x="157.8" y="158.3" width="10.4" height="31.7" fill="var(--viz-1)"><title>2026-09-05T13:00 · work: $43.27</title></rect>
+<rect x="157.8" y="157.4" width="10.4" height="0.9" fill="var(--viz-2)"><title>2026-09-05T13:00 · revise: $1.23</title></rect>
+<rect x="157.8" y="157.2" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T13:00 · rebase: $0.25</title></rect>
+<rect x="157.8" y="153.7" width="10.4" height="3.5" fill="var(--viz-cat-4)"><title>2026-09-05T13:00 · review: $4.79</title></rect>
+<rect x="172.3" y="176.5" width="10.4" height="13.5" fill="var(--viz-1)"><title>2026-09-05T15:00 · work: $18.49</title></rect>
+<rect x="172.3" y="171.1" width="10.4" height="5.3" fill="var(--viz-2)"><title>2026-09-05T15:00 · revise: $7.26</title></rect>
+<rect x="172.3" y="166.4" width="10.4" height="4.7" fill="var(--viz-cat-3)"><title>2026-09-05T15:00 · rebase: $6.42</title></rect>
+<rect x="172.3" y="157.7" width="10.4" height="8.8" fill="var(--viz-cat-4)"><title>2026-09-05T15:00 · review: $11.99</title></rect>
+<rect x="186.8" y="183.2" width="10.4" height="6.8" fill="var(--viz-1)"><title>2026-09-05T16:00 · work: $9.27</title></rect>
+<rect x="186.8" y="177.8" width="10.4" height="5.4" fill="var(--viz-2)"><title>2026-09-05T16:00 · revise: $7.37</title></rect>
+<rect x="186.8" y="173.1" width="10.4" height="4.7" fill="var(--viz-cat-4)"><title>2026-09-05T16:00 · review: $6.47</title></rect>
+<rect x="201.3" y="165.2" width="10.4" height="24.8" fill="var(--viz-1)"><title>2026-09-05T17:00 · work: $33.88</title></rect>
+<rect x="201.3" y="157.7" width="10.4" height="7.5" fill="var(--viz-2)"><title>2026-09-05T17:00 · revise: $10.21</title></rect>
+<rect x="201.3" y="156.7" width="10.4" height="1.0" fill="var(--viz-cat-3)"><title>2026-09-05T17:00 · rebase: $1.41</title></rect>
+<rect x="201.3" y="148.0" width="10.4" height="8.6" fill="var(--viz-cat-4)"><title>2026-09-05T17:00 · review: $11.81</title></rect>
+<rect x="215.7" y="183.1" width="10.4" height="6.9" fill="var(--viz-1)"><title>2026-09-05T18:00 · work: $9.43</title></rect>
+<rect x="215.7" y="181.2" width="10.4" height="1.9" fill="var(--viz-2)"><title>2026-09-05T18:00 · revise: $2.55</title></rect>
+<rect x="215.7" y="178.8" width="10.4" height="2.4" fill="var(--viz-cat-3)"><title>2026-09-05T18:00 · rebase: $3.30</title></rect>
+<rect x="215.7" y="173.7" width="10.4" height="5.1" fill="var(--viz-cat-4)"><title>2026-09-05T18:00 · review: $7.00</title></rect>
+<rect x="215.7" y="171.8" width="10.4" height="1.9" fill="var(--viz-cat-9)"><title>2026-09-05T18:00 · other: $2.61</title></rect>
+<rect x="230.2" y="183.0" width="10.4" height="7.0" fill="var(--viz-1)"><title>2026-09-05T19:00 · work: $9.56</title></rect>
+<rect x="230.2" y="180.6" width="10.4" height="2.4" fill="var(--viz-2)"><title>2026-09-05T19:00 · revise: $3.22</title></rect>
+<rect x="230.2" y="180.5" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T19:00 · rebase: $0.23</title></rect>
+<rect x="230.2" y="176.8" width="10.4" height="3.7" fill="var(--viz-cat-4)"><title>2026-09-05T19:00 · review: $5.05</title></rect>
+<rect x="230.2" y="172.9" width="10.4" height="3.9" fill="var(--viz-cat-9)"><title>2026-09-05T19:00 · other: $5.29</title></rect>
+<rect x="244.7" y="174.8" width="10.4" height="15.2" fill="var(--viz-1)"><title>2026-09-05T20:00 · work: $20.72</title></rect>
+<rect x="244.7" y="172.2" width="10.4" height="2.6" fill="var(--viz-2)"><title>2026-09-05T20:00 · revise: $3.55</title></rect>
+<rect x="244.7" y="171.1" width="10.4" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-05T20:00 · rebase: $1.59</title></rect>
+<rect x="244.7" y="168.4" width="10.4" height="2.6" fill="var(--viz-cat-4)"><title>2026-09-05T20:00 · review: $3.60</title></rect>
+<rect x="244.7" y="164.7" width="10.4" height="3.7" fill="var(--viz-cat-9)"><title>2026-09-05T20:00 · other: $5.03</title></rect>
+<rect x="259.2" y="187.2" width="10.4" height="2.8" fill="var(--viz-1)"><title>2026-09-05T21:00 · work: $3.81</title></rect>
+<rect x="259.2" y="184.5" width="10.4" height="2.7" fill="var(--viz-2)"><title>2026-09-05T21:00 · revise: $3.69</title></rect>
+<rect x="259.2" y="182.5" width="10.4" height="2.0" fill="var(--viz-cat-3)"><title>2026-09-05T21:00 · rebase: $2.68</title></rect>
+<rect x="259.2" y="175.1" width="10.4" height="7.5" fill="var(--viz-cat-4)"><title>2026-09-05T21:00 · review: $10.18</title></rect>
+<rect x="273.6" y="189.8" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-05T22:00 · rebase: $0.30</title></rect>
+<rect x="273.6" y="188.5" width="10.4" height="1.3" fill="var(--viz-cat-4)"><title>2026-09-05T22:00 · review: $1.71</title></rect>
+<rect x="273.6" y="160.7" width="10.4" height="27.8" fill="var(--viz-cat-5)"><title>2026-09-05T22:00 · persona: $38.03</title></rect>
+<rect x="288.1" y="184.3" width="10.4" height="5.7" fill="var(--viz-1)"><title>2026-09-05T23:00 · work: $7.72</title></rect>
+<rect x="288.1" y="183.7" width="10.4" height="0.6" fill="var(--viz-2)"><title>2026-09-05T23:00 · revise: $0.86</title></rect>
+<rect x="288.1" y="182.6" width="10.4" height="1.1" fill="var(--viz-cat-4)"><title>2026-09-05T23:00 · review: $1.55</title></rect>
+<rect x="288.1" y="177.0" width="10.4" height="5.6" fill="var(--viz-cat-5)"><title>2026-09-05T23:00 · persona: $7.65</title></rect>
+<rect x="288.1" y="174.3" width="10.4" height="2.7" fill="var(--viz-cat-6)"><title>2026-09-05T23:00 · retro: $3.67</title></rect>
+<rect x="302.6" y="165.4" width="10.4" height="24.6" fill="var(--viz-1)"><title>2026-09-06T00:00 · work: $33.62</title></rect>
+<rect x="302.6" y="163.9" width="10.4" height="1.5" fill="var(--viz-2)"><title>2026-09-06T00:00 · revise: $2.08</title></rect>
+<rect x="302.6" y="163.7" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T00:00 · rebase: $0.26</title></rect>
+<rect x="302.6" y="157.2" width="10.4" height="6.5" fill="var(--viz-cat-4)"><title>2026-09-06T00:00 · review: $8.86</title></rect>
+<rect x="302.6" y="154.2" width="10.4" height="3.0" fill="var(--viz-cat-9)"><title>2026-09-06T00:00 · other: $4.10</title></rect>
+<rect x="317.1" y="187.0" width="10.4" height="3.0" fill="var(--viz-1)"><title>2026-09-06T01:00 · work: $4.12</title></rect>
+<rect x="317.1" y="186.1" width="10.4" height="0.9" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="317.1" y="184.6" width="10.4" height="1.5" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
+<rect x="317.1" y="171.5" width="10.4" height="13.1" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
+<rect x="331.6" y="189.6" width="10.4" height="0.5" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="331.6" y="188.3" width="10.4" height="1.4" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-05T02:00</text>
+<text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($478.23)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($68.68)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($20.63)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($156.43)</text>
+<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">persona ($119.36)</text>
+<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-6)"/><text x="162" y="44">retro ($11.72)</text>
+<rect x="40" y="52" width="10" height="10" fill="var(--viz-cat-7)"/><text x="54" y="60">check ($0.00)</text>
+<rect x="148" y="52" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="60">other ($34.99)</text>
+</g>
+</svg></div>
+        <p class="hand">14:36Z config reloaded: review · 14:59Z config reloaded: harnesses · 17:11Z config reloaded: review · 18:50Z config reloaded: harnesses · 19:45Z config reloaded: harnesses · 20:37Z config reloaded: review · 20:39Z config reloaded: harnesses · 20:45Z config reloaded: harnesses · 22:32Z config reloaded: harnesses · 23:07Z config reloaded: harnesses, review · 23:08Z config reloaded: review · 02:01Z config reloaded: harness, review</p></div>
+      <div>
+        <div class="eyebrow">Runs by harness and model</div>
+        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>157</td><td>$281.16</td><td>$1.79</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>52</td><td>$237.63</td><td>$4.57</td></tr><tr><td class="mono">garden:review</td><td>201</td><td>$156.43</td><td>$0.78</td></tr><tr><td class="mono">garden:persona</td><td>24</td><td>$119.36</td><td>$4.97</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>11</td><td>$66.60</td><td>$6.05</td></tr><tr><td class="mono">garden:retro</td><td>6</td><td>$11.72</td><td>$1.95</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>10</td><td>$6.15</td><td>$0.61</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">garden:compare</td><td>2</td><td>$0.88</td><td>$0.44</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>78</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>199</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:work</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:trial</td><td>1</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">codex:trial</td><td>6</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:work</td><td>1</td><td>$0.00</td><td>$0.00</td></tr>
+        </table>
+        <div class="hand">hand steps: 94 (budget set 3, config override 2, decision accepted 5, decision resolved 21, dispatch paused 5, dispatch resumed 8, moved 10, resumed 12, suggestion 21, triaged 7) · hand merges: — until metrics carries them</div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <div class="window" data-window-panel="hour" >
+    
+    <div class="figures">
+      <div class="fig"><div class="v">7</div><div class="l">merged · CG-236, CG-243, CG-244, CG-245 and 3 more</div></div>
+      <div class="fig"><div class="v">0 %<small>0 of 1</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$16.20<small>16 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,3.0 100.0,7.4"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$4.62</div><div class="l">per accepted task</div></div>
+    </div>
+    <div class="period-grid">
+      <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="624" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="624" y1="113.0" y2="113.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="117.0" text-anchor="end" fill="var(--muted)" font-size="11">$7</text>
+<line x1="40" x2="624" y1="36.0" y2="36.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="40.0" text-anchor="end" fill="var(--muted)" font-size="11">$14</text>
+<rect x="80.9" y="176.2" width="210.2" height="13.8" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="80.9" y="169.5" width="210.2" height="6.7" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
+<rect x="80.9" y="36.0" width="210.2" height="133.5" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
+<rect x="372.9" y="184.6" width="210.2" height="5.4" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="372.9" y="163.4" width="210.2" height="21.1" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T01:00</text>
+<text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($1.24)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">rebase ($0.49)</text>
+<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">review ($2.50)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">check ($0.00)</text>
+<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-9)"/><text x="486" y="12">other ($11.97)</text>
+</g>
+</svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="344" y1="129.0" y2="129.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$7</text>
+<line x1="40" x2="344" y1="68.0" y2="68.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$14</text>
+<rect x="61.3" y="179.1" width="109.4" height="10.9" fill="var(--viz-1)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="61.3" y="173.8" width="109.4" height="5.3" fill="var(--viz-cat-3)"><title>2026-09-06T01:00 · review: $0.60</title></rect>
+<rect x="61.3" y="68.0" width="109.4" height="105.8" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $11.97</title></rect>
+<rect x="213.3" y="185.7" width="109.4" height="4.3" fill="var(--viz-2)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="213.3" y="168.9" width="109.4" height="16.7" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T01:00</text>
+<text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">revise ($1.24)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">rebase ($0.49)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">review ($2.50)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">check ($0.00)</text>
+<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="44">other ($11.97)</text>
+</g>
+</svg></div>
+        <p class="hand">02:01Z config reloaded: harness, review</p></div>
+      <div>
+        <div class="eyebrow">Runs by harness and model</div>
+        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">garden:review</td><td>3</td><td>$2.50</td><td>$0.83</td></tr><tr><td class="mono">claude:claude-sonnet-5</td><td>3</td><td>$1.71</td><td>$0.57</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>2</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>6</td><td>$0.00</td><td>$0.00</td></tr>
+        </table>
+        <div class="hand">hand steps: 3 (dispatch paused 1, dispatch resumed 2) · hand merges: — until metrics carries them</div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <div class="window" data-window-panel="phase" hidden>
+    
+    <div class="figures">
+      <div class="fig"><div class="v">9</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 5 more</div></div>
+      <div class="fig"><div class="v">45 %<small>5 of 11</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$75.97<small>91 runs </small></div><div class="l">cost</div></div>
+      <div class="fig"><div class="v">$4.47</div><div class="l">per accepted task</div></div>
+    </div>
+    <div class="period-grid">
+      <div class="chart-box"><div class="eyebrow">Cost by activity, per day</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="624" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="624" y1="121.0" y2="121.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$38</text>
+<line x1="40" x2="624" y1="52.0" y2="52.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$76</text>
+<rect x="121.8" y="121.4" width="420.5" height="68.6" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
+<rect x="121.8" y="115.4" width="420.5" height="6.0" fill="var(--viz-2)"><title>2026-09-06 · revise: $3.32</title></rect>
+<rect x="121.8" y="114.1" width="420.5" height="1.4" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
+<rect x="121.8" y="92.1" width="420.5" height="22.0" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.10</title></rect>
+<rect x="121.8" y="52.0" width="420.5" height="40.1" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $22.06</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06</text>
+<text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($0.74)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($12.10)</text>
+<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">check ($0.00)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($22.06)</text>
+</g>
+</svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="344" y1="129.0" y2="129.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$38</text>
+<line x1="40" x2="344" y1="68.0" y2="68.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$76</text>
+<rect x="82.6" y="129.4" width="218.9" height="60.6" fill="var(--viz-1)"><title>2026-09-06 · work: $37.75</title></rect>
+<rect x="82.6" y="124.1" width="218.9" height="5.3" fill="var(--viz-2)"><title>2026-09-06 · revise: $3.32</title></rect>
+<rect x="82.6" y="122.9" width="218.9" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06 · rebase: $0.74</title></rect>
+<rect x="82.6" y="103.4" width="218.9" height="19.4" fill="var(--viz-cat-4)"><title>2026-09-06 · review: $12.10</title></rect>
+<rect x="82.6" y="68.0" width="218.9" height="35.4" fill="var(--viz-cat-9)"><title>2026-09-06 · other: $22.06</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06</text>
+<text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($0.74)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($12.10)</text>
+<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">check ($0.00)</text>
+<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($22.06)</text>
+</g>
+</svg></div>
+        <p class="hand">02:01Z config reloaded: harness, review</p></div>
+      <div>
+        <div class="eyebrow">Runs by harness and model</div>
+        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">garden:review</td><td>16</td><td>$12.10</td><td>$0.76</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>8</td><td>$6.15</td><td>$0.77</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:check</td><td>26</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:rebase</td><td>4</td><td>$0.00</td><td>$0.00</td></tr>
+        </table>
+        <div class="hand">hand steps: 31 (decision resolved 4, dispatch paused 1, dispatch resumed 3, moved 2, suggestion 21) · hand merges: — until metrics carries them</div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <div class="window" data-window-panel="today" hidden>
+    
+    <div class="figures">
+      <div class="fig"><div class="v">9</div><div class="l">merged · CG-236, CG-239, CG-243, CG-244 and 5 more</div></div>
+      <div class="fig"><div class="v">45 %<small>5 of 11</small></div><div class="l">first-pass approval</div></div>
+      <div class="fig"><div class="v">$76.65<small>93 runs <svg viewBox="0 0 100 26" width="100" height="26" class="spark"><polyline fill="none" stroke="var(--viz-1)" stroke-width="1.5" points="0.0,3.0 50.0,18.4 100.0,21.0"/></svg></small></div><div class="l">cost · runs finished per hour</div></div>
+      <div class="fig"><div class="v">$4.47</div><div class="l">per accepted task</div></div>
+    </div>
+    <div class="period-grid">
+      <div class="chart-box"><div class="eyebrow">Cost by activity, per hour</div><div class="chart-wide"><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="624" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="624" y1="121.0" y2="121.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="125.0" text-anchor="end" fill="var(--muted)" font-size="11">$24</text>
+<line x1="40" x2="624" y1="52.0" y2="52.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="56.0" text-anchor="end" fill="var(--muted)" font-size="11">$49</text>
+<rect x="67.3" y="95.2" width="140.2" height="94.8" fill="var(--viz-1)"><title>2026-09-06T00:00 · work: $33.62</title></rect>
+<rect x="67.3" y="89.3" width="140.2" height="5.9" fill="var(--viz-2)"><title>2026-09-06T00:00 · revise: $2.08</title></rect>
+<rect x="67.3" y="88.6" width="140.2" height="0.7" fill="var(--viz-cat-3)"><title>2026-09-06T00:00 · rebase: $0.26</title></rect>
+<rect x="67.3" y="63.6" width="140.2" height="25.0" fill="var(--viz-cat-4)"><title>2026-09-06T00:00 · review: $8.86</title></rect>
+<rect x="67.3" y="52.0" width="140.2" height="11.6" fill="var(--viz-cat-9)"><title>2026-09-06T00:00 · other: $4.10</title></rect>
+<rect x="261.9" y="178.4" width="140.2" height="11.6" fill="var(--viz-1)"><title>2026-09-06T01:00 · work: $4.12</title></rect>
+<rect x="261.9" y="174.9" width="140.2" height="3.5" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="261.9" y="169.2" width="140.2" height="5.7" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
+<rect x="261.9" y="118.6" width="140.2" height="50.6" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
+<rect x="456.6" y="188.6" width="140.2" height="1.4" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="456.6" y="183.3" width="140.2" height="5.3" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T00:00</text>
+<text x="624" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="256" y="4" width="10" height="10" fill="var(--viz-cat-3)"/><text x="270" y="12">rebase ($0.74)</text>
+<rect x="364" y="4" width="10" height="10" fill="var(--viz-cat-4)"/><text x="378" y="12">review ($12.78)</text>
+<rect x="472" y="4" width="10" height="10" fill="var(--viz-cat-5)"/><text x="486" y="12">check ($0.00)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-9)"/><text x="54" y="28">other ($22.06)</text>
+</g>
+</svg></div><div class="chart-narrow"><svg class="chart" viewBox="0 0 360 220" width="100%" role="img" aria-label="Cost by activity over time">
+<line x1="40" x2="344" y1="190.0" y2="190.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="194.0" text-anchor="end" fill="var(--muted)" font-size="11">$0</text>
+<line x1="40" x2="344" y1="129.0" y2="129.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="133.0" text-anchor="end" fill="var(--muted)" font-size="11">$24</text>
+<line x1="40" x2="344" y1="68.0" y2="68.0" stroke="var(--line)" stroke-width="1"/>
+<text x="34" y="72.0" text-anchor="end" fill="var(--muted)" font-size="11">$49</text>
+<rect x="54.2" y="106.2" width="73.0" height="83.8" fill="var(--viz-1)"><title>2026-09-06T00:00 · work: $33.62</title></rect>
+<rect x="54.2" y="101.0" width="73.0" height="5.2" fill="var(--viz-2)"><title>2026-09-06T00:00 · revise: $2.08</title></rect>
+<rect x="54.2" y="100.3" width="73.0" height="0.6" fill="var(--viz-cat-3)"><title>2026-09-06T00:00 · rebase: $0.26</title></rect>
+<rect x="54.2" y="78.2" width="73.0" height="22.1" fill="var(--viz-cat-4)"><title>2026-09-06T00:00 · review: $8.86</title></rect>
+<rect x="54.2" y="68.0" width="73.0" height="10.2" fill="var(--viz-cat-9)"><title>2026-09-06T00:00 · other: $4.10</title></rect>
+<rect x="155.5" y="179.7" width="73.0" height="10.3" fill="var(--viz-1)"><title>2026-09-06T01:00 · work: $4.12</title></rect>
+<rect x="155.5" y="176.6" width="73.0" height="3.1" fill="var(--viz-2)"><title>2026-09-06T01:00 · revise: $1.24</title></rect>
+<rect x="155.5" y="171.6" width="73.0" height="5.0" fill="var(--viz-cat-4)"><title>2026-09-06T01:00 · review: $2.01</title></rect>
+<rect x="155.5" y="126.8" width="73.0" height="44.8" fill="var(--viz-cat-9)"><title>2026-09-06T01:00 · other: $17.96</title></rect>
+<rect x="256.9" y="188.8" width="73.0" height="1.2" fill="var(--viz-cat-3)"><title>2026-09-06T02:00 · rebase: $0.49</title></rect>
+<rect x="256.9" y="184.1" width="73.0" height="4.7" fill="var(--viz-cat-4)"><title>2026-09-06T02:00 · review: $1.90</title></rect>
+<text x="40" y="214" fill="var(--muted)" font-size="11">2026-09-06T00:00</text>
+<text x="344" y="214" text-anchor="end" fill="var(--muted)" font-size="11">2026-09-06T02:00</text>
+<g font-size="11" fill="var(--muted)">
+<rect x="40" y="4" width="10" height="10" fill="var(--viz-1)"/><text x="54" y="12">work ($37.75)</text>
+<rect x="148" y="4" width="10" height="10" fill="var(--viz-2)"/><text x="162" y="12">revise ($3.32)</text>
+<rect x="40" y="20" width="10" height="10" fill="var(--viz-cat-3)"/><text x="54" y="28">rebase ($0.74)</text>
+<rect x="148" y="20" width="10" height="10" fill="var(--viz-cat-4)"/><text x="162" y="28">review ($12.78)</text>
+<rect x="40" y="36" width="10" height="10" fill="var(--viz-cat-5)"/><text x="54" y="44">check ($0.00)</text>
+<rect x="148" y="36" width="10" height="10" fill="var(--viz-cat-9)"/><text x="162" y="44">other ($22.06)</text>
+</g>
+</svg></div>
+        <p class="hand">02:01Z config reloaded: harness, review</p></div>
+      <div>
+        <div class="eyebrow">Runs by harness and model</div>
+        <table><tr><th>who</th><th>runs</th><th>cost</th><th>mean</th></tr>
+          <tr><td class="mono">claude:claude-sonnet-5</td><td>10</td><td>$23.16</td><td>$2.32</td></tr><tr><td class="mono">garden:review</td><td>17</td><td>$12.78</td><td>$0.75</td></tr><tr><td class="mono">claude:claude-opus-4-8</td><td>2</td><td>$12.49</td><td>$6.25</td></tr><tr><td class="mono">claude:claude-fable-5-1</td><td>1</td><td>$11.97</td><td>$11.97</td></tr><tr><td class="mono">codex:gpt-5.6-terra</td><td>8</td><td>$6.15</td><td>$0.77</td></tr><tr><td class="mono">codex:gpt-6-astra</td><td>1</td><td>$5.98</td><td>$5.98</td></tr><tr><td class="mono">garden:edit</td><td>21</td><td>$2.68</td><td>$0.13</td></tr><tr><td class="mono">garden:kickoff</td><td>1</td><td>$1.42</td><td>$1.42</td></tr><tr><td class="mono">codex:gpt-5.6-luna</td><td>1</td><td>$0.01</td><td>$0.01</td></tr><tr><td class="mono">garden:rebase</td><td>5</td><td>$0.00</td><td>$0.00</td></tr><tr><td class="mono">garden:check</td><td>26</td><td>$0.00</td><td>$0.00</td></tr>
+        </table>
+        <div class="hand">hand steps: 31 (decision resolved 4, dispatch paused 1, dispatch resumed 3, moved 2, suggestion 21) · hand merges: — until metrics carries them</div>
+      </div>
+    </div>
+    
+  </div>
+  
+</section>
+
+<section class="gallery" id="gallery" hidden>
+  <h2>States</h2>
+  <p>A design gallery, not part of the page: one strip per state, and the empty and quiet sheets. Each is the same markup as above with different data.</p>
+  
+  <div class="g"><h4>running, priced from the stream</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
+      <span>7 min · typically 18 min</span>
+    
+    <span class="spend">$0.41 so far</span>
+    
+  </div>
+  <div class="said">“Tests pass; writing the PR description.”</div>
+  
+</article></div>
+  <div class="g"><h4>running, no price table for the model: tokens instead of dollars</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:0.389;--o:0.0"><i class="track"></i><i class="fill"></i><i class="end"></i></span>
+      <span>7 min · typically 18 min</span>
+    
+    <span class="spend">163k tokens so far</span>
+    
+  </div>
+  <div class="said">“Tests pass; writing the PR description.”</div>
+  
+</article></div>
+  <div class="g"><h4>running, past its typical time</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span>31 min · typically 18 min</span>
+    
+    <span class="spend">$1.12 so far</span>
+    
+  </div>
+  <div class="said">“Tests pass; writing the PR description.”</div>
+  
+</article></div>
+  <div class="g"><h4>running, fewer than three finished runs to take a typical from</h4><article class="specimen strip  st-running" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    
+      <span>5 min</span>
+    
+    <span class="spend">$0.03 so far</span>
+    
+  </div>
+  <div class="said">“Reading the brief.”</div>
+  
+</article></div>
+  <div class="g"><h4>finishing: done (holds eight seconds, then leaves)</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-done" title="finishing"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.056"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span>19 min · typically 18 min</span>
+    
+    <span class="verdict">done · $1.42</span>
+    
+  </div>
+  <div class="said">“Committed the change and the test.”</div>
+  
+</article></div>
+  <div class="g"><h4>finishing: a review's verdict</h4><article class="specimen strip  st-finishing" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-in_review" title="finishing"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    review · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.034"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span>5 min · typically 5 min</span>
+    
+    <span class="verdict">approve · 4 of 4 criteria</span>
+    
+  </div>
+  <div class="said">“All criteria are met and verified against the diff.”</div>
+  
+</article></div>
+  <div class="g"><h4>failed</h4><article class="specimen strip  st-failed" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-failed" title="failed"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="wilted"><title>wilted</title><use href="#st-wilt"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    work · claude claude-sonnet-5
+    
+  </div>
+  <div class="bar">
+    <span class="scale" aria-hidden="true" style="--r:1.0;--o:0.5"><i class="track"></i><i class="fill"></i><i class="end"></i><i class="over"></i></span>
+      <span>45 min · typically 18 min</span>
+    
+    <span class="verdict">failed · exit 1</span>
+    
+  </div>
+  <div class="said">“No space left on device.”</div>
+  
+</article></div>
+  <div class="g"><h4>a run record without a process (a slot held until a tick reaps it)</h4><article class="specimen strip  st-no_process" data-task="CG-236" data-run="x">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-" title="no process"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-236">CG-236</a>
+    <span class="t">A trial winner&#39;s PR enters the review queue on its own</span>
+  </div>
+  <div class="meta">
+    revise
+    
+  </div>
+  
+  <div class="bar"><span class="faint">no process recorded · started 01:01Z · a slot is held until a tick reaps it</span></div>
+  
+</article></div>
+  <div class="g"><h4>needs you</h4><article class="specimen strip  st-needs_you" data-task="CG-215" data-run="">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-waiting_human" title="needs you"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="bud, tagged"><title>bud, tagged</title><use href="#st-tag"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-215">CG-215</a>
+    <span class="t">Onboarding skill and command</span>
+  </div>
+  <div class="meta">
+    <span class="stamp">needs you</span>
+  </div>
+  
+  <div class="said reason">Should the fixture be a Go project or a Node project? The spec names neither.</div>
+  
+</article></div>
+  <div class="g"><h4>held</h4><article class="specimen strip  st-held" data-task="CG-250" data-run="">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-changes_requested" title="held"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in flower"><title>in flower</title><use href="#st-flower"/></svg></div>
+  <div class="head">
+    <a class="id" href="/tasks/CG-250">CG-250</a>
+    <span class="t">A reopen verdict is a working process</span>
+  </div>
+  <div class="meta">
+    <span class="stamp">held</span>
+  </div>
+  
+  <div class="said reason">automated review rounds used (4 of 4); a person decides whether to merge, revise by hand or close</div>
+  
+</article></div>
+  <div class="g"><h4>paused</h4><article class="specimen strip  st-paused" data-task="" data-run="">
+  <span class="tape"></span>
+  <div class="glyphs"><span class="state s-blocked" title="paused"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="seed, waiting"><title>seed, waiting</title><use href="#st-seed"/></svg></div>
+  <div class="head">
+    
+    <span class="t">codex harness paused</span>
+  </div>
+  <div class="meta">
+    <span class="stamp">paused</span>
+  </div>
+  
+  <div class="said reason">quota: usage limit reached · since 00:31Z · the probe resumes it on its own</div>
+  
+</article></div>
+  <div class="g"><h4>empty: nothing running, work queued</h4><div class="specimen empty-sheet"><span class="tape"></span><b>Nothing running.</b><p>Next tick in 42 s: it will dispatch CG-237 and CG-215 into 5 free slots.</p></div></div>
+  <div class="g"><h4>quiet: nothing running, nothing to dispatch</h4><div class="specimen empty-sheet"><span class="tape"></span><b>The garden is quiet.</b><p>Nothing is ready: 3 drafts wait for approval, 2 cards wait on you in the Inbox. Next tick in 42 s polls PRs only.</p></div></div>
+  <div class="g"><h4>next: lines the tick would skip, and the merge queue with a head, a held candidate and a PR in review</h4>
+    <ol class="queue">
+      <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-215">CG-215</a><span class="lt">Onboarding skill and command</span><span class="why">priority 2 · work · hard → <span class="skip">harness paused</span></span></li>
+      <li><span class="pos">2</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><a class="id" href="/tasks/CG-222">CG-222</a><span class="lt">The evaluation corpus for routing</span><span class="why">priority 3 · work · medium → <span class="skip">phase frozen</span></span></li>
+    </ol>
+    <div class="sub"><h3>Merge queue</h3><ul>
+      <li><a class="id" href="/tasks/CG-245">CG-245</a><span>Isolate planner execution from operator state</span><span class="fact">rebased, waiting for its rollup · CI pending</span></li>
+      <li><a class="id" href="/tasks/CG-251">CG-251</a><span>Cost per accepted task and first-pass approval per model, tier and harness</span><span class="fact held">held: the automated review verdict is request_changes, not approve</span></li>
+      <li><a class="id" href="/tasks/CG-244">CG-244</a><span>Reserve retro task IDs and survive duplicate records</span><span class="fact">round 1 of 4 · CI success · only 1 review round so far, need 2</span></li>
+    </ul></div></div>
+  <div class="g"><h4>dispatch paused (the region header)</h4><div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span><span class="right">3 of 5 worker slots · 0 of 3 review slots <span class="stamp">paused</span> · by cli at 00:31Z · quota on both accounts</span></div></div>
+  <div class="g"><h4>no runs in the window</h4><div class="empty">No runs finished in this window.</div></div>
+</section>
+</main>
+</div>
+<script>
+// Mock-only controls: the theme and gallery toggles, the window switch and the countdown.
+(function () {
+  var q = new URLSearchParams(location.search);
+  if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
+  if (q.get("gallery") === "1") document.getElementById("gallery").hidden = false;
+  var themeBtn = document.querySelector("[data-theme-toggle]");
+  themeBtn.addEventListener("click", function () {
+    var root = document.documentElement;
+    var dark = root.dataset.theme === "dark" || (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+    root.dataset.theme = dark ? "light" : "dark";
+  });
+  document.querySelector("[data-gallery-toggle]").addEventListener("click", function () {
+    var gal = document.getElementById("gallery"); gal.hidden = !gal.hidden; if (!gal.hidden) gal.scrollIntoView();
+  });
+  var initial = q.get("window") || "hour";
+  function show(key) {
+    document.querySelectorAll("[data-window-panel]").forEach(function (el) { el.hidden = el.dataset.windowPanel !== key; });
+    document.querySelectorAll("[data-window]").forEach(function (a) { a.classList.toggle("on", a.dataset.window === key); });
+  }
+  show(initial);
+  document.querySelectorAll("[data-window]").forEach(function (a) {
+    a.addEventListener("click", function (e) { e.preventDefault(); show(a.dataset.window); });
+  });
+  var left = 60;
+  setInterval(function () {
+    left = left > 0 ? left - 1 : 60;
+    document.querySelectorAll("[data-countdown]").forEach(function (el) { el.textContent = left; });
+  }, 1000);
+})();
+</script>
+</body>
+</html>
