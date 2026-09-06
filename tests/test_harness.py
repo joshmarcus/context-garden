@@ -315,6 +315,13 @@ def test_auth_marker_inside_a_long_report_is_not_an_env_error():
                    'fixed.\\nGARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{},"total_cost_usd":0.1}')
     assert done["env_error"] is False
 
+    # Even an error-shaped result is a completed worker result once it carries a
+    # parsed garden block; the marker in the report cannot turn it into auth.
+    error_with_result = h.parse('{"type":"result","subtype":"error_during_execution","is_error":true,'
+                                '"result":"not logged in was discussed; fixed.\\n'
+                                'GARDEN_RESULT: {\\"status\\":\\"done\\"}","usage":{}}')
+    assert error_with_result["env_error"] is False and error_with_result["result"]["status"] == "done"
+
     # Codex's agent message is worker prose, even when it is short and contains the marker.
     codex = Harness("codex", {})
     agent_message = json.dumps({"type": "item.completed", "item": {
