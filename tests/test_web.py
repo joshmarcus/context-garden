@@ -2,6 +2,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from garden.runs import Run
+from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
 from tests.conftest import complete_brief
@@ -21,6 +23,64 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_design_files_are_safe_and_use_the_product_checkout(garden):
+    repo = garden.parent / "repo"
+    (repo / "docs" / "design").mkdir(parents=True)
+    (repo / "docs" / "design" / "mock.html").write_text("<h1>Mock</h1><script>bad()</script>")
+    (repo / "docs" / "design" / "notes.md").write_text("# Notes\n\nA design note.")
+    (repo / "docs" / "design" / "pixel.png").write_bytes(b"PNG bytes")
+    c = client(garden)
+
+    assert "Design" in c.get("/").text
+    assert c.get("/design").status_code == 200
+    html = c.get("/design/mock.html")
+    assert html.status_code == 200 and "<script>bad()</script>" in html.text
+    assert html.headers["content-security-policy"] == "sandbox"
+    markdown = c.get("/design/notes.md")
+    assert markdown.status_code == 200 and "<h1>Notes</h1>" in markdown.text
+    image = c.get("/design/pixel.png")
+    assert image.status_code == 200 and image.content == b"PNG bytes"
+    assert c.get("/design/%2e%2e/README.md").status_code == 404
+    assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
+
+
+def test_snapshot_scrubs_sensitive_strings_not_just_field_names():
+    value = _safe({"message": "failed in /home/alice/repo with token=abc123 and ghp_secret",
+                   "error": "Authorization: Bearer xyz"})
+    text = str(value)
+    assert "/home/alice/repo" not in text
+    assert "abc123" not in text and "ghp_secret" not in text and "xyz" not in text
+
+
+def test_run_page_links_and_serves_every_capture_type(garden):
+    run_dir = garden / ".garden" / "runs" / "DM-001" / "capture-run"
+    run = Run(task_id="DM-001", run_id="capture-run", dir=str(run_dir), runner="local",
+              started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
+              status="done", result={"captures": [str(run_dir / "ui" / "page.png"),
+                                                  str(run_dir / "ui" / "page.html"),
+                                                  "notes.md", "run.json"]})
+    run.save()
+    (run_dir / "ui").mkdir()
+    (run_dir / "ui" / "page.png").write_bytes(b"png")
+    (run_dir / "ui" / "page.html").write_text("<script>bad()</script>")
+    (run_dir / "notes.md").write_text("notes")
+    c = client(garden)
+    page = c.get("/runs/DM-001/capture-run")
+    assert page.status_code == 200
+    assert "page.png" in page.text and "page.html" in page.text and "notes.md" in page.text
+    assert "/ui/{" not in page.text
+    for name, content_type in (("ui/page.png", "image/png"), ("ui/page.html", "text/html"), ("notes.md", "text/markdown")):
+        response = c.get(f"/runs/DM-001/capture-run/captures/{name}")
+        assert response.status_code == 200 and response.content
+        assert response.headers["content-type"].startswith(content_type)
+    assert c.get("/runs/DM-001/capture-run/captures/../run.json").status_code == 404
+    html = c.get("/runs/DM-001/capture-run/captures/ui/page.html")
+    assert html.headers["content-security-policy"] == "sandbox"
+    assert c.get("/runs/DM-001/capture-run/captures/run.json").status_code == 404
+    (run_dir / "garden.yaml").write_text("token: secret")
+    assert c.get("/runs/DM-001/capture-run/captures/garden.yaml").status_code == 404
 
 
 def test_header_has_seedling_mark_and_favicon(garden):

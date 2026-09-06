@@ -37,6 +37,19 @@ LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed",
 LOGGER = logging.getLogger("garden.web")
 
 
+def product_checkout(store: Store, product: str) -> Path:
+    """Return the configured local checkout, falling back to its garden metadata."""
+    configured = store.config.product_repo(product)
+    if isinstance(configured, str) and "://" in configured:
+        return next((p.path for p in store.products() if p.name == product), store.root)
+    return Path(configured)
+
+
+def product_design_root(store: Store, product: str) -> Path:
+    """The design directory belonging to a product's code checkout."""
+    return product_checkout(store, product) / "docs" / "design"
+
+
 def _flash_url(url: str, message: str, note: str = "", extra: dict[str, str] | None = None) -> str:
     """Append a flash message (and, for the answer form, the typed note) to a redirect target.
     `extra` carries a form's other typed fields back (the new-task form) so they survive a
@@ -166,6 +179,7 @@ class Site:
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "products": s.products(),
+            "has_design": any(product_design_root(s, p.name).is_dir() for p in s.products()),
             "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},
             "inbox_count": len(decisions(items)),
             "env": s.config.env,

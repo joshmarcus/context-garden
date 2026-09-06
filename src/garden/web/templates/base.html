@@ -332,6 +332,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/trials" class="{{ 'on' if page == 'trials' else '' }}">Trials</a>
     <a href="/runs" class="{{ 'on' if page == 'runs' else '' }}">Runs <span class="count">${{ '%.0f' % totals.cost_usd }}</span></a>
     <a href="/costs" class="{{ 'on' if page == 'costs' else '' }}">Costs</a>
+    {% if has_design %}<a href="/design" class="{{ 'on' if page == 'design' else '' }}">Design</a>{% endif %}
     <a href="/config" class="{{ 'on' if page == 'config' else '' }}">Config</a>
   </nav>
   <div>

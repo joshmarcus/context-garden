@@ -19,6 +19,21 @@ from ...trials import TrialLog, ranking_markdown
 from ..common import Site, render_md
 
 
+def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
+    """Design paths changed by the task branch, using the local checkout when available."""
+    if not task.branch:
+        return []
+    from ... import gitops
+    try:
+        repo = gitops.ensure_repo(store.config.product_repo(task.product), store.config.repos_dir)
+        base = store.config.product_base_branch(task.product)
+        names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}"}
+            for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
+
+
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
 
@@ -82,7 +97,9 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
-            prior_trials=prior_trials, trial_view=trial_view,
+            prior_trials=prior_trials,
+            trial_view=trial_view,
+            design_files=_design_files(t, s),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

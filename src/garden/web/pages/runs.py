@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from ...runs import RunStore
 from ..common import Site
+from .design import recorded_captures
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -57,22 +58,25 @@ def register(app: FastAPI, site: Site) -> None:
             final_text = str((res or {}).get("result") or "")
         brief_path = run.path / "brief.md"
         brief_text = brief_path.read_text() if brief_path.exists() else ""
-        captures = [Path(str(p)).name for ch in (run.result or {}).get("checks", [])
-                    if ch.get("name") == "ui" for p in ch.get("captures", [])]
+        captures = [{"name": p.relative_to(run.path).as_posix(),
+                     "href": f"/runs/{task_id}/{run_id}/captures/{p.relative_to(run.path).as_posix()}"}
+                    for p in recorded_captures(run)]
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
             captures=captures))
 
-    @app.get("/runs/{task_id}/{run_id}/ui/{name}", response_class=FileResponse)
+    @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):
         run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
                     if r.run_id == run_id), None)
         path = run.path / "ui" / Path(name).name if run else None
-        if path is None or not path.is_file():
+        if path is None or path.resolve() not in (recorded_captures(run) if run else []):
             raise HTTPException(404)
-        return FileResponse(path)
+        media = "text/html" if path.suffix.lower() in {".html", ".htm"} else None
+        headers = {"Content-Security-Policy": "sandbox"} if media else {}
+        return Response(path.read_bytes(), media_type=media, headers=headers)
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):
