@@ -466,6 +466,17 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
         console.print("[dim]nothing notable[/dim]")
 
 
+def _tier_cell(cell: dict | None, unit: str) -> str:
+    """One difficulty-by-model cell as text: the value in its unit, its n, and the marks the
+    page uses (▲ best, ▽ worst, ~ thin) so the terminal reads like the Now page."""
+    if not cell:
+        return "—"
+    v = cell["value"]
+    text = f"${v:.2f}" if unit == "usd" else f"{v:.0%}" if unit == "pct" else f"{v:.1f} h" if unit == "hours" else f"{v:.1f}"
+    mark = "▲ " if cell["best"] else "▽ " if cell["worst"] else ""
+    return f"{mark}{text} ({'~' if cell['thin'] else ''}n {cell['n']})"
+
+
 @app.command(rich_help_panel=PANEL_INSIGHT)
 def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
@@ -512,6 +523,19 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                           f"{row['first_pass_rate']:.0%}" if row["first_pass_rate"] is not None else "",
                           str(row["reviewed"]))
         console.print(table)
+    tiers = m["by_difficulty_model"]
+    for tm in tiers["metrics"]:
+        table = Table(title=f"{tm['label']} by difficulty and model (n = {tm['n_unit']}; ▲ best, ▽ worst of a row, ~ under {tiers['thin']} samples)")
+        table.add_column("tier")
+        for model in tiers["models"]:
+            table.add_column(model)
+        for tier in ("easy", "medium", "hard"):
+            cells = tm["rows"].get(tier) or {}
+            if not cells:
+                continue
+            table.add_row(tier, *[_tier_cell(cells.get(model), tm["unit"]) for model in tiers["models"]])
+        if table.row_count:
+            console.print(table)
     rb = m.get("rebase") or {}
     table = Table(title="rebases (their own mode: cheapest thing that brings a PR forward)")
     for c in ("rebases", "mechanical", "agent", "merges", "rebases per merge", "rebase cost"):
