@@ -83,8 +83,8 @@ def profile(
     name: str = typer.Argument("", help="economy | balanced | fast, or a name from garden.yaml profiles:; omit to show the active one"),
     clear_: bool = typer.Option(False, "--clear", help="Drop the live override, back to plain garden.yaml values"),
 ):
-    """Switch the operating profile live (CG-221): one named stop sets workers, reviews, the
-    model tier map, the review and retro tiers and the observe profile together, in effect
+    """Switch the operating profile live: one named stop sets workers, reviews, the
+    model tier map, the review and retro tiers and the observation feed together, in effect
     within one tick, no restart."""
     store = _store()
     sched = _scheduler(store)
@@ -163,7 +163,7 @@ def clear(key: str):
     console.print(f"[green]{key} override cleared[/green] (back to the garden.yaml value)")
 
 
-config_app = typer.Typer(help="A live garden.yaml reload held against an in-flight run's fence manifest (CG-242).",
+config_app = typer.Typer(help="A live garden.yaml reload held against an in-flight run's fence manifest.",
                          invoke_without_command=True, no_args_is_help=False)
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_LOOP)
 
@@ -368,12 +368,12 @@ def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to th
 @app.command(rich_help_panel=PANEL_LOOP)
 def observe(
     follow: bool = typer.Option(False, "--follow", help="Print a pass every observe.interval, streaming the configured events between passes"),
-    profile: str = typer.Option("", "--profile", help="quiet | watch | debug, or a name from observe.profiles (default: observe.profile in garden.yaml)"),
+    profile: str = typer.Option("", "--feed", "--profile", help="Observation feed: quiet | watch | debug, or a configured feed (observe.profile in garden.yaml)"),
     json_out: bool = typer.Option(False, "--json", help="One JSON object per pass instead of text"),
 ):
     """The operator's feed: a status line, cards that need a hand, stuck runs, tracebacks and
     a digest of the window — for a person or an agent's heartbeat. Cadence, event kinds and
-    the digest window are `observe:` in garden.yaml (see docs/architecture.md); `--profile`
+    the digest window are `observe:` in garden.yaml (see docs/architecture.md); `--feed`
     picks a built-in (quiet, watch, debug) or a custom one for this run only."""
     from .. import observe as observe_mod
 

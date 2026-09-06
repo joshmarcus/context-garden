@@ -86,7 +86,7 @@
     max_parallel above) still wins for that one knob.
   </p>
   <table style="margin-top:10px; font-size:12.5px">
-    <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>observe</th></tr>
+    <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>feed</th></tr>
     {% for row in operating_profile_rows %}
     <tr{% if row.active %} style="font-weight:700"{% endif %}>
       <td class="mono">{{ row.name }}{% if row.active %} (active){% endif %}</td>

@@ -100,7 +100,6 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
-            brief_gaps=brief_gaps(s, t),
             prior_trials=prior_trials,
             trial_view=trial_view,
             design_files=_design_files(t, s),
