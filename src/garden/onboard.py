@@ -39,6 +39,8 @@ class ProjectDiscovery:
     inferred: list[str] = field(default_factory=list)
     configure_by_hand: list[str] = field(default_factory=list)
     trusted_authors: list[str] = field(default_factory=list)
+    name_source: str = "repository directory"
+    base_branch_source: str = "default fallback"
 
 
 _SECRET_FILES = {".env", ".env.local", ".env.production", ".npmrc", ".pypirc"}
@@ -84,6 +86,8 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
         default = (repo_info.get("defaultBranchRef") or {}).get("name")
         if default:
             result.base_branch = str(default)
+            result.base_branch_source = "GitHub repository metadata"
+            result.inferred = [item for item in result.inferred if not item.startswith("base branch `")]
             result.inferred.append(f"base branch from GitHub repository metadata: {default}")
         result.read.append(f"github:{slug}:repository")
     issues = _gh_json(repo, ["issue", "list", "--repo", slug, "--state", "open", "--limit", "100", "--json", "number,title,milestone"])
@@ -104,9 +108,56 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
         result.inferred.append(f"{len(rules)} repository ruleset(s) found; preserve their review and branch requirements")
 
 
+def _safe_ci_command(command: str) -> bool:
+    """CI is documentation, not trusted command input: never copy credential-bearing text."""
+    secret_assignment = r"\b[A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|CREDENTIAL|AUTH)[A-Za-z_]*\s*="
+    return not (
+        re.search(r"\$\{\{|secrets\.|\$\(|`|https?://[^\s/:]+:[^\s/@]+@", command, re.IGNORECASE)
+        or re.search(secret_assignment, command, re.IGNORECASE)
+    )
+
+
+def _runner_commands(repo: Path, names: set[str]) -> tuple[str, str, str, list[str]]:
+    """Infer commands from task-runner target names, never from their shell recipes."""
+    candidates: list[tuple[str, str, set[str]]] = []
+    if "Makefile" in names:
+        targets = set(re.findall(r"^([A-Za-z0-9_.-]+)\s*:(?![=])", _text(repo / "Makefile"), re.MULTILINE))
+        candidates.append(("Makefile", "make", targets))
+    if "justfile" in names:
+        targets = set(re.findall(r"^([A-Za-z0-9_.-]+)(?:\s+[^:=\n]+)?\s*:(?:\s|$)", _text(repo / "justfile"), re.MULTILINE))
+        candidates.append(("justfile", "just", targets))
+    taskfile = next((name for name in ("Taskfile.yml", "Taskfile.yaml") if name in names), "")
+    if taskfile:
+        try:
+            data = yaml.safe_load(_text(repo / taskfile)) or {}
+            tasks = data.get("tasks", {}) if isinstance(data, dict) else {}
+            candidates.append((taskfile, "task", set(tasks) if isinstance(tasks, dict) else set()))
+        except yaml.YAMLError:
+            pass
+    for source, command, targets in candidates:
+        setup_target = next((target for target in ("setup", "install", "bootstrap", "deps") if target in targets), "")
+        test_target = "test" if "test" in targets else ""
+        lint_target = "lint" if "lint" in targets else ""
+        if setup_target or test_target or lint_target:
+            return (
+                f"{command} {setup_target}" if setup_target else "",
+                f"{command} {test_target}" if test_target else "",
+                f"{command} {lint_target}" if lint_target else "",
+                [source],
+            )
+    return "", "", "", []
+
+
 def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
     names = {p.relative_to(repo).as_posix() for p in files}
     ci = "\n".join(_text(p) for p in files if p.relative_to(repo).as_posix().startswith(".github/workflows/"))
+    runner = _runner_commands(repo, names)
+    if runner[3]:
+        setup, test, lint, sources = runner
+        if not lint and ".pre-commit-config.yaml" in names:
+            lint = "pre-commit run --all-files"
+            sources.append(".pre-commit-config.yaml")
+        return setup, test, lint, sources
     if "package.json" in names:
         package = yaml.safe_load((repo / "package.json").read_text()) or {}
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
@@ -119,7 +170,10 @@ def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
     if "Cargo.toml" in names:
         return "cargo fetch --locked", "cargo test --locked", "cargo clippy --all-targets -- -D warnings", ["Cargo.toml"]
     if "pyproject.toml" in names:
-        ci_commands = [m.strip() for m in re.findall(r"^\s*-\s*run:\s*(.+)$", ci, re.MULTILINE)]
+        ci_commands = [
+            command for m in re.findall(r"^\s*-\s*run:\s*(.+)$", ci, re.MULTILINE)
+            if (command := m.strip()) and _safe_ci_command(command)
+        ]
         setup = next((c for c in ci_commands if re.search(r"(?:pip install|uv sync|uv pip install)", c)), "")
         setup = setup or ("uv sync --all-extras" if "uv.lock" in names else "python -m pip install -e '.[dev]'")
         test = next((c for c in ci_commands if re.search(r"(?:^|\s)(?:pytest|python -m pytest)(?:\s|$)", c)), "")
@@ -131,26 +185,33 @@ def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
         return "./mvnw dependency:go-offline", "./mvnw test", "", ["pom.xml"]
     if "Gemfile" in names:
         return "bundle install", "bundle exec rake test", "", ["Gemfile"]
+    if ".pre-commit-config.yaml" in names or "Dockerfile" in names:
+        return (
+            "docker build ." if "Dockerfile" in names else "",
+            "",
+            "pre-commit run --all-files" if ".pre-commit-config.yaml" in names else "",
+            [name for name in ("Dockerfile", ".pre-commit-config.yaml") if name in names],
+        )
     return "", "", "", []
 
 
-def _project_name(repo: Path, rels: dict[str, Path]) -> str:
+def _project_name(repo: Path, rels: dict[str, Path]) -> tuple[str, str]:
     """Prefer a manifest's stable project name over a checkout/worktree directory name."""
     if "pyproject.toml" in rels:
         try:
             project = tomllib.loads(_text(rels["pyproject.toml"])).get("project", {})
             if isinstance(project, dict) and project.get("name"):
-                return str(project["name"])
+                return str(project["name"]), "pyproject.toml project.name"
         except tomllib.TOMLDecodeError:
             pass
     if "package.json" in rels:
         try:
             package = json.loads(_text(rels["package.json"]))
             if isinstance(package, dict) and package.get("name"):
-                return str(package["name"])
+                return str(package["name"]), "package.json name"
         except json.JSONDecodeError:
             pass
-    return repo.name
+    return repo.name, "repository directory"
 
 
 def discover_project(repo: Path) -> ProjectDiscovery:
@@ -166,20 +227,32 @@ def discover_project(repo: Path) -> ProjectDiscovery:
             ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
             cwd=repo, capture_output=True, text=True, check=False,
         ).stdout.strip()
-        base = remote_head.removeprefix("origin/") or current or "main"
+        if remote_head:
+            base, base_source = remote_head.removeprefix("origin/"), "git remote HEAD"
+        elif current:
+            base, base_source = current, "current Git branch"
+        else:
+            base, base_source = "main", "default fallback"
     except OSError:
-        base = "main"
+        base, base_source = "main", "default fallback"
     setup, test, lint, command_sources = _commands(repo, files)
-    result = ProjectDiscovery(_project_name(repo, rels), base, setup, test, lint)
+    project_name, name_source = _project_name(repo, rels)
+    result = ProjectDiscovery(project_name, base, setup, test, lint, name_source=name_source, base_branch_source=base_source)
     result.read.extend(command_sources)
     result.inferred.extend(
-        f"{label} command from {', '.join(command_sources)} and CI metadata: {value or 'not determined'}"
+        f"{label} command from {', '.join(command_sources) or 'available project metadata'}: {value or 'not determined'}"
         for label, value in (("setup", setup), ("test", test), ("lint", lint))
     )
 
     for rel, path in rels.items():
         lower = path.name.lower().split(".")[0]
-        is_doc = lower in _DOC_NAMES or rel.startswith("docs/") or rel.startswith(".github/ISSUE_TEMPLATE/")
+        is_doc = (
+            lower in _DOC_NAMES
+            or rel.startswith("docs/")
+            or rel.startswith(".github/ISSUE_TEMPLATE/")
+            or rel.startswith(".github/PULL_REQUEST_TEMPLATE/")
+            or rel == ".github/pull_request_template.md"
+        )
         if is_doc and path.name not in _SECRET_FILES:
             result.read.append(rel)
             text = _text(path)
@@ -200,8 +273,8 @@ def discover_project(repo: Path) -> ProjectDiscovery:
                 result.backlog.append((f"{match.group(2).strip()}{owner} — {source}", source))
 
     ci_text = "\n".join(_text(p) for rel, p in rels.items() if rel.startswith(".github/workflows/"))
-    for name in sorted(set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", ci_text))):
-        result.configure_by_hand.append(f"Environment variable {name} is referenced by CI; configure by hand.")
+    for env_name in sorted(set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", ci_text))):
+        result.configure_by_hand.append(f"Environment variable {env_name} is referenced by CI; configure by hand.")
     codeowners = next((p for rel, p in rels.items() if p.name == "CODEOWNERS"), None)
     if codeowners:
         result.trusted_authors = sorted(set(re.findall(r"(?<!\w)@([\w.-]+)", _text(codeowners))))
@@ -214,7 +287,18 @@ def discover_project(repo: Path) -> ProjectDiscovery:
         f"Use the project's discovered lint command: `{lint}`." if lint else "Choose and document a lint command.",
         f"Target the `{base}` branch for changes.",
     ]
-    result.inferred.append(f"base branch from the current Git checkout: {base}")
+    environment_inputs = [
+        rel for rel in rels
+        if rel in {"Makefile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Dockerfile", ".pre-commit-config.yaml"}
+        or rel.startswith(".devcontainer/")
+    ]
+    result.read.extend(environment_inputs)
+    if any(rel == ".pre-commit-config.yaml" for rel in environment_inputs):
+        result.conventions.append("Run the configured pre-commit hooks before review.")
+    if any(rel == "Dockerfile" or rel.startswith(".devcontainer/") for rel in environment_inputs):
+        result.conventions.append("Preserve the project's container-based development environment.")
+    result.inferred.append(f"project name `{project_name}` from {name_source}")
+    result.inferred.append(f"base branch `{base}` from {base_source}")
     result.inferred.append("module map from top-level repository entries")
     result.read = sorted(set(result.read))
     return result
@@ -325,8 +409,8 @@ def onboard_project(
         *info.configure_by_hand,
     ]
     derived = [
-        f"product slug `{product}` from repository directory name `{info.name}`",
-        f"task id prefix `{_prefix(info.name)}` from repository directory name `{info.name}`",
+        f"product slug `{product}` from project name `{info.name}` ({info.name_source})",
+        f"task id prefix `{_prefix(info.name)}` from project name `{info.name}` ({info.name_source})",
         f"configured repository `{configured_repo}` from the onboarding source",
         *info.inferred,
         *(f"trusted author @{author} from CODEOWNERS" for author in info.trusted_authors),

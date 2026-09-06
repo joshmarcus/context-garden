@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from garden.onboard import discover_project, onboard_project
@@ -37,6 +38,7 @@ def _valid_plan(_store: Store, _prompt: str) -> str:
             "difficulty": "easy",
             "depends_on": [],
             "reading": [],
+            "discovered_from": "onboard:src/index.js",
             "body": "## Goal\n\nAdd health output.\n\n## Context\n\nDiscovered backlog item.\n\n## Acceptance criteria\n\n- [ ] A test covers the endpoint.\n\n## Out of scope\n\n- Deployment changes.\n",
         }
     ])
@@ -70,6 +72,23 @@ def test_discovery_uses_manifest_name_in_a_worktree_directory(tmp_path):
     assert discover_project(repo).name == "context-garden"
 
 
+def test_discovery_records_remote_head_as_base_branch_source(tmp_path):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    git("init", "-q", "-b", "work", cwd=repo)
+    write(repo / "README.md", "# Project\n")
+    git("add", "README.md", cwd=repo)
+    git("commit", "-q", "-m", "initial", cwd=repo)
+    git("update-ref", "refs/remotes/origin/trunk", "HEAD", cwd=repo)
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk", cwd=repo)
+
+    info = discover_project(repo)
+
+    assert info.base_branch == "trunk"
+    assert info.base_branch_source == "git remote HEAD"
+    assert "base branch `trunk` from git remote HEAD" in info.inferred
+
+
 def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkeypatch):
     repo = _node_repo(tmp_path)
     garden = tmp_path / "garden"
@@ -83,7 +102,7 @@ def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkey
 
     assert setup == {"command": "npm ci", "test": "npm test", "lint": "npm run lint", "env": {"DEPLOY_TOKEN": ""}}
     assert task.status.value == "draft"
-    assert task.discovered_from == "onboard:project-backlog"
+    assert task.discovered_from == "onboard:src/index.js"
     assert (garden / "sample-web" / "product.md").exists()
     assert (garden / "principles" / "10-sample-web-conventions.md").exists()
     report = (garden / "sample-web" / "docs" / "onboarding.md").read_text()
@@ -91,6 +110,7 @@ def test_onboard_node_project_writes_complete_drafts_and_report(tmp_path, monkey
     assert "trusted author @maintainer from CODEOWNERS" in report
     assert "backlog item from `TODO.md`: Add structured logging" in report
     assert "backlog item from `src/index.js`: add a health endpoint" in report
+    assert "project name `sample-web` from repository directory" in report
     assert "super-secret-value" not in "\n".join(p.read_text(errors="replace") for p in garden.rglob("*") if p.is_file())
 
     from typer.testing import CliRunner
@@ -122,13 +142,77 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
     assert all(task.status.value == "draft" for task in tasks)
 
 
+def test_discovery_uses_safe_environment_sources_and_reports_exact_provenance(tmp_path):
+    repo = tmp_path / "checkout-name"
+    repo.mkdir()
+    git("init", "-q", "-b", "work", cwd=repo)
+    write(repo / "package.json", json.dumps({"name": "actual-product"}))
+    write(repo / "Makefile", "setup:\n\ttool install\ntest:\n\ttool test\nlint:\n\ttool lint\n")
+    write(repo / "Dockerfile", "FROM scratch\n")
+    write(repo / ".devcontainer" / "devcontainer.json", "{}")
+    write(repo / ".pre-commit-config.yaml", "repos: []\n")
+    write(repo / ".github" / "PULL_REQUEST_TEMPLATE" / "change.md", "Run checks before review.\n")
+    write(
+        repo / ".github" / "workflows" / "ci.yml",
+        "steps:\n  - run: API_TOKEN=plain-text-secret pytest -q\n",
+    )
+
+    info = discover_project(repo)
+
+    assert info.name == "actual-product"
+    assert info.name_source == "package.json name"
+    assert info.base_branch == "work"
+    assert info.base_branch_source == "current Git branch"
+    assert (info.setup_command, info.test_command, info.lint_command) == ("make setup", "make test", "make lint")
+    assert "plain-text-secret" not in repr(info)
+    assert {
+        "Makefile", "Dockerfile", ".devcontainer/devcontainer.json", ".pre-commit-config.yaml",
+        ".github/PULL_REQUEST_TEMPLATE/change.md",
+    }.issubset(set(info.read))
+
+
+def test_secret_bearing_ci_command_is_never_written(tmp_path):
+    repo = tmp_path / "python-app"
+    repo.mkdir()
+    git("init", "-q", "-b", "main", cwd=repo)
+    write(repo / "pyproject.toml", '[project]\nname = "python-app"\n[tool.pytest.ini_options]\n')
+    write(repo / ".github" / "workflows" / "ci.yml", "steps:\n  - run: API_TOKEN=hunter2 pytest -q\n")
+    garden = tmp_path / "garden"
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    output = "\n".join(path.read_text(errors="replace") for path in garden.rglob("*") if path.is_file())
+    assert "hunter2" not in output
+    assert yaml.safe_load((garden / "garden.yaml").read_text())["products"]["python-app"]["setup"]["test"] == "pytest -q"
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "expected"),
+    [
+        ("justfile", "setup:\n  tool install\ntest:\n  tool test\nlint:\n  tool lint\n", ("just setup", "just test", "just lint")),
+        (
+            "Taskfile.yml",
+            "version: '3'\ntasks:\n  setup: {cmds: ['tool install']}\n  test: {cmds: ['tool test']}\n  lint: {cmds: ['tool lint']}\n",
+            ("task setup", "task test", "task lint"),
+        ),
+    ],
+)
+def test_discovery_uses_supported_task_runners(tmp_path, filename, contents, expected):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    write(repo / filename, contents)
+
+    info = discover_project(repo)
+
+    assert (info.setup_command, info.test_command, info.lint_command) == expected
+    assert filename in info.read
+
+
 def test_onboard_refuses_existing_product_without_changing_it(tmp_path):
     repo = _node_repo(tmp_path)
     garden = tmp_path / "garden"
     onboard_project(repo, garden, planner=_valid_plan)
     before = {p.relative_to(garden): p.read_bytes() for p in garden.rglob("*") if p.is_file()}
-
-    import pytest
 
     with pytest.raises(ValueError, match="would overwrite an existing product"):
         onboard_project(repo, garden, planner=_valid_plan)
