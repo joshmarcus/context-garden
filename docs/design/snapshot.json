@@ -7,326 +7,6 @@
   },
   "events": [
     {
-      "at": "2026-09-05T19:48:30+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T194814Z-work",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T19:48:30+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260905T194814Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~9181 tokens)",
-      "task": "CG-232",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T19:49:54+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194954Z-review",
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T19:50:13+00:00",
-      "base": "main",
-      "harness": "claude",
-      "host": "",
-      "kind": "dispatch",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "resumed": false,
-      "run": "20260905T194957Z-work",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T19:50:13+00:00",
-      "from": "ready",
-      "kind": "transition",
-      "note": "dispatched work run 20260905T194957Z-work via local [claude model=claude-sonnet-5] (fresh session, base main, ~17527 tokens)",
-      "task": "CG-231",
-      "to": "running"
-    },
-    {
-      "at": "2026-09-05T19:54:57+00:00",
-      "cost_usd": 0.8977853999999998,
-      "kind": "run_finished",
-      "mode": "review",
-      "run": "20260905T194954Z-review",
-      "status": "request_changes",
-      "task": "CG-212",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T19:54:57+00:00",
-      "blocking": 1,
-      "criteria_met": 5,
-      "criteria_total": 5,
-      "description_ok": true,
-      "kind": "review",
-      "run": "20260905T194954Z-review",
-      "summary": "Solid, well-tested quota-pause mechanism across work/revise/rebase/resume/review/trial/persona paths, but the review env_error handler mishandles the after-rebase (uncounted) review round, corrupting review_rounds.",
-      "task": "CG-212",
-      "verdict": "request_changes"
-    },
-    {
-      "at": "2026-09-05T19:54:58+00:00",
-      "from": "in_review",
-      "kind": "transition",
-      "note": "automated review requested changes: Solid, well-tested quota-pause mechanism across work/revise/rebase/resume/review/trial/persona paths, but the review env_error handler mishandles the after-rebase (uncounted) review round, corrupting review_rounds. cost=$0.90",
-      "task": "CG-212",
-      "to": "changes_requested"
-    },
-    {
-      "at": "2026-09-05T19:55:08+00:00",
-      "kind": "needs_human",
-      "reason": "stuck: 3 revision rounds already used",
-      "stuck": true,
-      "task": "CG-212"
-    },
-    {
-      "at": "2026-09-05T19:58:30+00:00",
-      "harness": "codex",
-      "kind": "run_finished",
-      "mode": "trial",
-      "model": "gpt-5.6-terra",
-      "run": "20260905T194631Z-trial-2",
-      "status": "done",
-      "task": "CG-225",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:04:23+00:00",
-      "cost_usd": 5.026587399999998,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "trial",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194631Z-trial",
-      "status": "done",
-      "task": "CG-225",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:04:25+00:00",
-      "harness": "codex",
-      "kind": "dispatch",
-      "mode": "compare",
-      "model": "gpt-5.6-luna",
-      "run": "20260905T200425Z-compare",
-      "task": "CG-225",
-      "trial_id": "2026-09-05T19:46:31+00:00"
-    },
-    {
-      "at": "2026-09-05T20:04:25+00:00",
-      "cost_usd": 1.5481779999999998,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194957Z-work",
-      "status": "done",
-      "task": "CG-231",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:04:27+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T200427Z-check",
-      "stage": "pre_pr",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:07:25+00:00",
-      "cost_usd": 0.0,
-      "kind": "run_finished",
-      "mode": "check",
-      "run": "20260905T200427Z-check",
-      "status": "done",
-      "task": "CG-231",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:07:25+00:00",
-      "kind": "check",
-      "name": "test",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:07:25+00:00",
-      "kind": "check",
-      "name": "lint",
-      "stage": "pre_pr",
-      "status": "pass",
-      "summary": "ok",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:07:26+00:00",
-      "base": "main",
-      "draft": false,
-      "kind": "pr_opened",
-      "pr": "https:<path>",
-      "stacked_on": "",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:07:26+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "opened https:<path> (base main): Added a `--wait`<path> option to `garden trial` that ticks the scheduler until the trial reaches a terminal state (done/inconclusive), then prints the resolved contender table instead of the just-dispatched snapshot. cost=$1.55",
-      "task": "CG-231",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:07:27+00:00",
-      "items": 1,
-      "kind": "friction",
-      "phase": "context-garden/phase-04",
-      "run": "20260905T194957Z-work",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:07:28+00:00",
-      "harness": "claude",
-      "kind": "dispatch",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T200728Z-review",
-      "task": "CG-231"
-    },
-    {
-      "at": "2026-09-05T20:10:26+00:00",
-      "kind": "run_finished",
-      "mode": "compare",
-      "run": "20260905T200425Z-compare",
-      "status": "done",
-      "task": "CG-225",
-      "usage": {}
-    },
-    {
-      "at": "2026-09-05T20:10:29+00:00",
-      "kind": "trial_done",
-      "scores": {
-        "claude:claude-sonnet-5": 7,
-        "codex:gpt-5.6-terra": 9
-      },
-      "task": "CG-225",
-      "winner": "codex:gpt-5.6-terra"
-    },
-    {
-      "at": "2026-09-05T20:10:29+00:00",
-      "from": "running",
-      "kind": "transition",
-      "note": "trial won by codex:gpt-5.6-terra (scores: claude:claude-sonnet-5=7, codex:gpt-5.6-terra=9): https:<path>",
-      "task": "CG-225",
-      "to": "in_review"
-    },
-    {
-      "at": "2026-09-05T20:10:29+00:00",
-      "cost_usd": 4.721356600000001,
-      "exit_code": 0,
-      "harness": "claude",
-      "kind": "run_finished",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194814Z-work",
-      "status": "done",
-      "task": "CG-232",
-      "usage": {
-        "cache_creation": {},
-        "inference_geo": "not_available",
-        "iterations": [
-          {
-            "cache_creation": {},
-            "type": "message"
-          }
-        ],
-        "server_tool_use": {
-          "web_fetch_requests": 0,
-          "web_search_requests": 0
-        },
-        "service_tier": "standard",
-        "speed": "standard"
-      }
-    },
-    {
-      "at": "2026-09-05T20:10:30+00:00",
-      "kind": "dispatch",
-      "mode": "check",
-      "run": "20260905T201030Z-check",
-      "stage": "pre_pr",
-      "task": "CG-232"
-    },
-    {
-      "at": "2026-09-05T20:10:30+00:00",
-      "dangling": true,
-      "kind": "run_finished",
-      "mode": "work",
-      "run": "20260905T194646Z-work",
-      "status": "done",
-      "task": "CG-225",
-      "usage": {}
-    },
-    {
       "at": "2026-09-05T20:11:59+00:00",
       "cost_usd": 0.5153176,
       "kind": "run_finished",
@@ -29789,6 +29469,329 @@
       "name": "garden:CG-293:2026-09-06T19:48:00+00:00",
       "sha": "4d71cfa531acb2f444c1dd0c3875961b6f326bf0",
       "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T19:48:01+00:00",
+      "base": "main",
+      "harness": "codex",
+      "host": "",
+      "kind": "dispatch",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "resumed": false,
+      "run": "20260906T194800Z-work",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T19:48:01+00:00",
+      "from": "ready",
+      "kind": "transition",
+      "note": "dispatched work run 20260906T194800Z-work via local [codex model=gpt-5.6-terra] (fresh session, base main, ~10055 tokens)",
+      "task": "CG-293",
+      "to": "running"
+    },
+    {
+      "at": "2026-09-06T19:52:39+00:00",
+      "cost_usd": 0.547128,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T194748Z-review",
+      "status": "request_changes",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:52:39+00:00",
+      "blocking": 3,
+      "criteria_met": 3,
+      "criteria_total": 4,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260906T194748Z-review",
+      "summary": "No-change reconciliation preserves automated-review identities but can silently discard the external feedback that triggered the revision. The branch also deletes an unrelated tracked design snapshot.",
+      "task": "CG-337",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T19:52:44+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195243Z-review",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:55:08+00:00",
+      "cost_usd": 0.37294479999999997,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T195243Z-review",
+      "status": "request_changes",
+      "task": "CG-337",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:55:08+00:00",
+      "blocking": 2,
+      "criteria_met": 4,
+      "criteria_total": 4,
+      "description_ok": true,
+      "kind": "review",
+      "run": "20260906T195243Z-review",
+      "summary": "No-change reconciliation, bounded finding handling, operational recovery, and decision-card clarity are correctly implemented and tested. The PR still removes an unrelated tracked runtime snapshot, so it is not yet mergeable.",
+      "task": "CG-337",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T19:55:10+00:00",
+      "kind": "stall",
+      "reason": "review finding repeated after a revise round: ui captures not read for: board, board-list, config, events, herbarium, inbox, n",
+      "task": "CG-337"
+    },
+    {
+      "at": "2026-09-06T19:55:10+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "stalled: review finding repeated after a revise round: ui captures not read for: board, board-list, config, events, herbarium, inbox, n; run `garden triage CG-337 --changes \"<feedback>\" to unblock`",
+      "task": "CG-337",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T19:55:20+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195520Z-review",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T19:57:40+00:00",
+      "cost_usd": 0.4626312,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T195520Z-review",
+      "status": "request_changes",
+      "task": "CG-338",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T19:57:40+00:00",
+      "blocking": 3,
+      "criteria_met": 2,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T195520Z-review",
+      "summary": "The shared admission gate and cleanup logic do not cover the concurrency and detached-descendant failures that motivated this task. The Inbox captures are visually sound and the focused suite passes.",
+      "task": "CG-338",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T19:57:45+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195744Z-review",
+      "task": "CG-338"
+    },
+    {
+      "at": "2026-09-06T20:03:43+00:00",
+      "cost_usd": 0.3264512,
+      "kind": "run_finished",
+      "mode": "review",
+      "run": "20260906T195744Z-review",
+      "status": "request_changes",
+      "task": "CG-338",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:03:43+00:00",
+      "blocking": 3,
+      "criteria_met": 1,
+      "criteria_total": 4,
+      "description_ok": false,
+      "kind": "review",
+      "run": "20260906T195744Z-review",
+      "summary": "The UI and environment-error classification are sound, but concurrent launchers can exceed the host limit and detached descendants can outlive cleanup/accounting. The PR description and commit story also contain process narration.",
+      "task": "CG-338",
+      "verdict": "request_changes"
+    },
+    {
+      "at": "2026-09-06T20:03:44+00:00",
+      "from": "in_review",
+      "kind": "transition",
+      "note": "automated review requested changes: The UI and environment-error classification are sound, but concurrent launchers can exceed the host limit and detached descendants can outlive cleanup/accounting. The PR description and commit story also contain process narration. cost=$0.33",
+      "task": "CG-338",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:07:06+00:00",
+      "cost_usd": 0.7276696000000001,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T194800Z-work",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:07:08+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T200708Z-check",
+      "stage": "pre_pr",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:07:08+00:00",
+      "cost_usd": 0.5226736000000001,
+      "exit_code": 0,
+      "harness": "codex",
+      "kind": "run_finished",
+      "mode": "revise",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T194758Z-revise",
+      "status": "done",
+      "task": "CG-343",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:07:09+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T200709Z-check",
+      "stage": "pre_pr",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:09:22+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T200708Z-check",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:09:22+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "fail",
+      "summary": "exit 1",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:09:22+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:09:23+00:00",
+      "kind": "dispatch",
+      "mode": "check",
+      "run": "20260906T200923Z-check",
+      "stage": "base_probe",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:10:26+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T200923Z-check",
+      "status": "done",
+      "task": "CG-293",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:10:26+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "base_probe",
+      "status": "fail",
+      "summary": "exit 127",
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:10:26+00:00",
+      "base": "40fc26107ed27499877be1fa8706d26b37206788",
+      "checks": "test",
+      "kind": "check_base",
+      "moved": true,
+      "task": "CG-293"
+    },
+    {
+      "at": "2026-09-06T20:10:27+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "pre-PR checks failed (test); no PR opened yet; revise run will fix cost=$0.73",
+      "task": "CG-293",
+      "to": "changes_requested"
+    },
+    {
+      "at": "2026-09-06T20:10:27+00:00",
+      "cost_usd": 0.0,
+      "kind": "run_finished",
+      "mode": "check",
+      "run": "20260906T200709Z-check",
+      "status": "done",
+      "task": "CG-343",
+      "usage": {}
+    },
+    {
+      "at": "2026-09-06T20:10:27+00:00",
+      "kind": "check",
+      "name": "test",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:10:27+00:00",
+      "kind": "check",
+      "name": "lint",
+      "stage": "pre_pr",
+      "status": "pass",
+      "summary": "ok",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:10:30+00:00",
+      "from": "running",
+      "kind": "transition",
+      "note": "pushed revision to https:<path> Restored the unrelated generated design snapshot from origin/main, leaving the review-reconciliation change scoped to five scheduler, view, and test files. Focused lifecycle tests and lint pass. cost=$0.52",
+      "task": "CG-343",
+      "to": "in_review"
+    },
+    {
+      "at": "2026-09-06T20:10:31+00:00",
+      "items": 2,
+      "kind": "friction",
+      "phase": "context-garden/phase-05",
+      "run": "20260906T194758Z-revise",
+      "task": "CG-343"
+    },
+    {
+      "at": "2026-09-06T20:10:32+00:00",
+      "harness": "codex",
+      "kind": "dispatch",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T201032Z-review",
+      "task": "CG-343"
     }
   ],
   "metrics": {
@@ -29818,17 +29821,17 @@
         "avg_lead_hours": 3.65,
         "avg_revisions": 1.41,
         "cost_per_accepted_task": 21.7964,
-        "cost_usd": 378.1444,
-        "criteria_met": 44,
+        "cost_usd": 379.8535,
+        "criteria_met": 46,
         "criteria_rate": 0.57,
-        "criteria_total": 77,
+        "criteria_total": 81,
         "done": 16,
         "first_pass_approve": 8,
-        "first_pass_rate": 0.44,
-        "mean_cost_usd": 2.2375,
-        "reviewed": 18,
+        "first_pass_rate": 0.42,
+        "mean_cost_usd": 2.2085,
+        "reviewed": 19,
         "revisions": 31,
-        "runs": 169,
+        "runs": 172,
         "tasks": 22
       },
       "medium": {
@@ -29837,17 +29840,17 @@
         "avg_lead_hours": 2.43,
         "avg_revisions": 1.01,
         "cost_per_accepted_task": 8.2569,
-        "cost_usd": 757.6383,
+        "cost_usd": 758.8887,
         "criteria_met": 117,
         "criteria_rate": 0.87,
         "criteria_total": 135,
         "done": 87,
         "first_pass_approve": 58,
         "first_pass_rate": 0.66,
-        "mean_cost_usd": 1.0808,
+        "mean_cost_usd": 1.0749,
         "reviewed": 88,
         "revisions": 102,
-        "runs": 701,
+        "runs": 706,
         "tasks": 101
       }
     },
@@ -30047,7 +30050,7 @@
               },
               "gpt-5.6-sol": {
                 "best": false,
-                "n": 6,
+                "n": 7,
                 "rank": 1.0,
                 "thin": false,
                 "value": 0.0,
@@ -30225,23 +30228,23 @@
               "claude-sonnet-5": {
                 "best": false,
                 "n": 41,
-                "rank": 0.464,
+                "rank": 0.466,
                 "thin": false,
                 "value": 2.325,
                 "worst": false
               },
               "gpt-5.6-terra": {
                 "best": true,
-                "n": 66,
+                "n": 68,
                 "rank": 0.0,
                 "thin": false,
-                "value": 0.909,
+                "value": 0.901,
                 "worst": false
               },
               "sonnet": {
                 "best": false,
                 "n": 24,
-                "rank": 0.3,
+                "rank": 0.302,
                 "thin": false,
                 "value": 1.823,
                 "worst": false
@@ -30536,12 +30539,12 @@
         "accepted": 28,
         "accepted_cost_usd": 228.2811,
         "cost_per_accepted_task": 8.1529,
-        "cost_usd": 202.7179,
+        "cost_usd": 203.9683,
         "first_pass_approve": 4,
         "first_pass_rate": 0.11,
-        "mean_cost_usd": 1.3079,
-        "reviewed": 35,
-        "runs": 155,
+        "mean_cost_usd": 1.2992,
+        "reviewed": 36,
+        "runs": 157,
         "tasks": 46
       },
       "human": {
@@ -30560,12 +30563,12 @@
         "accepted": 7,
         "accepted_cost_usd": 94.4228,
         "cost_per_accepted_task": 13.489,
-        "cost_usd": 296.2203,
+        "cost_usd": 297.9295,
         "first_pass_approve": 4,
         "first_pass_rate": 0.57,
-        "mean_cost_usd": 0.3165,
+        "mean_cost_usd": 0.3159,
         "reviewed": 7,
-        "runs": 936,
+        "runs": 943,
         "tasks": 7
       }
     },
@@ -30638,7 +30641,7 @@
         "first_pass_approve": 0,
         "first_pass_rate": 0.0,
         "mean_cost_usd": 1.7752,
-        "reviewed": 6,
+        "reviewed": 7,
         "runs": 25,
         "tasks": 9
       },
@@ -30646,12 +30649,12 @@
         "accepted": 15,
         "accepted_cost_usd": 91.51,
         "cost_per_accepted_task": 6.1007,
-        "cost_usd": 59.9847,
+        "cost_usd": 61.235,
         "first_pass_approve": 1,
         "first_pass_rate": 0.05,
-        "mean_cost_usd": 0.9089,
+        "mean_cost_usd": 0.9005,
         "reviewed": 19,
-        "runs": 66,
+        "runs": 68,
         "tasks": 25
       },
       "gpt-6-astra": {
@@ -30694,12 +30697,12 @@
         "accepted": 18,
         "accepted_cost_usd": 104.0721,
         "cost_per_accepted_task": 5.7818,
-        "cost_usd": 296.2203,
+        "cost_usd": 297.9295,
         "first_pass_approve": 12,
         "first_pass_rate": 0.71,
-        "mean_cost_usd": 0.3099,
+        "mean_cost_usd": 0.3094,
         "reviewed": 17,
-        "runs": 956,
+        "runs": 963,
         "tasks": 19
       }
     },
@@ -32297,7 +32300,7 @@
                 "missing": 0,
                 "n": 2,
                 "rank": "",
-                "shade": -0.11761923269859825,
+                "shade": -0.11848500030566511,
                 "unit": "USD",
                 "value": 4.2091255
               },
@@ -32315,7 +32318,7 @@
                 "missing": 0,
                 "n": 16,
                 "rank": "",
-                "shade": -0.07420405008329789,
+                "shade": -0.08025873733531164,
                 "unit": "USD",
                 "value": 3.42531620625
               },
@@ -32346,11 +32349,11 @@
               "gpt-5.6-terra": {
                 "direction": "lower",
                 "missing": 5,
-                "n": 21,
+                "n": 22,
                 "rank": "best",
                 "shade": 1.0,
                 "unit": "USD",
-                "value": 1.3005906476190476
+                "value": 1.2745487818181818
               },
               "gpt-6-astra": {
                 "direction": "lower",
@@ -32373,7 +32376,7 @@
                 "missing": 0,
                 "n": 18,
                 "rank": "",
-                "shade": 0.5935691447654163,
+                "shade": 0.5831472339902808,
                 "unit": "USD",
                 "value": 2.1044919416666668
               },
@@ -36411,7 +36414,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 5.1105,
+        "cost_usd": 5.8382,
         "criteria_met": 0,
         "criteria_total": 0,
         "difficulty": "medium",
@@ -36425,8 +36428,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 4,
-        "runs": 25,
-        "status": "ready"
+        "runs": 28,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
@@ -36934,7 +36937,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 6.9459,
+        "cost_usd": 7.866,
         "criteria_met": 2,
         "criteria_total": 4,
         "difficulty": "hard",
@@ -36948,16 +36951,16 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 2,
-        "runs": 10,
-        "status": "in_review"
+        "runs": 11,
+        "status": "changes_requested"
       },
       {
         "accepted": false,
-        "cost_usd": 4.3188,
-        "criteria_met": 0,
-        "criteria_total": 0,
+        "cost_usd": 5.1078,
+        "criteria_met": 2,
+        "criteria_total": 4,
         "difficulty": "hard",
-        "first_review": "",
+        "first_review": "request_changes",
         "harness": [
           "codex"
         ],
@@ -36967,8 +36970,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 5,
-        "status": "in_review"
+        "runs": 7,
+        "status": "changes_requested"
       },
       {
         "accepted": true,
@@ -36992,7 +36995,7 @@
       },
       {
         "accepted": false,
-        "cost_usd": 1.9958,
+        "cost_usd": 2.5185,
         "criteria_met": 3,
         "criteria_total": 3,
         "difficulty": "medium",
@@ -37006,8 +37009,8 @@
         ],
         "phase": "context-garden/phase-05",
         "revisions": 1,
-        "runs": 4,
-        "status": "running"
+        "runs": 6,
+        "status": "in_review"
       },
       {
         "accepted": true,
@@ -37194,70 +37197,6 @@
   ],
   "queue": {},
   "runs": [
-    {
-      "harness": "claude",
-      "mode": "trial",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194631Z-trial",
-      "status": "done",
-      "task": "CG-225"
-    },
-    {
-      "harness": "codex",
-      "mode": "trial",
-      "model": "gpt-5.6-terra",
-      "run": "20260905T194631Z-trial-2",
-      "status": "done",
-      "task": "CG-225"
-    },
-    {
-      "harness": "codex",
-      "mode": "work",
-      "model": "gpt-5.6-terra",
-      "run": "20260905T194646Z-work",
-      "status": "done",
-      "task": "CG-225"
-    },
-    {
-      "harness": "claude",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194814Z-work",
-      "status": "done",
-      "task": "CG-232"
-    },
-    {
-      "harness": "claude",
-      "mode": "review",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194954Z-review",
-      "status": "done",
-      "task": "CG-212"
-    },
-    {
-      "harness": "claude",
-      "mode": "work",
-      "model": "claude-sonnet-5",
-      "run": "20260905T194957Z-work",
-      "status": "done",
-      "task": "CG-231"
-    },
-    {
-      "harness": "codex",
-      "mode": "compare",
-      "model": "gpt-5.6-luna",
-      "run": "20260905T200425Z-compare",
-      "status": "done",
-      "task": "CG-225"
-    },
-    {
-      "harness": "",
-      "mode": "check",
-      "model": "",
-      "run": "20260905T200427Z-check",
-      "status": "done",
-      "task": "CG-231"
-    },
     {
       "harness": "claude",
       "mode": "review",
@@ -42447,7 +42386,7 @@
       "mode": "review",
       "model": "gpt-5.6-sol",
       "run": "20260906T194748Z-review",
-      "status": "running",
+      "status": "done",
       "task": "CG-337"
     },
     {
@@ -42455,14 +42394,78 @@
       "mode": "revise",
       "model": "gpt-5.6-terra",
       "run": "20260906T194758Z-revise",
+      "status": "done",
+      "task": "CG-343"
+    },
+    {
+      "harness": "codex",
+      "mode": "work",
+      "model": "gpt-5.6-terra",
+      "run": "20260906T194800Z-work",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195243Z-review",
+      "status": "done",
+      "task": "CG-337"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195520Z-review",
+      "status": "done",
+      "task": "CG-338"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T195744Z-review",
+      "status": "done",
+      "task": "CG-338"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T200708Z-check",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T200709Z-check",
+      "status": "done",
+      "task": "CG-343"
+    },
+    {
+      "harness": "",
+      "mode": "check",
+      "model": "",
+      "run": "20260906T200923Z-check",
+      "status": "done",
+      "task": "CG-293"
+    },
+    {
+      "harness": "codex",
+      "mode": "review",
+      "model": "gpt-5.6-sol",
+      "run": "20260906T201032Z-review",
       "status": "running",
       "task": "CG-343"
     },
     {
       "harness": "",
-      "mode": "work",
+      "mode": "revise",
       "model": "",
-      "run": "20260906T194800Z-work",
+      "run": "20260906T201037Z-revise",
       "status": "running",
       "task": "CG-293"
     }
@@ -44761,7 +44764,7 @@
       "id": "CG-293",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "ready",
+      "status": "changes_requested",
       "title": "A brief never ships with an empty or unresolved reading list, and a revise brief restates the criteria and the concrete blocker"
     },
     {
@@ -45097,7 +45100,7 @@
       "id": "CG-337",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "changes_requested",
       "title": "Attention cards ask for product decisions, while no-change reports reconcile automatically"
     },
     {
@@ -45105,7 +45108,7 @@
       "id": "CG-338",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "in_review",
+      "status": "changes_requested",
       "title": "Keep the operator machine responsive under concurrent workers and test suites"
     },
     {
@@ -45145,7 +45148,7 @@
       "id": "CG-343",
       "phase": "phase-05",
       "product": "context-garden",
-      "status": "running",
+      "status": "in_review",
       "title": "Finished reviews are reconciled even after their task leaves review states"
     },
     {
