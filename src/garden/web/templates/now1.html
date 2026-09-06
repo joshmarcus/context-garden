@@ -22,9 +22,10 @@
 .strip .glyphs { grid-row:1 / span 3; display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:2px; }
 .strip .glyphs .state::before { width:8px; height:8px; }
 .strip .head { display:flex; align-items:baseline; gap:10px; min-width:0; }
-.strip .head .id { flex:none; }
+.strip .head .id { flex:none; color:var(--muted); }
 .strip .t { font:400 16.5px/1.3 var(--display); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .strip .meta { font:12px/1.5 var(--mono); color:var(--muted); white-space:nowrap; text-align:right; }
+.strip .meta .open-run { color:var(--muted); }
 .strip .bar { grid-column:2 / span 2; display:flex; align-items:center; gap:12px; font:12px/1.4 var(--mono); color:var(--muted); min-width:0; flex-wrap:wrap; }
 .strip .bar .spend, .strip .bar .verdict { margin-left:auto; color:var(--ink); transition:opacity .2s; }
 .strip .bar .spend.faint { color:var(--faint); }
@@ -58,10 +59,11 @@
 .empty-sheet p { margin:0; color:var(--muted); font:13.5px/1.5 var(--body); }
 /* next */
 .queue { list-style:none; margin:0; padding:0; }
-.queue li { display:grid; grid-template-columns:26px 22px 68px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); transition:transform .3s cubic-bezier(.2,.7,.2,1), opacity .3s; }
+.queue li { display:grid; grid-template-columns:26px 22px minmax(0, 1fr); gap:3px 10px; align-items:baseline; padding:8px 4px; border-bottom:1px dashed var(--line); transition:transform .3s cubic-bezier(.2,.7,.2,1), opacity .3s; }
 .queue .pos { font:12px/1.4 var(--mono); color:var(--faint); text-align:right; }
-.queue .lt { font:15px/1.35 var(--display); overflow-wrap:anywhere; }
-.queue .why { grid-column:4; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .lt { grid-column:3; font:15px/1.35 var(--display); overflow-wrap:anywhere; }
+.queue .why { grid-column:3; font:11.5px/1.5 var(--mono); color:var(--muted); }
+.queue .why .id { color:var(--muted); }
 .queue .why .skip { color:var(--warn); font-weight:700; }
 .queue-more { display:block; margin:8px 4px 0; font:12px/1.4 var(--mono); }
 .sub { margin-top:20px; }
@@ -120,10 +122,11 @@
 .tiers { margin-top:26px; }
 .tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
 .tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.tier-tables.wide { grid-template-columns:minmax(0, 1fr); }  /* more than five models: one table per row, so no column is cut */
 .tier-tables .scroll { overflow-x:auto; }
 table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
 table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
-table.tier caption .dir { margin-left:8px; font:italic 11.5px/1.3 var(--display); color:var(--faint); }
+table.tier caption small { margin-left:6px; font:11px/1.4 var(--mono); color:var(--muted); }
 table.tier th { font:400 11px/1.3 var(--mono); letter-spacing:0; text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
 table.tier th .vendor { display:block; color:var(--faint); }
 table.tier th .tot { display:block; color:var(--faint); font:italic 10.5px/1.4 var(--display); }
@@ -140,17 +143,25 @@ table.tier th .tot { display:block; color:var(--faint); font:italic 10.5px/1.4 v
 .runs-table .scroll { overflow-x:auto; }
 .runs-table table.tier { width:auto; min-width:min(100%, 520px); }
 table.tier td { padding:5px 6px; vertical-align:baseline; border-bottom:1px dashed var(--line); }
-table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; }
+table.tier td b { font:400 14px/1.2 var(--display); color:var(--ink); display:block; white-space:nowrap; }
 table.tier td small { font:10.5px/1.4 var(--mono); color:var(--faint); display:block; }
+/* the heat scale (the owner's rule, 2026-09-06 02:45Z): --k is the cell's place on its row, 0 at
+   the best value and 1 at the worst, decided in the data; the ground is mixed in oklab between
+   two tokens per palette so the ink reads on both and the middle of a row is a quiet tan. A thin
+   cell sits on the scale at a third of the strength; the marks say what the colour says. */
+:root { --cell-good:#d9eedd; --cell-bad:#f5d9d4; }
+:root[data-theme="dark"] { --cell-good:#20402c; --cell-bad:#4a2a28; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cell-good:#20402c; --cell-bad:#4a2a28; } }
+table.tier td.scaled { background:color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)); }
+table.tier td.scaled.thin { background:color-mix(in oklab, color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)) 35%, transparent); }
 table.tier td.best b { font-weight:600; }
 table.tier td.thin b { color:var(--muted); font-style:italic; }
+table.tier .mark { font:700 10px/1 var(--mono); margin-right:4px; vertical-align:2px; }
+table.tier .mark.best, .tiers .lead .mark.best { color:var(--good); }
+table.tier .mark.worst, .tiers .lead .mark.worst { color:var(--bad); }
+table.tier .mark.thin, .tiers .lead .mark.thin { color:var(--muted); margin-right:2px; }
+.tiers .lead .mark { font:700 11px/1 var(--mono); }
 table.tier td .faint { color:var(--faint); }
-/* the heat-map ground (the owner's rule, 2026-09-06 02:45Z): within a row, a light green at the
-   best value through a quiet scale to a light red at the worst; --g is the cell's share of green.
-   The tint sits under the ink at a fifth of its strength, so the text reads in both themes; a
-   thin cell gets less than half of that, and the marks in each cell say what the colour says. */
-td.heat { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 22%, transparent); }
-td.heat.thin { background:color-mix(in srgb, color-mix(in srgb, var(--good) var(--g), var(--bad)) 9%, transparent); }
 /* live region for a screen reader */
 .now-live { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 /* the rail on this page: the page is the Running now block, so the rail does not repeat it */
@@ -176,8 +187,6 @@ body.page-now .rail-running { display:none; }
   .strip .said { grid-column:2; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .scale { --track:110px; }
   .queue li { grid-template-columns:22px 20px minmax(0, 1fr); }
-  .queue .id { grid-column:3; }
-  .queue .lt, .queue .why { grid-column:3; }
   .sheet.big { padding:18px 12px 18px; min-height:0; }
   .sheet .t1 { top:120px; } .sheet .t2 { display:none; }
   .sheet .mount img { max-height:300px; }

@@ -106,6 +106,25 @@ def format_cell(unit: str, value: float) -> str:
     return f"{value:.1f}"
 
 
+def cell_text(cell: dict[str, Any] | None, unit: str) -> str:
+    """A shaded cell as one line of text, the same in `garden now` and `garden metrics` as the
+    page's marks read: `▲ $1.20 (n 4)` for the best of a row, `▽` for the worst, `(~n 2)` for
+    a thin cell, `—` where a model did no work."""
+    if not cell:
+        return "—"
+    mark = "▲ " if cell["best"] else "▽ " if cell["worst"] else ""
+    return f"{mark}{format_cell(unit, cell['value'])} ({'~' if cell['thin'] else ''}n {cell['n']})"
+
+
+def short_title(title: str, n: int = 56) -> str:
+    """A task title as the five-second sentence says it: whole words up to about `n`
+    characters, then an ellipsis, so the sentence names the work and never its id."""
+    title = " ".join(str(title or "").split())
+    if len(title) <= n:
+        return title
+    return title[:n].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+
+
 def shade_row(cells: dict[str, dict[str, Any]], better: str) -> None:
     """Give a row of `{value, n}` cells the shape and the marks `events.difficulty_by_model`
     gives its own (`thin`, `rank`, `best`, `worst`, by `events._rank_row`), so every shaded
@@ -211,10 +230,9 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
     """One Now strip for a run record, running or just finished."""
     t = tasks.get(run.task_id)
     finished = run.status != "running"
-    # A record with no pid and no output was written at dispatch and never launched; the
-    # scheduler counts it against a slot until a tick reaps it, so the page shows it as what
-    # it is rather than as a run that has said nothing for an hour.
-    no_process = not finished and run.pid is None and not (run.path / "stdout.json").exists()
+    # A record written at dispatch and never launched holds a slot until a tick reaps it, so
+    # the page shows it as what it is rather than as a run that has said nothing for an hour.
+    no_process = run.no_process
     p = run_progress(run, store)
     out = {
         "kind": "run", "state": "finishing" if finished else "running", "task": run.task_id,
@@ -300,15 +318,20 @@ def dispatch_lines(sched: Any) -> list[dict[str, Any]]:
 
 
 def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[dict[str, Any]],
-                strips: list[dict[str, Any]], control: dict[str, Any], review_busy: int, review_slots: int) -> dict[str, Any]:
+                strips: list[dict[str, Any]], sched: Any, last_tick: str = "") -> dict[str, Any]:
     """The merge queue's head and candidates, every other PR in review, and the reviews
-    waiting for a slot, each with the fact that says why it sits where it does."""
+    waiting to start, each with the fact that says why it sits where it does. A waiting
+    review's reason is the scheduler's own (`Scheduler.review_wait_reason`: the first of the
+    tick's gates, in the tick's order), judged against the hub's `last_tick` and the task's
+    newest event so a review nothing explains is named as such."""
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in strips if s.get("mode") in REVIEW_MODES}
     max_rounds = int(store.config.get("review.max_rounds", 2))  # the scheduler's own default
-    paused = set((control.get("paused_harnesses") or {}).keys())
-    review_harness = str((store.config.get("review") or {}).get("harness") or store.config.get("harness") or "claude")
+    last_moved: dict[str, str] = {}
+    for e in events:
+        if e.get("task"):
+            last_moved[e["task"]] = max(last_moved.get(e["task"], ""), str(e.get("at") or ""))
     in_review, waiting = [], []
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
@@ -318,8 +341,8 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
                               "reviewing": t.id in reviewing, "blocked": str(st.get("automerge_blocked") or "")})
         for item in st.get("pending_reviews") or []:
             name = str(item.get("kind", "review")) + (f":{item['name']}" if item.get("name") else "")
-            why = "harness paused" if review_harness in paused else f"no review slot ({review_busy} of {review_slots} busy)"
-            waiting.append({"task": t.id, "title": t.title, "what": name, "why": why})
+            gate, why = sched.review_wait_reason(t, last_tick=last_tick, last_moved=last_moved.get(t.id, ""))
+            waiting.append({"task": t.id, "title": t.title, "what": name, "gate": gate, "why": why})
     return {"head": view["head"], "candidates": view["candidates"], "last_drop": view["last_drop"],
             "in_review": in_review, "waiting": waiting}
 
@@ -564,7 +587,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
                    "drafts": drafts, "inbox_decisions": len(hands)},
         "now": strips + hands,
         "next": {"dispatch": dispatch_lines(sched),
-                 "merge": merge_queue(store, tasks, state, events, strips, control, review_busy, review_parallel)},
+                 "merge": merge_queue(store, tasks, state, events, strips, sched, str(tick.get("at") or ""))},
         "where": {"primary": primary, "others": sheets[1:], "closed": closed},
         "period": period(events, op_events, tasks, since, bucket),
     }
@@ -685,14 +708,15 @@ def render_text(snap: dict[str, Any]) -> str:
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))
     bm = w["by_model"]
+    marks = f"▲ best, ▽ worst of a row, ~ under {bm['thin']} samples"
     if bm["columns"]:
-        out.append(f"  by harness and model: cost per run · n runs (* best, - worst, ~ under {bm['thin']} samples)")
+        out.append(f"  by harness and model: cost per run (n = runs; {marks})")
         out += _text_table(bm, bm["columns"], list(bm["rows"]), bm["heads"])
     for a in w["annotations"]:
         out.append(f"  {a['at'][11:16]}Z {a['kind'].replace('_', ' ')}" + (f": {', '.join(a['changed'])}" if a["changed"] else "") + (f": {a['from'] or '(none)'} → {a['to']}" if a["to"] else ""))
     tiers = w["tiers"]
     if tiers["models"]:
-        out.append(f"  by difficulty and model (value · n; * best, - worst, ~ under {tiers['thin']} samples)")
+        out.append(f"  by difficulty and model ({marks})")
         for m in tiers["metrics"]:
             out += _text_table(m, tiers["models"], ["easy", "medium", "hard"])
     else:
@@ -701,22 +725,15 @@ def render_text(snap: dict[str, Any]) -> str:
 
 
 def _text_table(m: dict[str, Any], columns: list[str], rows: list[str], heads: dict[str, str] | None = None) -> list[str]:
-    """A shaded table as text: the label, then a line per row, each cell `value · n` with the
-    mark the shading decided (* best, - worst, ~ thin), the same rule as the page's cells."""
-    out = [f"    {m['label']:<24} " + "".join(f"{col:>22}" for col in columns)]
+    """A shaded table as text: the label with its direction and what n counts, then a line
+    per row, each cell as `cell_text` writes it, the marks the same as the page's."""
+    caption = f"{m['label']} · {'higher' if m['better'] == 'high' else 'lower'} is better · n = {m['n_unit']}"
+    out = [f"    {caption:<24} " + "".join(f"{col:>22}" for col in columns)]
     if heads:
         out.append(f"    {'':<24} " + "".join(f"{heads.get(col, ''):>22}" for col in columns))
     for key in rows:
         cells = m["rows"][key]
-        line = ""
-        for col in columns:
-            c = cells.get(col)
-            if not c:
-                line += f"{'—':>22}"
-            else:
-                mark = "~" if c["thin"] else ("*" if c["best"] else ("-" if c["worst"] else ""))
-                line += f"{format_cell(m['unit'], c['value']) + ' · ' + str(c['n']) + mark:>22}"
-        out.append(f"    {key:<24} {line}")
+        out.append(f"    {key:<24} " + "".join(f"{cell_text(cells.get(col), m['unit']):>22}" for col in columns))
     return out
 
 

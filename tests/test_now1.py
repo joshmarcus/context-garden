@@ -230,8 +230,24 @@ def test_the_page_shades_a_row_with_two_solid_cells(garden):
     lines = log.path.read_text().splitlines()
     log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
     page = _client(garden).get("/now1?window=hour").text
-    assert re.search(r'<th>work</th>.*?class="heat worst" style="--g:0%"[^>]*>\s*<b>\$4\.00</b><small>n 3 · worst</small>', page, re.S)
-    assert re.search(r'<th>work</th>.*?class="heat best" style="--g:100%"[^>]*>\s*<b>\$1\.00</b><small>n 3 · best</small>', page, re.S)
+    assert re.search(r'<th>work</th>.*?class="scaled worst" style="--k:1\.0">\s*<b><span class="mark worst" title="worst of the row">▽</span>\$4\.00</b><small>n 3</small>', page, re.S)
+    assert re.search(r'<th>work</th>.*?class="scaled best" style="--k:0\.0">\s*<b><span class="mark best" title="best of the row">▲</span>\$1\.00</b><small>n 3</small>', page, re.S)
+
+
+def test_cell_text_reads_like_garden_metrics():
+    """One formatter for a cell in text: the Now text view and `garden metrics` print the
+    same marks as the page (▲ best, ▽ worst, ~ thin)."""
+    from garden.cli.loop import _tier_cell
+
+    best = {"value": 1.2, "n": 4, "thin": False, "rank": 0.0, "best": True, "worst": False}
+    worst = {"value": 0.25, "n": 3, "thin": False, "rank": 1.0, "best": False, "worst": True}
+    thin = {"value": 0.5, "n": 2, "thin": True, "rank": None, "best": False, "worst": False}
+    assert now1.cell_text(best, "usd") == "▲ $1.20 (n 4)" == _tier_cell(best, "usd")
+    assert now1.cell_text(worst, "pct") == "▽ 25% (n 3)" and now1.cell_text(thin, "hours") == "0.5 h (~n 2)"
+    assert now1.cell_text(None, "usd") == "—" == _tier_cell(None, "usd")
+    # the five-second sentence names what comes next by title: whole words, then an ellipsis
+    assert now1.short_title("Build Now 1 at /now1 from the Fable design: live view of what is running") == "Build Now 1 at /now1 from the Fable design: live view…"
+    assert now1.short_title("  Second   task ") == "Second task"
 
 
 def test_harness_progress_reads_a_partial_stream():
@@ -259,8 +275,13 @@ def test_now1_page_renders_the_four_regions_and_the_nav(garden):
     assert '<a href="/now1" class="on">Now 1</a>' in page and 'href="/now2"' in page
     assert 'class="page-now"' in page and re.search(r'data-server-now="\d{4}-\d\d-\d\dT', page)
     assert "The garden is quiet." not in page  # two ready tasks are queued
-    assert "Nothing running." in page and "it will dispatch DM-001" in page
-    assert "DM-001" in page and "priority 1 · work · medium →" in page
+    assert "Nothing running." in page and 'it will dispatch <a href="/tasks/DM-001">First task</a> into' in page
+    # the five-second sentence says what comes next by title, never by id
+    five = re.search(r'<p class="now-five".*?</p>', page, re.S).group(0)
+    assert "Next</a>: First task." in five and "DM-" not in five
+    # in the Next list the title is the link and the id opens the mono line under it
+    assert '<a class="lt" href="/tasks/DM-001">First task</a>' in page
+    assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
     assert "p1, seed" in page and "0 of 2 merged" in page
     assert "No runs finished in this window." in page
     for region in ("head", "now", "next", "where", "period"):
@@ -280,7 +301,9 @@ def test_running_card_carries_the_start_time_the_clock_reads(garden):
     strip = re.search(r'data-task="DM-001".*?</article>', page, re.S).group(0)
     assert re.search(r"<span data-elapsed>7:0\d</span>", strip)  # the server's first reading in the clock's format
     assert "“Found the bug.”" in strip and "1k tokens so far" in strip  # tokens, since claude has no price table
-    assert "work · claude sonnet" in strip
+    # the title leads and links to the task; the id follows; `open run` links to this exact run
+    assert '<a class="t" href="/tasks/DM-001">First task</a><span class="id">DM-001</span>' in strip
+    assert f'work · claude sonnet · <a class="open-run" href="/runs/DM-001/{run.run_id}">open run</a>' in strip
     assert "1 run in flight" in page and "1 of 2 worker slots" in page
     # the same attributes on the Board's running card and the task page's run row, and the clock script once
     assert 'data-started="' in c.get("/board").text
@@ -365,7 +388,48 @@ def test_merge_queue_and_reviews_waiting_show_their_facts(garden):
     page = _client(garden).get("/now1").text
     assert "rebased, waiting for its rollup · CI pending" in page
     assert "round 1 of 2 · CI success · the automated review verdict is request_changes" in page
-    assert "persona:security" in page and "no review slot (0 of 2 busy)" in page
+    # a waiting review names the task and the gate that holds it; nothing does here, and a free
+    # slot never reads as a full one
+    assert "<span>persona:security · Second task</span>" in page and "queued: the next tick starts it" in page
+    assert "no review slot" not in page
+    # a tick has passed since the task last moved and no gate explains the wait: the line is set
+    # in the ink colour and sends the person to the log rather than promising a recovery
+    app_ = create_app(Store(garden), watch=False, host="testserver")
+    app_.state.hub.tick_record = {"at": "2999-01-01T00:00:00+00:00"}
+    page = TestClient(app_).get("/now1").text
+    assert ('class="fact held">still queued after a tick and no gate explains it: see the task&#39;s log · '
+            '<a href="/tasks/DM-002#log">open the log</a>') in page
+
+
+def test_review_wait_reason_is_the_first_of_the_ticks_gates(garden):
+    """The reason a queued review waits is the scheduler's own: the gates the tick applies, in
+    the tick's order (a pause, the task's own worker run, the review harness, the slots), and
+    the overdue line only when nothing holds it and a tick has passed since the task moved."""
+    store = Store(garden)
+    sched = Scheduler(store, github=FakeGitHub())
+    t = store.task("DM-002")
+    t.status = now1.Status.IN_REVIEW
+    t.pr = "https://example.com/pull/2"
+    store.save(t)
+
+    def reason(**kw):
+        return sched.review_wait_reason(store.task("DM-002"), **kw)
+
+    assert reason() == ("tick", "queued: the next tick starts it")
+    assert reason(last_tick="2026-09-06T03:06:00+00:00", last_moved="2026-09-06T03:05:00+00:00") == (
+        "overdue", "still queued after a tick and no gate explains it: see the task's log")
+    assert reason(last_tick="2026-09-06T03:04:00+00:00", last_moved="2026-09-06T03:05:00+00:00")[0] == "tick"
+    for _ in range(2):  # review_parallel follows max_parallel, two in this garden
+        _record_running(garden, task="DM-001", mode="review")
+    assert reason() == ("slots", "no review slot (2 of 2 busy)")
+    sched.pause_harness("claude", "quota")
+    assert reason() == ("harness", "claude harness paused")
+    _record_running(garden, task="DM-002", mode="revise", pid=None)  # a record without a process
+    assert reason() == ("worker", "its revise record has no process; the tick that reaps it starts the review")
+    _record_running(garden, task="DM-002", mode="revise")
+    assert reason() == ("worker", "waits for its revise run to finish")
+    sched.pause("cli", "quota on both accounts")
+    assert reason() == ("paused", "dispatch paused: reviews start again with dispatch")
 
 
 def test_phase_sheet_grows_with_merges_and_closed_phases_are_specimens(garden):
@@ -401,19 +465,25 @@ def test_last_period_reads_the_windows_events(garden):
     assert 'href="/now1?window=hour#period" class="on"' in page
     assert "merged · DM-001, DM-002" in page and "50 %<small>1 of 2</small>" in page
     assert "$4.00<small>2 runs" in page and "$2.00</div><div class=\"l\">per accepted task" in page
-    assert "claude:opus" in page and "claude:sonnet" in page and "<b>1</b><small>answer 1</small>" in page
+    assert '<span class="vendor">claude:</span>opus' in page and '<span class="vendor">claude:</span>sonnet' in page
+    assert "<b>1</b><small>answer 1</small>" in page
     assert "profile changed: (none) → steady" in page and 'class="annotation"' in page
-    for label in ("cost per accepted task", "first-pass approval", "work-run cost", "revise rounds", "median lead time"):
-        assert f"<caption>{label}" in page
+    # each table's caption says which way is good and what its n counts
+    assert "<caption>cost per accepted task <small>lower is better · n = accepted tasks</small>" in page
+    assert "<caption>first-pass approval <small>higher is better · n = tasks first reviewed</small>" in page
+    assert "<caption>work-run cost <small>lower is better · n = work runs</small>" in page
+    for label in ("revise rounds", "median lead time"):
+        assert f"<caption>{label} <small>lower is better · n = accepted tasks</small>" in page
     # the shading: with one sample each the cells are thin, so the row has no scale to shade on
-    # (fewer than two solid cells) and neither is marked best or worst, only marked thin
-    assert 'class="plain thin"' in page and 'class="heat' not in page
-    assert "n 1 · thin" in page and "· best" not in page
+    # (fewer than two solid cells): no ground, the ~ mark on the n, and no ▲ or ▽ anywhere
+    assert 'class="thin"' in page and 'class="scaled' not in page
+    assert '<span class="mark thin" title="fewer than 3 samples">~</span>n 1</small>' in page
+    assert 'title="best of the row"' not in page and 'title="worst of the row"' not in page
     # the runs table reads the same way: a row per mode, a column per harness:model with its total
     # in the head, each cell the mean cost per run shaded within the row and marked
-    assert "<caption>cost per run<span class=\"dir\">lower is better · n = runs</span>" in page
+    assert "<caption>cost per run <small>lower is better · n = runs</small>" in page
     assert '<span class="vendor">claude:</span>opus<span class="tot">$3.00 · 1 run</span>' in page
-    assert re.search(r'<th>work</th>.*?class="plain thin"[^>]*>\s*<b>\$1\.00</b>', page, re.S)
+    assert re.search(r'<th>work</th>.*?class="thin">\s*<b>\$1\.00</b>', page, re.S)
     for window in ("today", "24h", "phase"):
         assert c.get(f"/now1?window={window}").status_code == 200
 

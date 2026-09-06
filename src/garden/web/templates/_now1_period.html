@@ -34,7 +34,7 @@
   {% if bm.columns %}
   <div class="tiers">
     <div class="eyebrow">Runs by harness and model</div>
-    <p class="lead">a row per mode that ran, a column per harness and model with what it cost in all, each cell the mean cost of one run over its n runs, shaded and marked within the row like every table here</p>
+    <p class="lead">a row per mode that ran, a column per harness and model with what it cost in all, each cell the mean cost of one run over its n runs, shaded and marked within the row the way every table here is</p>
     <div class="runs-table">{{ heat_table(bm, bm.columns, bm.rows.keys() | list, bm.thin, bm.heads) }}</div>
   </div>
   {% endif %}
@@ -42,8 +42,8 @@
   <div class="tiers">
     <div class="eyebrow">By difficulty and model</div>
     {% if tiers.models %}
-    <p class="lead">the same five figures <code>garden metrics</code> reports, each cell with its n; each row runs from a green ground at its best value to a red one at its worst, the best and worst cells are marked, and a cell under {{ tiers.thin }} samples is faint and marked thin</p>
-    <div class="tier-tables">
+    <p class="lead">the five figures <code>garden metrics</code> reports, each cell with its n. Along a row the ground runs from green at the best value to red at the worst, <span class="mark best">▲</span> and <span class="mark worst">▽</span> mark the two ends; a cell under {{ tiers.thin }} samples is faint and marked <span class="mark thin">~</span>, and is never an end</p>
+    <div class="tier-tables{{ ' wide' if tiers.models | length > 5 }}">
       {% for m in tiers.metrics %}{{ heat_table(m, tiers.models, ("easy", "medium", "hard"), tiers.thin) }}{% endfor %}
     </div>
     {% else %}<p class="lead">No model did work in this window.</p>{% endif %}

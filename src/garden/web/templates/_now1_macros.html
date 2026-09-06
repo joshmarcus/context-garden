@@ -9,7 +9,7 @@
 <p class="now-five" id="now-five">
   {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
   <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
-  {%- if snap.next.dispatch %} <a href="#next">Next</a>: {{ snap.next.dispatch[0].task }}{% if snap.next.dispatch | length > 1 %}, then {{ snap.next.dispatch[1].task }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
+  {%- if snap.next.dispatch %} <a href="#next">Next</a>: {{ f.short(snap.next.dispatch[0].title) }}{% if snap.next.dispatch | length > 1 %}, then {{ f.short(snap.next.dispatch[1].title) }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
   {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
   <a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a>: {{ snap.period.merged }} merged, ${{ '%.2f' % snap.period.cost }}.
 </p>
@@ -28,11 +28,12 @@
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-{{ '' if no_process else s.dot }}" title="{{ 'no process' if no_process else s.state | replace('_', ' ') }}"></span>{{ stage(s.glyph, 22) }}</div>
   <div class="head">
-    {% if s.task %}<a class="id" href="/tasks/{{ s.task }}">{{ s.task }}</a>{% endif %}
-    <span class="t">{{ s.title }}</span>
+    {#- the title leads and is the link to the task page, where the actions are; the id follows
+        in muted mono for the person who knows the work by number -#}
+    {% if s.task %}<a class="t" href="/tasks/{{ s.task }}">{{ s.title }}</a><span class="id">{{ s.task }}</span>{% else %}<span class="t">{{ s.title }}</span>{% endif %}
   </div>
   <div class="meta">
-    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}{% if s.state == "failed" %} <span class="stamp">failed</span>{% endif %}
+    {% if s.kind == "run" %}{{ s.mode }}{% if s.stage %} · {{ s.stage }}{% endif %}{% if s.harness %} · {{ s.harness }} {{ s.model }}{% endif %}{% if s.run %} · <a class="open-run" href="/runs/{{ s.task }}/{{ s.run }}">open run</a>{% endif %}{% if s.state == "failed" %} <span class="stamp">failed</span>{% endif %}
     {% else %}<span class="stamp">{{ s.state | replace('_', ' ') }}</span>{% endif %}
   </div>
   {% if no_process %}
@@ -75,22 +76,24 @@
 {%- endmacro -%}
 
 {%- macro queue_line(q) -%}
-<li data-key="{{ q.task }}"><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="id" href="/tasks/{{ q.task }}">{{ q.task }}</a><span class="lt">{{ q.title }}</span>
-  <span class="why">{{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
+<li data-key="{{ q.task }}"><span class="pos">{{ q.pos }}</span>{{ stage('changes_requested' if q.mode != 'work' else 'ready', 18) }}<a class="lt" href="/tasks/{{ q.task }}">{{ q.title }}</a>
+  <span class="why"><span class="id">{{ q.task }}</span> · {{ q.why }} · {{ q.mode }} · {{ q.difficulty }} → {% if q.skip %}<span class="skip">{{ q.skip }}</span>{% else %}{{ q.harness }} {{ q.model }}{% endif %}</span></li>
 {%- endmacro -%}
 
 {%- macro heat_table(m, columns, rows, thin, heads={}) -%}
 {#- One shaded table (the owner's rule, 2026-09-06 02:45Z): a column per model, a row per key,
-    each cell its value over its n, the ground and the best/worst/thin marks decided in the data
+    each cell its value over its n. The ground and the marks are decided in the data
     (`events._rank_row`: `rank` runs from 0 at the row's best to 1 at its worst, and is unset
-    when the row has fewer than two solid cells, so no ground is drawn); the template only
-    styles them. `m.n_unit` says what a cell's n counts; `heads` adds a line under a column's
+    when the row has fewer than two solid cells, so no ground is drawn; `best`, `worst`, `thin`);
+    the template only styles them: ▲ before the best value, ▽ before the worst, ~ on a thin
+    cell's n, each with its word in a title, so colour is never the only signal. The caption
+    says which way is good and what n counts (`m.n_unit`); `heads` adds a line under a column's
     name (the runs table's total cost and count). -#}
 <div class="scroll"><table class="tier">
-  <caption>{{ m.label }}<span class="dir">{{ 'lower is better' if m.better == 'low' else 'higher is better' }}{% if m.n_unit %} · n = {{ m.n_unit }}{% endif %}</span></caption>
+  <caption>{{ m.label }} <small>{{ 'lower is better' if m.better == 'low' else 'higher is better' }}{% if m.n_unit %} · n = {{ m.n_unit }}{% endif %}</small></caption>
   <tr><th></th>{% for col in columns %}{% set parts = col.split(':', 1) if ':' in col else col.split('-', 1) %}<th>{% if parts | length == 2 %}<span class="vendor">{{ parts[0] }}{{ ':' if ':' in col else '-' }}</span>{{ parts[1] }}{% else %}{{ col }}{% endif %}{% if heads.get(col) %}<span class="tot">{{ heads[col] }}</span>{% endif %}</th>{% endfor %}</tr>
   {% for d in rows %}
-  <tr><th>{{ d }}</th>{% for col in columns %}{% set c = m.rows[d].get(col) %}{% if c %}<td class="{{ 'heat' if c.rank is not none else 'plain' }}{{ ' best' if c.best }}{{ ' worst' if c.worst }}{{ ' thin' if c.thin }}"{% if c.rank is not none %} style="--g:{{ f.grown(c.rank) }}"{% endif %} title="{{ m.label }}, {{ d }}, {{ col }}: {{ f.cell(m.unit, c.value) }} over {{ c.n }} sample{{ 's' if c.n != 1 }}{% if c.thin %}; fewer than {{ thin }}, so not a verdict{% elif c.best %}; the best of the row{% elif c.worst %}; the worst of the row{% endif %}"><b>{{ f.cell(m.unit, c.value) }}</b><small>n {{ c.n }}{% if c.thin %} · thin{% elif c.best %} · best{% elif c.worst %} · worst{% endif %}</small></td>{% else %}<td><span class="faint">—</span></td>{% endif %}{% endfor %}</tr>
+  <tr><th>{{ d }}</th>{% for col in columns %}{% set c = m.rows[d].get(col) %}{% if c %}{% set cls = (['scaled'] if c.rank is not none else []) + (['best'] if c.best else []) + (['worst'] if c.worst else []) + (['thin'] if c.thin else []) %}<td class="{{ cls | join(' ') }}"{% if c.rank is not none %} style="--k:{{ c.rank }}"{% endif %}><b>{% if c.best %}<span class="mark best" title="best of the row">▲</span>{% elif c.worst %}<span class="mark worst" title="worst of the row">▽</span>{% endif %}{{ f.cell(m.unit, c.value) }}</b><small>{% if c.thin %}<span class="mark thin" title="fewer than {{ thin }} samples">~</span>{% endif %}n {{ c.n }}</small></td>{% else %}<td><span class="faint">—</span></td>{% endif %}{% endfor %}</tr>
   {% endfor %}
 </table></div>
 {%- endmacro -%}

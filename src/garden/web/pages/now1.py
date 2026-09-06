@@ -31,9 +31,8 @@ def _chart(p: dict[str, Any], width: int = 640) -> Markup:
 # shared environment, so this page's names never collide with another's.
 FORMAT = SimpleNamespace(
     clock=now1.clock, minutes=now1.minutes, money=now1.money, ktok=now1.ktok, per_merge=now1.per_merge,
-    cell=now1.format_cell, chart=_chart,
+    cell=now1.format_cell, short=now1.short_title, chart=_chart,
     spark=lambda values: Markup(sparkline_svg([float(v) for v in values], width=100, height=26)),
-    grown=lambda rank: f"{round((1 - float(rank)) * 100)}%",  # a cell's green share for the heat-map ground
 )
 
 

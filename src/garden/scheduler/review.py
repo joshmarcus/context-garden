@@ -68,7 +68,7 @@ class ReviewMixin:
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
-        if any(r.task_id == task.id for r in self.worker_runs_active()):
+        if self._worker_holding_reviews(task) is not None:
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
@@ -122,6 +122,38 @@ class ReviewMixin:
         if not separator or not harness or not model:
             return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
         return harness, model, writer
+
+    def _worker_holding_reviews(self, task: Task) -> Run | None:
+        """The worker run a review for this task waits behind (a review never runs beside a
+        worker round for the same task, CG-177): the newest one, or None."""
+        mine = [r for r in self.worker_runs_active() if r.task_id == task.id]
+        return mine[-1] if mine else None
+
+    def review_wait_reason(self, task: Task, last_tick: str = "", last_moved: str = "") -> tuple[str, str]:
+        """Why a queued review (`pending_reviews`) has not started: the first of the gates the
+        tick applies, in the tick's own order, as a gate word and a sentence. The Now page
+        shows it, and it reads the predicates `_drain_pending_reviews` and
+        `_dispatch_or_defer_reviews` apply, so the page and the tick cannot disagree: the
+        drain runs inside dispatch (so a pause holds it), then the worker gate, the review
+        harness, the review slots. When none holds it the next tick starts it; when none holds
+        it and a tick (`last_tick`, the hub's) has passed since the task last moved
+        (`last_moved`, its newest event), something this cannot see is in the way, and the
+        sentence sends the person to the task's log rather than promising a recovery."""
+        if self.is_dispatch_paused():
+            return "paused", "dispatch paused: reviews start again with dispatch"
+        run = self._worker_holding_reviews(task)
+        if run is not None:
+            if run.no_process:
+                return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
+            return "worker", f"waits for its {run.mode} run to finish"
+        harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
+        if self.is_harness_paused(harness):
+            return "harness", f"{harness} harness paused"
+        if self.review_slots_free() <= 0:
+            return "slots", f"no review slot ({len(self.review_runs_active())} of {self.review_parallel_limit()} busy)"
+        if last_tick and last_tick > last_moved:
+            return "overdue", "still queued after a tick and no gate explains it: see the task's log"
+        return "tick", "queued: the next tick starts it"
 
     @staticmethod
     def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
