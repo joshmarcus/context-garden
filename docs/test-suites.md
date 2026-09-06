@@ -44,16 +44,41 @@ python3 scripts/check_ci.py
 ## Serial timing comparison
 
 The representative change is a retro document renderer/parser edit. Both measurements ran
-serially on this worker on 2026-09-06, with a fresh `--basetemp` directory and
-`/usr/bin/time`; temp use is the final size of that directory. The before command named the
-former mixed module, while the after command names only the extracted pure-document suite.
+serially on this worker on 2026-09-06. The baseline was commit `c4e6ca3` (before this split)
+and used its former mixed `tests/test_retro.py`; the current measurement uses the extracted
+pure-document suite. Both runs had a fresh `--basetemp`, CPU time limited to 120 seconds,
+address space limited to 1 GiB (`1048576` KiB), and 1,024 open files. This host did not
+expose cgroup CPU or memory limit files, so these identical per-process shell limits are the
+recorded caps. `/usr/bin/time` reports wall time and peak RSS; `du -sk` reports final temp
+use.
+
+Reproduce the two commands from the repository root (the archive keeps the historical test
+module out of the working tree):
+
+```bash
+run_suite() {
+  local suite=$1 temp=$2
+  ulimit -t 120 -v 1048576 -n 1024
+  /usr/bin/time -f 'elapsed=%e\npeak_rss_kib=%M' -o "$temp/time.txt" \
+    .venv/bin/python -m pytest "$suite" -q --basetemp="$temp/pytest"
+  du -sk "$temp"
+  cat "$temp/time.txt"
+}
+
+baseline=$(mktemp -d /tmp/cg354-retro-before.XXXXXX)
+git archive c4e6ca3 | tar -x -C "$baseline"
+run_suite "$baseline/tests/test_retro.py" "$baseline"
+
+focused=$(mktemp -d /tmp/cg354-retro-documents-after.XXXXXX)
+run_suite tests/test_retro_documents.py "$focused"
+```
 
 | Selection | Command | Tests | Elapsed | Peak RSS | Temp use |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Before | `.venv/bin/python -m pytest tests/test_retro.py -q --basetemp=/tmp/cg354-retro-before/pytest` | 34 passed | 3.37 s | 67,768 KiB | 8,152 KiB |
-| After | `.venv/bin/python -m pytest tests/test_retro_documents.py -q --basetemp=/tmp/cg354-retro-documents-after/pytest` | 6 passed | 0.31 s | 54,092 KiB | 4 KiB |
+| Before | `run_suite "$baseline/tests/test_retro.py" "$baseline"` | 28 passed | 3.15 s | 59,952 KiB | 8,232 KiB |
+| After | `run_suite tests/test_retro_documents.py "$focused"` | 6 passed | 0.30 s | 54,064 KiB | 4 KiB |
 
-The focused document loop is about 11 times faster and avoids the temporary Git topology.
+The focused document loop is about 10 times faster and avoids the temporary Git topology.
 The remaining retro lifecycle suite intentionally still pays for repository/worktree setup:
 those tests validate Git-backed behavior and should not be disguised as unit tests. Full
 suite duration is not repeated locally; it remains a GitHub CI gate, and its fixture Git
