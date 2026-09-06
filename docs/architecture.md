@@ -104,8 +104,8 @@ of the loop touch different files.
 | `scheduler/feedback.py` | current-head composition of review, CI and PR-comment feedback, preserving operator handoffs and replacing only the resolving producer |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
 | `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
-| `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
-| `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch`; chooses and records a tier-pool member before a worker starts |
+| `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
+| `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch`; chooses and records a tier-pool member before a worker starts. Pools use round robin, weights, or quota-aware weighting (half share after a recent member quota stop; paused harnesses are skipped). |
 | `scheduler/human.py` | `approve` (the one draft→ready gate the CLI, web and TUI share), answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
 | `scheduler/scope.py` | checkout-ownership preflight: separates declared operator-owned live configuration from worker deliverables, records operator evidence, and releases checkout work only after that prerequisite is verified |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
