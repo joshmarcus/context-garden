@@ -162,6 +162,7 @@ DEFAULTS: dict[str, Any] = {
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
+        "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
     },
     "retro": {

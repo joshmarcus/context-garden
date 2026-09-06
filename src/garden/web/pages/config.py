@@ -29,6 +29,7 @@ def register(app: FastAPI, site: Site) -> None:
             "review.enabled": cfg.get("review.enabled"),
             "review.max_rounds": cfg.get("review.max_rounds"),
             "review.difficulty": sched.effective("review.difficulty") or "(task tier)",
+            "review.ladder": ", ".join(str(x) for x in (cfg.get("review.ladder") or [])) or "(tier rule)",
             "retro.difficulty": sched.effective("retro.difficulty") or "hard",
             "github.draft_pr": cfg.get("github.draft_pr"),
             "stack": cfg.get("stack"),

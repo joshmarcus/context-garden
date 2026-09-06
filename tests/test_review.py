@@ -4,6 +4,26 @@ from garden.scheduler import Scheduler
 from garden.store import Store
 
 
+def _writer_run(sched, task_id, harness, model):
+    run = sched.runs.new_run(task_id, "local", mode="work")
+    run.harness = harness
+    run.model = model
+    run.status = "done"
+    run.save()
+    return run
+
+
+def _review_ladder(sched):
+    sched.cfg.data["review"]["ladder"] = [
+        "codex:gpt-5.6-luna",
+        "claude:claude-sonnet-5",
+        "codex:gpt-5.6-terra",
+        "codex:gpt-5.6-sol",
+        "claude:claude-fable-5-1",
+        "codex:gpt-6-astra",
+    ]
+
+
 def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     """A verdict the scheduler reaped in its last tick is on disk (state.json) before the
     process ends: a fresh Scheduler on the same garden reads it back. Guards the 2026-09-05
@@ -23,6 +43,50 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     st2 = fresh.state.get("DM-001")
     assert st2.get("last_review", {}).get("verdict") == "approve"
     assert st2.get("last_review_run") == run_id
+
+
+def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
+    """A review uses the next configured harness:model pair, not the PR's harness."""
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    expected = [
+        ("codex", "gpt-5.6-terra", "codex", "gpt-5.6-sol"),
+        ("claude", "claude-fable-5-1", "codex", "gpt-6-astra"),
+        ("codex", "gpt-5.6-luna", "claude", "claude-sonnet-5"),
+    ]
+    for writer_harness, writer_model, reviewer_harness, reviewer_model in expected:
+        _writer_run(sched, task.id, writer_harness, writer_model)
+        run = sched.dispatch_review(task)
+        assert (run.harness, run.model) == (reviewer_harness, reviewer_model)
+        assert run.env_snapshot["writer_harness"] == writer_harness
+        assert run.env_snapshot["writer_model"] == writer_model
+    assert "reviewed by claude-sonnet-5, one above gpt-5.6-luna" in task.body
+
+
+def test_review_ladder_top_rung_reviews_itself_and_unlisted_writer_falls_back(sched):
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    _writer_run(sched, task.id, "codex", "gpt-6-astra")
+    top = sched.dispatch_review(task)
+    assert (top.harness, top.model) == ("codex", "gpt-6-astra")
+
+    _writer_run(sched, task.id, "other", "not-on-the-ladder")
+    fallback = sched.dispatch_review(task)
+    assert (fallback.harness, fallback.model) == ("claude", "sonnet")
+    assert "writer_model" not in fallback.env_snapshot
+
+
+def test_review_ladder_defers_when_the_selected_reviewer_harness_is_paused(sched):
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    writer = _writer_run(sched, task.id, "codex", "gpt-5.6-luna")
+    sched.pause_harness("claude", "quota limit")
+    from garden.scheduler import TickReport
+
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(task, [{"kind": "review"}], rep, work_run=writer)
+    assert rep.dispatched == []
+    assert sched.state.get(task.id)["pending_reviews"] == [{"kind": "review"}]
 
 
 def test_review_brief_and_parse(garden):
