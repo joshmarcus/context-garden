@@ -6,9 +6,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from garden.runs import Run, RunStore
+from garden.scheduler import Scheduler
 from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
+from garden.web.common import Hub
 from tests.conftest import complete_brief
 
 
@@ -51,6 +53,16 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden):
     print(f"3003 runs, 3 active: page p95={p95:.3f}s max={max(timings):.3f}s scans={rs.scan_count - scans}")
     assert p95 < 2.0
     assert rs.scan_count - scans <= len(timings)
+
+
+def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("read-only page construction ran a scheduler migration")
+
+    monkeypatch.setattr(Scheduler, "_migrate_fence_bookkeeping", unexpected)
+    monkeypatch.setattr(Scheduler, "_hold_startup_config_against_fences", unexpected)
+    reader = Hub(Store(garden), watch=False).reader()
+    assert reader.control() == {}
 
 
 def test_design_files_are_safe_and_use_the_product_checkout(garden):

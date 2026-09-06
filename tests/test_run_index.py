@@ -79,3 +79,17 @@ def test_archive_health_reports_missing_or_corrupt_index(tmp_path: Path):
     assert "missing" in rs.archive_health()
     (rs.archive_dir / "index.json").write_text("not json")
     assert "unreadable" in rs.archive_health()
+
+
+def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    bad = rs.archive_dir / "CG-001" / "bad" / "run.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("not json")
+    try:
+        rs.rebuild_archive_index()
+    except ValueError as exc:
+        assert "unreadable run record" in str(exc)
+    else:
+        raise AssertionError("corrupt archived history was silently omitted")
+    assert not (rs.archive_dir / "index.json").exists()
