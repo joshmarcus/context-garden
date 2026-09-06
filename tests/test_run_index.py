@@ -264,3 +264,55 @@ def test_stale_archived_update_cannot_recreate_a_restored_run(tmp_path):
     assert not archived.path.exists()
     assert rs.totals()["runs"] == 1
     assert rs.totals()["cost_usd"] == 3.25
+
+
+def test_external_archive_move_is_atomic_to_refresh(tmp_path, monkeypatch):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "20260101T000000Z-work", 3.25)
+    assert rs.totals()["runs"] == 1
+    monkeypatch.setattr(rs, "MAX_INDEX_AGE_SECONDS", -1)
+    moved, release = tmp_path / "moved", tmp_path / "release"
+    script = """
+import datetime as dt
+import os
+import sys
+import time
+from pathlib import Path
+from garden.runs import RunStore
+root = Path(sys.argv[1])
+rs = RunStore(root)
+replace = os.replace
+def pause_after_move(source, target):
+    replace(source, target)
+    if Path(source) == rs.dir / "CG-001" / "20260101T000000Z-work":
+        (root / "moved").touch()
+        deadline = time.monotonic() + 5
+        while not (root / "release").exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError("reader did not release writer")
+            time.sleep(0.01)
+os.replace = pause_after_move
+assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+"""
+    writer = subprocess.Popen([sys.executable, "-c", script, str(tmp_path)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            deadline = time.monotonic() + 5
+            while not moved.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert moved.exists(), "external writer did not move the run"
+            reader = pool.submit(rs.totals)
+            with pytest.raises(TimeoutError):
+                reader.result(timeout=0.1)
+        finally:
+            release.touch()
+            try:
+                stdout, stderr = writer.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                writer.kill()
+                writer.communicate()
+                raise
+        assert writer.returncode == 0, stdout + stderr
+        assert reader.result(timeout=5)["cost_usd"] == 3.25
+    assert rs.all_runs()[0].path == rs.archive_dir / run.task_id / run.run_id
