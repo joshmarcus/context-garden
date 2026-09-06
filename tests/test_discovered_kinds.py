@@ -1,7 +1,7 @@
 """A worker's discovery can be a decision (duplicate / cancel) or a note, not only a task.
 
 Covers the four `kind`s of a discovered item: `task` (files work, as before), `duplicate`
-and `cancel` (a decision card, Accept cancels / Reject keeps), and `note` (friction record,
+and `cancel` (a decision card naming the outcomes), and `note` (friction record,
 no card). Driven through the fake harness end to end.
 """
 
@@ -44,11 +44,11 @@ def test_duplicate_and_cancel_make_decision_cards_not_tasks(sched, fake_github, 
     assert by_kind["cancel"]["target"] == "DM-003"
     assert by_kind["duplicate"]["proposed_by"] == "DM-001"
 
-    # Both show up under "Needs a decision" with Accept/Reject, quoting the worker's reason.
+    # Both show up under "Needs a decision" with outcome labels, quoting the worker's reason.
     cards = [i for i in build_inbox(sched.store, sched) if i.get("decision")]
     assert len(cards) == 2
     dup_card = next(c for c in cards if c["task"] == "DM-002")
-    assert c_labels(dup_card) == ["Accept", "Reject"]
+    assert c_labels(dup_card) == ["Use DM-001", "Keep both tasks"]
     assert "DM-002 restates DM-001" in dup_card["why"] and dup_card["group"] == "attention"
 
 
