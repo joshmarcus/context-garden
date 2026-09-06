@@ -406,7 +406,11 @@ class ReviewMixin:
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
         missing_fixes = self._blocking_findings_without_fix(review)
-        if missing_fixes and not st.get("review_fix_reasked"):
+        # A replay restores a verdict whose worker run had already been reaped before the
+        # scheduler crashed. Older reviews legitimately lack `fix`, and recovery must put
+        # their original changes_requested state back rather than replacing it with a new
+        # review round. Freshly reaped reviews still get the one actionable re-ask.
+        if missing_fixes and not emitted and not st.get("review_fix_reasked"):
             st["review_fix_reasked"] = True
             self.dispatch_review(task, count_round=False, reask_missing_fixes=True)
             rep.transitions.append(f"{task.id} review re-asked for blocking fixes")
