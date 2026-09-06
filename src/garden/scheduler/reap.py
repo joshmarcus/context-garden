@@ -714,15 +714,53 @@ class ReapMixin:
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))
-        if run.mode == "revise":
+        if run.mode == "rebase":
+            self._retry_or_park_rebase(task, run, rep, reason)
+        elif run.mode == "revise":
             self._transition(task, Status.FAILED, f"revision failed: {reason}")
             rep.transitions.append(f"{task.id} -> failed")
-        elif task.attempts < max_attempts:
+        elif run.mode == "work" and task.attempts < max_attempts:
             self._transition(task, Status.READY, f"attempt {task.attempts} failed: {reason}; will retry")
             rep.transitions.append(f"{task.id} -> ready (retry)")
-        else:
+        elif run.mode == "work":
             self._transition(task, Status.FAILED, f"attempt {task.attempts} failed: {reason}; giving up")
             rep.transitions.append(f"{task.id} -> failed")
+        else:
+            self._transition(task, Status.FAILED, f"{run.mode} run failed: {reason}")
+            rep.transitions.append(f"{task.id} -> failed ({run.mode})")
+
+    def _retry_or_park_rebase(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
+        """Retry a conflict-resolution run once without reopening the work round.
+
+        A rebase agent works on an already-open PR.  Treating its missing result as a failed
+        work attempt loses that context and lets the ready queue dispatch a new work brief from
+        the base branch.  Keep the branch and PR, and put the same rebase continuation back on
+        the rebase queue instead.  The second loss is a human decision, not an attempt failure.
+        """
+        st = self.state.get(task.id)
+        retries = int(st.get("rebase_run_retries", 0))
+        if retries < 1:
+            st["rebase_run_retries"] = retries + 1
+            st["rebase_pending"] = True
+            st["rebase_retry_files"] = list(st.get("rebase_files", []))
+            note = f"rebase run {run.run_id} did not finish: {reason}; will retry"
+            task.log(note)
+            self.store.save(task)
+            self.events.emit("rebase_retry", task.id, run=run.run_id, cause=reason, retry=retries + 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, note)
+            rep.transitions.append(f"{task.id} -> changes_requested (rebase retry)")
+            return
+        files = list(st.get("rebase_files", [])) or list(st.get("rebase_retry_files", []))
+        conflict = ", ".join(str(p) for p in files if p) or "the rebase conflict"
+        note = f"rebase run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
+        self._set_needs_human(task, "rebase_failed", note, run=run.run_id, cause=reason,
+                              files=files)
+        st.pop("rebase_pending", None)
+        self.events.emit("needs_human", task.id, stop_kind="rebase_failed", reason=note, run=run.run_id)
+        self.state.save()
+        self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
+        rep.transitions.append(f"{task.id} -> {'in_review' if task.pr else 'changes_requested'} (rebase needs human)")
 
     # ---- dead-run sweep -----------------------------------------------------
     def _owned_run_ids(self) -> set[str]:

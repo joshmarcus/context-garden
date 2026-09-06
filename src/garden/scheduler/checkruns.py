@@ -51,7 +51,7 @@ class CheckRunMixin:
 
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
-                            extra: dict[str, Any] | None = None) -> Run:
+                            extra: dict[str, Any] | None = None, retries: int = 0) -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
@@ -77,7 +77,8 @@ class CheckRunMixin:
         launch_cwd = worktree if worktree.exists() else run.path
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
-        st["check_run"] = {"run_id": run.run_id, "stage": stage, "cont": cont}
+        st["check_run"] = {"run_id": run.run_id, "stage": stage, "cont": cont,
+                           "specs": specs, "retries": retries}
         self.events.emit("dispatch", task.id, run=run.run_id, mode="check", stage=stage)
         self.state.save()
         rep.dispatched.append(f"{task.id}(check:{stage})")
@@ -116,6 +117,10 @@ class CheckRunMixin:
             if key in evidence:
                 evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
         cont = dict(info.get("cont") or {})
+        if self._check_did_not_run(run, results):
+            self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
+                                      int(info.get("retries", 0)), rep)
+            return True
         handler = {
             "pre_pr": self._after_pre_pr_check,
             "base_probe": self._after_base_probe_check,
@@ -131,6 +136,49 @@ class CheckRunMixin:
             return True
         handler(task, run, results, cont, rep)
         return True
+
+    @staticmethod
+    def _check_did_not_run(run: Run, results: list[dict[str, Any]]) -> bool:
+        """Whether the check runner failed before it produced a usable check verdict."""
+        if run.status == "timeout" or not results:
+            return True
+        return any("check did not finish (killed" in str(result.get("summary") or "")
+                   or "check run produced no results" in str(result.get("summary") or "")
+                   for result in results)
+
+    def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
+                             specs: list[dict[str, Any]], retries: int, rep: TickReport) -> None:
+        """Retry an interrupted detached check once, without creating revision feedback."""
+        cause = self._check_failure_cause(run, results=run.result.get("checks") or [])
+        if retries < 1 and specs:
+            note = f"check did not run ({run.run_id}): {cause}; will retry"
+            task.log(note)
+            self.store.save(task)
+            self.events.emit("check_retry", task.id, run=run.run_id, stage=stage, cause=cause, retry=retries + 1)
+            self._dispatch_check_run(task, worktree=Path(cont.get("worktree") or run.worktree),
+                                     branch=str(cont.get("branch") or run.branch),
+                                     base=str(cont.get("base") or run.base), specs=specs, stage=stage,
+                                     cont=cont, rep=rep, retries=retries + 1)
+            return
+        note = f"check did not run ({run.run_id}): {cause}; retry also failed; needs human"
+        self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage)
+        self.events.emit("needs_human", task.id, stop_kind="check_did_not_run", reason=note, run=run.run_id)
+        self.state.save()
+        self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
+        rep.transitions.append(f"{task.id} -> {'in_review' if task.pr else 'changes_requested'} (check needs human)")
+
+    @staticmethod
+    def _check_failure_cause(run: Run, results: list[dict[str, Any]]) -> str:
+        """Return the runner error or the interrupted check's own diagnostic."""
+        if run.error:
+            return run.error
+        if run.status == "timeout":
+            return "timed out"
+        for result in results:
+            summary = str(result.get("summary") or "")
+            if "check did not finish" in summary or "check run produced no results" in summary:
+                return summary
+        return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:
         path = run.path / "checks.json"

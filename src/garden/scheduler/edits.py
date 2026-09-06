@@ -127,9 +127,18 @@ class EditsMixin:
                          usage=run.usage, status=run.status)
         if not revised:
             st["edit_attempts"] = int(st.get("edit_attempts", 0)) + 1
-            task.log(f"suggestion integration produced no revised body ({run.error[:120] or run.status}){cost}")
+            cause = run.error[:120] or run.status
+            task.log(f"suggestion integration run {run.run_id} produced no revised body ({cause}){cost}")
             self.store.save(task)
-            rep.transitions.append(f"{task.id} edit failed")
+            if st["edit_attempts"] >= self.EDIT_MAX_ATTEMPTS:
+                note = f"edit run {run.run_id} did not finish: {cause}; retry also failed; needs human"
+                self._set_needs_human(task, "edit_failed", note, run=run.run_id, cause=cause)
+                self.events.emit("needs_human", task.id, stop_kind="edit_failed", reason=note, run=run.run_id)
+                self.state.save()
+                self._transition(task, task.status, note, needs_human=True)
+                rep.transitions.append(f"{task.id} edit needs human")
+            else:
+                rep.transitions.append(f"{task.id} edit failed; will retry")
             return True
         st["edit_attempts"] = 0
         self._apply_edit(task, run, revised, cost, rep, len(pending_suggestions(task.body)))
