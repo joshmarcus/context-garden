@@ -163,6 +163,40 @@ def clear(key: str):
     console.print(f"[green]{key} override cleared[/green] (back to the garden.yaml value)")
 
 
+config_app = typer.Typer(help="A live garden.yaml reload held against an in-flight run's fence manifest (CG-242).",
+                         invoke_without_command=True, no_args_is_help=False)
+app.add_typer(config_app, name="config", rich_help_panel=PANEL_LOOP)
+
+
+@config_app.callback(invoke_without_command=True)
+def config_default(ctx: typer.Context) -> None:
+    """Show a held config reload, if any."""
+    if ctx.invoked_subcommand is not None:
+        return
+    store = _store()
+    sched = _scheduler(store)
+    hold = sched.config_hold()
+    if not hold:
+        console.print("[dim]no config reload is held[/dim]")
+        return
+    console.print(f"[yellow]held since {hold.get('since', '?')}[/yellow]: {', '.join(hold.get('keys') or [])}")
+    console.print(f"runs holding it: {', '.join(hold.get('runs') or [])}")
+    console.print("run `garden config accept` to apply it now, or wait for those runs to be reaped")
+
+
+@config_app.command("accept")
+def config_accept():
+    """Apply a held garden.yaml reload now, even while its runs are still in flight: you have
+    looked at the change and vouch it is yours, not a worker's write racing the fence."""
+    store = _store()
+    sched = _scheduler(store)
+    if not sched.config_hold():
+        err.print("[red]no config reload is held[/red]")
+        raise typer.Exit(1) from None
+    sched.accept_config_reload(by="cli")
+    console.print("[green]held config reload accepted[/green] (applies on the next tick)")
+
+
 @app.command(rich_help_panel=PANEL_LOOP)
 def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't start workers")):
     """One scheduler pass: reap finished workers, poll PRs, dispatch ready tasks."""
@@ -531,7 +565,7 @@ def trial(
         try:
             while sc.state.get(t.id).get("trial", {}).get("status") not in ("done", "inconclusive"):
                 sc.tick()
-                sc.store.invalidate()
+                sc.store.invalidate_tasks()  # config reload is gated by tick() itself (CG-242)
                 if sc.state.get(t.id).get("trial", {}).get("status") in ("done", "inconclusive"):
                     break
                 time.sleep(interval)

@@ -118,7 +118,7 @@ class PersonaMixin:
                                    priority=priority, status="draft")
         t.discovered_from = provenance
         self.store.save(t)
-        self.store.invalidate()
+        self.store.invalidate_tasks()
         return t
 
     def _finish_persona(self, entry: dict[str, Any], run: Run, final: str, rep: TickReport) -> None:
@@ -148,7 +148,7 @@ class PersonaMixin:
                     if t is not None:
                         self.events.emit("discovered", entry["task"], new_task=t.id, title=t.title, blocking=False,
                                          status="draft", persona=name, severity=f.get("severity"))
-                self.store.invalidate()
+                self.store.invalidate_tasks()
             return
         task = self.store.task(entry["task"])
         md = report_markdown(rev, f"{name} review of {task.id}", run.run_id)

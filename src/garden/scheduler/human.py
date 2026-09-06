@@ -309,7 +309,7 @@ class HumanMixin:
             old_path.unlink()
         self.events.emit("moved", task.id, **{"from": old_key, "to": ph.key})
         self.log(f"{task.id}: moved {old_key} -> {ph.key}")
-        self.store.invalidate()
+        self.store.invalidate_tasks()
 
     def reorder(self, task: Task, after: str | None = None, direction: str = "") -> None:
         """Reorder a task within its own phase section (the backlog). `after` is the id the task
@@ -375,7 +375,7 @@ class HumanMixin:
         moved.log(f"reordered in {moved.key} (order {old_order} -> {moved.order}{band_note}) (web)")
         self.store.save(moved)
         self.events.emit("reordered", moved.id, order=moved.order, priority=moved.priority)
-        self.store.invalidate()
+        self.store.invalidate_tasks()
 
     def _grant_one_more_review_round(self, st: _TaskState) -> bool:
         """When a human asks for one more automated review after the review cap stopped it,

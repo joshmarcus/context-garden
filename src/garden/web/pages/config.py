@@ -46,6 +46,7 @@ def register(app: FastAPI, site: Site) -> None:
         overrides = dict(State(cfg.garden_dir / "state.json").get("_budgets"))
         budgets.update(overrides)
         profile_names = sorted(set(BUILTIN_PROFILES) | set(observe_cfg.get("profiles") or {}))
+        config_hold = sched.config_hold()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
         stop_rows = [{"name": name, "active": name == active, "meaning": describe_stop(stop),
@@ -53,7 +54,7 @@ def register(app: FastAPI, site: Site) -> None:
                     for name, stop in stops.items()]
         return templates.TemplateResponse(request, "config.html", ctx(
             request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
-            budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS,
+            budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS, config_hold=config_hold,
             max_parallel_file=cfg.get("max_parallel"), max_parallel_override=sched.overrides().get("max_parallel"),
             max_parallel_value=sched.effective_max_parallel(), max_parallel_source=sched.effective_source("max_parallel"),
             observe_profile_file=observe_cfg.get("profile") or "", observe_profile_names=profile_names,

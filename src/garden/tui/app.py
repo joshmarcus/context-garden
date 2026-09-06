@@ -168,7 +168,10 @@ class GardenTUI(App):
 
     # ---- data --------------------------------------------------------------
     def action_refresh(self) -> None:
-        self.store.invalidate()
+        # Tasks only: a garden.yaml edit is picked up by the tick worker's own gate (CG-242),
+        # not by every refresh or action, so neither can hand a held reload's executable
+        # fields a route around it.
+        self.store.invalidate_tasks()
         try:
             tasks = self.store.tasks()
         except Exception as e:  # noqa: BLE001
@@ -372,7 +375,8 @@ class GardenTUI(App):
 
     # ---- actions -----------------------------------------------------------
     def _sched(self) -> Scheduler:
-        self.store.invalidate()
+        # Tasks only: config reload is gated by the tick worker's own tick() call (CG-242).
+        self.store.invalidate_tasks()
         return Scheduler(self.store, log=self._note)
 
     def _note(self, msg: str) -> None:

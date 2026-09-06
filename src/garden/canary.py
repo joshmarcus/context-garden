@@ -139,7 +139,7 @@ def _drive(sched: Any, cond: Callable[[], bool], *, timeout: float = 90.0, inter
     deadline = time.time() + timeout
     while time.time() < deadline:
         sched.tick()
-        sched.store.invalidate()
+        sched.store.invalidate_tasks()  # config reload is gated by tick() itself (CG-242)
         if cond():
             return True
         time.sleep(interval)

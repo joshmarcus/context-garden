@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,103 @@ def no_live_garden_root(base: Path) -> str:
     """A path under `base` guaranteed not to contain a garden.yaml, for GARDEN_ROOT in
     worker and check subprocess environments (see find_root)."""
     return str(base / NO_LIVE_GARDEN)
+
+
+# The fields whose value shapes what a dispatched run, its setup command or a check
+# subprocess is allowed to execute. Two raw config mappings whose executable_signature()
+# agree can never differ in what a worker or check can run, however many other keys (budgets,
+# review settings, observe cadence, ...) changed between them. The scheduler's live-reload
+# gate (Scheduler._reload_config_if_safe) holds a change here against an in-flight run's own
+# fence manifest until the run is reaped or an operator confirms it (CG-242): live reload must
+# never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
+# can revert it.
+EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "checks", "worker_env.pass")
+
+
+def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
+    """The values of `EXECUTABLE_KEYS`, plus every product's `setup.command` and every
+    harness's `bin`/`command`, read from a raw config mapping (`Config.data`)."""
+
+    def _get(dotted: str) -> Any:
+        cur: Any = data
+        for part in dotted.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return None
+            cur = cur[part]
+        return cur
+
+    sig = {key: _get(key) for key in EXECUTABLE_KEYS}
+    sig["setup.command"] = {
+        name: (p.get("setup") or {}).get("command")
+        for name, p in (data.get("products") or {}).items()
+        if isinstance(p, dict) and (p.get("setup") or {}).get("command")
+    }
+    sig["harnesses"] = {
+        name: {"bin": h.get("bin"), "command": h.get("command")}
+        for name, h in (data.get("harnesses") or {}).items() if isinstance(h, dict)
+    }
+    return sig
+
+
+def executable_diff(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    """The `executable_signature` keys that differ between two raw config mappings, sorted."""
+    a, b = executable_signature(old), executable_signature(new)
+    return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+
+
+def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) -> dict[str, Any]:
+    """Return ``data`` with its executable fields restored from ``signature``.
+
+    A fresh scheduler can load garden.yaml after an in-flight worker has changed it.  Its
+    fence records this small, dispatch-time signature, which lets the scheduler retain the
+    current non-executable settings while it holds the unsafe executable values for reap.
+    """
+    out = deepcopy(data)
+
+    def _set(dotted: str, value: Any) -> None:
+        cur: dict[str, Any] = out
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            child = cur.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                cur[part] = child
+            cur = child
+        cur[parts[-1]] = deepcopy(value)
+
+    for key in EXECUTABLE_KEYS:
+        _set(key, signature.get(key))
+
+    products = out.setdefault("products", {})
+    if isinstance(products, dict):
+        commands = signature.get("setup.command") or {}
+        for name, product in products.items():
+            if not isinstance(product, dict):
+                continue
+            setup = product.get("setup")
+            if not isinstance(setup, dict):
+                setup = {}
+                product["setup"] = setup
+            if name in commands:
+                setup["command"] = deepcopy(commands[name])
+            else:
+                setup.pop("command", None)
+
+    harnesses = out.setdefault("harnesses", {})
+    if isinstance(harnesses, dict):
+        saved = signature.get("harnesses") or {}
+        for name in set(harnesses) | set(saved):
+            harness = harnesses.get(name)
+            if not isinstance(harness, dict):
+                harness = {}
+                harnesses[name] = harness
+            prior = saved.get(name) or {}
+            for key in ("bin", "command"):
+                if prior.get(key) is None:
+                    harness.pop(key, None)
+                else:
+                    harness[key] = deepcopy(prior[key])
+    return out
 
 
 DEFAULTS: dict[str, Any] = {

@@ -1176,6 +1176,41 @@ def test_config_page_names_live_and_restart_keys(garden):
     assert "work_dir" in text and "tick_interval" in text
 
 
+def test_config_page_and_inbox_show_a_held_reload_and_accept_applies_it(garden, monkeypatch):
+    """CG-242: garden.yaml changes while a dispatched run is still in flight — driven entirely
+    through `/tick`, the same path `garden serve`'s own watch loop uses. The Config page and
+    Inbox must show the hold, and confirming it from the Config page applies it on the next
+    tick even though the run has not been reaped."""
+    import yaml
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")  # DM-001's run never finishes on its own
+    c = client(garden)
+    assert c.post("/tick", follow_redirects=False).status_code == 303  # dispatch DM-001
+
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["notify"] = {"command": "true"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    assert c.post("/tick", follow_redirects=False).status_code == 303  # held: DM-001 is still in flight and unreaped
+    config_page = c.get("/config").text
+    assert "Held config reload" in config_page and "notify.command" in config_page
+    assert "Confirm a held config change" in c.get("/").text
+
+    r = c.post("/config/accept-reload", follow_redirects=False)
+    assert r.status_code == 303
+
+    assert c.post("/tick", follow_redirects=False).status_code == 303  # applies now, even though DM-001 is still running
+    assert "Held config reload" not in c.get("/config").text
+    assert "Confirm a held config change" not in c.get("/").text
+
+
+def test_accept_reload_with_nothing_held_flashes_a_message(garden):
+    c = client(garden)
+    r = c.post("/config/accept-reload", follow_redirects=False)
+    assert r.status_code == 303
+    assert "no config reload is held" in c.get(r.headers["location"]).text
+
+
 def test_pause_resume_web(garden):
     c = client(garden)
     # not paused by default

@@ -185,7 +185,7 @@ class KickoffMixin:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_kickoff_doc(phase, data, filed_design, filed_docs, filed_questions, goals_gaps,
                                            difficulty=difficulty, model=model))
-        self.store.invalidate()
+        self.store.invalidate_tasks()
         self.events.emit("kickoff_done", "", phase=phase.key, run=run_id, ready=bool(data.get("ready")))
         return path
 

@@ -26,6 +26,7 @@ GROUPS = [
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
+    ("config_hold", "Confirm a held config change", "garden.yaml changed while a worker run was in flight; the executable parts of the change (notify.command, checks, setup commands, harness bin/command, worker_env.pass) are held until the run is reaped or you confirm it.", "decision"),
     ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go.", "decision"),
     ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused.", "decision"),
 ]
@@ -451,6 +452,15 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Change to close", "kind": "retro-decide-close", "command": f"garden retro-decide {phase_key} close"},
             ],
         })
+
+    hold = getattr(sched, "config_hold", dict)()
+    if hold:
+        keys = ", ".join(hold.get("keys") or [])
+        runs = ", ".join(hold.get("runs") or [])
+        items.append({"group": "config_hold", "group_title": titles["config_hold"], "task": "", "title": keys,
+                      "phase": "", "status": "", "pr": "", "why": f"held since {hold.get('since', '')}; runs: {runs}",
+                      "actions": [{"label": "Confirm now", "kind": "config-accept", "command": "garden config accept"}],
+                      "age": _age(str(hold.get("since") or "")), "difficulty": ""})
 
     for name, entry in sorted(getattr(sched, "paused_harnesses", dict)().items()):
         items.append({"group": "harness", "group_title": titles["harness"], "task": "", "title": name, "phase": "",

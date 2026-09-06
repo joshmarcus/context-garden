@@ -78,3 +78,34 @@ def test_canary_needs_a_build_to_check(tmp_path):
     r = run(tmp_path, "canary")  # no sha, no --skip-install, no live garden
     assert r.exit_code == 2
     assert "no build to check" in r.output
+
+
+def test_drive_never_bypasses_the_config_reload_gate():
+    """_drive() ticks a real scheduler in a loop; garden.yaml reload is gated inside tick()
+    itself (CG-242), so between ticks it must only re-scan task files (invalidate_tasks), never
+    call the unconditional invalidate() — that would adopt a held executable-field change
+    (e.g. a worker's own notify.command write) before the fence gets to reap and revert it."""
+
+    class FakeStore:
+        def __init__(self):
+            self.invalidate_calls = 0
+            self.invalidate_tasks_calls = 0
+
+        def invalidate(self):
+            self.invalidate_calls += 1
+
+        def invalidate_tasks(self):
+            self.invalidate_tasks_calls += 1
+
+    class FakeScheduler:
+        def __init__(self):
+            self.store = FakeStore()
+            self.ticks = 0
+
+        def tick(self):
+            self.ticks += 1
+
+    sched = FakeScheduler()
+    assert canary._drive(sched, lambda: sched.ticks >= 3, timeout=5, interval=0)
+    assert sched.store.invalidate_calls == 0
+    assert sched.store.invalidate_tasks_calls == 3

@@ -159,7 +159,7 @@ class DiscoveredMixin:
             st = self.state.get(task.id)
             st["discovered_ids"] = sorted(set(st.get("discovered_ids", []) + [t.id for t in created]))
             task.log("discovered work filed: " + ", ".join(t.id for t in created))
-            self.store.invalidate()
+            self.store.invalidate_tasks()
         return created
 
     # ---- needs-human stops -------------------------------------------------

@@ -458,7 +458,7 @@ class RetroMixin:
             if gaps:
                 t.log("brief_gap: " + "; ".join(gaps))
             self.store.save(t)
-            self.store.invalidate()
+            self.store.invalidate_tasks()
             existing_titles[b["title"].strip().lower()] = t.id
             filed.append({**b, "task_id": t.id, "status": "draft", "brief_gaps": gaps})
             self.events.emit("retro_blocking_filed", t.id, phase=phase.key, title=b["title"])
@@ -665,7 +665,7 @@ class RetroMixin:
             self._transition(t, Status.READY, "approved by the retro reopen verdict")
             approved.append(tid)
         if approved:
-            self.store.invalidate()
+            self.store.invalidate_tasks()
         return approved, refused
 
     def close_accepted_reopens(self, rep: TickReport) -> None:
