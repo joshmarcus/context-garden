@@ -83,13 +83,15 @@ class DispatchMixin:
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
-            if self.slots_free() <= 0:
-                break
             if self.budget_exceeded(task):
                 continue
             runner = self.runner_for(task)
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
+            if self.slots_free() <= 0:
+                break
+            if runner.name == "local" and self.local_slots_free() <= 0:
+                continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             try:
@@ -301,6 +303,8 @@ class DispatchMixin:
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
+        if runner.name == "local":
+            self._admit_local_launch(mode)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)

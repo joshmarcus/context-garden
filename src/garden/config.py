@@ -140,6 +140,11 @@ DEFAULTS: dict[str, Any] = {
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
+    "resources": {               # host-wide local admission; thresholds of 0 disable sensing
+        "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "min_memory_available_mb": 0,
+        "min_temp_free_mb": 0,
+    },
     "max_attempts": 2,
     "max_revisions": 3,
     "timeout_minutes": 90,

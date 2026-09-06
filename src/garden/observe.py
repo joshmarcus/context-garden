@@ -176,8 +176,12 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
         f"garden: {store.config.get('name')}",
         f"service {_service_state(store, sched)}",
         f"workers {len(sched.worker_runs_active())}/{sched.effective_max_parallel()}",
+        f"local {len(sched.local_runs_active())}/{sched.resource_parallel_limit()}",
         f"spend ${totals['cost_usd']:.2f}",
     ]
+    pressure = sched.resource_status()
+    if pressure.pressured:
+        bits.append("pressure " + "; ".join(pressure.reasons) + " — wait for drain or pause dispatch")
     if count_bits:
         bits.append(count_bits)
     return "  ".join(bits)

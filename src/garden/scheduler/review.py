@@ -240,6 +240,7 @@ class ReviewMixin:
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
+        self._admit_local_launch("review")
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
         base = self.base_for(task)

@@ -23,7 +23,9 @@ class ReapMixin:
         """Remove disk-backed temp directories once their local run is no longer active."""
         work_dir = self.cfg.work_dir
         for run in self.runs.all_runs():
-            if run.runner == "local" and run.status != "running":
+            # A terminal metadata value alone is not enough: prove the wrapper exited (or
+            # wrote its exit_code) before deleting files a still-live descendant may use.
+            if run.runner == "local" and run.status != "running" and run.process_finished():
                 shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
 
     # ---- reap --------------------------------------------------------------
@@ -674,8 +676,11 @@ class ReapMixin:
             task.attempts = max(0, task.attempts - 1)
         harness_name = run.harness or ""
         self._pause_for_env_error(run, collected)
-        note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
-        if harness_name:
+        if kind == "resource":
+            note = "environment stop (resource): the host exhausted memory or temporary storage; branch not blamed and attempt not counted"
+        else:
+            note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
+        if harness_name and kind != "resource":
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
 
         st = self.state.get(task.id)

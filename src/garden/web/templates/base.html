@@ -347,6 +347,8 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
+    <span class="faint">{{ resource_status.active }} of {{ resource_status.limit }} local execution slots</span>
+    {% if resource_status.pressured %}<div class="warn" style="margin:6px 0"><b>Resource pressure</b><br>{{ resource_status.reasons|join('; ') }}.<br>Active work is draining; pause dispatch or wait for headroom, then retry.</div>{% endif %}
     <div class="running-now">
       {% for r in running %}<div class="r"><span class="dot"></span><a href="/tasks/{{ r.task }}">{{ r.task }}</a><span>{{ r.mode }}{% if r.model %} · {{ r.model }}{% endif %} · {{ r.minutes }} min{% if r.idle %} · <span class="idle">idle {{ r.idle }} min</span>{% endif %}</span></div>{% else %}<span class="faint">nothing running</span>{% endfor %}
     </div>

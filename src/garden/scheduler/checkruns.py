@@ -55,6 +55,7 @@ class CheckRunMixin:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        self._admit_local_launch(f"{stage} check")
         runner = self.runner_for(task, "local")
         run = self.runs.new_run(task.id, "local", mode="check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"

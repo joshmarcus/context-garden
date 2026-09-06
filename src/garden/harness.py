@@ -298,6 +298,19 @@ class Harness:
         haystack = " ".join(t for t in texts if t).lower()
         return "quota" if any(p in haystack for p in patterns) else ""
 
+    def _resource_kind(self, *texts: str) -> str:
+        """Recognise process/filesystem exhaustion reported by the harness wrapper.
+
+        As with quota matching, callers pass only the CLI's error channel or a short output
+        with no result marker, never arbitrary worker prose.
+        """
+        configured = self.cfg.get("resource_patterns")
+        patterns = [str(p).lower() for p in (configured or (
+            "no space left on device", "cannot allocate memory", "out of memory", "errno 12",
+        )) if str(p)]
+        haystack = " ".join(t for t in texts if t).lower()
+        return "resource" if any(pattern in haystack for pattern in patterns) else ""
+
     def parse(self, stdout: str, stderr: str = "", final_path: Path | None = None, model: str = "") -> dict[str, Any]:
         """Normalise output to {final_text, usage, cost_usd, error, session_id, result, model,
         missing_price, env_error, env_kind}. `env_error` is True when the run stopped on
@@ -329,7 +342,9 @@ class Harness:
         # or it is the whole of a short output with no result block. A worker that merely
         # quotes the pattern (one that reads this file, say) has not hit a limit.
         short = len(out["final_text"].strip()) < 2000 and not out["result"]
-        kind = self._quota_kind(out["error"], stderr) or (self._quota_kind(out["final_text"], stdout) if short else "")
+        kind = (self._quota_kind(out["error"], stderr) or self._resource_kind(out["error"], stderr)
+                or ((self._quota_kind(out["final_text"], stdout) or self._resource_kind(out["final_text"], stdout))
+                    if short else ""))
         if kind:
             out["env_error"] = True
             out["env_kind"] = kind

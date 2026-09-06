@@ -194,6 +194,7 @@ class RetroMixin:
     def _dispatch_retro_run(self, probe: Task, brief_text: str, worktree: Path, difficulty: str = "hard") -> Run:
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
+        self._admit_local_launch("retro")
         run = self.runs.new_run(probe.id, runner.name, mode="retro")
         run.worktree = str(worktree)
         run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
