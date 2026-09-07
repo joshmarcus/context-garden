@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -623,7 +624,7 @@ def onboard_project(
             garden, product, config_before, gitignore_before, generated_bytes
         )
         retry_source = repo_value or str(repo)
-        retry = f"garden onboard {retry_source} --into {garden}"
+        retry = shlex.join(["garden", "onboard", retry_source, "--into", str(garden)])
         raise ValueError(
             f"{error}\nPlanner output was rejected. Draft scaffold recovery: "
             f"{' ; '.join(dispositions)}. No tasks were imported or approved. Retry with: {retry}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -382,6 +383,24 @@ def test_onboard_rolls_back_a_planner_failure(tmp_path):
 
     assert "No tasks were imported or approved" in str(error.value)
     assert not (garden / "sample-web").exists()
+
+
+def test_onboard_recovery_retry_command_quotes_paths_with_spaces(tmp_path):
+    repo = _node_repo(tmp_path).rename(tmp_path / "source project")
+    garden = tmp_path / "garden drafts"
+
+    def failed_planner(_store: Store, _prompt: str) -> str:
+        raise RuntimeError("planner unavailable")
+
+    with pytest.raises(ValueError, match="Planner output was rejected") as error:
+        onboard_project(repo, garden, planner=failed_planner)
+
+    retry = str(error.value).rsplit("Retry with: ", 1)[1]
+    assert shlex.split(retry) == ["garden", "onboard", str(repo), "--into", str(garden)]
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    assert Store(garden).product("source-project").phases[0].tasks[0].status.value == "draft"
 
 
 def test_onboard_rejection_keeps_an_owner_edit_to_the_new_draft(tmp_path):
