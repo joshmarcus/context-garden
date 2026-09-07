@@ -50,6 +50,13 @@ def _no_ambient_garden_root(monkeypatch):
     monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_harness_config(monkeypatch):
+    """Tests must not read a developer's real Claude or Codex configuration."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+
 def git(*args: str, cwd: Path, timeout: float = 30) -> None:
     """Run a fixture Git command with a bounded wait and no leaked pipe holders.
 

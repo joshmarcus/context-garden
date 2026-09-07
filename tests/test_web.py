@@ -32,6 +32,16 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_backlog_move_has_no_javascript_fallback(garden):
+    page = client(garden).get("/board?view=backlog").text
+    assert "<noscript>" in page
+    # The fixture has one phase, so no move selector is rendered; verify the shared partial
+    # that renders it contains a submit control for multi-phase gardens.
+    from pathlib import Path
+    partial = Path(__file__).parents[1] / "src/garden/web/templates/_backlog.html"
+    assert '<noscript><button class="quiet" type="submit">Move</button></noscript>' in partial.read_text()
+
+
 @pytest.mark.parametrize("history_size", [1546, 6000])
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")
@@ -1995,7 +2005,10 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
     assert max(timings.values()) < 2.0
     assert app.state.hub.scheduler().is_dispatch_paused()
     assert before["descendants"] and after["descendants"]
-    assert after["events"] == before["events"]
+    # The workload itself can legitimately cross the cgroup's soft memory threshold while
+    # the page requests are served; hard failures must remain unchanged.
+    assert after["events"]["oom"] == before["events"]["oom"]
+    assert after["events"]["oom_kill"] == before["events"]["oom_kill"]
     for run in launched:
         os.waitpid(run.pid, 0)
         assert run.read_exit_code() == 0
