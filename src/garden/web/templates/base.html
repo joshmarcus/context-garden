@@ -144,6 +144,7 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .panel + .panel, .stack > * + * { margin-top:14px; }
 .panel h3 { margin:0 0 10px; font:500 15px/1.2 var(--display); color:var(--ink); }
 .grid2 { display:grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap:16px; align-items:start; }
+.grid2 > * { min-width:0; } /* let wide table scrollers stay inside their grid column */
 @media (max-width: 1000px) { .shell { grid-template-columns: 1fr; } .rail { position:static; height:auto; } .grid2 { grid-template-columns:1fr; } }
 .kpis { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
 .kpi { background:var(--label); border:1px solid var(--line); padding:10px 12px; }
@@ -295,6 +296,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   main { padding:18px 14px 42px; }
+  .kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .item { grid-template-columns:26px minmax(18rem,1fr); gap:8px 10px; }
   .item .card-actions, .item .do { align-items:stretch; }
   .item .do form { align-items:stretch; }
