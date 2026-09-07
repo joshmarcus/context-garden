@@ -491,7 +491,7 @@ and the words leave when the stream is back.
 
 | element | source | function |
 |---|---|---|
-| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active`, `check_runs_active`, `review_runs_active` for slots |
+| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active` for worker slots, `check_runs_active` for visible checks, and `review_runs_active` for review slots |
 | a record without a process | the run record | `Run.pid is None` and no `stdout.json` |
 | the clock's start, the server's clock | run records, the request | `Run.started_at` as UTC ISO in `data-started`; `now_iso()` at render in `data-server-now`; `Run.elapsed_minutes` for the first reading |
 | typical | run records | `now1.typical_seconds(runs)`: median elapsed per (mode, harness or token-free, difficulty) over the last seven days, falling back to (mode, harness or token-free) all-time, at least three samples, counting only runs that reached an outcome (done, failed, timeout, blocked): a cancelled, superseded or env_error run says nothing about how long the work takes, and a mechanical rebase must not share a median with an agent one |
@@ -612,7 +612,7 @@ under `docs/design/captures/`:
 | capture | what it is | what it showed |
 |---|---|---|
 | `now1-1280-light.png`, `now1-1280-dark.png` | the page at 1280, last hour, both palettes | the hierarchy holds: strips, then Next beside the sheet, then the ledger; the dark palette keeps the plate on paper and the tables legible |
-| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe in a 500-wide window (the grey band on the right is the frame's margin), because a desktop Edge window will not open narrower than about 500 and quietly lays out wider than it captures; the recipe's plain 390 window cut the right edge of every line | one column, the rail folded to wordmark and nav, strips on four lines with the title first, the sheet's label under the plant, the figures two by two |
+| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe in a 600-wide window (the extra outer width is the frame's margin); the embedded page measured `clientWidth=390` and `scrollWidth=390` | one column, the rail folded to wordmark and nav, strips on four lines with the title first, the sheet's label under the plant, the figures two by two |
 | `now1-1280-24h-light.png`, `now1-1280-24h-dark.png` | the 24-hour window, where the tables have rows with two or more solid cells | the green-to-red grounds, the ▲ ▽ marks and the faint `~n 1` cells read in both palettes; the seven-model rows overflowed the two-abreast layout, which is why more than five models now stack the tables full width |
 | `now1-390-tables-light.png`, `now1-390-tables-dark.png` | the ledger's tables at 390 (the same frame, scrolled to the tables) | each table scrolls sideways inside its box; the first four columns, the captions and the marks are readable without scrolling |
 | `now1-1280-gallery-light.png` | the states gallery | every strip state, the two empty sheets, the paused header, the seven waiting-reason lines and the no-runs ledger on one screen |

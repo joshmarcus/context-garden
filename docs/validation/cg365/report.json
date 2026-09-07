@@ -1,0 +1,51 @@
+{
+  "recorded_at": "2026-09-07T01:58:00-04:00",
+  "scope": "Disposable fixture only; the fixture controller stays outside the execution cgroup.",
+  "command": "unit_name=cg365-validation-$RANDOM; systemd-run --user --unit=\"$unit_name\" --property=Delegate=yes --property=CPUQuota=20% --property=MemoryHigh=96M --property=MemoryMax=128M --collect /bin/sleep 45; cg=$(systemctl --user show \"$unit_name\" -p ControlGroup --value); CG365_EXECUTION_CGROUP=\"/sys/fs/cgroup$cg\" .venv/bin/python -m pytest tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest -q -s; rc=$?; systemctl --user stop \"$unit_name\"; exit $rc",
+  "execution_cgroup": {
+    "cpu.max": "20000 100000",
+    "memory.high": 100663296,
+    "memory.max": 134217728,
+    "verified_supervisor_migration": true
+  },
+  "workload": {
+    "command": "python -m pytest <temporary focused target allocating 24MiB and repeatedly touching/hashing it for 2.5s> -q",
+    "heavy_capacity": 1,
+    "states_observed": ["running", "waiting"],
+    "retained_terminal_runs": 120,
+    "synchronization": "The admitted pytest writes its ready marker after a 250ms CPU warm-up; all requests and samples occur after that marker and before the workload exits."
+  },
+  "journey_latency_seconds": {
+    "inbox": 0.04851,
+    "now": 0.055798,
+    "task_control": 0.00515,
+    "pause": 0.003123
+  },
+  "execution_measurements": {
+    "memory_current_before": 47980544,
+    "memory_current_after": 56651776,
+    "memory_events_before": {"high": 0, "oom": 0, "oom_kill": 0},
+    "memory_events_after": {"high": 0, "oom": 0, "oom_kill": 0},
+    "temp_free_before": 2035400704,
+    "temp_free_after": 2035392512,
+    "cgroup_procs_before": [2310706, 2310755, 2310756, 2310757, 2310758, 2310759],
+    "cgroup_procs_after": [2310706, 2310755, 2310756, 2310757, 2310758, 2310759],
+    "actual_descendants": {
+      "supervisors": [2310755, 2310756],
+      "active_pytest": 2310759,
+      "active_pytest_command": "python -m pytest .../test_control_capacity.py -q",
+      "waiting_supervisor": 2310756
+    },
+    "cpu_stat_before": {"usage_usec": 215421, "user_usec": 167550, "system_usec": 47871, "nr_periods": 12, "nr_throttled": 10, "throttled_usec": 803661},
+    "cpu_stat_after": {"usage_usec": 243591, "user_usec": 191678, "system_usec": 51912, "nr_periods": 13, "nr_throttled": 11, "throttled_usec": 883805},
+    "pressure_before": {
+      "cpu": ["some avg10=0.00 avg60=0.00 avg300=0.00 total=719605", "full avg10=0.00 avg60=0.00 avg300=0.00 total=719605"],
+      "memory": ["some avg10=0.00 avg60=0.00 avg300=0.00 total=0", "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"]
+    },
+    "pressure_after": {
+      "cpu": ["some avg10=0.00 avg60=0.00 avg300=0.00 total=854363", "full avg10=0.00 avg60=0.00 avg300=0.00 total=854363"],
+      "memory": ["some avg10=0.00 avg60=0.00 avg300=0.00 total=0", "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"]
+    }
+  },
+  "result": "1 passed; the transient execution unit was stopped after collection"
+}

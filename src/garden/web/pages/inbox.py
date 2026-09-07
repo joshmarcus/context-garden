@@ -24,14 +24,22 @@ def register(app: FastAPI, site: Site) -> None:
         items = build_inbox(s, sched)
         tasks = s.tasks()
         evs = EventLog(s.config.garden_dir / "events.jsonl")
+        all_events = evs.read()
         open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
         in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
-        spent_24h = digest(evs.read(since=parse_since("24h")))["cost_usd"]
+        since_24h = parse_since("24h")
+        spent_24h = digest([event for event in all_events if event.get("at", "") >= since_24h])["cost_usd"]
         from ...suggestions import has_pending
 
         suggestions_pending = sum(1 for t in open_tasks if has_pending(t.body))
-        merge_queue = merge_queue_view(s, sched.state, evs.read(kinds=["merge_head"]))
+        merge_queue = merge_queue_view(
+            s,
+            sched.state,
+            [event for event in all_events if event.get("kind") == "merge_head"],
+        )
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
+            tool_build=sched.upgrade_status(),
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
-            burnup=burnup_svg(evs.read(), len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}), tiers=tier_bars_svg(tier_rows(s, tasks))))
+            burnup=burnup_svg(all_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}),
+            tiers=tier_bars_svg(tier_rows(s, tasks, all_events))))

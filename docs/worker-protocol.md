@@ -106,9 +106,9 @@ have had to make:
 - **Branch and base**: the branch is `garden/<id>-<slug>` (kept across runs). The base is
   the product's base branch, or, when stacking applies, the branch of the one dependency
   whose PR is still open.
-- **Worktree**: `.garden/worktrees/<id>` is created from `origin/<base>` (fetched first)
-  or reused if it already exists on that branch. Remote runners skip this; the host makes
-  its own.
+- **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
+  (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
+  creates or reuses its host-side worktree as described in its variant below. Remote runners beyond ssh are not implemented; the `runner: remote` claim, heartbeat and finish flow are deferred to CG-216.
 - **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
@@ -122,6 +122,17 @@ have had to make:
   with `run.json` holding the choices above.
 
 ### 2. Starting the process (the runner, in `start`)
+
+Before potentially slow worktree or setup work, dispatch writes the run identity as
+`requested`, then advances it to `preparing`. Only recording the detached worker PID
+advances it to `running`; terminal outcomes are presented as `finished` by the operation
+API. All three startup states reserve the task and capacity, so a timed-out retry cannot
+start another run. After restart, a `requested` or `preparing` record with no PID is not
+live. Ordinary launches are closed once and left retryable. Recovery API launches retain
+their client idempotency key and are resumed on the same record when that client replays
+after restart; the runner's setup lock/stamp makes an escaped setup child and the resumed
+server reconcile preparation once. The preparation server's PID is never exposed as the
+worker PID.
 
 The local runner writes the brief to `brief.md` in the run directory and starts a small
 supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
@@ -277,7 +288,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
                 "friction": ["short item"], "notes": "...",
-                "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
+                "discovered": [{"kind", "title", "body", "file", "error", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
@@ -315,8 +326,8 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   leaves a criterion undone or declines an improvement, because that changes the promised
   product outcome rather than merely reporting evidence about it.
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
-  a `task` becomes a draft task file, unless its title (normalised) or its body's file and
-  error already match an open task in this phase or the next one, in which case it is noted
+  a `task` becomes a draft task file, unless its title (normalised) or its structured `file`
+  and `error` fields already match an open task in this phase or the next one, in which case it is noted
   on that task ("also found by") instead of filing a near-duplicate, with a
   `discovered_duplicate` event; a `duplicate` (`of`/`duplicates`) or `cancel`
   (`task`) becomes a decision card for a human — Accept cancels the named task with the
@@ -369,10 +380,12 @@ A review is a worker with a different brief: the task brief without the operatin
 the PR title and body, the diff against the base (inlined under `review.max_diff_chars`,
 otherwise read from git in the worktree), and the author's per-criterion `verified` claims
 under "Author's verification". It ends with `GARDEN_REVIEW: {"verdict", "summary",
-"criteria": [{"criterion", "met", "reason"}], "description_ok", "description_feedback",
+"criteria": [{"criterion", "met", "evidence", "reason"}], "description_ok", "description_feedback",
 "findings": [...]}`. `criteria` speaks to each acceptance criterion by name, checking the
 author's evidence against the diff; a criterion with no evidence, or one the author marked
-not done without a reason the reviewer accepts, is `met: false` and a blocking finding.
+not done without a reason the reviewer accepts, is `met: false` and a blocking finding. The
+scheduler mechanically changes the verdict to `request_changes` when any returned criterion
+is unmet or lacks its own `evidence`, so an approving top-level verdict cannot bypass the gate.
 Reaping it posts the verdict as a PR comment; `request_changes`
 turns the blocking findings and the description feedback into the next revise brief.
 Persona reviews (`GARDEN_PERSONA:`) and trial comparisons (`GARDEN_COMPARE:`) use the same

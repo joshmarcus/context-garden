@@ -120,4 +120,3 @@ def test_phase_window_keeps_global_operating_marks_without_other_phase_cost():
     assert p["series"]["grand_total"]["cost_usd"] == 4
     assert p["matrices"]["accepted_count"] == 1
     assert all("position" not in e for e in events)
-

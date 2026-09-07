@@ -91,13 +91,18 @@ def status(
     mp_line += f"  operating profile: {active_profile or '(none)'}"
     console.print(mp_line)
     up = sched.upgrade_available()
+    build = sched.upgrade_status()
+    console.print(f"tool active: {str(build.get('active') or 'unversioned')[:12]}")
     if up:
         sha = str(up.get("sha") or "")[:12]
         count = up.get("count")
-        line = f"tool update available: {sha}"
+        state = str(up.get("status") or "available")
+        line = f"tool update {state}: {sha}"
         if count is not None:
             line += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
-        console.print(f"[cyan]{line}[/cyan] — run `garden upgrade`")
+        if up.get("reason"):
+            line += f" — {up['reason']}"
+        console.print(f"[cyan]{line}[/cyan]" + (" — run `garden upgrade`" if state in {"available", "held"} else ""))
     from ..scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     if ctrl.get("dispatch") == "paused":
@@ -173,7 +178,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     """Show a task, its blockers and its runs."""
     from rich.markdown import Markdown
 
-    from ..graph import blockers, dependents
+    from ..graph import blockers, dependency_after, dependents
     from ..runs import RunStore
 
     store = _store()
@@ -185,7 +190,8 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
-        console.print(f"depends_on: {', '.join(t.depends_on)}  blockers: {', '.join(blockers(t, tasks)) or '-'}")
+        rules = ", ".join(f"{d} (after {dependency_after(t, d, tasks)})" for d in t.depends_on)
+        console.print(f"depends_on: {rules}  blockers: {', '.join(blockers(t, tasks)) or '-'}")
     deps = dependents(t.id, tasks)
     if deps:
         console.print(f"unblocks: {', '.join(deps)}")
@@ -296,13 +302,18 @@ def validate():
     from ..graph import validate as _validate
 
     store = _store()
-    problems = _validate(store.tasks())
+    try:
+        tasks = store.tasks()
+    except ValueError as exc:
+        console.print(f"[red]![/red] malformed task: {exc}")
+        raise typer.Exit(1) from None
+    problems = _validate(tasks)
     for tid, paths in sorted(store.duplicate_ids().items()):
         problems.append(f"duplicate task id {tid}: claimed by {', '.join(paths)} "
                         "(both are quarantined from dispatch until one is renamed or removed)")
     from ..brief import resolve_reading
 
-    for t in store.tasks().values():
+    for t in tasks.values():
         for r in t.reading:
             if resolve_reading(store, t, r)[0] is None:
                 problems.append(f"{t.id}: reading path {r!r} does not exist in the garden or the product checkout")

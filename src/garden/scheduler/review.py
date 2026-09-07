@@ -11,6 +11,7 @@ from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
 from ..review import (
+    enforce_criteria_verdict,
     feedback_from_review,
     parse_review,
     review_brief,
@@ -47,9 +48,16 @@ class ReviewMixin:
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
             max_rounds = int(self.cfg.get("review.max_rounds", 2))
-            if int(st.get("review_rounds", 0)) < max_rounds:
+            rounds = int(st.get("review_rounds", 0))
+            self_product_default = (self.cfg.product_self(task.product)
+                                    and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+            # The garden reviews its own changes. Once the first automated opinion is in,
+            # the default second opinion must be independent evidence (persona or human), not
+            # another automated pass from the same product. An explicit product setting keeps
+            # control of the ordinary automated-round policy.
+            if rounds < max_rounds and not (self_product_default and rounds >= 1):
                 wanted.append({"kind": "review", "count_round": not after_rebase})
-            else:
+            elif not self_product_default:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
                 self._set_needs_human(task, "review_cap", reason)
                 self.events.emit("needs_human", task.id, stop_kind="review_cap", reason=reason)
@@ -303,6 +311,7 @@ class ReviewMixin:
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
                         reask_missing_fixes: bool = False) -> Run:
+        self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
@@ -456,7 +465,7 @@ class ReviewMixin:
             final = collected.get("final_text") or ""
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
-            review = parse_review(final)
+            review = enforce_criteria_verdict(parse_review(final))
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
@@ -532,6 +541,7 @@ class ReviewMixin:
         queue a revise round, or record the verdict. Split out of `reap_review` so a restart can
         re-apply a verdict the previous process reaped but never persisted (`emitted=True` then
         skips the run_finished emit, which the first pass already made)."""
+        review = enforce_criteria_verdict(review)
         st = self.state.get(task.id)
         st["review_run"] = ""
         pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
@@ -674,29 +684,40 @@ class ReviewMixin:
         return pr_state in ("CLOSED", "MERGED")
 
     def reap_orphaned(self, rep: TickReport) -> None:
-        """Close a verdict-bearing run (review, persona, compare) still marked `running`
-        whose task has moved on before the tick that would have read its verdict: merged,
-        closed, failed or otherwise past the point where the verdict can be applied, so
-        `state[task].review_run` (or the aux pointer) no longer leads a reap to it. Only
-        these modes are swept — a task's own work/revise/resume/trial run is always reaped
-        by its task, so one that merely finishes between its task's reap and this sweep in
-        the same tick (the CG-098 case) is left for the next tick's reap, not swept out from
-        under it. Usage and cost are recorded; nothing is posted, since the task is no longer
-        where this run left it."""
-        aux_run_ids = {e["run_id"] for e in self._aux_list()}
+        """Close a moot verdict run, or a terminal task's pid-less ghost record.
+
+        Verdict runs are moot once their task has moved on. Worker-mode records otherwise
+        remain their task's reaper's responsibility, except a terminal task cannot have a
+        live pid-less worker that was launched into a worktree; that record has no process
+        which could ever report an outcome. A reservation not yet bound to a worktree stays
+        active, because the dispatcher may still be completing its launch transaction.
+        Usage and cost are recorded; nothing is posted, since the task is no longer where the
+        run left it.
+        """
+        aux_run_ids = {entry["run_id"] for entry in self._aux_list()}
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual" or run.run_id in aux_run_ids:
-                continue
-            if run.mode not in ("review", "persona", "compare"):
-                continue
             task = tasks.get(run.task_id)
-            if not self._verdict_is_moot(task):
+            # A terminal task cannot own an active pid-less record.  This is distinct from a
+            # live worker which happens to have no verdict yet: without a pid there is no
+            # process to reap, so leaving the record active permanently consumes a slot.
+            ghost = bool(task and task.status.terminal and run.worktree and run.pid is None
+                          and not run.process_finished())
+            if run.runner == "manual":
+                continue
+            if not ghost and run.run_id in aux_run_ids:
+                continue
+            if not ghost and run.mode not in ("review", "persona", "compare"):
+                continue
+            if not ghost and not self._verdict_is_moot(task):
                 continue
             runner = self.runner_for(task or Task(path=self.store.root, id=run.task_id, title=""), run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            if not ghost and not self._finished_or_timed_out(run, runner):
                 continue
-            if run.status != "timeout":
+            if ghost:
+                run.finished_at = now_iso()
+                run.status = "failed"
+            elif run.status != "timeout":
                 run.exit_code = run.read_exit_code()
                 run.finished_at = now_iso()
                 collected = runner.collect(run)

@@ -75,7 +75,7 @@ __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
-CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge check; also holds a slot
+CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
 
 
 class Scheduler(
@@ -276,7 +276,7 @@ class Scheduler(
         return [r for r in self.runs.active() if r.runner != "manual"]
 
     def worker_runs_active(self) -> list[Run]:
-        """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
+        """Active runs that occupy a `max_parallel` slot: worker modes only."""
         return [r for r in self.active_runs() if r.mode in WORKER_MODES]
 
     def worker_run_in_flight(self, task_id: str) -> bool:
@@ -307,13 +307,16 @@ class Scheduler(
         return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
 
     def check_runs_active(self) -> list[Run]:
-        """Active check runs (pre-PR, base probe, pre-merge). Like a worker run, one runs a
-        product's suite, so it holds a `max_parallel` slot until it is reaped (CG-182)."""
+        """Active check runs (pre-PR, base probe, pre-merge).
+
+        Checks are deliberately visible as runs but do not occupy worker slots: they are
+        short, machine-bound work and have no worker-mode concurrency cap.
+        """
         return [r for r in self.active_runs() if r.mode in CHECK_MODES]
 
     def slots_free(self) -> int:
-        queue_free = self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active())
-        return max(0, queue_free)
+        """Worker slots available to dispatch; checks and edit runs are excluded."""
+        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
 
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")
@@ -475,11 +478,14 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        if self.maintenance_requested():
+            return TickReport()
         rep = TickReport()
         started = time.monotonic()
         self.store.invalidate_tasks()
         self.state = State(self.state.path)
         self._migrate_fence_bookkeeping()
+        self.confirm_restarted_upgrade()
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
             self._reap_all(rep)
@@ -503,6 +509,13 @@ class Scheduler(
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         self._migrate_fence_bookkeeping()
+        self.confirm_restarted_upgrade()
+        if self.maintenance_requested():
+            # A prior transaction has completed before this locked pass observes the
+            # request.  Do no collection or mutation in the acknowledgement pass.
+            self._quiesce_for_maintenance()
+            self.state.save()
+            return rep
         try:
             # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
             # change against an in-flight run's fence manifest until it's safe or an operator
@@ -557,9 +570,18 @@ class Scheduler(
             self._guard(rep, "retro close", lambda: self.close_accepted_reopens(rep))
         with self._step(rep, "harness_probe"):
             self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
+        with self._step(rep, "tool_update"):
+            self._guard(rep, "tool update detection", self.detect_tool_upgrade)
         if dispatch is None:
             dispatch = bool(self.cfg.get("auto_dispatch", True))
         if self.is_dispatch_paused():
+            dispatch = False
+        pending_upgrade = self.upgrade_available()
+        if (self.cfg.upgrade_auto() and pending_upgrade
+                and pending_upgrade.get("status") not in {"failed", "restart_pending", "installed"}):
+            # Once an authorized update is known, stop admitting new work. Existing workers,
+            # reviews and checks keep running and are reaped above; this prevents a busy queue
+            # from starving the safe install boundary indefinitely.
             dispatch = False
         if dispatch:
             with self._step(rep, "dispatch"):

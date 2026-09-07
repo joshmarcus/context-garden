@@ -43,17 +43,35 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Installation</div>
+  <h3>Maintenance pause</h3>
+  {% if maintenance.requested %}
+  <p style="margin:0 0 10px">Maintenance is <strong>{{ "quiesced" if maintenance.quiesced else "requested" }}</strong>. Unlike dispatch pause, it freezes collection and every scheduler mutation at a transaction boundary.</p>
+  {% if maintenance.live %}<p class="warn">Reinstall blockers:{% for run in maintenance.live %}<br><span class="mono">{{ run.task }}/{{ run.run }}</span> — {{ run.blocker }}{% endfor %}</p>{% endif %}
+  {% if maintenance.finished_uncollected %}<p class="muted">Finished but uncollected (safe to reinstall): {{ maintenance.finished_uncollected|join(', ') }}.</p>{% endif %}
+  <p><strong>{{ "Reinstall ready" if maintenance.ready else "Reinstall not ready" }}</strong></p>
+  <form method="post" action="/maintenance/resume" class="actions"><button class="primary">Resume maintenance</button></form>
+  {% else %}
+  <p class="muted">Use this before reinstalling or restarting the scheduler. It lets active processes finish and save results, but does not collect them until you explicitly resume. Ordinary dispatch pause still lets collection, checks, reviews and merges continue.</p>
+  <form method="post" action="/maintenance/pause" class="actions"><input type="text" name="reason" placeholder="Reason (optional)" style="width:260px"><button>Freeze for maintenance</button></form>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Capacity</div>
   <h3>Local execution boundary</h3>
   <p class="muted" style="margin:0">
     Host admission: <strong>{{ resource_status.active }}/{{ resource_status.limit }}</strong> ·
-    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong>
+    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong> authoritative
+    (requested {{ resource_status.requested_heavy_limit }})
     {% if resource_status.heavy_waiting %}({{ resource_status.heavy_waiting }} waiting: heavy-test budget full){% endif %} ·
     cgroup isolation: <strong>{{ resource_status.isolation }}</strong>.
     Available memory: <strong>{{ resource_status.memory_available_mb if resource_status.memory_available_mb is not none else "unknown" }} MiB</strong>
-    {% if resource_status.cgroup_available_mb is not none %}(effective cgroup headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
+    {% if resource_status.cgroup_available_mb is not none %}(effective {{ resource_status.cgroup_boundary }} headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
     temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
   </p>
+  {% if resource_status.heavy_conflict %}<p class="warn" style="margin:8px 0 0">Heavy capacity conflict: {{ resource_status.heavy_conflict }}. Existing authoritative capacity remains enforced.</p>{% endif %}
+  {% if resource_status.cgroup_events %}<p class="muted" style="margin:8px 0 0">Memory events: {% for name, value in resource_status.cgroup_events %}{{ name }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
   {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget ({{ resource_status.isolation }}). Configure a delegated, finite <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
 </div>
 
@@ -65,6 +83,7 @@
     {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
     {% if max_parallel_source == "profile" %} · effective now: <strong>{{ max_parallel_value }}</strong> (from the operating profile <span class="mono">{{ operating_profile_active }}</span>, below){% endif %}
   </p>
+  <p class="muted" style="margin:8px 0 0"><strong>Worker occupancy:</strong> {{ workers_running }}/{{ max_parallel }} — the same worker-mode count used by dispatch and shown in the rail and <span class="mono">garden status</span>.</p>
   <form method="post" action="/config/max-parallel" class="actions" data-autosave>
     <label class="muted" for="max-parallel-override">live override</label>
     <input type="number" id="max-parallel-override" name="value" min="1" placeholder="none — uses {{ max_parallel_file }}"
@@ -73,6 +92,7 @@
     <span class="autosave-mark" aria-live="polite"></span>
   </form>
   <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
+  <p class="muted" style="margin:8px 0 0"><strong>Worker slots:</strong> {{ worker_slot_modes }}. Reviews use the separate <span class="mono">reviews</span> cap; checks and edit runs are short machine-bound runs and do not consume worker slots, but they still count toward the shared local execution limit shown in the rail.</p>
 </div>
 
 {% set profile_source = "live override" if operating_profile_override else ("garden.yaml" if operating_profile_file else "") %}

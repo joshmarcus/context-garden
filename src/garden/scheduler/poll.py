@@ -254,11 +254,22 @@ class PollMixin:
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
         if hard_tier:
             min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
-        if (self._needs_second_review_round(task.product)
-                and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
+        self_product_default = (self.cfg.product_self(task.product)
+                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+        if self_product_default:
+            # The second opinion is supplied by a current-head persona or a human, so only
+            # one automated review round is required by the default self-product policy.
+            min_rounds = max(min_rounds, 1)
+        elif (self._needs_second_review_round(task.product)
+              and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
             min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
+        if (self_product_default and int(st.get("review_rounds", 0)) >= 1
+                and pr.review_decision != "APPROVED"
+                and not any(str(item.get("head") or "") == str(pr.head_sha or "")
+                            for item in st.get("persona_reviews", []) if isinstance(item, dict))):
+            return False, "the second review must be a persona review or human approval"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
         review_run = st.get("review_run")
@@ -517,7 +528,8 @@ class PollMixin:
             return
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=outcome.files)
         # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
-        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, rep, f"parent {parent_id} merged")
+        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, outcome.artifacts,
+                                    rep, f"parent {parent_id} merged")
 
     def _reopen_if_base_deleted(self, task: Task, slug: str | None, pr: PRInfo, rep: TickReport) -> bool:
         """A PR GitHub closed because its base branch was deleted (a stack parent that merged with

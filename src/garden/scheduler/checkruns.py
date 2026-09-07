@@ -8,7 +8,8 @@ itself. The chain (pre-PR → base probe → rebase re-check) is a small state m
 stage stores the continuation the reap needs, and `reap_check` routes the results to it.
 
 The git scaffolding a check needs (a mechanical rebase, a throwaway probe worktree) is cheap
-and stays in the tick; only the check commands — the slow part — move to the run record.
+and stays in the tick; only the check commands — the slow part — move to the run record. Check
+runs are visible in the run list but do not consume the worker-mode `max_parallel` cap.
 """
 
 from __future__ import annotations
@@ -53,8 +54,10 @@ class CheckRunMixin:
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
                             extra: dict[str, Any] | None = None, retries: int = 0) -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
-        reap resumes. The slot accounting counts it; the task shows it on its page. `extra` adds
+        reap resumes. The task shows it on its page, but it does not consume a worker slot.
+        `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        self.require_maintenance_running()
         runner = self.runner_for(task, "local")
         run = self._new_local_run(task.id, "check", f"{stage} check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
@@ -229,7 +232,8 @@ class CheckRunMixin:
         for result in results:
             summary = str(result.get("summary") or "")
             if "check did not finish" in summary or "check run produced no results" in summary:
-                return summary
+                details = str(result.get("details") or "").strip()
+                return f"{summary}\n\n{details}".strip() if details else summary
         return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:

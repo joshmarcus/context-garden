@@ -65,6 +65,19 @@ def test_parse_plan_tolerates_fences():
     assert items[0]["title"] == "A"
 
 
+@pytest.mark.parametrize("dependency", [
+    {"after": "merge"},
+    {"id": 42},
+    {"id": "DM-001", "after": "review"},
+    {"id": "DM-001", "extra": True},
+])
+def test_planner_rejects_malformed_dependency_rules_before_creating_tasks(garden, dependency):
+    store = Store(garden)
+    with pytest.raises(ValueError):
+        import_plan(store, "demo", "p1", [{"title": "Invalid plan", "depends_on": [dependency]}])
+    assert not (garden / "demo" / "p1" / "tasks" / "DM-003-invalid-plan.md").exists()
+
+
 def test_import_resolves_title_deps(garden):
     store = Store(garden)
     criteria = "\n\n## Acceptance criteria\n\n- [ ] It does the thing, proven by a test.\n"

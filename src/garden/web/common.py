@@ -162,8 +162,15 @@ def render_md(text: str) -> str:
     return sanitize_html(md.markdown(text, extensions=["fenced_code", "tables", "sane_lists"]))
 
 
-def tier_rows(s: Store, tasks: dict[str, Any]) -> list[dict[str, Any]]:
-    m = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks)
+def tier_rows(
+    s: Store,
+    tasks: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build tier rows from one caller-supplied history snapshot when available."""
+    if events is None:
+        events = EventLog(s.config.garden_dir / "events.jsonl").read()
+    m = metrics(events, tasks)
     return [{"tier": t, **m["by_difficulty"][t]} for t in ("easy", "medium", "hard") if m["by_difficulty"].get(t)]
 
 
@@ -210,6 +217,7 @@ class Site:
             "inbox_count": len(decisions(items)),
             "env": s.config.env,
             "running": running_now(s),
+            "worker_busy": len(sched.worker_runs_active()),
             "workers_running": len(sched.worker_runs_active()),
             "reviews_running": len(sched.review_runs_active()),
             "max_parallel": sched.effective_max_parallel(),

@@ -8,12 +8,11 @@ posted as PR comments.
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
 
-from .brief import build_brief
+from .brief import _parse_marked_json, build_brief
 from .model import Phase, Task, now_iso, slugify, split_frontmatter
 from .store import Store
 
@@ -310,18 +309,9 @@ def pr_brief(store: Store, task: Task, name: str, branch: str, base: str, pr_tit
 
 
 def parse_persona(text: str) -> dict[str, Any]:
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line.startswith(PERSONA_MARKER):
-            payload = line[len(PERSONA_MARKER):].strip()
-            s, e = payload.find("{"), payload.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    data = json.loads(payload[s : e + 1])
-                    if isinstance(data, dict) and "findings" in data:
-                        return data
-                except json.JSONDecodeError:
-                    continue
+    data = _parse_marked_json(text, PERSONA_MARKER)
+    if "findings" in data:
+        return data
     return {}
 
 

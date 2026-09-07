@@ -18,7 +18,7 @@ from .store import Store
 # item, so it counts toward the badge, the "need you" figure and the digest. "notice" is
 # informational — the loop is already handling it — so it renders but never counts.
 GROUPS = [
-    ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
+    ("tool", "Garden tool update", "The configured tool base advanced. The controller reports whether the verified build is available, held, installing, waiting for restart, or failed.", "notice"),
     ("question", "Questions to answer", "A worker, kickoff, or retrospective is waiting for your answer.", "decision"),
     ("retro_verdict", "Accept or change a retro's verdict", "A retrospective reopened the phase: the named tasks must land before it can close. Accept to approve them and keep the phase open, or change the verdict to close instead.", "decision"),
     ("decision", "Choose the product outcome", "A worker recommends cancelling or changing the promised outcome. The card explains what each choice does.", "decision"),
@@ -163,6 +163,16 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         if diff_summary:
             line += f" · {diff_summary}"
         out.append(line)
+        # Only a terminal interrupted check needs its full diagnostic on the card. Other
+        # attention cards already have a concise run summary, and their check output can be
+        # large or unrelated to the decision.
+        stop = st.get("needs_human") or {}
+        interrupted = isinstance(stop, dict) and stop.get("kind") == "check_did_not_run"
+        if interrupted:
+            for check in (r.result or {}).get("checks") or []:
+                trace = str(check.get("details") or "").strip()
+                if trace:
+                    out.append(f"{check.get('name', 'check')} diagnostic:\n{trace}")
     rev = st.get("last_review") or {}
     if rev:
         out.append(f"last automated review: {str(rev.get('verdict', '')).replace('_', ' ')} — {str(rev.get('summary', ''))[:160]}")
@@ -444,12 +454,18 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     if up:
         sha = str(up.get("sha") or "")[:12]
         count = up.get("count")
-        why = f"tool update available: {sha}"
+        status = str(up.get("status") or "available")
+        why = f"tool update {status}: {sha}"
         if count is not None:
-            why += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
+            why += f", {count} commit{'s' if count != 1 else ''} on configured base since {str(up.get('from') or '')[:12] or 'the current install'}"
+        if up.get("reason"):
+            why += f" · {up['reason']}"
+        if up.get("diagnosis") and status == "failed":
+            why += f" · {up['diagnosis']}"
         items.append({"group": "tool", "group_title": titles["tool"], "task": "", "title": f"{up.get('product', 'tool')} → {sha}",
                       "phase": "", "status": "", "pr": "", "why": why,
-                      "actions": [{"label": "Upgrade", "kind": "upgrade", "command": "garden upgrade"}],
+                      "actions": ([{"label": "Upgrade", "kind": "upgrade", "command": "garden upgrade"}]
+                                  if status in {"available", "held"} else []),
                       "age": _age(str(up.get("at") or "")), "difficulty": ""})
 
     for d in getattr(sched, "pending_decisions", list)():

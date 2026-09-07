@@ -17,10 +17,15 @@ class AuxMixin:
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
                      harness_name: str = "", difficulty: str = "") -> Run:
+        self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner = self.runner_for(probe, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
-        run = self._new_local_run(probe.id if task else f"_{kind}", kind, kind)
+        # Phase persona reports must retain their phase identity.  Unlike PR personas, they
+        # have no task, and the old shared `_persona` bucket let reports from two phases
+        # overwrite one another.
+        run_task_id = probe.id if task or kind == "persona" else f"_{kind}"
+        run = self._new_local_run(run_task_id, kind, kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
         if kind in ("persona", "compare"):

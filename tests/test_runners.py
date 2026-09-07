@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -94,6 +96,7 @@ def test_easy_task_gets_cheap_model(sched):
 
 
 @pytest.mark.parametrize("harness, output", [("claude", "worker-output.txt"), ("codex", "codex-output.txt")])
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path, harness, output):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
@@ -428,6 +431,124 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
     assert status["state"] == "running" and status["owner_scoped"] is True
 
 
+def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    fallback = tmp_path / "tmp"
+    fallback.mkdir()
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    class StickyTmp:
+        def lstat(self):
+            return type("TmpStat", (), {"st_mode": stat.S_IFDIR | 0o1777, "st_uid": 0})()
+
+        def is_dir(self):
+            return True
+
+        def is_symlink(self):
+            return False
+
+        def __truediv__(self, child):
+            return fallback / child
+
+    monkeypatch.setattr(supervisor, "Path", lambda value: StickyTmp() if value == "/tmp" else Path(value))
+    root = fallback / f"garden-{os.getuid()}"
+    root.symlink_to(tmp_path / "outside")
+    with pytest.raises(RuntimeError, match="private runtime directory"):
+        supervisor._private_runtime_dir()
+    root.unlink()
+    root = supervisor._private_runtime_dir()
+    assert root.name == f"garden-{os.getuid()}"
+    assert root.stat().st_mode & 0o777 == 0o700
+
+    hostile = root / f"garden-heavy-test-{os.getuid()}-capacity.json"
+    hostile.symlink_to(tmp_path / "outside")
+    with pytest.raises(RuntimeError, match="unsafe runtime file"):
+        supervisor._authoritative_limit(1)
+
+
+@pytest.mark.parametrize("name", [
+    "garden-heavy-test-{uid}-capacity.json",
+    "garden-heavy-test-{uid}-capacity.lock",
+    "garden-heavy-test-{uid}-0.lock",
+    "garden-heavy-test-{uid}-owner-owner.lock",
+])
+@pytest.mark.parametrize("mode", [stat.S_IFIFO, stat.S_IFDIR])
+def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path, monkeypatch, name, mode):
+    """Every metadata and lease-file name fails closed on an unsafe fstat result."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    root = supervisor._private_runtime_dir()
+    expected_name = name.format(uid=os.getuid())
+    real_fstat = supervisor.os.fstat
+
+    monkeypatch.setattr(
+        supervisor.os,
+        "fstat",
+        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid() + 1, "st_mode": stat.S_IFREG | 0o600})()
+        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+    )
+    with pytest.raises(RuntimeError, match="not a user-owned regular file"):
+        supervisor._safe_runtime_file(root, expected_name)
+
+    monkeypatch.setattr(
+        supervisor.os,
+        "fstat",
+        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid(), "st_mode": mode | 0o600})()
+        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+    )
+    with pytest.raises(RuntimeError, match="not a user-owned regular file"):
+        supervisor._safe_runtime_file(root, expected_name)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+@pytest.mark.parametrize("lease", ["metadata", "guard", "slot", "owner"])
+def test_runtime_leases_reject_precreated_hostile_files(tmp_path, monkeypatch, kind, lease):
+    """Capacity metadata and every lock class refuse substitutions without following them."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    root = supervisor._private_runtime_dir()
+    uid = os.getuid()
+    target = tmp_path / "substitution-target"
+    target.write_text("untouched")
+    names = {
+        "metadata": f"garden-heavy-test-{uid}-capacity.json",
+        "guard": f"garden-heavy-test-{uid}-capacity.lock",
+        "slot": f"garden-heavy-test-{uid}-0.lock",
+        "owner": f"garden-heavy-test-{uid}-owner-{hashlib.sha256(b'owner').hexdigest()[:20]}.lock",
+    }
+
+    if lease == "slot":
+        assert supervisor._authoritative_limit(1) == (1, None)
+    path = root / names[lease]
+    if kind == "symlink":
+        path.symlink_to(target)
+    else:
+        os.mkfifo(path)
+
+    run_dir = tmp_path / f"run-{lease}-{kind}"
+    run_dir.mkdir()
+    if lease == "owner":
+        monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owner")
+
+    def action() -> object:
+        if lease in {"metadata", "guard"}:
+            return supervisor._authoritative_limit(1)
+        if lease == "slot":
+            return supervisor._execution_slot(run_dir, lambda: False)
+        return supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
+
+    with pytest.raises(RuntimeError, match="unsafe runtime file"):
+        action()
+    assert target.read_text() == "untouched"
+
+
 def test_two_validations_from_one_worker_are_serialized(tmp_path):
     """Competing supported validation wrappers cannot multiply one worker's workload."""
     from garden.harness import Harness
@@ -537,6 +658,7 @@ def test_setup_waits_inside_the_heavy_execution_budget(tmp_path, monkeypatch):
     assert all((worktree / "setup-started").exists() for _, worktree in runs)
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_uses_bare_bin(sched, fake_github):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
@@ -549,6 +671,7 @@ def test_ssh_runner_uses_bare_bin(sched, fake_github):
     assert "/resolved/claude" not in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_sets_garden_root(sched, fake_github):
     """The ssh remote script must export GARDEN_ROOT at a non-garden path, so a worker on a
     remote clone that is itself a garden cannot run garden commands against it."""
@@ -561,6 +684,7 @@ def test_ssh_runner_sets_garden_root(sched, fake_github):
     assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_path, monkeypatch):
     """The ssh runner's remote script must run the harness under the same allowlist as the
     local worker (runner.base.PASS_ENV plus worker_env.pass and setup.env): a host's ambient
@@ -597,6 +721,7 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_github, tmp_path, monkeypatch):
     """CG-218: `worker_env.config_dirs` overrides the remote script's CLAUDE_CONFIG_DIR/
     CODEX_HOME defaults, the same way it overrides `scrubbed_env` for the local runner."""
@@ -623,6 +748,7 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_github, tmp_path, monkeypatch):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg.setdefault("worker_env", {})["config_dirs"] = {"CUSTOM_HARNESS_HOME": "/srv/custom-creds"}
@@ -643,6 +769,7 @@ def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_
     assert seen["CUSTOM_HARNESS_HOME"] == "/srv/custom-creds"
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_host_capacity(sched):
     for tid in ("DM-001", "DM-002"):
         t = sched.store.task(tid)

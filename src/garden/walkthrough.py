@@ -15,7 +15,6 @@ HTML and text.
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -25,6 +24,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 
 from .browser import browser_failure, classify_browser_failure
@@ -123,7 +123,7 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
         first = next((p for p in sorted(design_root.rglob("*")) if p.is_file()), None)
         if first:
             rel = first.relative_to(design_root).as_posix()
-            specs.append(PageSpec("design", f"/design/{rel}", "Design",
+            specs.append(PageSpec("design", f"/design/{rel}?product={phase.product}", "Design",
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
@@ -166,11 +166,219 @@ def _design_root(store: Store, phase: Phase) -> Path:
 
 
 # --------------------------------------------------------------------------- html -> text
-_BLOCK = re.compile(r"</(p|div|li|tr|h[1-6]|section|header|footer|article|table|ul|ol|nav|form)>", re.I)
-_BR = re.compile(r"<br\s*/?>", re.I)
-_DROP = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
-_TAG = re.compile(r"<[^>]+>")
 _BLANKS = re.compile(r"\n[ \t]*\n[ \t]*\n+")
+
+
+class _TextParser(HTMLParser):
+    """Collect visible text nodes without allowing markup attributes into the capture."""
+
+    _BLOCK_TAGS = frozenset({"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+                             "section", "header", "footer", "article", "table", "ul", "ol",
+                             "nav", "form"})
+    _IGNORED_TAGS = frozenset({"script", "style"})
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                             "meta", "param", "source", "track", "wbr"})
+
+    def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden_selectors = hidden_selectors or []
+        self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
+        self._hidden_depth = 0
+        self._ignored_depth = 0
+        self._hidden_starts: list[bool] = []
+        self._ignored_starts: list[bool] = []
+
+    @staticmethod
+    def _matches_simple_selector(tag: str, attrs: list[tuple[str, str | None]], selector: str) -> bool:
+        """Match the small, explicit selector subset used by the app's stylesheets.
+
+        Returning false for syntax we do not understand is important here: this is a
+        conservative visibility filter, not a CSS engine.  A false negative leaves text
+        in a capture for review; a false positive can erase unrelated visible content.
+        """
+        values = {name.lower(): value or "" for name, value in attrs}
+        classes = set(values.get("class", "").split())
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
+        if tag_name:
+            if tag_name.group(0).lower() not in ("*", tag.lower()):
+                return False
+            index += len(tag_name.group(0))
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match or values.get("id") != match.group(0)[1:]:
+                    return False
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match or match.group(0)[1:] not in classes:
+                    return False
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return False
+                name = match.group(1).lower()
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                if name not in values or (expected is not None and values[name] != expected):
+                    return False
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return False
+                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
+                    return False
+                index = end + 1
+            else:
+                return False
+        return True
+
+    @staticmethod
+    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+        """Split selectors, retaining whether each component requires a direct parent."""
+        components: list[tuple[str, str | None]] = []
+        buffer: list[str] = []
+        brackets = parentheses = 0
+        pending: str | None = None
+        whitespace = False
+
+        def add_component() -> bool:
+            nonlocal pending, whitespace
+            component = "".join(buffer).strip()
+            if not component:
+                return True
+            relation = pending
+            if relation is None and components and whitespace:
+                relation = " "
+            components.append((component, relation))
+            buffer.clear()
+            pending = None
+            whitespace = False
+            return True
+
+        for char in selector:
+            if char == "[":
+                brackets += 1
+            elif char == "]":
+                brackets -= 1
+                if brackets < 0:
+                    return None
+            elif char == "(":
+                parentheses += 1
+            elif char == ")":
+                parentheses -= 1
+                if parentheses < 0:
+                    return None
+            if brackets or parentheses:
+                buffer.append(char)
+            elif char.isspace():
+                add_component()
+                whitespace = True
+            elif char == ">":
+                add_component()
+                if not components or pending == ">":
+                    return None
+                pending = ">"
+            else:
+                if not buffer and whitespace and components and pending is None:
+                    pending = " "
+                buffer.append(char)
+                whitespace = False
+        if brackets or parentheses or not add_component() or pending:
+            return None
+        return components
+
+    def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if not self._hidden_selectors:
+            return False
+        # A selector's final component identifies the element; checking its ancestors
+        # as well handles the descendant selectors used by the web templates without
+        # needing a CSS dependency in the walkthrough tool.
+        hidden: bool | None = None
+        winning_rule: tuple[bool, int] | None = None
+        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
+            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
+                continue
+            ancestors = self._elements
+            index = len(ancestors) - 1
+            matched = True
+            for component_index in range(len(components) - 1, 0, -1):
+                relation = components[component_index][1]
+                component = components[component_index - 1][0]
+                if relation == ">":
+                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                        matched = False
+                        break
+                else:
+                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                        index -= 1
+                    if index < 0:
+                        matched = False
+                        break
+                index -= 1
+            if matched:
+                rule_order = (important, rule_index)
+                if winning_rule is None or rule_order >= winning_rule:
+                    winning_rule = rule_order
+                    hidden = is_none
+        return bool(hidden)
+
+    def _is_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        values = {name.lower(): value for name, value in attrs}
+        if "hidden" in values:
+            return True
+        if str(values.get("aria-hidden") or "").strip().lower() == "true":
+            return True
+        style = str(values.get("style") or "")
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I)) \
+            or self._stylesheet_hidden(tag, attrs)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        hidden = self._is_hidden(tag, attrs)
+        ignored = tag in self._IGNORED_TAGS
+        if tag in self._VOID_TAGS:
+            if tag == "br" and not self._hidden_depth and not self._ignored_depth:
+                self.parts.append("\n")
+            return
+        self._hidden_starts.append(hidden)
+        self._ignored_starts.append(ignored)
+        self._elements.append((tag, attrs))
+        if hidden:
+            self._hidden_depth += 1
+        if ignored:
+            self._ignored_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        hidden = self._hidden_starts.pop() if self._hidden_starts else False
+        ignored = self._ignored_starts.pop() if self._ignored_starts else False
+        if hidden:
+            self._hidden_depth -= 1
+        if ignored:
+            self._ignored_depth -= 1
+        if self._elements:
+            self._elements.pop()
+        if tag in self._BLOCK_TAGS and not self._hidden_depth and not self._ignored_depth:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden_depth and not self._ignored_depth:
+            self.parts.append(data)
 
 # The run page's stderr tab: raw process stderr can carry secrets a test suite printed,
 # tracebacks or other things that should never land in a committed docs/ page.
@@ -194,15 +402,26 @@ def _redact_home(text: str, home: str) -> str:
 
 
 def html_to_text(page: str) -> str:
-    """A plain-text rendering that reads roughly as the page does, top to bottom: scripts
-    and styles dropped, block ends turned into newlines, remaining tags stripped."""
-    page = _DROP.sub("", page)
-    page = _BR.sub("\n", page)
-    page = _BLOCK.sub("\n", page)
-    page = _TAG.sub("", page)
-    page = html.unescape(page)
-    page = "\n".join(line.rstrip() for line in page.splitlines())
-    return _BLANKS.sub("\n\n", page).strip() + "\n"
+    """Render visible element text, excluding hidden subtrees and all attributes."""
+    hidden_selectors: list[tuple[str, bool, bool]] = []
+    for css in re.findall(r"<style\b[^>]*>(.*?)</style\s*>", page, re.I | re.S):
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            display = re.search(r"display\s*:\s*([\w-]+)(\s*!important)?", declarations, re.I)
+            if display:
+                is_none = display.group(1).lower() == "none"
+                important = bool(display.group(2))
+                hidden_selectors.extend(
+                    (part.strip(), is_none, important)
+                    for part in selectors.split(",")
+                    if part.strip()
+                )
+    parser = _TextParser(hidden_selectors)
+    parser.feed(page)
+    parser.close()
+    text = "".join(parser.parts)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _BLANKS.sub("\n\n", text).strip() + "\n"
 
 
 # --------------------------------------------------------------------------- capture
@@ -231,6 +450,53 @@ def _fetch(store: Store, specs: list[PageSpec], base_url: str) -> dict[str, tupl
 
 VIEWPORTS = (1280, 390)
 COLOR_SCHEMES = ("light", "dark")
+NARROW_OUTER_WIDTH = 600
+NARROW_FRAME_HEIGHT = 5400
+
+
+class NarrowViewportError(RuntimeError):
+    """The embedded page loaded, but did not fit the required narrow viewport."""
+
+    def __init__(self, measurements: dict[str, int]) -> None:
+        self.measurements = measurements
+        super().__init__(
+            "narrow frame measured "
+            f"clientWidth {measurements['clientWidth']}, "
+            f"scrollWidth {measurements['scrollWidth']}"
+        )
+
+
+def _narrow_frame(page: object, url: str) -> object:
+    """Load a page in a 390px frame so Edge's outer-window floor cannot widen it."""
+    import html
+
+    frame_url = html.escape(url, quote=True)
+    wrapper = ("<html><body style=\"margin:0\">"
+               f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
+               "</body></html>")
+    page.set_content(wrapper, wait_until="networkidle", timeout=30000)
+    iframe = page.locator("iframe")
+    handle = getattr(iframe, "element_handle", lambda: None)()
+    frame = handle.content_frame() if handle is not None else page.frame(url=url)
+    if frame is None:
+        raise RuntimeError(f"narrow frame did not load {url}")
+    wait_for_load_state = getattr(frame, "wait_for_load_state", None)
+    if wait_for_load_state is not None:
+        wait_for_load_state("domcontentloaded", timeout=30000)
+    measured = frame.evaluate(
+        """() => {
+            const width = document.documentElement.clientWidth;
+            const scrollWidth = document.documentElement.scrollWidth;
+            return {clientWidth: width, scrollWidth, scrollHeight: document.documentElement.scrollHeight};
+        }"""
+    )
+    iframe.evaluate(
+        "(iframe, height) => { iframe.style.height = `${Math.max(5400, height)}px`; }",
+        measured["scrollHeight"],
+    )
+    if measured["clientWidth"] != 390 or measured["scrollWidth"] != 390:
+        raise NarrowViewportError(measured)
+    return {"clientWidth": measured["clientWidth"], "scrollWidth": measured["scrollWidth"]}
 
 
 def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
@@ -249,13 +515,45 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                 complete = True
                 for width in VIEWPORTS:
                     for scheme in COLOR_SCHEMES:
-                        page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
+                        narrow = width == 390
+                        page = browser.new_page(
+                            viewport={"width": NARROW_OUTER_WIDTH if narrow else width,
+                                      "height": 900},
+                            color_scheme=scheme,
+                        )
                         try:
-                            page.goto(base_url.rstrip("/") + s.url, wait_until="networkidle", timeout=30000)
-                            viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
-                            page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
-                            evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
-                                             "color_scheme": scheme, **viewport})
+                            url = base_url.rstrip("/") + s.url
+                            if narrow:
+                                measurements: dict[str, int] | None = None
+                                try:
+                                    measurements = _narrow_frame(page, url)
+                                    log(f"  narrow frame {s.slug} {scheme}: "
+                                        f"clientWidth={measurements['clientWidth']} "
+                                        f"scrollWidth={measurements['scrollWidth']}")
+                                except NarrowViewportError as e:
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                except Exception as e:  # noqa: BLE001 - retain a load diagnostic
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                finally:
+                                    # Keep a diagnostic image when the page itself overflows;
+                                    # the missing/invalid measurement must still fail the check.
+                                    try:
+                                        page.locator("iframe").screenshot(
+                                            path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
+                                        )
+                                    except Exception as e:  # noqa: BLE001 - outer handler logs it
+                                        log(f"  diagnostic screenshot {s.slug} at {width}/{scheme} failed: {e}")
+                                if measurements is not None:
+                                    evidence.append({"page": s.slug, "action": "frame", "viewport": width,
+                                                     "color_scheme": scheme, **measurements})
+                            else:
+                                page.goto(url, wait_until="networkidle", timeout=30000)
+                                viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
+                                page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
+                                evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
+                                                 "color_scheme": scheme, **viewport})
                         except Exception as e:  # noqa: BLE001 - one bad page should not sink the rest
                             complete = False
                             log(f"  screenshot {s.slug} at {width}/{scheme} failed: {e}")
@@ -433,7 +731,16 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
         store = Store(garden_root)
-        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
+        logs: list[str] = []
+        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
+                         log=logs.append)
+    expected = {
+        f"{page.spec.slug}-{width}-{scheme}.png"
+        for page in result.pages
+        for width in VIEWPORTS
+        for scheme in COLOR_SCHEMES
+    }
+    missing = sorted(name for name in expected if not (out_dir / name).is_file())
     captures = [str(p) for p in sorted(out_dir.iterdir())
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
     expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
@@ -441,16 +748,19 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not complete_pngs:
+    details = "\n".join(filter(None, [result.browser_note, *logs]))
+    if not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
+        if missing:
+            details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and evidence_complete
+    passed = complete_pngs and not missing and evidence_complete
     return {"status": "pass" if passed else "fail", "summary": summary,
             "failure_kind": "infrastructure" if result.browser_failure_kind else
                             ("product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
-            "details": result.browser_note or ("missing screenshot files or interaction evidence" if not passed else ""),
+            "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
             "pages": [p.spec.slug for p in result.pages]}
 

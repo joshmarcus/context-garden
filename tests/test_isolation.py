@@ -65,8 +65,8 @@ def test_find_root_worktree_nested_garden_is_fine(tmp_path):
 
 
 def test_conftest_fixture_clears_ambient_env(tmp_path):
-    """The autouse `_no_ambient_garden_root` fixture in tests/conftest.py must strip both
-    GARDEN_ROOT and GARDEN_EXEC_ROOT before every test, so this suite behaves the same in a
+    """The autouse environment fixtures must strip garden and harness config variables before
+    every test, so this suite behaves the same in a
     developer's shell, in CI and under the check runner (see garden.checks module docstring:
     a product's tests must not depend on the garden's environment variables).
 
@@ -87,12 +87,16 @@ def test_conftest_fixture_clears_ambient_env(tmp_path):
         "def test_probe():\n"
         "    assert 'GARDEN_ROOT' not in os.environ\n"
         "    assert 'GARDEN_EXEC_ROOT' not in os.environ\n"
+        "    assert 'CLAUDE_CONFIG_DIR' not in os.environ\n"
+        "    assert 'CODEX_HOME' not in os.environ\n"
     )
     try:
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)  # don't let the outer run's flags reselect/deselect the probe
         env["GARDEN_ROOT"] = str(tmp_path / "nonexistent")
         env["GARDEN_EXEC_ROOT"] = str(tmp_path)
+        env["CLAUDE_CONFIG_DIR"] = str(tmp_path / "claude")
+        env["CODEX_HOME"] = str(tmp_path / "codex")
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", str(probe)],
             cwd=tests_dir.parent, env=env, capture_output=True, text=True,
