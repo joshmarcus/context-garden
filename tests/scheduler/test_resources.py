@@ -70,6 +70,7 @@ def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, mo
     _set_resource_limit(sched, "min_memory_available_mb", 1500)
     _set_resource_limit(sched, "min_temp_free_mb", 1000)
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 900)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
     monkeypatch.setattr(resources, "_free_mb", lambda path: 700)
 
     with pytest.raises(ResourcePressureError, match="available memory.*temporary storage"):
@@ -79,10 +80,42 @@ def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, mo
     assert any(e["kind"] == "resource_pressure" for e in sched.events.read())
 
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 2000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
     monkeypatch.setattr(resources, "_free_mb", lambda path: 2000)
     sched.refresh_resource_pressure()
     assert "resource_pressure" not in State(sched.state.path).get("_control")
     assert any(e["kind"] == "resource_recovered" for e in sched.events.read())
+
+
+def test_effective_memory_uses_tighter_cgroup_headroom(sched, monkeypatch):
+    import garden.scheduler.resources as resources
+
+    _set_resource_limit(sched, "min_memory_available_mb", 1500)
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 900)
+    status = sched.resource_status()
+    assert status.memory_available_mb == 900
+    assert status.cgroup_available_mb == 900
+    assert "available memory 900 MiB is below 1500 MiB" in status.reasons
+
+
+def test_writable_but_unbounded_execution_cgroup_is_not_enforced(sched, monkeypatch, tmp_path):
+    group = tmp_path / "execution"
+    group.mkdir()
+    for name, value in (("cgroup.procs", ""), ("cpu.max", "max 100000"),
+                        ("memory.high", "max"), ("memory.max", "max")):
+        (group / name).write_text(value)
+    monkeypatch.setattr(sched, "effective", lambda key, default=None:
+                        str(group) if key == "resources.execution_cgroup" else default)
+
+    status = sched.resource_status()
+
+    assert status.isolation.startswith("execution cgroup is unbounded")
+
+
+def test_disabled_heavy_budget_is_rendered_as_zero(sched):
+    _set_resource_limit(sched, "heavy_test_parallel", 0)
+    assert sched.resource_status().heavy_limit == 0
 
 
 def test_operator_feed_names_effective_limit_pressure_and_recovery(sched, monkeypatch):

@@ -9,6 +9,7 @@ can drain and recover without losing run records or restarting the controller.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import threading
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..model import now_iso
+from ..run_supervisor import _finite_cgroup_limits
 
 _ADMISSION_LOCKS: dict[str, threading.Lock] = {}
 _ADMISSION_LOCKS_GUARD = threading.Lock()
@@ -30,6 +32,11 @@ class ResourceStatus:
     memory_min_mb: int
     temp_free_mb: int | None
     temp_min_mb: int
+    cgroup_available_mb: int | None
+    isolation: str
+    heavy_limit: int
+    heavy_running: int
+    heavy_waiting: int
     reasons: tuple[str, ...]
 
     @property
@@ -59,6 +66,23 @@ def _free_mb(path: Path) -> int | None:
         stat = os.statvfs(probe)
         return stat.f_bavail * stat.f_frsize // (1024 * 1024)
     except OSError:
+        return None
+
+
+def _cgroup_memory_available_mb(root: Path = Path("/sys/fs/cgroup")) -> int | None:
+    """Memory headroom against this process's effective cgroup high/max ceiling."""
+    try:
+        relative = next(line.split("::", 1)[1] for line in Path("/proc/self/cgroup").read_text().splitlines()
+                        if line.startswith("0::"))
+        group = root / relative.lstrip("/")
+        current = int((group / "memory.current").read_text().strip())
+        ceilings = []
+        for name in ("memory.high", "memory.max"):
+            raw = (group / name).read_text().strip()
+            if raw != "max":
+                ceilings.append(int(raw))
+        return max(0, min(ceilings) - current) // (1024 * 1024) if ceilings else None
+    except (OSError, ValueError, StopIteration):
         return None
 
 
@@ -102,8 +126,38 @@ class ResourceMixin:
         limit = self.resource_parallel_limit()
         memory_min = int(self.effective("resources.min_memory_available_mb", 0) or 0)
         temp_min = int(self.effective("resources.min_temp_free_mb", 0) or 0)
-        memory = _memory_available_mb()
+        host_memory = _memory_available_mb()
+        cgroup_memory = _cgroup_memory_available_mb()
+        values = [v for v in (host_memory, cgroup_memory) if v is not None]
+        memory = min(values) if values else None
         temp = _free_mb(self.cfg.work_dir / "tmp")
+        execution_cgroup = str(self.effective("resources.execution_cgroup", "") or "")
+        isolation = "not configured"
+        if execution_cgroup:
+            target = Path(execution_cgroup)
+            bounded, _, reason = _finite_cgroup_limits(target)
+            procs = target / "cgroup.procs"
+            isolation = "available" if bounded and procs.exists() and os.access(procs, os.W_OK) else reason or "unavailable"
+        heavy_limit = max(0, int(self.effective("resources.heavy_test_parallel", 1) or 0))
+        heavy_running = heavy_waiting = 0
+        for run in self.local_runs_active():
+            try:
+                if execution_cgroup:
+                    actual = json.loads((run.path / "isolation.json").read_text())
+                    if actual.get("enforced"):
+                        isolation = "enforced"
+                    else:
+                        isolation = str(actual.get("reason") or "unavailable")
+            except (OSError, ValueError):
+                pass
+            status_paths = [run.path / "execution.json", *run.path.glob("validations/*/execution.json")]
+            for status_path in status_paths:
+                try:
+                    state = json.loads(status_path.read_text()).get("state")
+                except (OSError, ValueError):
+                    continue
+                heavy_running += state == "running"
+                heavy_waiting += state == "waiting"
         reasons: list[str] = []
         if active >= limit:
             reasons.append(f"local execution limit reached ({active}/{limit})")
@@ -111,7 +165,8 @@ class ResourceMixin:
             reasons.append(f"available memory {memory} MiB is below {memory_min} MiB")
         if temp_min and temp is not None and temp < temp_min:
             reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
-        return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, tuple(reasons))
+        return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, cgroup_memory,
+                              isolation, heavy_limit, heavy_running, heavy_waiting, tuple(reasons))
 
     def _record_resource_status(self, status: ResourceStatus) -> None:
         ctrl = self.control()

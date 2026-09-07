@@ -312,6 +312,24 @@ Reaping is never gated, so pressure drains without a restart; the rail and opera
 name the effective bound and recovery action. Queue-specific `max_parallel` and
 `review_parallel` remain narrower caps inside that host bound.
 
+Supported local setup, checks, probes and worker-issued validations additionally share
+`resources.heavy_test_parallel` kernel leases across every garden owned by the same OS user
+(one by default). The first limit stored in the shared runtime directory is authoritative;
+conflicting garden limits are recorded and use that capacity rather than minting more slots.
+Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
+cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
+release its `flock`, so reservations cannot become stale. A supported worker-issued validation
+uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` and takes both the host
+lease and a separate owner-scoped lease. The parent model session holds neither lease, so two
+validations in one run serialize without a nested-lock deadlock.
+Raw child commands are still contained by the aggregate cgroup but cannot be recognized as
+heavy and are not serialized. With `resources.execution_cgroup`, the
+supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU
+and memory controls and its resulting membership, so all descendants
+share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose
+waiting counts and whether cgroup isolation is enforced. Arbitrary commands launched outside
+the local runner and remote hosts are outside this boundary and must be bounded separately.
+
 Dispatching one task means: choose the runner (task, then product, then garden default),
 the harness (same order), the model (an explicit `model:`, else the harness's tier map by
 `difficulty`), the base branch (a stack parent's branch or the product base), prepare the

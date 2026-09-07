@@ -741,7 +741,7 @@ def personas():
 @app.command(rich_help_panel=PANEL_REVIEW)
 def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci")):
     """Run the token-free checks for a task by hand (pre_pr in its worktree, or ci analysers)."""
-    from ..checks import run_checks
+    from ..scheduler.resources import ResourcePressureError
 
     store = _store()
     t = _task(store, task_id)
@@ -754,9 +754,24 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
         err.print(f"no checks configured under checks.{stage}")
         raise typer.Exit(1)
     wt = sched.worktree_for(t)
-    results = run_checks(specs, sched.check_ctx(t, t.branch or t.default_branch(), sched.base_for(t), wt),
-                         cwd=wt if wt.exists() else None, timeout=int(store.config.get("checks.timeout_seconds", 600)),
-                         config=store.config.data)
+    try:
+        run = sched._new_local_run(t.id, "check", f"operator {stage} check")
+    except ResourcePressureError as e:
+        err.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(2) from None
+    run.branch, run.base, run.worktree = t.branch or t.default_branch(), sched.base_for(t), str(wt)
+    run.save()
+    payload = {"specs": specs, "ctx": sched.check_ctx(t, run.branch, run.base, wt),
+               "cwd": str(wt) if wt.exists() else "", "setup": store.config.product_setup(t.product),
+               "timeout": int(store.config.get("checks.timeout_seconds", 600)), "config": store.config.data}
+    runner = sched.runner_for(t, "local")
+    runner.start_checks(run, wt if wt.exists() else run.path, payload)
+    while not run.process_finished():
+        time.sleep(0.05)
+    results = json.loads((run.path / "checks.json").read_text())
+    run.exit_code, run.finished_at, run.cost_usd = run.read_exit_code(), now_iso(), 0.0
+    run.result, run.status = {"checks": results}, "done"
+    run.save()
     bad = 0
     for r in results:
         color = "green" if r.get("status") == "pass" else ("yellow" if r.get("status") == "flaky" else "red")

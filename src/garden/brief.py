@@ -27,7 +27,11 @@ OPERATING_RULES = """\
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
 {env_rule}- Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
 - Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
-- Run the project's own fast checks (tests, lint, typecheck) before you finish. Fix what you broke.
+- During iteration run focused tests only. Before finishing, run the project's checks sequentially
+  (tests, lint, typecheck); full CI remains the merge gate. Fix what you broke.
+- In a supervised local run, launch each potentially heavy validation as
+  `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
+  within its execution budget. Run ordinary lightweight inspection commands directly.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
@@ -174,7 +178,8 @@ def _env_rule(setup: dict) -> str:
         if cmd:
             checks.append(f"`{cmd}` ({label})")
     if checks:
-        prepared += " Run the project's checks with " + " and ".join(checks) + " before you finish."
+        prepared += (" During iteration run focused tests only. Before finishing, run the project's checks "
+                     "sequentially with " + " and ".join(checks) + "; full CI remains the merge gate.")
     return prepared + "\n"
 
 

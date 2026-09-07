@@ -120,11 +120,13 @@ max_parallel: 1
 review_parallel: 1
 resources:
   max_parallel: 2               # all local workers, reviews, personas and checks together
+  heavy_test_parallel: 1        # per-user: one supported heavy local command at once
   min_memory_available_mb: 1536 # defer new processes below this headroom
   min_temp_free_mb: 1024        # measured on work_dir/tmp, not the system /tmp
+  execution_cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/garden-execution.slice
 ```
 
-All scheduler and direct CLI launches consult the same run records and limits, so
+All scheduler launch paths consult the same run records and limits, so
 `garden dispatch` and `garden review` cannot create extra local concurrency outside the
 served loop; admission is serialized across processes when the running record is created.
 A pressure stop never kills or fails existing work: reaping continues, new
@@ -133,15 +135,49 @@ web rail and `garden observe` show the effective local limit, the measured press
 the recovery action. `garden pause --reason "resource pressure"` is available when an
 operator also wants to hold ordinary dispatch while the current work drains.
 
+Supported local setup, checks, probes, and worker-issued validations take a kernel-backed,
+per-user heavy-execution lease shared by every garden using the same runtime directory. The
+first configured limit recorded there is authoritative; a different limit is reported in the
+run's `execution.json` and uses the authoritative capacity instead of creating extra slots.
+Change capacity only while idle by removing the user-owned `garden-heavy-test-*-capacity.json`
+from `$XDG_RUNTIME_DIR` (or `/tmp`) before restarting with one consistent configuration.
+Model sessions and remote-CI waits do not hold this lease, so independently configured local
+run capacity can keep agents thinking while heavy commands remain serial. Extra heavy work is visible as waiting;
+cancellation works while waiting, and process exit or a crash releases the lease without stale
+cleanup. Inside a worker, each supported heavy command is launched as
+`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>`; the variable selects the
+garden installation's Python even when the product uses another environment. Concurrent wrappers
+take both the host slot and a second, owner-scoped lease. Their model-session parent owns
+neither lock, avoiding nested acquisition deadlocks. Raw commands that
+bypass this wrapper still remain inside the aggregate cgroup but are not individually serialized.
+Arbitrary operator terminal commands and remote runners are not intercepted; use the wrapper
+from a local supervised run, CI, or an equivalent host-side unit for those paths.
+
 Per-run temporary directories live below `work_dir/tmp`, receive both `TMPDIR` and
 `PYTEST_DEBUG_TEMPROOT`, and are removed only after their run record is terminal. Keep
 `work_dir` on disk rather than tmpfs. A per-run subreaper owns daemonized descendants too,
-so stopping a run terminates them and cleanup waits for the whole process tree. Process-level
-CPU and memory ceilings remain an OS
-responsibility; when running `garden serve` as a user service, use persistent systemd
-settings such as `CPUQuota=200%`, `CPUWeight=20`, `MemoryHigh=3G`, `MemoryMax=4G` and
-`MemorySwapMax=512M`. The garden admission gate is still required because it covers
-direct CLI launches and automatic base probes that a service-only process count misses.
+so stopping a run terminates them and cleanup waits for the whole process tree.
+
+CPU and memory isolation is enforced only when `resources.execution_cgroup` names a delegated
+cgroup whose `cgroup.procs` is writable, `cpu.max` is finite, and at least one of
+`memory.high` or `memory.max` is finite. The supervisor moves itself before spawning, verifies
+its effective cgroup membership, and
+every child and detached session inherits that budget. The rail and `garden observe` say
+`isolation enforced` only after a supervisor has recorded verified migration. `available`
+means the controls look finite and writable but no active run has yet proved membership;
+`not configured` and a concrete unbounded/unavailable reason are also shown. None of those
+three states claims isolation. Admission uses the tighter of host `MemAvailable` and the control process's effective
+cgroup `memory.high`/`memory.max` headroom.
+
+Reserve the service independently with sibling systemd slices: for example,
+`garden-control.slice` with `CPUWeight=100`, `MemoryLow=768M`, `MemoryHigh=1G`, and a delegated
+`garden-execution.slice` with `CPUQuota=100%`, `CPUWeight=20`, `MemoryHigh=2G`,
+`MemoryMax=2500M`, `MemorySwapMax=256M`. Put `garden serve` in the control slice, pre-create and
+delegate the execution slice, then point `execution_cgroup` at its cgroup-v2 directory. Paths
+and delegation vary by distribution; confirm the rail says `enforced` before relying on it.
+
+Workers are instructed to run focused tests during iteration and sequential final validation;
+full CI remains the merge gate. Instructions supplement the enforced boundary.
 
 1. Create a product and phase with `garden new-product widget --repo ../widget` and
    `garden new-phase widget phase-01`.

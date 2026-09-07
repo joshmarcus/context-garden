@@ -49,8 +49,13 @@ class InProcessRunner(LocalRunner):
     name = "local"
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
+        from garden.runner.base import run_setup
+
         assert self.harness is not None
         d = run.path
+        setup_input = d / "setup_input.json"
+        if setup_input.exists():
+            run_setup(worktree, json.loads(setup_input.read_text()), log_path=d / "setup.log", env=env)
         argv = self.harness_argv(run, worktree, d / "final.md")
         # What the shell wrapper records for a real run: the resolved command line.
         (d / "command.txt").write_text(" ".join(shlex.quote(c) for c in argv) + "\n")

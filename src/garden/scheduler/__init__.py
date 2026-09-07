@@ -170,6 +170,7 @@ class Scheduler(
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
+        cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
         return get_runner(name, cfg, harness)
 
     def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
