@@ -32,7 +32,8 @@ def base_acceptance(event: dict) -> bool:
     note = str(event.get("note") or "")
     return event.get("kind") == "transition" and event.get("to") == "done" and (
         event.get("base_merged") is True or note.startswith("PR merged")
-        or (note.startswith("parent ") and "this task's commits are now on " in note))
+        or (note.startswith("parent ") and "this task's commits are now on " in note)
+        or not any(marker in note.lower() for marker in ("forced", "without merging", "marked done")))
 
 
 def cell(values: list[float], missing: int, unit: str, direction: str, med: bool = False) -> dict:

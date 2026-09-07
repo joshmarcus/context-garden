@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
+from .outcomes import base_acceptance
 
 # Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
@@ -261,9 +262,31 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     rebase_cost = 0.0
     merges = 0
     merged_tasks: set[str] = set()
-    queued_tasks: set[str] = set()
     tick_durations: list[float] = []
     task_ids = set(tasks)  # scope every count (rebases and merges included) to the phase filter
+    # Queue attribution is historical: an automerge can be recorded just before a
+    # completion window while the poll which observes the merge lands inside it.
+    # Keep that fact before applying the window to completion events.
+    queued_history: set[str] = set()
+    for ev in events:
+        at = str(ev.get("at") or "")
+        if until and at >= until:
+            continue
+        if ev.get("kind") == "automerged" and ev.get("task") in task_ids:
+            queued_history.add(str(ev["task"]))
+
+    operator_spend = 0.0
+    total_spend = 0.0
+    for ev in events:
+        at = str(ev.get("at") or "")
+        if (since and at < since) or (until and at >= until):
+            continue
+        if ev.get("kind") == "run_finished":
+            amount = float(ev.get("cost_usd") or 0.0)
+            total_spend += amount
+            if ev.get("mode") == "operator" or ev.get("activity") == "operator":
+                operator_spend += amount
+
     for ev in events:
         at = str(ev.get("at") or "")
         if (since and at < since) or (until and at >= until):
@@ -276,8 +299,6 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
             except (TypeError, ValueError):
                 pass
             continue
-        if k == "automerged" and t:
-            queued_tasks.add(str(t))
         if not t or t not in task_ids:
             continue
         if k == "dispatch":
@@ -289,7 +310,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                 for dimension in ("model", "harness"):
                     value = str(ev.get(dimension) or "unknown")
                     task_dimensions[t][dimension].add(value)
-        elif k == "transition" and ev.get("to") == "done":
+        elif k == "transition" and base_acceptance(ev):
             done_at[t] = ev["at"]
             merged_tasks.add(str(t))
             merges += 1
@@ -428,7 +449,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         "merges": merges,
         "per_merge": round(rebases / merges, 2) if merges else None,
     }
-    hand_merges = len(merged_tasks - queued_tasks)
+    hand_merges = len(merged_tasks - queued_history)
     tick_duration = {
         "count": len(tick_durations),
         "mean_s": round(sum(tick_durations) / len(tick_durations), 3) if tick_durations else None,
@@ -436,8 +457,10 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     }
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "rebase": rebase,
-            "merges": merges, "queue_merges": len(merged_tasks & queued_tasks),
+            "merges": merges, "queue_merges": len(merged_tasks & queued_history),
             "hand_merges": hand_merges, "tick_duration": tick_duration,
+            "operator": {"spend": round(operator_spend, 4),
+                          "share": round(operator_spend / total_spend, 4) if total_spend else None},
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 
