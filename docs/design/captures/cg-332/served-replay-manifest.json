@@ -1,7 +1,17 @@
 {
   "schema": "cg-332.served-replay.v1",
-  "reviewed_head": "928403559323d76bdafc2df056f2233b681482e8",
-  "fixture": "garden.qa disposable fixture",
+  "reviewed_head": "ab37132f6cb6b0b9c00dec65afc6c3cb767d9872",
+  "fixture": "disposable served garden with a ready task parked by a claude quota stop",
+  "captures": [
+    "task-1280-light.png",
+    "task-1280-dark.png",
+    "task-390-light.png",
+    "task-390-dark.png",
+    "inbox-1280-light.png",
+    "inbox-1280-dark.png",
+    "inbox-390-light.png",
+    "inbox-390-dark.png"
+  ],
   "interaction": {
     "transport": "served HTTP app driven by Playwright Chromium",
     "viewport": {
