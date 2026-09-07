@@ -179,27 +179,66 @@ class _TextParser(HTMLParser):
     _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
                              "meta", "param", "source", "track", "wbr"})
 
-    def __init__(self) -> None:
+    def __init__(self, hidden_selectors: set[str] | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self._hidden_selectors = hidden_selectors or set()
+        self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
         self._hidden_depth = 0
         self._ignored_depth = 0
         self._hidden_starts: list[bool] = []
         self._ignored_starts: list[bool] = []
 
     @staticmethod
-    def _is_hidden(attrs: list[tuple[str, str | None]]) -> bool:
+    def _matches_simple_selector(tag: str, attrs: list[tuple[str, str | None]], selector: str) -> bool:
+        """Match the simple tag/class/id selectors used by the app's stylesheets."""
+        selector = re.sub(r":(?:not\([^)]*\)|[-\w]+(?:\([^)]*\))?)", "", selector)
+        tag_name = re.match(r"^[a-z][\w-]*|^\*", selector, re.I)
+        if tag_name and tag_name.group(0) not in ("*", tag):
+            return False
+        values = {name.lower(): value or "" for name, value in attrs}
+        classes = set(values.get("class", "").split())
+        if any(values.get("id") != ident for ident in re.findall(r"#([\w-]+)", selector)):
+            return False
+        return all(ident in classes for ident in re.findall(r"\.([\w-]+)", selector))
+
+    def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if not self._hidden_selectors:
+            return False
+        # A selector's final component identifies the element; checking its ancestors
+        # as well handles the descendant selectors used by the web templates without
+        # needing a CSS dependency in the walkthrough tool.
+        for selector in self._hidden_selectors:
+            components = [part for part in re.split(r"\s+|>", selector.strip()) if part]
+            if not components or not self._matches_simple_selector(tag, attrs, components[-1]):
+                continue
+            ancestors = self._elements
+            index = len(ancestors) - 1
+            matched = True
+            for component in reversed(components[:-1]):
+                while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                    index -= 1
+                if index < 0:
+                    matched = False
+                    break
+                index -= 1
+            if matched:
+                return True
+        return False
+
+    def _is_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
         values = {name.lower(): value for name, value in attrs}
         if "hidden" in values:
             return True
         if str(values.get("aria-hidden") or "").strip().lower() == "true":
             return True
         style = str(values.get("style") or "")
-        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I))
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I)) \
+            or self._stylesheet_hidden(tag, attrs)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        hidden = self._is_hidden(attrs)
+        hidden = self._is_hidden(tag, attrs)
         ignored = tag in self._IGNORED_TAGS
         if tag in self._VOID_TAGS:
             if tag == "br" and not self._hidden_depth and not self._ignored_depth:
@@ -207,6 +246,7 @@ class _TextParser(HTMLParser):
             return
         self._hidden_starts.append(hidden)
         self._ignored_starts.append(ignored)
+        self._elements.append((tag, attrs))
         if hidden:
             self._hidden_depth += 1
         if ignored:
@@ -227,6 +267,8 @@ class _TextParser(HTMLParser):
             self._hidden_depth -= 1
         if ignored:
             self._ignored_depth -= 1
+        if self._elements:
+            self._elements.pop()
         if tag in self._BLOCK_TAGS and not self._hidden_depth and not self._ignored_depth:
             self.parts.append("\n")
 
@@ -257,7 +299,13 @@ def _redact_home(text: str, home: str) -> str:
 
 def html_to_text(page: str) -> str:
     """Render visible element text, excluding hidden subtrees and all attributes."""
-    parser = _TextParser()
+    hidden_selectors: set[str] = set()
+    for css in re.findall(r"<style\b[^>]*>(.*?)</style\s*>", page, re.I | re.S):
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            if re.search(r"display\s*:\s*none(?:\s*!important)?", declarations, re.I):
+                hidden_selectors.update(part.strip() for part in selectors.split(",") if part.strip())
+    parser = _TextParser(hidden_selectors)
     parser.feed(page)
     parser.close()
     text = "".join(parser.parts)

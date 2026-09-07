@@ -253,6 +253,17 @@ def test_html_to_text_omits_hidden_panels_and_attributes():
     assert "tasks\"->Plan phase" not in txt
 
 
+def test_html_to_text_omits_stylesheet_hidden_panels():
+    txt = html_to_text(
+        '<style>.panel { display: none; } #secret { display:none !important; }</style>'
+        '<div class="panel">Hidden by class</div><p id="secret">Hidden by id</p>'
+        '<p>Visible</p>'
+    )
+    assert "Hidden by class" not in txt
+    assert "Hidden by id" not in txt
+    assert "Visible" in txt
+
+
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")
