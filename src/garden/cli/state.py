@@ -126,7 +126,7 @@ def set_status(task_id: str, new_status: str, note: str = typer.Option("", help=
             sched.mark_done(t, note or "status forced to done", force=force, actor=actor)
         else:
             sched.set_status(t, s, note or f"status forced to {s.value}", actor=actor)
-    except ValueError as e:
+    except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     console.print(f"{t.id} -> {s.value}")
@@ -181,7 +181,7 @@ def retry(task_id: str, actor: str = typer.Option("human_owner", "--actor",
     store = _store()
     try:
         _scheduler(store).retry(_task(store, task_id), actor=actor)
-    except (RuntimeError, ValueError) as e:
+    except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
 

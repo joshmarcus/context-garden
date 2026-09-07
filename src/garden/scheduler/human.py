@@ -30,7 +30,7 @@ class HumanMixin:
     def _validate_action_actor(actor: str) -> str:
         """Return a recorded action actor, rejecting ambiguous live provenance."""
         if actor not in ACTORS:
-            raise ValueError(
+            raise RuntimeError(
                 "actor must be one of " + ", ".join(sorted(ACTORS))
             )
         return actor

@@ -346,7 +346,7 @@ def register(app: FastAPI, site: Site) -> None:
                     warning = run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise
-        except (RuntimeError, ValueError, GitError, GitHubError) as e:
+        except (RuntimeError, GitError, GitHubError) as e:
             message = str(e)
             hub._log(f"{task_id}/{action} failed: {message}")
             note_to_keep = note if action == "answer" else ""

@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -13,7 +19,6 @@ from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler
 from garden.stabilization import RECOVERY_EXERCISES, gate, intervene, record_outcome, sample, start
 from garden.store import Store
-from garden.web.app import create_app
 
 
 def protected_phase(garden):
@@ -208,7 +213,7 @@ def test_event_log_delegated_actions_and_automated_merge_preserve_passing_window
 
 
 def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
-    from fastapi.testclient import TestClient
+    import httpx
 
     phase = protected_phase(garden)
     start(phase, "build-a")
@@ -220,12 +225,35 @@ def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
     for i in range(10):
         events.emit("transition", f"DM-{i:03}", phase=phase.key, to="done", at="2026-09-06T01:00:00+00:00")
 
-    app = create_app(Store(garden), watch=False, host="testserver")
-    response = TestClient(app).post(
-        "/tasks/DM-001/retry", data={"actor": "delegated_operator"},
-        headers={"Origin": "http://testserver"}, follow_redirects=False,
-    )
-    assert response.status_code == 303
+    gate_dir = garden.parent / "served-gates"
+    gate_dir.mkdir()
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    command = [
+        sys.executable, str(Path(__file__).with_name("served_incident_app.py")),
+        str(garden), str(port), str(gate_dir),
+    ]
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+    process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for _ in range(100):
+            try:
+                if httpx.get(f"{base}/healthz", timeout=0.1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.02)
+        else:
+            raise AssertionError("disposable served app did not start")
+        response = httpx.post(
+            f"{base}/tasks/DM-001/retry", data={"actor": "delegated_operator"},
+            headers={"Origin": base}, follow_redirects=False, timeout=5,
+        )
+        assert response.status_code == 303
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
     sample(phase, events, at="2026-09-06T04:00:00+00:00")
     record_passes(phase)
 
