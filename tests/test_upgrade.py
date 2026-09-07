@@ -371,6 +371,7 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
     checkout = Path(__file__).resolve().parents[1]
     subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(checkout), str(source)], check=True)
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
     subprocess.run(["git", "remote", "set-url", "origin", str(remote)], cwd=source, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
@@ -453,10 +454,9 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
         assert "upgrade_installing" in lifecycle
         assert "upgrade_restart_pending" in lifecycle
         assert "upgrade_active" in lifecycle
-        log_text = log_path.read_text()
-        assert f"tool update available at {commit_b[:12]} from main" in log_text
-        assert f"tool upgrade installing configured-base commit {commit_b[:12]}" in log_text
-        assert f"tool upgrade active at {commit_b[:12]}; restarted controller confirmed" in log_text
+        available = next(event for event in events if event["kind"] == "upgrade_available")
+        assert available["base"] == "main" and available["count"] == 1
+        assert yaml.safe_load(config_path.read_text())["upgrade"] == "auto"
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)

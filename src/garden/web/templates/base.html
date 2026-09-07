@@ -377,7 +377,6 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     {% else %}
     <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick <span data-tick-at>{{ last_tick[11:19] }}Z</span>{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
     {% endif %}
-    <span>tool active {{ tool_build.get('active', '')[:12] if tool_build.get('active') else 'unversioned' }}{% if tool_build.get('status') %} · update {{ tool_build.status }}{% if tool_build.get('sha') %} {{ tool_build.sha[:12] }}{% endif %}{% if tool_build.get('reason') %} · {{ tool_build.reason }}{% endif %}{% endif %}</span>
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
