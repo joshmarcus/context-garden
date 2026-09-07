@@ -70,6 +70,57 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
     assert reads == 1
 
 
+def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
+    """A rendered Inbox keeps scheduler-owned notices out of the owner count while
+    retaining the deliberate deferred and recovery actions a person can inspect."""
+    from typer.testing import CliRunner
+
+    from garden.cli import app as cli_app
+    from garden.model import Status
+    from garden.scheduler import State
+
+    def command(*args: str):
+        cwd = os.getcwd()
+        os.chdir(garden)
+        try:
+            return CliRunner().invoke(cli_app, list(args))
+        finally:
+            os.chdir(cwd)
+
+    store = Store(garden)
+    review = store.task("DM-001")
+    review.status = Status.IN_REVIEW
+    review.pr = "https://github.com/test/demo/pull/71"
+    store.save(review)
+    recovery = store.task("DM-002")
+    recovery.status = Status.FAILED
+    store.save(recovery)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "head_sha": "head", "last_review_head": "head",
+        "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+        "pending_reviews": [{"kind": "review"}],
+    })
+    state.get("DM-002")["needs_human"] = {
+        "kind": "deployment", "reason": "deploy the verified build to the staging host",
+        "prior_status": "in_review", "at": "2026-09-07T00:00:00+00:00",
+    }
+    state.save()
+    assert command("new-phase", "demo", "p2").exit_code == 0
+    assert command("new-task", "demo/p1", "Deferred work").exit_code == 0
+    assert command("freeze", "demo/p1").exit_code == 0
+
+    page = client(garden).get("/inbox")
+    assert page.status_code == 200
+    assert '<div class="v">1</div><div class="l">need you</div>' in page.text
+    assert "automated review queued: queued: the next tick starts it" in page.text
+    assert "prior automated verdict: request changes" in page.text
+    assert "Deferred work" in page.text and "View freeze policy" in page.text
+    assert "Deployment prerequisite" in page.text
+    assert "Deployment completed, resume" in page.text
+    assert "set-status DM-001 done" not in page.text
+
+
 @pytest.mark.parametrize("history_size", [1546, 6000])
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")

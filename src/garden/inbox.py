@@ -166,7 +166,7 @@ def _automated_review_is_current(st: Any) -> bool:
             and str(st.get("last_review_head") or "") == str(st.get("head_sha") or ""))
 
 
-def _automated_review_wait(st: Any) -> str:
+def _automated_review_wait(t: Task, st: Any, sched: Any) -> str:
     """A concise operational explanation for a review the scheduler still owns."""
     pending = list(st.get("pending_reviews") or [])
     review = st.get("last_review") or {}
@@ -178,8 +178,8 @@ def _automated_review_wait(st: Any) -> str:
     if st.get("review_run"):
         return "automated review running" + prior
     if pending:
-        kinds = ", ".join(sorted({str(item.get("kind") or "review") for item in pending if isinstance(item, dict)}))
-        return f"automated review queued ({kinds or 'review'} waiting for a worker slot)" + prior
+        _, reason = sched.review_wait_reason(t)
+        return f"automated review queued: {reason}" + prior
     if verdict:
         detail = str(review.get("summary") or "").strip()
         return f"last automated verdict: {verdict.replace('_', ' ')}" + (f" — {detail}" if detail else "") + "; a fresh review is required for this head"
@@ -442,7 +442,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Open PR", "kind": "link", "href": t.pr},
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
-            if _automated_review_is_current(st):
+            # A current approval is actionable only after every automated review of this
+            # head has finished.  A queued or running follow-up remains scheduler-owned.
+            if st.get("review_run") or st.get("pending_reviews"):
+                add("automated_review", t, _automated_review_wait(t, st, sched), [],
+                    prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
+                    review_head=str(st.get("last_review_head") or ""),
+                    current_head=str(st.get("head_sha") or ""))
+            elif _automated_review_is_current(st):
                 why = "automated review approved this PR head"
                 if st.get("checks"):
                     why += f" · CI {st['checks'].lower()}"
@@ -451,7 +458,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 add("review", t, why, [{"label": "Open PR", "kind": "link", "href": t.pr}],
                     automerge_blocked=str(st.get("automerge_blocked") or ""))
             else:
-                add("automated_review", t, _automated_review_wait(st), [],
+                add("automated_review", t, _automated_review_wait(t, st, sched), [],
                     prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
                     review_head=str(st.get("last_review_head") or ""),
                     current_head=str(st.get("head_sha") or ""))
