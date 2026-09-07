@@ -21,6 +21,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
+from ..review import validation_plan
 from ..runs import Run
 from .report import TickReport
 
@@ -64,17 +65,24 @@ class CheckRunMixin:
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
             changed = gitops.diff_names(worktree, base)
+            worker = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
+            result = worker.result if worker is not None else {}
+            plan = validation_plan(changed, task.title, task.body,
+                                   str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
+                                   head=gitops.head_sha(worktree))
             needs_captures = any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
-            if (needs_captures or any(_is_ui_path(path) for path in changed)) and not any(s.get("name") == "ui" for s in specs):
+            if (needs_captures or plan["pages"]) and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
-                                  "changed": changed}]
+                                  "changed": changed, "pages": plan["pages"]}]
+            run.env_snapshot = {"validation_plan": plan}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
+        run.save()
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
         cont.setdefault("task_status", task.status.value)

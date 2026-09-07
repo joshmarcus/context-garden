@@ -14,6 +14,7 @@ from garden.review import (
     parse_review,
     review_brief,
     review_to_markdown,
+    validation_plan,
 )
 from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
@@ -262,6 +263,55 @@ def test_explicit_change_metadata_can_require_interaction_evidence():
     )
     assert required and not scalability
     assert reason == "change metadata requires interaction evidence"
+
+
+def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
+    backend = validation_plan(["src/garden/scheduler/human.py"], "Change incident control")
+    assert backend["pages"] == []
+    assert backend["interaction"] is True
+    assert backend["reasons"][-1]["reason"].endswith("scheduler/human.py")
+
+    parser = validation_plan(["src/garden/criteria.py"], "Parse result markers")
+    assert parser["pages"] == []
+    assert parser["interaction"] is False
+    assert parser["reasons"] == [{"item": "focused relevant checks", "reason": "no rendered or lifecycle behavior changed"}]
+
+    page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout")
+    assert page["pages"] == ["task"]
+    assert page["interaction"] is True
+
+    shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style")
+    assert shared["pages"] == ["*"]
+    assert any("every consumer" in reason["reason"] for reason in shared["reasons"])
+
+
+def test_validation_plan_requires_bounded_inspection_for_unknown_ui_scope():
+    plan = validation_plan(["src/garden/web/widgets/unmapped.py"], "New component")
+
+    assert plan["pages"] == []
+    assert plan["unknown_ui"] == ["src/garden/web/widgets/unmapped.py"]
+    assert any(reason["item"] == "bounded UI inspection" for reason in plan["reasons"])
+
+
+def test_review_brief_distinguishes_required_validation_from_available_captures(garden):
+    store = Store(garden)
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a")
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
+                        diff="+x", max_diff_chars=1000,
+                        captures=["/tmp/task-1280-light.png", "/tmp/inbox-1280-light.png"], plan=plan)
+
+    assert '"pages": [\n    "task"\n  ]' in text
+    assert "not the available" in text
+
+
+def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_demand(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
+                        lambda *_: ["src/garden/web/pages/task.py"])
+    run = sched.dispatch_review(task)
+
+    assert run.env_snapshot["capture_pages"] == ["task"]
+    assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
 
 
 def test_scalability_claim_in_pr_description_requires_load_evidence():

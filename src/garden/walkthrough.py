@@ -411,9 +411,11 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
 
 
 def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
-            base_url: str = "", log: Log | None = None, include_stderr: bool = False) -> WalkthroughResult:
+            base_url: str = "", log: Log | None = None, include_stderr: bool = False,
+            pages: list[str] | None = None) -> WalkthroughResult:
     """Write `<slug>.html`, `<slug>.txt` (and `<slug>.png` when a browser is available) for
-    every page, plus `index.md`, under out_dir. Returns what was captured.
+    each selected page (or every page when ``pages`` is omitted), plus `index.md`, under out_dir.
+    Returns what was captured.
 
     Absolute home-directory paths are redacted to `~` in every page, and the run page's
     stderr tab is omitted unless `include_stderr` is set — this capture is committed to the
@@ -422,6 +424,8 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     log = log or (lambda _m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     specs = pages_for(store, phase)
+    if pages and "*" not in pages:
+        specs = [spec for spec in specs if spec.slug in pages]
     fetched = _fetch(store, specs, base_url)
 
     shot: set[str] = set()
@@ -505,7 +509,7 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
+def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
     from .qa.sandbox import make_garden
 
@@ -514,7 +518,7 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
         store = Store(garden_root)
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
-                         log=logs.append)
+                         log=logs.append, pages=pages)
     expected = {
         f"{page.spec.slug}-{width}-{scheme}.png"
         for page in result.pages
@@ -561,7 +565,8 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     env = dict(os.environ)
     env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
-        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)],
+        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
+         json.dumps(spec.get("pages") or [])],
         cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
     )
     try:
@@ -576,8 +581,9 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
 
 
 def _main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--ui-check":
-        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]))))
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--ui-check":
+        pages = json.loads(sys.argv[3]) if len(sys.argv) == 4 else []
+        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]), pages)))
         return 0
     return 2
 

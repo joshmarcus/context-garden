@@ -20,11 +20,11 @@ from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
-    interaction_requirement,
     parse_review,
     review_brief,
     review_is_description_only,
     review_to_markdown,
+    validation_plan,
 )
 from ..runs import Run
 from .report import TickReport
@@ -296,9 +296,11 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
-        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
-            changed, task.title, task.body, pr_title, pr_body,
-        )
+        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head)
+        needs_interaction = bool(plan["interaction"])
+        needs_scalability = bool(plan["scalability"])
+        interaction_reason = next((row["reason"] for row in plan["reasons"]
+                                   if row["item"] == "served interaction"), "non-UI change")
         run = self._new_local_run(task.id, "review", "review")
         replay_nonce = secrets.token_urlsafe(24) if needs_interaction else ""
         replay_manifest = run.path / "interaction-replay" / "interaction-manifest.json"
@@ -320,24 +322,37 @@ class ReviewMixin:
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
             if capture_paths:
                 break
+        for check_run in reversed(self.runs.runs_for(task.id)):
+            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
+            if isinstance(checked_plan, dict) and checked_plan.get("head") == review_head:
+                plan = checked_plan
+                break
+        needs_interaction = bool(plan["interaction"])
+        needs_scalability = bool(plan["scalability"])
+        interaction_reason = next((row["reason"] for row in plan["reasons"]
+                                   if row["item"] == "served interaction"), "non-UI change")
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
                             checks=check_results, reask_missing_fixes=reask_missing_fixes,
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
                             review_head=review_head, interaction_reason=interaction_reason,
-                            interaction_manifest=str(replay_manifest) if needs_interaction else "")
+                            interaction_manifest=str(replay_manifest) if needs_interaction else "",
+                            plan=plan)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+        required_pages = set(plan["pages"])
+        if "*" in required_pages:
+            required_pages = set(capture_pages)
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
-                            "reask_missing_fixes": reask_missing_fixes}
+                            "reask_missing_fixes": reask_missing_fixes, "validation_plan": plan}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -440,6 +455,16 @@ class ReviewMixin:
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
             review = enforce_criteria_verdict(parse_review(final))
+            expansions = review.get("scope_expansions") if isinstance(review, dict) else None
+            if isinstance(expansions, list):
+                for expansion in expansions:
+                    if not isinstance(expansion, dict):
+                        continue
+                    item = str(expansion.get("item") or "").strip()
+                    reason = str(expansion.get("reason") or "").strip()
+                    if item and reason:
+                        task.log(f"review validation scope expansion: {item} — {reason}")
+                        self.store.save(task)
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
