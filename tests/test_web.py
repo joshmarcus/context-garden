@@ -87,6 +87,8 @@ def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
     assert "Operator recovery" in page
     assert "enable live setting" in page
     assert "/tasks/DM-001/operator-evidence" in page
+    task_page = c.get("/tasks/DM-001").text
+    assert "Operator-owned configuration" in task_page
     response = c.post("/tasks/DM-001/operator-evidence", data={"note": "verified in disposable environment"},
                       headers={"Origin": "http://testserver", "Referer": "http://testserver/inbox"},
                       follow_redirects=False)
