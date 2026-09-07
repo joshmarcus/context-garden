@@ -82,6 +82,9 @@
         <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
+      {% elif it.group == 'deferred' %}
+        {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
+        <a class="btn quiet" href="/phases/{{ it.phase.split('/', 1)[0] }}/{{ it.phase.split('/', 1)[1] }}">View freeze policy</a>
       {% elif it.group == 'attention' and it.get('decision_kind') == 'question' %}
         <form method="post" action="/decisions/{{ it.decision }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="answer" placeholder="Your answer." required></textarea><button class="primary">Answer</button></form>
         <form method="post" action="/decisions/{{ it.decision }}/dismiss"><button class="quiet danger">Dismiss</button></form>
@@ -121,9 +124,6 @@
         <a class="btn quiet" href="/config">Config page ↗</a>
       {% endif %}
     </div>
-    {% if it.group == 'review' %}
-      <form class="escape-hatch" method="post" action="/tasks/{{ it.task }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>
-    {% endif %}
     </div>
   </div>
   {% endfor %}

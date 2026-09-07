@@ -285,7 +285,7 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
-def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
+def test_review_requires_current_automated_approval_before_it_needs_a_person(garden):
     from garden.model import Status
     from garden.store import Store
 
@@ -294,17 +294,12 @@ def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
     task.pr = "https://github.com/test/demo/pull/71"
     Store(garden).save(task)
     c = client(garden)
-    task_page = c.get("/tasks/DM-001").text
     inbox = c.get("/").text
 
-    assert "Mark done without merging" in task_page
-    assert "Mark this task done without merging its PR?" in task_page
-    assert 'action="/tasks/DM-001/done"' in inbox
-    assert "Mark done without merging" in inbox
-    assert "Mark this task done without merging its PR?" in inbox
-    primary_actions, escape_hatch = inbox.split('class="escape-hatch"')
-    assert 'action="/tasks/DM-001/done"' not in primary_actions
-    assert 'action="/tasks/DM-001/done"' in escape_hatch
+    assert "Automated review" in inbox
+    assert "automated review not recorded yet" in inbox
+    assert "Mark done without merging" not in inbox
+    assert 'action="/tasks/DM-001/done"' not in inbox
 
 
 def test_task_page_lists_stashed_changes(garden):
@@ -1140,7 +1135,7 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "awaiting_triage" in next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"]
     c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "in_review"
-    assert "Review and merge" in c.get("/").text
+    assert "Automated review" in c.get("/").text
 
 
 def test_inbox_shows_a_paused_harness_notice(garden):
