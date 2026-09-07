@@ -431,8 +431,18 @@ class DispatchMixin:
                 hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []),
                 artifacts=dict(st.get("rebase_artifacts") or {}))
         else:
-            changed = gitops.diff_names(wt, base) if wt is not None else []
-            plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "")
+            inspection_error = ""
+            try:
+                changed = gitops.diff_names(wt, base) if wt is not None else []
+            except gitops.GitError as exc:
+                changed = []
+                inspection_error = str(exc)
+            plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
+                                   check_specs=self._pre_pr_specs(task))
+            if inspection_error:
+                plan["inspection_error"] = inspection_error
+                plan["reasons"].append({"item": "bounded diff inspection",
+                                        "reason": "changed paths unavailable: " + inspection_error})
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
                                 criteria_snapshot=criteria_snapshot, validation_plan=plan)

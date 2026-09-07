@@ -79,7 +79,7 @@ class CheckRunMixin:
             result = worker.result if worker is not None else {}
             plan = validation_plan(changed, task.title, task.body,
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
-                                   head=gitops.head_sha(worktree))
+                                   head=gitops.head_sha(worktree), check_specs=specs)
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
@@ -286,6 +286,8 @@ class CheckRunMixin:
             worktree, base, str(worker_result.get("pr_body") or ""),
             require_description=not bool(task.pr), ui_changed=False, captures=captures,
             inspection_error=str(cont.get("mechanical_inspection_error") or ""),
+            required_ui=(bool(run.env_snapshot["validation_plan"].get("pages"))
+                         if "validation_plan" in run.env_snapshot else None),
         )
         results.extend(mechanical)
         run.result = {"checks": results}

@@ -88,7 +88,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
     return required, scalability, reason
 
 
-def validation_plan(changed: list[str], *review_context: str, head: str = "") -> dict[str, Any]:
+def validation_plan(changed: list[str], *review_context: str, head: str = "",
+                    check_specs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Return the head-bound validation required by this change, not the capture inventory.
 
     A UI page gets that page's captures.  Shared chrome and styles intentionally fan out to
@@ -129,7 +130,9 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "") ->
         check_reason = "parser or brief behavior changed without rendered behavior"
     else:
         check_reason = "changed code requires focused regression coverage"
-    checks = [{"item": "configured pre-PR checks", "reason": check_reason}]
+    checks = ([{"item": str(spec.get("name") or "unnamed configured check"), "reason": check_reason}
+               for spec in check_specs] if check_specs is not None
+              else [{"item": "configured pre-PR checks", "reason": check_reason}])
     if not reasons:
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,

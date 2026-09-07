@@ -313,7 +313,7 @@ def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_d
     task = sched.store.task("DM-001")
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
                         lambda *_: ["src/garden/web/pages/task.py"])
-    run = sched.dispatch_review(task)
+    run = _review_after_completed_empty_replay(sched, task)
 
     assert run.env_snapshot["capture_pages"] == ["task"]
     assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
@@ -329,7 +329,7 @@ def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypa
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
     monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "head-a")
 
-    run = sched.dispatch_review(task)
+    run = _review_after_completed_empty_replay(sched, task)
 
     assert run.env_snapshot["validation_plan"] == plan
     assert run.env_snapshot["capture_pages"] == ["task"]
@@ -370,7 +370,7 @@ def test_review_rejects_unmapped_unknown_ui_scope_and_accepts_consumer_mapping(s
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/web/widgets/unmapped.py"])
     monkeypatch.setattr("garden.scheduler.review.interaction_evidence_gaps", lambda *args, **kwargs: [])
     for mapping, expected in (([], True), ([{"path": "src/garden/web/widgets/unmapped.py", "consumers": ["task"]}], False)):
-        run = sched.dispatch_review(task)
+        run = _review_after_completed_empty_replay(sched, task)
         review = {"verdict": "approve", "summary": "looks good", "pages_seen": [], "ui_scope": mapping,
                   "scope_expansions": [], "criteria": [], "description_ok": True,
                   "description_feedback": "", "description_rewrite": "", "findings": [], "improvements": []}
@@ -1072,3 +1072,51 @@ def test_interaction_replay_defers_model_review_and_survives_collection(sched, m
     assert run.mode == "review"
     assert run.env_snapshot["interaction_replay_digest"] == digest
     assert sched.state.get(task.id)["review_rounds"] == 1
+
+
+def test_scoped_backend_preflight_does_not_reintroduce_capture_all(garden, monkeypatch):
+    from garden import gitops
+    from garden.preflight import mechanical_results
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **kwargs:
+                        "src/garden/web/actions/control.py" if "--name-only" in args else "+return True")
+    plan = validation_plan(["src/garden/web/actions/control.py"], "Backend pause action")
+    assert plan["pages"] == []
+    results = mechanical_results(garden, "main", "Pause control", require_description=True,
+                                 ui_changed=False, captures=[], required_ui=bool(plan["pages"]))
+    assert all(row["status"] == "pass" for row in results)
+
+
+def test_shared_ui_without_a_current_check_is_not_verified(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
+                        lambda *_: ["src/garden/web/templates/base.html"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    assert run.env_snapshot["validation_plan"]["pages"] == ["*"]
+    assert run.env_snapshot["validation_check_current"] is False
+
+
+@pytest.mark.parametrize(("changed", "pages"), [
+    (["src/garden/web/actions/control.py"], []),
+    (["src/garden/criteria.py"], []),
+    (["src/garden/web/pages/task.py"], ["task"]),
+    (["src/garden/web/templates/base.html"], ["*"]),
+])
+def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, changed, pages):
+    task = sched.store.task("DM-001")
+    # Capture the job at the real scheduler/runner boundary; no browser is needed to
+    # verify which pages the scheduler actually requests.
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks", lambda self, run, wt, payload: submitted.append(payload))
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names", lambda *_: changed)
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.head_sha", lambda *_: "planned-head")
+    run = sched._dispatch_check_run(task, worktree=sched.store.root,
+                                    branch=task.default_branch(), base="main", stage="pre_pr",
+                                    specs=[{"name": "focused lint", "command": "true"}], cont={}, rep=TickReport())
+    ui = [spec for spec in submitted[0]["specs"] if spec["name"] == "ui"]
+    assert [spec["pages"] for spec in ui] == ([pages] if pages else [])
+    plan = run.env_snapshot["validation_plan"]
+    assert plan["head"] == "planned-head"
+    assert plan["checks"][0]["item"] == "focused lint"

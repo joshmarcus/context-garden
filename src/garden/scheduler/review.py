@@ -297,7 +297,31 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
-        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head)
+        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head, check_specs=self._pre_pr_specs(task))
+        needs_interaction = bool(plan["interaction"])
+        needs_scalability = bool(plan["scalability"])
+        interaction_reason = next((row["reason"] for row in plan["reasons"]
+                                   if row["item"] == "served interaction"), "non-UI change")
+        capture_paths: list[str] = []
+        capture_pages: list[str] = []
+        check_results: list[dict[str, Any]] = []
+        current_check = None
+        stale_validation_check = False
+        for check_run in reversed(self.runs.runs_for(task.id)):
+            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
+            if check_run.mode == "check" and isinstance(checked_plan, dict):
+                stale_validation_check = stale_validation_check or checked_plan.get("head") != review_head
+            if (check_run.mode == "check" and check_run.status == "done"
+                    and isinstance(checked_plan, dict) and checked_plan.get("head") == review_head):
+                current_check = check_run
+                plan = checked_plan
+                break
+        if current_check is not None:
+            check_results = list((current_check.result or {}).get("checks", []))
+            ui_results = [result for result in check_results if result.get("name") == "ui"]
+            capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
+                             if str(p).endswith(".png")]
+            capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
         interaction_reason = next((row["reason"] for row in plan["reasons"]
@@ -333,30 +357,6 @@ class ReviewMixin:
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
         run = self._new_local_run(task.id, "review", "review")
-        capture_paths: list[str] = []
-        capture_pages: list[str] = []
-        check_results: list[dict[str, Any]] = []
-        current_check = None
-        stale_validation_check = False
-        for check_run in reversed(self.runs.runs_for(task.id)):
-            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
-            if check_run.mode == "check" and isinstance(checked_plan, dict):
-                stale_validation_check = stale_validation_check or checked_plan.get("head") != review_head
-            if (check_run.mode == "check" and check_run.status == "done"
-                    and isinstance(checked_plan, dict) and checked_plan.get("head") == review_head):
-                current_check = check_run
-                plan = checked_plan
-                break
-        if current_check is not None:
-            check_results = list((current_check.result or {}).get("checks", []))
-            ui_results = [result for result in check_results if result.get("name") == "ui"]
-            capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
-                             if str(p).endswith(".png")]
-            capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
-        needs_interaction = bool(plan["interaction"])
-        needs_scalability = bool(plan["scalability"])
-        interaction_reason = next((row["reason"] for row in plan["reasons"]
-                                   if row["item"] == "served interaction"), "non-UI change")
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
@@ -375,7 +375,7 @@ class ReviewMixin:
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
-                            "validation_check_current": current_check is not None or not stale_validation_check,
+                            "validation_check_current": current_check is not None or (not stale_validation_check and not plan["pages"]),
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
