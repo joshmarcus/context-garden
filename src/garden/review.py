@@ -100,7 +100,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                   if isinstance(a, dict) and isinstance(a.get("index"), int)}
     criteria_note = ""
     if amendments:
-        lines = ["## Amended acceptance criteria\n"]
+        lines = ["## Amended acceptance criteria\n",
+                 "Judge each amended line against its stated outcome; the original wording is superseded.\n"]
         for index, criterion in enumerate(parse_criteria(task.body)):
             if index in amendments:
                 lines.append(f"- **{criterion}** *(amended — {amendments[index].get('reason', '')})*")
