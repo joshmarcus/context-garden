@@ -15,6 +15,7 @@ from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
 from ..operator_spend import total_cost as operator_total_cost
+from ..operator_spend import total_turns as operator_total_turns
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -531,9 +532,12 @@ class RetroMixin:
                                                         existing_titles, alloc)
             followups = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, alloc)
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
-        operator_records = read_operator_records(operator_spend_path(self.store.root))
+        ledger_path = operator_spend_path(self.store.root, self.cfg)
+        operator_records = read_operator_records(ledger_path)
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
-        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"])
+        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
+                                  operator_turns=operator_total_turns(operator_records),
+                                  operator_ledger_path=ledger_path)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,

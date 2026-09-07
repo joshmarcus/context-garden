@@ -39,7 +39,17 @@ _DEFAULT_PRICE = PRICES["claude-fable-5-1"]
 DEFAULT_RELATIVE_PATH = Path("docs") / "operator-spend.jsonl"
 
 
-def default_path(root: Path) -> Path:
+def default_path(root: Path, config: Any | None = None) -> Path:
+    """Return the operator ledger path shared by the CLI, costs surfaces and retros.
+
+    A configured path is relative to the garden root unless absolute.  In the usual
+    single-product layout the garden root is the product root, so the default is
+    ``<product>/docs/operator-spend.jsonl``.
+    """
+    configured = config.get("operator_spend.path") if config is not None else None
+    if configured:
+        path = Path(str(configured))
+        return path if path.is_absolute() else root / path
     return root / DEFAULT_RELATIVE_PATH
 
 
@@ -153,6 +163,11 @@ def total_cost(records: list[dict[str, Any]], since: str = "") -> float:
     """The operator's total spend, windowed the same way `cost_series` windows a run:
     delta events at or after `since` (empty = all time)."""
     return round(sum(e["cost_usd"] for e in to_cost_events(records) if not since or e["at"] >= since), 4)
+
+
+def total_turns(records: list[dict[str, Any]]) -> int:
+    """The turns in the latest cumulative heartbeat for each operator session."""
+    return sum(row["turns"] for row in session_rows(records))
 
 
 def compaction_marks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

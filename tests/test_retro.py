@@ -65,6 +65,12 @@ def test_persona_revs_rejects_unsafe_or_escaping_footer_run_ids(sched, tmp_path)
     assert sched._persona_revs(phase, {"escaping": escaping}) == {}
 
 
+def test_numbers_section_reports_missing_operator_ledger(tmp_path):
+    text = numbers_section(8.0, 0.0, operator_ledger_path=tmp_path / "missing.jsonl")
+    assert "ledger not found" in text
+    assert "missing.jsonl" in text
+
+
 def test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimension():
     text = numbers_section(8.0, 2.0, {
         "by_difficulty": {"easy": {"mean_cost_usd": 1.0, "cost_per_accepted_task": 2.0, "first_pass_rate": 1.0}},
@@ -361,6 +367,34 @@ def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_gith
     assert "## Numbers" in retro_md
     assert "$3.50" in retro_md
     assert "100%" in retro_md  # no worker run_finished events recorded here, so it's all operator
+
+
+def test_retro_document_uses_configured_operator_ledger_and_reports_turns(tmp_path, fake_github, monkeypatch):
+    import json
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    config = yaml.safe_load((root / "garden.yaml").read_text())
+    config["operator_spend"] = {"path": "ledger/operator-spend.jsonl"}
+    (root / "garden.yaml").write_text(yaml.safe_dump(config))
+    ledger = root / "ledger" / "operator-spend.jsonl"
+    ledger.parent.mkdir()
+    ledger.write_text(json.dumps({
+        "at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "turns": 7,
+        "list_price_usd": 3.5,
+    }) + "\n")
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+    _friction_run(sched, "GD-002", "The check command references $GARDEN_ROOT.")
+
+    sched.start_retro(store.phase("gdn", "p1"), ["designer"], skip_personas=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    retro_md = (store.config.worktree_path("_retro-gdn-p1") / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "$3.50" in retro_md and "7 turns" in retro_md and "100%" in retro_md
 
 
 def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, fake_github, monkeypatch):
