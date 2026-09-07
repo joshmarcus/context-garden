@@ -59,7 +59,8 @@ def default_path(root: Path, config: Any | None = None,
     if configured:
         path = Path(str(configured))
         return path if path.is_absolute() else root / path
-    return (Path(product_path) if product_path is not None else root) / DEFAULT_RELATIVE_PATH
+    base = Path(product_path) if product_path is not None else selected_product_path(root, config) or root
+    return base / DEFAULT_RELATIVE_PATH
 
 
 def project_dir_for(root: Path) -> Path:

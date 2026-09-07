@@ -141,7 +141,16 @@ def test_session_rows_uses_latest_heartbeat_and_counts_compactions():
     assert ops.session_rows(records)[0]["session"] == "a"
 
 
-def test_default_path_is_under_docs():
+def test_default_path_is_under_product_docs():
+    from types import SimpleNamespace
+
+    root = Path("/x")
+    config = SimpleNamespace(data={"products": {"context-garden": {"self": True}}},
+                             get=lambda key: None)
+    assert ops.default_path(root, config) == root / "context-garden/docs/operator-spend.jsonl"
+
+
+def test_default_path_stays_under_garden_docs_without_tool_product():
     assert ops.default_path(Path("/x")) == Path("/x/docs/operator-spend.jsonl")
 
 
