@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import site
 import socket
 import subprocess
 import threading
@@ -388,6 +389,15 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
     venv = tmp_path / "controller-venv"
     subprocess.run([os.fspath(Path(os.sys.executable)), "-m", "venv", "--system-site-packages", str(venv)], check=True)
     python = venv / "bin/python"
+    # A nested venv's --system-site-packages sees the base interpreter, not the parent
+    # development venv. Share its already-installed dependencies without resolving or
+    # downloading anything; the disposable venv's own installed garden remains first.
+    dependency_path = next(path for path in site.getsitepackages() if Path(path).name == "site-packages")
+    nested_site = subprocess.run(
+        [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (Path(nested_site) / "test-dependencies.pth").write_text(dependency_path + "\n")
     spec_a = f"context-garden @ {git_ref(str(source))}@{commit_a}"
     subprocess.run(
         [str(python), "-m", "pip", "install", "-q", "--no-deps", spec_a], check=True, timeout=120
