@@ -105,6 +105,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
         PageSpec("board-list", "/board?view=list", "Board (list)",
                  "The board as a list grouped by status, with a per-state fact on each row.",
                  "Does each row say enough to act without opening the task?"),
+        PageSpec("backlog", "/board?view=backlog", "Backlog",
+                 "The backlog view of work that is not yet ready to run.",
+                 "Can you see what is waiting for approval or dependencies?"),
         PageSpec("trellis", "/trellis", "Trellis",
                  "The dependency and stacking graph with growth-stage glyphs and the hide-done control.",
                  "Can you follow what blocks what, and what the glyphs mean?"),
@@ -132,6 +135,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("runs", "/runs", "Runs",
                           "Every run with its cost and tokens.",
                           "Is cost easy to total and attribute?"))
+    specs.append(PageSpec("costs", "/costs", "Costs",
+                          "Spend and accepted-task outcomes by activity, tier, model and harness.",
+                          "Can you read what an accepted task costs and which route produced it?"))
     specs.append(PageSpec("herbarium", "/herbarium", "Herbarium",
                           "A plate per phase; closed phases live here.",
                           "Does a closed phase read as a finished, catalogued thing?"))
@@ -149,6 +155,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("events", "/events", "Events",
                           "The event timeline.",
                           "Can you reconstruct what happened from the timeline alone?"))
+    specs.append(PageSpec("retro", f"/phases/{key}/retro", "Retro",
+                          "The phase retrospective, persona reports and filed follow-ups.",
+                          "Can you see what the phase learned and what it carries forward?"))
     return specs
 
 

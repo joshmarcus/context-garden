@@ -570,6 +570,10 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
     events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
     m = _metrics(events, tasks, parse_since(since) if since else "", until)
+    timing = m["tick_duration"]
+    console.print(f"Merged PRs: {m['merges']} (queue: {m['queue_merges']}, hand: {m['hand_merges']})")
+    console.print("Tick duration: " + (f"mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)"
+                                       if timing["count"] else "no tick records"))
     from ..outcomes import format_cell
 
     for matrix in m["difficulty_by_model"]["metrics"].values():

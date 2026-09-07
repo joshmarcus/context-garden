@@ -177,6 +177,15 @@ class RetroMixin:
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
                                "open the retro PR; see docs/architecture.md")
+        # The persona briefs inline the newest walkthrough. Capture it before dispatching any
+        # persona so every review sees the same page set and empty/error states.
+        from datetime import date
+
+        from ..walkthrough import capture
+
+        walkthrough_dir = phase.path / "docs" / "walkthrough" / date.today().isoformat()
+        # Scheduler work must remain bounded and headless; the CLI can add PNGs explicitly.
+        capture(self.store, phase, walkthrough_dir, screenshots=False, log=self.log)
         names = personas or self.retro_default_personas()
         for n in names:
             valid_name(n)

@@ -203,6 +203,7 @@ class Site:
         run_store = sched.runs
         totals = run_store.totals()
         resources = sched.resource_status()
+        rail_metrics = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), s.tasks())
         return {
             "request": request,
             "page": page,
@@ -233,6 +234,7 @@ class Site:
             "operating_profile": active,
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
             "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
+            "rail_metrics": rail_metrics,
             **kw,
         }
 

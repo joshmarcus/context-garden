@@ -260,10 +260,24 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     rebases_agent = 0
     rebase_cost = 0.0
     merges = 0
+    merged_tasks: set[str] = set()
+    queued_tasks: set[str] = set()
+    tick_durations: list[float] = []
     task_ids = set(tasks)  # scope every count (rebases and merges included) to the phase filter
     for ev in events:
+        at = str(ev.get("at") or "")
+        if (since and at < since) or (until and at >= until):
+            continue
         t = ev.get("task", "")
         k = ev.get("kind")
+        if k == "tick":
+            try:
+                tick_durations.append(float(ev.get("duration_s") or 0.0))
+            except (TypeError, ValueError):
+                pass
+            continue
+        if k == "automerged" and t:
+            queued_tasks.add(str(t))
         if not t or t not in task_ids:
             continue
         if k == "dispatch":
@@ -277,6 +291,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                     task_dimensions[t][dimension].add(value)
         elif k == "transition" and ev.get("to") == "done":
             done_at[t] = ev["at"]
+            merged_tasks.add(str(t))
             merges += 1
         elif k == "review":
             if t not in first_review:
@@ -413,8 +428,16 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         "merges": merges,
         "per_merge": round(rebases / merges, 2) if merges else None,
     }
+    hand_merges = len(merged_tasks - queued_tasks)
+    tick_duration = {
+        "count": len(tick_durations),
+        "mean_s": round(sum(tick_durations) / len(tick_durations), 3) if tick_durations else None,
+        "max_s": round(max(tick_durations), 3) if tick_durations else None,
+    }
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "rebase": rebase,
+            "merges": merges, "queue_merges": len(merged_tasks & queued_tasks),
+            "hand_merges": hand_merges, "tick_duration": tick_duration,
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 

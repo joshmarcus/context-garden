@@ -86,6 +86,14 @@ def test_pages_include_the_phase_and_a_task(garden):
     assert "/" in urls
 
 
+def test_includes_costs_backlog_retro(garden):
+    specs = pages_for(Store(garden), Store(garden).phase("demo", "p1"))
+    urls = {s.url for s in specs}
+    assert "/costs" in urls
+    assert "/board?view=backlog" in urls
+    assert "/phases/demo/p1/retro" in urls
+
+
 def test_ui_path_detection():
     assert _is_ui_path("src/garden/web/templates/inbox.html")
     assert _is_ui_path("assets/site.css")

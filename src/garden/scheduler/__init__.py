@@ -535,6 +535,8 @@ class Scheduler(
         self.state = State(self.state.path)
         self.maybe_auto_upgrade(rep)
         rep.duration_s = time.monotonic() - started
+        self.events.emit("tick", "", duration_s=rep.duration_s, steps=rep.steps,
+                         summary=rep.summary())
         budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
         if budget and rep.duration_s > budget:
             self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")
