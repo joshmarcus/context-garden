@@ -19,6 +19,8 @@ from .model import Task, estimate_tokens, goals_text
 from .store import Store
 
 RESULT_MARKER = "GARDEN_RESULT:"
+REBASE_BRIEF_MAX_BYTES = 128 * 1024
+REBASE_INLINE_HUNK_MAX_BYTES = 16 * 1024
 
 OPERATING_RULES = """\
 ## Operating rules
@@ -477,15 +479,30 @@ def rebase_brief(
     base: str,
     hunks: dict[str, str],
     files: list[str] | None = None,
+    artifacts: dict[str, dict[str, object]] | None = None,
 ) -> str:
     """A minimal brief for an agent that only resolves a rebase conflict: the task's goal for
     intent, the rule "resolve the conflict, change nothing else", and the conflicting hunks.
     Deliberately small — a rebase is not a fresh worker round and gets no reading list."""
+    artifacts = artifacts or {}
     if hunks:
-        parts = []
+        parts: list[str] = []
+        goal = _truncate_utf8(task.body.strip(), REBASE_BRIEF_MAX_BYTES // 4)
         for path, content in hunks.items():
+            artifact_path = str(artifacts.get(path, {}).get("path") or "")
+            content_bytes = len(content.encode("utf-8", "replace"))
+            if content_bytes > REBASE_INLINE_HUNK_MAX_BYTES:
+                parts.append(_rebase_hunk_summary(path, content_bytes, artifact_path))
+                continue
             fence = "````" if "```" in content else "```"
-            parts.append(f"\n### {path}\n\n{fence}\n{content.rstrip()}\n{fence}\n")
+            candidate = f"\n### {path}\n\n{fence}\n{content.rstrip()}\n{fence}\n"
+            rendered = REBASE_BRIEF.format(task_id=task.id, title=task.title, branch=branch,
+                                           base=base, goal=goal, hunks="\n".join([*parts, candidate]),
+                                           marker=RESULT_MARKER)
+            if len(rendered.encode("utf-8", "replace")) > REBASE_BRIEF_MAX_BYTES:
+                parts.append(_rebase_hunk_summary(path, content_bytes, artifact_path))
+            else:
+                parts.append(candidate)
         hunks_text = "\n".join(parts)
     elif files:
         hunks_text = "\nConflicting files: " + ", ".join(f"`{f}`" for f in files) + "\n"
@@ -496,10 +513,24 @@ def rebase_brief(
         title=task.title,
         branch=branch,
         base=base,
-        goal=task.body.strip(),
+        goal=_truncate_utf8(task.body.strip(), REBASE_BRIEF_MAX_BYTES // 4),
         hunks=hunks_text,
         marker=RESULT_MARKER,
     )
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) <= max_bytes:
+        return text
+    marker = "\n[truncated for the bounded rebase prompt]\n"
+    return encoded[:max_bytes - len(marker.encode())].decode("utf-8", "ignore") + marker
+
+
+def _rebase_hunk_summary(path: str, size: int, artifact_path: str) -> str:
+    location = f" Preserved conflict artifact: `{artifact_path}`." if artifact_path else ""
+    return (f"\n### {path}\n\nGenerated conflict omitted from this prompt ({size:,} bytes)."
+            f" Re-run the rebase to inspect Git's conflict stages.{location}\n")
 
 
 def estimate_brief_tokens(store: Store, task: Task) -> tuple[int, int]:
