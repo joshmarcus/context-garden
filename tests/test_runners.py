@@ -441,7 +441,9 @@ def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, 
     def fallback_lstat(path, *args, **kwargs):
         result = original_lstat(path, *args, **kwargs)
         if Path(path) == fallback:
-            return type("FallbackStat", (), {"st_mode": result.st_mode | 0o1000, "st_uid": 0})()
+            return os.stat_result((result.st_mode | 0o1000, result.st_ino, result.st_dev,
+                                   result.st_nlink, 0, result.st_gid, result.st_size,
+                                   result.st_atime, result.st_mtime, result.st_ctime))
         return result
 
     monkeypatch.setattr(supervisor.os, "lstat", fallback_lstat)
