@@ -22,6 +22,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
+from ..preflight import mechanical_results
 from ..runs import Run
 from .report import TickReport
 
@@ -33,7 +34,7 @@ _EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 def _is_ui_path(path: str) -> bool:
     """Files whose rendered result must be inspected before a PR opens."""
-    return (path.startswith(("src/garden/web/", "templates/")) or "/templates/" in path
+    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
             or path.endswith((".css", ".scss")))
 
 
@@ -65,7 +66,13 @@ class CheckRunMixin:
         for item in required_evidence(task.body, task.extra.get("requires")):
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
-            changed = gitops.diff_names(worktree, base)
+            try:
+                changed = gitops.diff_names(worktree, base)
+            except gitops.GitError as exc:
+                # Do not let an inspection problem abort the tick. The continuation carries
+                # this into the mechanical gate, which fails closed with revise feedback.
+                changed = []
+                cont["mechanical_inspection_error"] = str(exc)
             needs_captures = any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
             if (needs_captures or any(_is_ui_path(path) for path in changed)) and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
@@ -168,6 +175,16 @@ class CheckRunMixin:
             if key in evidence:
                 evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
         cont = dict(info.get("cont") or {})
+        # `_dispatch_check_run` needs changed paths only to decide whether to add the UI
+        # capture check. It records an inspection error instead of raising; every continuation
+        # must turn that record into a failing result. The ordinary pre-PR handler lets
+        # `mechanical_results` produce it alongside the rest of its guarded inspection.
+        inspection_error = str(cont.get("mechanical_inspection_error") or "")
+        if inspection_error and stage != "pre_pr":
+            results.append({"name": "mechanical pre-flight", "status": "fail",
+                            "summary": f"could not inspect candidate diff: {inspection_error}", "details": ""})
+            run.result = {"checks": results}
+            run.save()
         if self._check_did_not_run(run, results):
             self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
                                       int(info.get("retries", 0)), rep)
@@ -250,8 +267,23 @@ class CheckRunMixin:
         worktree = Path(cont["worktree"])
         branch, base = cont["branch"], cont["base"]
         stalled = bool(cont.get("stalled"))
+        worker_result = worker_run.result if worker_run is not None else self._last_worker_result(task)
+        ui = [item for item in results if item.get("name") == "ui"]
+        captures = [str(path) for item in ui for path in item.get("captures", [])]
+        mechanical = mechanical_results(
+            worktree, base, str(worker_result.get("pr_body") or ""),
+            require_description=not bool(task.pr), ui_changed=False, captures=captures,
+            inspection_error=str(cont.get("mechanical_inspection_error") or ""),
+        )
+        results.extend(mechanical)
+        run.result = {"checks": results}
+        run.save()
         failed = check_failures(results)
         if failed and not stalled:
+            mechanical_failed = check_failures(mechanical)
+            if mechanical_failed:
+                self._start_check_revise(task, failed, rep, cont["cost"])
+                return
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)
             return
         self._open_pr_after_checks(task, worker_run, branch, base, cont, rep)
