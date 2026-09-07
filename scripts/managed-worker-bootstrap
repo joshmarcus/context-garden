@@ -50,6 +50,7 @@ def main():
     command("python3", "-m", "venv", "/opt/garden-worker")
     command("/opt/garden-worker/bin/pip", "install", "--disable-pip-version-check",
             "context-garden @ git+https://github.com/joshmarcus/context-garden@" + source)
+    command("chmod", "-R", "a+rX", "/opt/garden-worker")
     version = "1.102.3"
     data = fetch("https://pkgs.tailscale.com/stable/tailscale_" + version + "_amd64.tgz")
     if hashlib.sha256(data).hexdigest() != "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5":
@@ -99,7 +100,7 @@ def main():
         "[Service]\nUser=garden-worker\nGroup=garden-worker\n"
         "Environment=HOME=/var/lib/garden-worker\nEnvironment=PATH=/opt/garden-worker/bin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/opt/garden-worker/bin/python -m garden.managed_worker --config /etc/garden-worker.json\n"
-        "Restart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\n"
+        "StandardOutput=journal+console\nStandardError=journal+console\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\n"
         "ReadWritePaths=/var/lib/garden-worker\nPrivateTmp=yes\nMemoryMax=12G\nMemorySwapMax=0\nCPUQuota=300%\n"
         "[Install]\nWantedBy=multi-user.target\n")
     command("systemctl", "daemon-reload")
