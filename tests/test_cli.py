@@ -95,6 +95,7 @@ def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):
     assert "automated review running" in re.sub(r"\s+", " ", running.output)
 
     st.pop("review_run")
+    st.pop("pending_reviews")
     state.save()
     approved = run(garden, "inbox")
     assert "1 need you" in approved.output
