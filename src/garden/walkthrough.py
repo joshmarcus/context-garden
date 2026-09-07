@@ -195,7 +195,7 @@ class _TextParser(HTMLParser):
         if str(values.get("aria-hidden") or "").strip().lower() == "true":
             return True
         style = str(values.get("style") or "")
-        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none\s*(?:;|$)", style, re.I))
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()

@@ -163,13 +163,16 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         if diff_summary:
             line += f" · {diff_summary}"
         out.append(line)
-        # Interrupted check jobs can carry the only useful diagnostic in the check
-        # result's details (often a complete traceback). Keep it on the card instead
-        # of reducing the evidence to the short "did not finish" summary.
-        for check in (r.result or {}).get("checks") or []:
-            trace = str(check.get("details") or "").strip()
-            if trace:
-                out.append(f"{check.get('name', 'check')} diagnostic:\n{trace}")
+        # Only a terminal interrupted check needs its full diagnostic on the card. Other
+        # attention cards already have a concise run summary, and their check output can be
+        # large or unrelated to the decision.
+        stop = st.get("needs_human") or {}
+        interrupted = isinstance(stop, dict) and stop.get("kind") == "check_did_not_run"
+        if interrupted:
+            for check in (r.result or {}).get("checks") or []:
+                trace = str(check.get("details") or "").strip()
+                if trace:
+                    out.append(f"{check.get('name', 'check')} diagnostic:\n{trace}")
     rev = st.get("last_review") or {}
     if rev:
         out.append(f"last automated review: {str(rev.get('verdict', '')).replace('_', ' ')} — {str(rev.get('summary', ''))[:160]}")

@@ -241,11 +241,13 @@ def test_html_to_text_omits_hidden_panels_and_attributes():
         '<main><h1 title="tasks&quot;-&gt;Plan phase">Visible</h1>'
         '<div hidden>Hidden attribute</div>'
         '<aside style="display: none">Display hidden</aside>'
+        '<aside style="display: none !important">Important hidden</aside>'
         '<section aria-hidden="true">ARIA hidden</section></main>'
     )
     assert "Visible" in txt
     assert "Hidden attribute" not in txt
     assert "Display hidden" not in txt
+    assert "Important hidden" not in txt
     assert "ARIA hidden" not in txt
     assert "tasks\"-&gt;Plan phase" not in txt
     assert "tasks\"->Plan phase" not in txt
