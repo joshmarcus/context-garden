@@ -135,10 +135,9 @@ class UpgradeMixin:
         ok, output = self.upgrader.install(url, sha)
         if not ok:
             self.events.emit("upgrade_failed", product, sha=sha[:12], reason="install")
-            self.log(f"tool upgrade to {sha[:12]} failed to install; keeping the current install")
-            info.update(status="failed", reason="install failed", diagnosis=output[-2000:])
-            self.control()["upgrade"] = info
-            self.state.save()
+            self.log(f"tool upgrade to {sha[:12]} failed to install; restoring the prior install")
+            self._rollback_upgrade(info, url, old_sha,
+                                   f"install failed: {output[-2000:]}")
             return {"ok": False, "reason": "install failed", "output": output}
         installed = self.upgrader.installed_commit() or ""
         if not (installed == sha or (installed and sha.startswith(installed))):
@@ -168,9 +167,20 @@ class UpgradeMixin:
         recovered = False
         diagnosis = reason
         if old_sha:
-            recovered, output = self.upgrader.install(url, old_sha)
-            if not recovered:
+            rollback_ok, output = self.upgrader.install(url, old_sha)
+            if not rollback_ok:
                 diagnosis += f"; rollback to {old_sha[:12]} failed: {output[-1000:]}"
+            else:
+                installed = self.upgrader.installed_commit() or ""
+                if installed != old_sha:
+                    diagnosis += (f"; rollback reported success but active metadata reports "
+                                  f"{installed[:12] or 'unversioned'}, expected {old_sha[:12]}")
+                elif not self.upgrader.doctor_ok():
+                    diagnosis += f"; rollback restored {old_sha[:12]} but `garden doctor` failed"
+                else:
+                    recovered = True
+        else:
+            diagnosis += "; prior installed commit is unknown, so recovery could not be verified"
         info.update(status="failed", reason=reason, diagnosis=diagnosis,
                     recovered=bool(recovered), active=old_sha if recovered else "")
         self.control()["upgrade"] = info

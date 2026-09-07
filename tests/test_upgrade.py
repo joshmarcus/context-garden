@@ -34,12 +34,18 @@ class FakeUpgrader:
         self.install_ok = True
         self.doctor = True
         self.after_install: str | None = None  # commit to report once install runs
+        self.install_results: list[tuple[bool, str, str | None]] = []
 
     def installed_commit(self) -> str | None:
         return self.commit
 
     def install(self, url: str, sha: str) -> tuple[bool, str]:
         self.installs.append((url, sha))
+        if self.install_results:
+            ok, output, reported_commit = self.install_results.pop(0)
+            if reported_commit is not None:
+                self.commit = reported_commit
+            return ok, output
         if self.install_ok and self.after_install is not None:
             self.commit = sha
         return self.install_ok, "pip output"
@@ -184,13 +190,60 @@ def test_failed_verify_leaves_old_install_running(garden, fake_github):
     assert [e for e in sched.events.read() if e["kind"] == "upgrade_failed"]
 
 
-def test_failed_install_leaves_old_install_running(garden, fake_github):
+def test_failed_install_that_mutates_environment_restores_verified_old_install(garden, fake_github):
     sched, up, restart, new_sha = _armed(garden, fake_github)
-    up.install_ok = False
+    old_sha = up.commit
+    up.install_results = [
+        (False, "pip failed after replacing files", new_sha),
+        (True, "restored", old_sha),
+    ]
     result = sched.upgrade(restart=True)
     assert not result["ok"] and result["reason"] == "install failed"
     assert restart.called == 0
-    assert sched.upgrade_available()["sha"] == new_sha
+    assert up.installs == [(str(garden.parent / "repo"), new_sha),
+                           (str(garden.parent / "repo"), old_sha)]
+    info = sched.upgrade_available()
+    assert info["sha"] == new_sha
+    assert info["recovered"] is True
+    assert info["active"] == old_sha
+    assert "pip failed after replacing files" in info["diagnosis"]
+
+
+def test_rollback_success_with_wrong_commit_is_not_reported_as_recovered(garden, fake_github):
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    old_sha = up.commit
+    wrong_sha = "f" * 40
+    up.install_results = [
+        (False, "target install failed", new_sha),
+        (True, "pip claimed rollback success", wrong_sha),
+    ]
+
+    result = sched.upgrade(restart=True)
+
+    assert not result["ok"] and restart.called == 0
+    info = sched.upgrade_available()
+    assert info["recovered"] is False
+    assert info["active"] == ""
+    assert wrong_sha[:12] in info["diagnosis"]
+    assert old_sha[:12] in info["diagnosis"]
+
+
+def test_rollback_requires_doctor_to_confirm_usable_prior_install(garden, fake_github):
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    old_sha = up.commit
+    up.install_results = [
+        (False, "target install failed", new_sha),
+        (True, "restored", old_sha),
+    ]
+    up.doctor = False
+
+    result = sched.upgrade(restart=True)
+
+    assert not result["ok"] and restart.called == 0
+    info = sched.upgrade_available()
+    assert info["recovered"] is False
+    assert info["active"] == ""
+    assert "doctor` failed" in info["diagnosis"]
 
 
 def test_doctor_failure_blocks_restart(garden, fake_github):
