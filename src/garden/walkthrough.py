@@ -93,14 +93,26 @@ def _task_and_run(store: Store, phase: Phase) -> tuple[str, str]:
 def _decision_task(store: Store, phase: Phase) -> str:
     """Choose an open task whose page renders the same decision card a person must act on."""
     state = State(store.config.garden_dir / "state.json")
+    fallback = ""
     for task in phase.tasks:
         if task.status.terminal:
             continue
+        fallback = fallback or task.id
         facts = state.get(task.id)
         if (facts.get("decision") or facts.get("question") or facts.get("needs_human")
                 or task.status.value in ("failed", "waiting_human")):
             return task.id
-    return ""
+    return fallback
+
+
+def _has_live_decision(store: Store, phase: Phase, task_id: str) -> bool:
+    """Return whether a task already has decision state that the page can render."""
+    task = next((task for task in phase.tasks if task.id == task_id), None)
+    if task is None:
+        return False
+    facts = State(store.config.garden_dir / "state.json").get(task_id)
+    return bool(facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human"))
 
 
 def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
@@ -140,7 +152,11 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     task_id, run_id = _task_and_run(store, phase)
     decision_id = _decision_task(store, phase)
     if decision_id:
-        specs.append(PageSpec("task-decision", f"/tasks/{decision_id}", "Task decision",
+        has_live_decision = _has_live_decision(store, phase, decision_id)
+        decision_url = f"/tasks/{decision_id}"
+        if not has_live_decision:
+            decision_url += "?walkthrough=decision"
+        specs.append(PageSpec("task-decision", decision_url, "Task decision",
                               "A task page with an active worker decision or needs-you card.",
                               "Does the page explain the decision and give the person a clear recovery action?"))
     if task_id:

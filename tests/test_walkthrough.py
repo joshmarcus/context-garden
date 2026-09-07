@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from garden.cli import app
 from garden.personas import phase_brief
 from garden.runs import RunStore
+from garden.scheduler import State
 from garden.scheduler.checkruns import _is_ui_path
 from garden.scheduler.report import TickReport
 from garden.store import Store
@@ -79,6 +80,22 @@ def test_capture_writes_pages_and_index(garden):
     decision = next(pr for pr in result.pages if pr.spec.slug == "task-decision")
     assert decision.spec.url == "/tasks/DM-001"
     assert 'class="panel decision-card"' in (out / "task-decision.html").read_text()
+
+
+def test_capture_includes_representative_decision_card_without_live_decision(garden, tmp_path):
+    store = Store(garden)
+    task = store.task("DM-001")
+    state = State(store.config.garden_dir / "state.json")
+    facts = state.get(task.id)
+    for key in ("decision", "question", "needs_human"):
+        facts.pop(key, None)
+    state.save()
+
+    result = capture(store, store.phase("demo", "p1"), tmp_path / "walkthrough", screenshots=False)
+
+    decision = next(page for page in result.pages if page.spec.slug == "task-decision")
+    assert decision.spec.url == "/tasks/DM-001?walkthrough=decision"
+    assert 'class="panel decision-card"' in (tmp_path / "walkthrough" / "task-decision.html").read_text()
 
 
 def test_capture_marks_empty_or_failed_documents(garden, monkeypatch, tmp_path):
