@@ -539,6 +539,17 @@ class ReapMixin:
         st = self.state.get(task.id)
         names = ", ".join(str(f.get("name")) for f in failed)
         feedback = to_feedback(failed, "pre-PR check")
+        # A pre-PR failure can be the first reason this worker is sent back, before a
+        # review run exists to add the frozen-criteria delta. Keep the contract that
+        # failed worker received with the mechanical feedback, so a task-file edit made
+        # while it worked is actionable in the immediately following revise brief.
+        for worker_run in reversed(self.runs.runs_for(task.id)):
+            if worker_run.mode not in ("work", "revise", "resume"):
+                continue
+            criteria_note = self._criteria_changed_note(task, worker_run)
+            if criteria_note:
+                feedback = f"{feedback}\n\n{criteria_note}" if feedback else criteria_note
+            break
         if not feedback.strip():
             # A killed or empty check leaves nothing to revise against; storing it as
             # empty feedback would make dispatch skip the task forever. Flag it instead.

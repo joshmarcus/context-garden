@@ -93,6 +93,27 @@ def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monke
     assert "Removed: The original criterion is met." in brief
 
 
+def test_criteria_edit_reaches_revise_after_a_mechanical_pre_pr_failure(sched, monkeypatch):
+    """A result-gate failure still carries edits made after the worker's dispatch."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "omit-preflight")
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original criterion is met.\n"
+    sched.store.save(task)
+
+    sched.tick()  # dispatch work with the original criterion
+    task = sched.store.task("DM-001")
+    task.body = task.body.replace("The original criterion is met.", "The later criterion is met.")
+    sched.store.save(task)
+    sched.store.invalidate()
+
+    sched.tick()  # reap the incomplete result and dispatch the automatic revise
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "pre-PR check" in brief
+    assert "### Criteria changed after dispatch" in brief
+    assert "Added: The later criterion is met." in brief
+    assert "Removed: The original criterion is met." in brief
+
+
 def test_empty_criteria_snapshot_does_not_adopt_later_task_edits(sched):
     task = sched.store.task("DM-001")
     review_run = sched.runs.new_run(task.id, "local", mode="review")
