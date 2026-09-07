@@ -287,6 +287,10 @@ def page_case(
             "server_cgroup": Path(f"/proc/{server.pid}/cgroup").read_text().strip(),
             "profiled": profiled,
             "load_pids": [p.pid for p in loads],
+            "load_identities": [
+                {"pid": p.pid, "cgroup": Path(f"/proc/{p.pid}/cgroup").read_text().strip()}
+                for p in loads
+            ],
             "rows": rows,
             "summary": summary,
             "background_ticks": tick_rows,
@@ -369,6 +373,26 @@ def main() -> None:
         profiled=False,
     )
     report["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    report["interaction"] = {
+        "source_head": report["build"],
+        "application": "disposable Uvicorn garden.web app",
+        "actions": [
+            "served 100-task and 1,000-task retained-history gardens",
+            "requested /now1, /inbox, and /config seven times in each of three cache-expiry cycles",
+            "repeated each served flow with zero, one, and four bounded model-session replay occupants",
+            "ran one no-dispatch background scheduler tick after every cycle",
+        ],
+        "observations": {
+            key: {
+                path: value
+                for path, value in case["summary"].items()
+                if path.startswith("expiry_3:")
+            }
+            for key, case in report["pages"].items()
+            if "plain" not in key
+        },
+        "limitations": "Serial local GETs and deterministic replay occupants; no vendor or production traffic.",
+    }
     report["final_cgroup"] = pressure()
     report["temp_kib"] = int(
         subprocess.check_output(["du", "-sk", str(args.output)], text=True).split()[0]
