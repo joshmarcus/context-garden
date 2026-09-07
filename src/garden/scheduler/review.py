@@ -32,7 +32,8 @@ class ReviewMixin:
         and the ping fires right away."""
         if not bool(self.cfg.get("review.enabled", True)):
             return False
-        return int(st.get("review_rounds", 0)) < int(self.cfg.get("review.max_rounds", 2))
+        max_rounds = self.cfg.review_max_rounds()
+        return max_rounds is None or int(st.get("review_rounds", 0)) < max_rounds
 
     def _maybe_review(self, task: Task, work_run: Run, rep: TickReport) -> None:
         if not task.pr:
@@ -47,7 +48,7 @@ class ReviewMixin:
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
-            max_rounds = int(self.cfg.get("review.max_rounds", 2))
+            max_rounds = self.cfg.review_max_rounds()
             rounds = int(st.get("review_rounds", 0))
             self_product_default = (self.cfg.product_self(task.product)
                                     and "automerge_min_review_rounds" not in self.cfg.product(task.product))
@@ -55,7 +56,7 @@ class ReviewMixin:
             # the default second opinion must be independent evidence (persona or human), not
             # another automated pass from the same product. An explicit product setting keeps
             # control of the ordinary automated-round policy.
-            if rounds < max_rounds and not (self_product_default and rounds >= 1):
+            if (max_rounds is None or rounds < max_rounds) and not (self_product_default and rounds >= 1):
                 wanted.append({"kind": "review", "count_round": not after_rebase})
             elif not self_product_default:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
@@ -65,12 +66,73 @@ class ReviewMixin:
                 self.store.save(task)
                 notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
                 rep.transitions.append(f"{task.id} review cap reached")
+            self._record_review_loop_friction(task, st)
         required_personas = [item["name"] for item in requirements if item["kind"] == "persona"]
         for name in dict.fromkeys([*required_personas, *(str(n) for n in list(self.cfg.get("review.personas", []) or []))]):
             if name in required_personas and evidence.get(f"persona:{name}") in ("running", "posted"):
                 continue  # required evidence is produced when this PR opens, not once per review round
             wanted.append({"kind": "persona", "name": name, "required": name in required_personas})
         self._dispatch_or_defer_reviews(task, wanted, rep, work_run=work_run)
+
+    def _record_review_loop_friction(self, task: Task, st: dict[str, Any]) -> None:
+        """Record one observable, non-blocking signal for a long review episode.
+
+        This deliberately has no needs-human stop: ordinary stall handling remains the
+        protection against identical paid retries, while this gives the retro enough context
+        to distinguish churn from a genuine new defect.
+        """
+        threshold = self.cfg.review_friction_after()
+        rounds = int(st.get("review_rounds", 0))
+        if threshold is None or rounds < threshold or st.get("review_loop_friction"):
+            return
+        runs = [run for run in self.runs.runs_for(task.id) if run.mode in ("work", "revise", "review")]
+        cost = sum(float(run.cost_usd or 0) for run in runs)
+        heads = list(dict.fromkeys(str(head) for head in st.get("review_heads", []) if head))
+        feedback = str(st.get("pending_feedback") or "").strip()
+        cause = self._review_loop_cause(st, feedback)
+        evidence = feedback or str((st.get("last_review") or {}).get("summary") or "unknown")
+        item = (
+            f"Review loop: {rounds} rounds, ${cost:.2f} cumulative work/revise/review cost; "
+            f"head lineage {', '.join(heads) or 'unknown'}; cause: {cause}; "
+            f"actionable evidence: {evidence[:500]}. "
+            "Prevention work: CG-374 (routine recovery), CG-372 (review admission), "
+            "CG-323 (worker preflight), CG-339 (proportional application evidence)."
+        )
+        from ..friction import friction_comment, record_friction
+
+        try:
+            phase = self.store.phase(task.product, task.phase)
+            record_friction(phase.path / "docs" / "friction.md", [item],
+                            f"review loop for {task.id} ({task.title})", now_iso()[:10])
+        except KeyError:
+            self.log(f"{task.id}: cannot record review-loop friction; phase {task.key} not found")
+        slug, number = self.slug_for(task), self._pr_number(task)
+        if slug and number and self.github.available:
+            try:
+                self.github.comment(slug, number, mark_garden_comment(friction_comment([item]), "review-loop"))
+            except GitHubError as e:
+                self.log(f"{task.id}: could not post review-loop friction: {e}")
+        st["review_loop_friction"] = {"rounds": rounds, "cause": cause, "heads": heads, "cost_usd": cost}
+        self.events.emit("review_loop_friction", task.id, rounds=rounds, cost_usd=cost,
+                         heads=heads, cause=cause, evidence=evidence[:500])
+
+    @staticmethod
+    def _review_loop_cause(st: dict[str, Any], feedback: str) -> str:
+        """Classify only evidenced loop causes; unexplained loops remain explicitly unknown."""
+        text = feedback.lower()
+        if st.get("pending_feedback_rebase") or st.get("last_round_rebase"):
+            return "mechanical rebase/head change"
+        if any(word in text for word in ("capture", "screenshot", "evidence", "infrastructure")):
+            return "stale/missing infrastructure evidence"
+        if st.get("pending_feedback_easy"):
+            return "description-only correction"
+        if not feedback and not st.get("last_review"):
+            return "lost feedback/state transition"
+        if st.get("review_feedback_history", []).count(feedback) > 1:
+            return "repeated unaddressed finding"
+        if feedback:
+            return "newly discovered defect"
+        return "unknown"
 
     def _dispatch_or_defer_reviews(self, task: Task, wanted: list[dict[str, Any]], rep: TickReport,
                                    work_run: Run | None = None) -> None:
@@ -314,6 +376,7 @@ class ReviewMixin:
         runner.start(run, wt, text)
         st = self.state.get(task.id)
         st["review_run"] = run.run_id
+        st.setdefault("review_heads", []).append(run.env_snapshot["review_head"])
         if count_round:
             st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
         if ladder_model and writer:
@@ -548,6 +611,7 @@ class ReviewMixin:
                     return True
                 fb = feedback_from_review(review)
                 if fb and bool(self.cfg.get("auto_revise", True)):
+                    st.setdefault("review_feedback_history", []).append(fb)
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
                     st.pop("pending_feedback_rebase", None)

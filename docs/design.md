@@ -107,10 +107,12 @@ token-free scripts; `events` records history; `store` and `model` read and write
 
 ## Bounded loops, on purpose
 
-Every automatic loop has a cap in `garden.yaml`: `max_attempts`, `max_revisions`,
-`review.max_rounds`, `timeout_minutes`, per-phase `budgets`, plus stall detection. When a
-cap is hit the task is flagged for a human rather than retried. The garden should never
-be the thing that spends money while nobody is watching.
+Every automatic loop has a bound in `garden.yaml`: `max_attempts`, `max_revisions`,
+`timeout_minutes`, per-phase `budgets`, plus stall detection. `review.max_rounds` defaults
+to two and accepts either a positive hard cap or `null` for unlimited review rounds. In the
+unlimited mode `review.friction_after` records one non-blocking, retrospective-visible loop
+signal; stall handling still stops unchanged paid attempts. The garden should never spend
+money on an identical loop while nobody is watching.
 
 ## The operator seat
 

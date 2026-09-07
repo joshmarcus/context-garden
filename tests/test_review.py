@@ -527,6 +527,40 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     assert not sched.state.get("DM-001").get("needs_human")
 
 
+def test_unlimited_review_cap_keeps_review_pending_and_records_one_loop_friction_signal(sched):
+    """A null cap continues reviews while the soft threshold stays observable, not blocking."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 3}
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update(review_rounds=3, review_heads=["head-a", "head-b"],
+              pending_feedback="- **reviewer**: add the missing assertion")
+
+    assert sched._review_round_pending(st)
+    sched._record_review_loop_friction(task, st)
+    sched._record_review_loop_friction(task, st)
+
+    friction = (sched.store.phase("demo", "p1").path / "docs" / "friction.md").read_text()
+    assert friction.count("Review loop: 3 rounds") == 1
+    assert "head-a, head-b" in friction
+    assert "newly discovered defect" in friction
+    assert not st.get("needs_human")
+    signals = sched.events.read(task_id=task.id, kinds=["review_loop_friction"])
+    assert len(signals) == 1
+
+
+def test_finite_review_cap_and_invalid_optional_values_are_unambiguous(sched):
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "friction_after": None}
+    st = sched.state.get("DM-001")
+    st["review_rounds"] = 2
+    assert not sched._review_round_pending(st)
+
+    sched.cfg.data["review"]["max_rounds"] = 0
+    with pytest.raises(ValueError, match="null or a positive integer"):
+        sched.cfg.review_max_rounds()
+
+
 def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(sched, fake_github):
     """CG-139: a revise round that only resolved a stale-base rebase conflict (CG-131) by hand
     re-reads code the reviewer already approved, so the review that follows it must not count
