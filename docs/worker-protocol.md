@@ -64,7 +64,7 @@ sequenceDiagram
   W->>D: exit_code
   Note over S: a later tick
   S->>D: exit_code present, so parse stdout.json and keep final.md
-  S->>T: commit leftovers, count commits ahead of the base
+  S->>T: preserve uncommitted leftovers as a named recovery stash, count committed work ahead of the base
   S->>G: push the branch, open a draft PR from pr_title and pr_body
   S->>W: start a review run the same way, with a review brief
   S->>D: run.json updated: status, usage, cost
@@ -252,6 +252,10 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
+- The scheduler pushes only committed work. Uncommitted files at dispatch or reap are
+  preserved as a named recovery stash in the task worktree, with the task and run recorded
+  in the run record and task state. Restore one with its recorded `git stash apply <sha>`;
+  a later reap or revise starts clean and cannot add that artifact to the PR.
 - `pr_body` is the permanent description of the change for a reader without the task file:
   what it does, why, how it was verified, follow-ups. It never narrates the process — rounds,
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
