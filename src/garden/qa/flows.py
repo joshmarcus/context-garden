@@ -30,6 +30,11 @@ class Client:
         self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=timeout)
         self.timeout = timeout
         self.last_page = "/"
+        self.events: list[dict[str, Any]] = []
+
+    def _record(self, method: str, path: str, status: int) -> None:
+        self.events.append({"at": time.time(), "method": method, "url": str(self.http.base_url.join(path)),
+                            "status_code": status})
 
     def close(self) -> None:
         self.http.close()
@@ -37,6 +42,7 @@ class Client:
     def get(self, path: str) -> str:
         self.last_page = path
         r = self.http.get(path)
+        self._record("GET", path, r.status_code)
         if r.status_code != 200:
             raise FlowFailed(f"GET {path} returned {r.status_code}")
         return r.text
@@ -45,6 +51,7 @@ class Client:
         """Post a form; return the page it redirected to. A flash on that page is a refusal."""
         headers = {"referer": self.http.base_url.join(referer or self.last_page).__str__()}
         r = self.http.post(path, data=data or {}, headers=headers)
+        self._record("POST", path, r.status_code)
         if r.status_code not in (303, 302):
             raise FlowFailed(f"POST {path} returned {r.status_code}: {r.text[:200]}")
         location = r.headers.get("location", "/")
@@ -57,6 +64,7 @@ class Client:
 
     def tasks(self) -> dict[str, dict[str, Any]]:
         r = self.http.get("/api/tasks")
+        self._record("GET", "/api/tasks", r.status_code)
         if r.status_code != 200:
             raise FlowFailed(f"GET /api/tasks returned {r.status_code}")
         return {t["id"]: t for t in r.json()}
@@ -74,7 +82,8 @@ class Client:
             seen = self.status(task_id)
             if seen in want:
                 return seen
-            self.http.post("/tick", headers={"referer": str(self.http.base_url.join(self.last_page))})
+            response = self.http.post("/tick", headers={"referer": str(self.http.base_url.join(self.last_page))})
+            self._record("POST", "/tick", response.status_code)
             time.sleep(0.2)
         raise FlowFailed(f"{task_id} is {seen or 'missing'}; expected {' or '.join(want)} within {self.timeout:.0f}s")
 
@@ -222,6 +231,8 @@ def close_a_phase(c: Client) -> None:
         raise FlowFailed("demo/p1 was closed but its page does not say so")
     if "p1" not in c.get("/herbarium"):
         raise FlowFailed("the closed phase is not in the herbarium")
+    if "Inbox zero" not in c.get("/"):
+        raise FlowFailed("the completed journey did not leave an empty Inbox")
 
 
 FLOWS: list[Flow] = [
@@ -262,15 +273,19 @@ def run_scripted(base_url: str, timeout: float = 30.0) -> dict[str, Any]:
     findings: list[dict[str, str]] = []
     try:
         for f in FLOWS:
+            event_start = len(c.events)
             try:
                 f.run(c)
-                flows.append({"name": f.name, "ok": True, "page": f.page, "note": ""})
+                flows.append({"name": f.name, "ok": True, "page": f.page, "note": "",
+                              "requests": c.events[event_start:]})
             except FlowFailed as e:
-                flows.append({"name": f.name, "ok": False, "page": c.last_page, "note": str(e)})
+                flows.append({"name": f.name, "ok": False, "page": c.last_page, "note": str(e),
+                              "requests": c.events[event_start:]})
                 findings.append({"page": c.last_page, "text": f"{f.name}: {e}"})
                 break
             except httpx.HTTPError as e:
-                flows.append({"name": f.name, "ok": False, "page": c.last_page, "note": f"request failed: {e}"})
+                flows.append({"name": f.name, "ok": False, "page": c.last_page, "note": f"request failed: {e}",
+                              "requests": c.events[event_start:]})
                 findings.append({"page": c.last_page, "text": f"{f.name}: request failed: {e}"})
                 break
     finally:

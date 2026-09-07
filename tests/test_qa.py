@@ -45,7 +45,11 @@ def test_scripted_agent_completes_every_flow(tmp_path):
     assert report.findings == []
     assert "every flow completed (9 of 9)" in report.summary()
     # the run directory keeps the agent's result and every page the app served
-    assert json.loads((out / "result.json").read_text())["flows"][0]["ok"] is True
+    recorded = json.loads((out / "result.json").read_text())["flows"]
+    assert recorded[0]["ok"] is True
+    assert all(flow["requests"] for flow in recorded)
+    assert all({"at", "method", "url", "status_code"} <= request.keys()
+               for flow in recorded for request in flow["requests"])
     pages = sorted((out / "pages").glob("*.html"))
     assert pages and any("tasks-dm-003" in p.name for p in pages)
     assert "DM-003" in next(p for p in pages if "tasks-dm-003" in p.name).read_text()

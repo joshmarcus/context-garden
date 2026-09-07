@@ -64,6 +64,23 @@ Browser readiness is infrastructure evidence only. It is not application accepta
 current PR head must still produce every expected PNG and provide executed interaction and
 viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
 they are retained as diagnostics, never presented as successful captures.
+The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox/model state,
+or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
+against a disposable garden and report the command, performed actions, observed consequences,
+and artifact paths for the affected journey, an empty state, and a relevant failure/recovery
+state. This structured JSON interaction record names the reviewed SHA, repeats the performed
+actions and observations, and includes a chronological sequence of affected, empty, failure, and
+recovery events. Each event names its outcome; served HTTP failures have an unsuccessful response
+followed by a successful recovery response, while browser actions name the action, target, outcome,
+and observed result.
+It lists automated checks separately. A screenshot, generic file, or image-only artifact by
+itself is capture evidence, not interaction evidence; missing,
+failed, stale-head, live-garden, or partly unverified interaction evidence mechanically changes
+an approval to changes requested. Reviews of performance or scalability claims additionally
+record representative and larger histories, repeated cache-expiry intervals, executing bounded
+workloads, empirical latency samples, read/scan counts, and whether the load was controlled or
+used real model harnesses. Pure non-UI changes keep the ordinary proportionate code-and-test
+review.
 
 ## The sequence
 
