@@ -451,6 +451,61 @@ def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]])
     )
 
 
+def _restore_onboarding_drafts(
+    garden: Path,
+    product: str,
+    created: list[Path],
+    config_before: bytes | None,
+    gitignore_before: bytes | None,
+    generated_bytes: dict[Path, bytes],
+) -> tuple[list[str], list[str]]:
+    """Remove the scaffold made before a planner rejection, preserving prior garden files."""
+    cfg_path = garden / CONFIG_NAME
+    gitignore = garden / ".gitignore"
+    retained: list[str] = []
+    if cfg_path.read_bytes() == generated_bytes[cfg_path]:
+        if config_before is None:
+            cfg_path.unlink()
+        else:
+            cfg_path.write_bytes(config_before)
+    else:
+        retained.append(str(cfg_path.relative_to(garden)))
+    if generated_bytes.get(gitignore) is not None and gitignore.read_bytes() == generated_bytes[gitignore]:
+        if gitignore_before is None:
+            gitignore.unlink()
+        else:
+            gitignore.write_bytes(gitignore_before)
+
+    # The product and conventions paths were checked for collisions before they were
+    # created. Planner validation happens before task import, so this known scaffold
+    # list is enough and does not risk removing a file an owner added meanwhile.
+    removable = [path for path in created if path not in {cfg_path, gitignore}]
+    product_dir = garden / product
+    removable.append(product_dir / "phase-01" / "goals.md")
+    removed: list[str] = []
+    for path in sorted(set(removable), key=lambda item: len(item.parts), reverse=True):
+        if path.exists() and path.is_file() and generated_bytes.get(path) == path.read_bytes():
+            path.unlink()
+            removed.append(str(path.relative_to(garden)))
+        elif path.exists() and path.is_file():
+            retained.append(str(path.relative_to(garden)))
+    for directory in sorted(
+        [path for path in product_dir.rglob("*") if path.is_dir()] + [product_dir],
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    for path in sorted({path.parent for path in removable}, key=lambda item: len(item.parts), reverse=True):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+    return sorted(removed), sorted(retained)
+
+
 def onboard_project(
     repo: Path,
     garden: Path,
@@ -472,6 +527,10 @@ def onboard_project(
         targets = [f"product {product!r} in garden.yaml"] if product in (existing_config.get("products") or {}) else []
         targets.extend(str(path.relative_to(garden)) for path in collisions)
         raise ValueError("onboarding would overwrite an existing product: " + ", ".join(targets))
+
+    config_before = cfg_path.read_bytes() if cfg_path.exists() else None
+    gitignore = garden / ".gitignore"
+    gitignore_before = gitignore.read_bytes() if gitignore.exists() else None
 
     # GitHub is optional enrichment of the deterministic local result. It happens only in
     # the end-to-end command and every successful query is recorded in the report.
@@ -526,12 +585,29 @@ def onboard_project(
         "## Non-goals\n\n- Work not represented in the discovered backlog.\n\n## Definition of done\n\n- The approved first-phase tasks are complete.\n"
     )
     store.invalidate()
+    generated_paths = set(created) | {goals}
+    generated_bytes = {path: path.read_bytes() for path in generated_paths if path.is_file()}
     guidance = (
         "All tasks are onboarding drafts. Use only backlog items stated in the goals. "
         "For each item add discovered_from as onboard:<source>, using its stated source."
     )
-    items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
-    provenances = [_backlog_provenance(item, backlog) for item in items]
+    try:
+        items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
+        provenances = [_backlog_provenance(item, backlog) for item in items]
+    except (RuntimeError, ValueError) as error:
+        removed, retained = _restore_onboarding_drafts(
+            garden, product, created, config_before, gitignore_before, generated_bytes
+        )
+        retry_source = repo_value or str(repo)
+        retry = f"garden onboard {retry_source} --into {garden}"
+        recovery = (
+            f"Owner-edited draft files were retained ({', '.join(retained)}); review or remove them before retrying."
+            if retained else f"Retry with: {retry}"
+        )
+        raise ValueError(
+            f"{error}\nPlanner output was rejected; onboarding rolled back its draft files "
+            f"({', '.join(removed) or 'none'}). No tasks were imported or approved. {recovery}"
+        ) from error
     tasks = import_plan(store, product, "phase-01", items, status="draft")
     for task, provenance in zip(tasks, provenances, strict=False):
         task.discovered_from = provenance
