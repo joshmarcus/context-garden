@@ -142,6 +142,22 @@ gitignored `garden.local.yaml`. Home can use GitHub Actions and local workers; w
 use ssh hosts and a different CI analyser, from the same repository. The tool never
 assumes a CI system; every CI-specific piece is a plugin named in config.
 
+## Rendered page captures
+
+The browser capture recipe keeps the measured content viewport separate from the browser
+window. On this host, Edge's headless outer window has a minimum width of about 496px, so
+`--window-size=390` lays the page out wider than the requested capture. For a narrow light or
+dark capture, open a temporary wrapper at an outer width of 600px:
+
+```html
+<html><body style="margin:0"><iframe src="http://localhost:8765/inbox"
+  style="width:390px;height:5400px;border:0"></iframe></body></html>
+```
+
+Inspect the embedded document and require `clientWidth=390` and `scrollWidth=390`; the
+walkthrough and CG-315 UI check use this same 390px frame. The outer margin is not part of
+the page evidence.
+
 ## Non-goals
 
 Hosted or multi-user operation, automatic merging, and being a general workflow engine.

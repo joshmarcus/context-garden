@@ -231,6 +231,53 @@ def _fetch(store: Store, specs: list[PageSpec], base_url: str) -> dict[str, tupl
 
 VIEWPORTS = (1280, 390)
 COLOR_SCHEMES = ("light", "dark")
+NARROW_OUTER_WIDTH = 600
+NARROW_FRAME_HEIGHT = 5400
+
+
+class NarrowViewportError(RuntimeError):
+    """The embedded page loaded, but did not fit the required narrow viewport."""
+
+    def __init__(self, measurements: dict[str, int]) -> None:
+        self.measurements = measurements
+        super().__init__(
+            "narrow frame measured "
+            f"clientWidth {measurements['clientWidth']}, "
+            f"scrollWidth {measurements['scrollWidth']}"
+        )
+
+
+def _narrow_frame(page: object, url: str) -> object:
+    """Load a page in a 390px frame so Edge's outer-window floor cannot widen it."""
+    import html
+
+    frame_url = html.escape(url, quote=True)
+    wrapper = ("<html><body style=\"margin:0\">"
+               f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
+               "</body></html>")
+    page.set_content(wrapper, wait_until="networkidle", timeout=30000)
+    iframe = page.locator("iframe")
+    handle = getattr(iframe, "element_handle", lambda: None)()
+    frame = handle.content_frame() if handle is not None else page.frame(url=url)
+    if frame is None:
+        raise RuntimeError(f"narrow frame did not load {url}")
+    wait_for_load_state = getattr(frame, "wait_for_load_state", None)
+    if wait_for_load_state is not None:
+        wait_for_load_state("domcontentloaded", timeout=30000)
+    measured = frame.evaluate(
+        """() => {
+            const width = document.documentElement.clientWidth;
+            const scrollWidth = document.documentElement.scrollWidth;
+            return {clientWidth: width, scrollWidth, scrollHeight: document.documentElement.scrollHeight};
+        }"""
+    )
+    iframe.evaluate(
+        "(iframe, height) => { iframe.style.height = `${Math.max(5400, height)}px`; }",
+        measured["scrollHeight"],
+    )
+    if measured["clientWidth"] != 390 or measured["scrollWidth"] != 390:
+        raise NarrowViewportError(measured)
+    return {"clientWidth": measured["clientWidth"], "scrollWidth": measured["scrollWidth"]}
 
 
 def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
@@ -249,13 +296,45 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                 complete = True
                 for width in VIEWPORTS:
                     for scheme in COLOR_SCHEMES:
-                        page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
+                        narrow = width == 390
+                        page = browser.new_page(
+                            viewport={"width": NARROW_OUTER_WIDTH if narrow else width,
+                                      "height": 900},
+                            color_scheme=scheme,
+                        )
                         try:
-                            page.goto(base_url.rstrip("/") + s.url, wait_until="networkidle", timeout=30000)
-                            viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
-                            page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
-                            evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
-                                             "color_scheme": scheme, **viewport})
+                            url = base_url.rstrip("/") + s.url
+                            if narrow:
+                                measurements: dict[str, int] | None = None
+                                try:
+                                    measurements = _narrow_frame(page, url)
+                                    log(f"  narrow frame {s.slug} {scheme}: "
+                                        f"clientWidth={measurements['clientWidth']} "
+                                        f"scrollWidth={measurements['scrollWidth']}")
+                                except NarrowViewportError as e:
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                except Exception as e:  # noqa: BLE001 - retain a load diagnostic
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                finally:
+                                    # Keep a diagnostic image when the page itself overflows;
+                                    # the missing/invalid measurement must still fail the check.
+                                    try:
+                                        page.locator("iframe").screenshot(
+                                            path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
+                                        )
+                                    except Exception as e:  # noqa: BLE001 - outer handler logs it
+                                        log(f"  diagnostic screenshot {s.slug} at {width}/{scheme} failed: {e}")
+                                if measurements is not None:
+                                    evidence.append({"page": s.slug, "action": "frame", "viewport": width,
+                                                     "color_scheme": scheme, **measurements})
+                            else:
+                                page.goto(url, wait_until="networkidle", timeout=30000)
+                                viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
+                                page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
+                                evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
+                                                 "color_scheme": scheme, **viewport})
                         except Exception as e:  # noqa: BLE001 - one bad page should not sink the rest
                             complete = False
                             log(f"  screenshot {s.slug} at {width}/{scheme} failed: {e}")
@@ -433,7 +512,16 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
         store = Store(garden_root)
-        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
+        logs: list[str] = []
+        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
+                         log=logs.append)
+    expected = {
+        f"{page.spec.slug}-{width}-{scheme}.png"
+        for page in result.pages
+        for width in VIEWPORTS
+        for scheme in COLOR_SCHEMES
+    }
+    missing = sorted(name for name in expected if not (out_dir / name).is_file())
     captures = [str(p) for p in sorted(out_dir.iterdir())
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
     expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
@@ -441,16 +529,19 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not complete_pngs:
+    details = "\n".join(filter(None, [result.browser_note, *logs]))
+    if not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
+        if missing:
+            details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and evidence_complete
+    passed = complete_pngs and not missing and evidence_complete
     return {"status": "pass" if passed else "fail", "summary": summary,
             "failure_kind": "infrastructure" if result.browser_failure_kind else
                             ("product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
-            "details": result.browser_note or ("missing screenshot files or interaction evidence" if not passed else ""),
+            "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
             "pages": [p.spec.slug for p in result.pages]}
 
