@@ -196,6 +196,7 @@ class Site:
         run_store = sched.runs
         totals = run_store.totals()
         resources = sched.resource_status()
+        tool_build = sched.upgrade_status()
         return {
             "request": request,
             "page": page,
@@ -215,6 +216,7 @@ class Site:
             "max_parallel": sched.effective_max_parallel(),
             "review_parallel": sched.review_parallel_limit(),
             "resource_status": resources,
+            "tool_build": tool_build,
             "totals": totals,
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,

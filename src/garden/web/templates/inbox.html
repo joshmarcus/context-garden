@@ -63,7 +63,7 @@
     <div class="do">
       {% if it.get('decision_card') %}
       {% elif it.group == 'tool' %}
-        <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
+        {% if it.actions %}<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>{% endif %}
       {% elif it.group == 'question' and it.task %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
       {% elif it.group == 'question' %}
