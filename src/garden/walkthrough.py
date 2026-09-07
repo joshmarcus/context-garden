@@ -766,7 +766,6 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
 
 def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
-    from .model import Status
     from .qa.sandbox import make_garden
     from .scheduler import State
 
@@ -775,11 +774,11 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
         store = Store(garden_root)
         # Keep the visual fixture representative even before a worker has run: the
         # walkthrough must always give personas a real decision card to inspect.
-        task = store.task("DM-001")
-        task.status = Status.WAITING_HUMAN
-        store.save(task)
         state = State(store.config.garden_dir / "state.json")
-        state.get(task.id)["question"] = "Which database should this task use?"
+        state.get("DM-001")["decision"] = {
+            "kind": "changed_outcome",
+            "reason": "The worker needs a product decision before it can continue.",
+        }
         state.save()
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
