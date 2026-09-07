@@ -62,7 +62,24 @@ def write_snapshot(scheduler: Any, task: Any, worktree: Path) -> None:
         "tasks": tasks,
         "runs": run_rows,
         "control": {k: v for k, v in scheduler.control().items() if k not in {"token", "secret"}},
-        "queue": {k: v for k, v in state.get("_queue", {}).items() if k in {"head", "order"}},
+        # Queue facts are per task, not in a synthetic ``_queue`` state entry.  Keep the
+        # merge and dispatch views separate so a design worker sees both kinds of waiting
+        # work without reconstructing scheduler policy from task status.
+        "queue": {
+            "merge": [
+                {"task": task.id, "candidate": bool(state.get(task.id, {}).get("automerge_candidate")),
+                 "head": bool(state.get(task.id, {}).get("merge_head")),
+                 "ready_at": state.get(task.id, {}).get("automerge_ready_at", ""),
+                 "blocked": state.get(task.id, {}).get("automerge_blocked", "")}
+                for task in store.tasks().values()
+                if any(state.get(task.id, {}).get(key) for key in
+                       ("automerge_candidate", "merge_head", "automerge_blocked"))
+            ],
+            "dispatch": [
+                {"task": task.id, "mode": mode, "reason": reason}
+                for task, mode, reason in scheduler.dispatch_queue()
+            ],
+        },
         "phases": phases,
         "events": EventLog(store.config.garden_dir / "events.jsonl").read(since=parse_since("24h")),
         "metrics": metrics(EventLog(store.config.garden_dir / "events.jsonl").read(), store.tasks()),
