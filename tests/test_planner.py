@@ -135,6 +135,22 @@ def test_import_plan_inlines_cited_retro_evidence(garden):
     assert "The quota convention must merge before its consumer design." in body
 
 
+def test_import_plan_repeated_short_retro_citation_keeps_phase_document(garden):
+    store = Store(garden)
+    write(garden / "demo" / "p1" / "docs" / "retro.md", "# Phase retro\n\nPhase evidence.\n")
+    write(garden / "docs" / "retro.md", "# Root retro\n\nUnrelated root evidence.\n")
+
+    created = import_plan(store, "demo", "p1", [{
+        "title": "Use phase retro evidence",
+        "body": "## Goal\n\nUse docs/retro.md, then `docs/retro.md` again.",
+    }])
+
+    body = store.task(created[0].id).body
+    assert body.count("### docs/retro.md") == 1
+    assert "Phase evidence." in body
+    assert "Unrelated root evidence." not in body
+
+
 def test_plan_prompt_inlines_retro_evidence_cited_by_human_guidance(garden):
     write(garden / "demo" / "p1" / "docs" / "friction.md", "# Friction\n\nA worker needed quota rules.\n")
     store = Store(garden)

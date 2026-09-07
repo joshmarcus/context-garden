@@ -71,8 +71,13 @@ def _retro_evidence(store: Store, phase_path: Path, text: str) -> list[tuple[str
                 path = candidate.resolve()
             except OSError:
                 continue
-            if path in seen or not path.is_relative_to(store.root.resolve()) or not path.is_file():
+            if not path.is_relative_to(store.root.resolve()) or not path.is_file():
                 continue
+            # A citation names its nearest existing garden document. Once that document
+            # has been included, do not fall through to a root-level document with the
+            # same short path on a later citation.
+            if path in seen:
+                break
             contents = _read(path)
             if contents:
                 evidence.append((match.group(1), contents))
