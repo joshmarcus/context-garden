@@ -31,7 +31,7 @@ class FakeUpgrader:
     def install(self, url: str, sha: str) -> tuple[bool, str]:
         self.installs.append((url, sha))
         if self.install_ok and self.after_install is not None:
-            self.commit = self.after_install
+            self.commit = sha
         return self.install_ok, "pip output"
 
     def doctor_ok(self) -> bool:
@@ -157,8 +157,11 @@ def test_upgrade_installs_verifies_restarts(garden, fake_github):
     assert result["ok"] and result["restarted"]
     assert up.installs == [(str(garden.parent / "repo"), new_sha)]
     assert restart.called == 1
-    assert sched.upgrade_available() is None  # control cleared
-    assert [e for e in sched.events.read() if e["kind"] == "upgraded"]
+    assert sched.upgrade_available()["status"] == "restart_pending"
+    restarted = Scheduler(Store(garden), github=fake_github, upgrader=up, restarter=restart, log=print)
+    restarted.reap_on_start()
+    assert restarted.upgrade_available() is None
+    assert [e for e in restarted.events.read() if e["kind"] == "upgrade_active"]
 
 
 def test_failed_verify_leaves_old_install_running(garden, fake_github):
@@ -224,7 +227,7 @@ def test_auto_upgrade_on_idle_tick(garden, fake_github):
     up.after_install = new_sha
     rep = sched.tick()  # no dispatch -> idle -> auto-upgrade fires
     assert restart.called == 1
-    assert sched.upgrade_available() is None
+    assert sched.upgrade_available()["status"] == "restart_pending"
     assert "tool upgraded" in rep.transitions
 
 
@@ -234,6 +237,76 @@ def test_no_auto_upgrade_when_manual(garden, fake_github):
     sched.tick()
     assert restart.called == 0
     assert sched.upgrade_available()["sha"] == new_sha
+
+
+def test_auto_upgrade_detects_configured_base_advance_missed_while_offline(garden, fake_github):
+    _enable_provides_tool(garden, upgrade="auto", auto_dispatch=False)
+    repo = garden.parent / "repo"
+    old_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    new_sha = _advance_main(repo, "available-after-restart.md")
+    up = FakeUpgrader(old_sha)
+    up.after_install = new_sha
+    restart = Restarter()
+    sched = Scheduler(Store(garden), github=fake_github, upgrader=up, restarter=restart, log=print)
+
+    rep = sched.tick()
+
+    assert up.installs == [(str(repo), new_sha)]
+    assert restart.called == 1
+    assert sched.upgrade_available()["status"] == "restart_pending"
+    assert "tool upgraded" in rep.transitions
+
+
+def test_pending_auto_upgrade_drains_before_dispatch_and_cannot_be_starved(garden, fake_github):
+    sched, up, restart, new_sha = _armed(garden, fake_github, upgrade="auto")
+    up.after_install = new_sha
+    active = sched.runs.new_run("DM-001", "local", mode="check")
+    sched.state.get("DM-001")["check_run"] = active.run_id
+    sched.state.save()
+
+    sched.tick()
+
+    assert up.installs == []
+    assert sched.upgrade_available()["status"] == "held"
+    assert "draining 1 active worker/check run(s)" in sched.upgrade_available()["reason"]
+    assert sched.store.task("DM-001").status.value == "ready"
+
+    active.status = "done"
+    active.save()
+    sched.tick()
+    assert up.installs == [(str(garden.parent / "repo"), new_sha)]
+    assert restart.called == 1
+
+
+def test_paused_dispatch_is_an_explicit_automatic_upgrade_hold(garden, fake_github):
+    sched, up, restart, _ = _armed(garden, fake_github, upgrade="auto", auto_dispatch=False)
+    sched.pause(by="test", reason="maintenance")
+
+    sched.tick()
+
+    assert up.installs == []
+    assert restart.called == 0
+    assert sched.upgrade_available()["status"] == "held"
+    assert "dispatch is paused" in sched.upgrade_available()["reason"]
+
+
+def test_restart_failure_rolls_back_and_reports_recovery(garden, fake_github):
+    sched, up, _restart, new_sha = _armed(garden, fake_github)
+    old_sha = up.commit
+    up.after_install = new_sha
+
+    def broken_restart():
+        raise OSError("exec refused")
+
+    sched._restarter = broken_restart
+    result = sched.upgrade(restart=True)
+
+    assert not result["ok"] and "restart failed" in result["reason"]
+    assert up.commit == old_sha
+    info = sched.upgrade_available()
+    assert info["status"] == "failed" and info["recovered"] is True
+    assert "exec refused" in info["diagnosis"]
 
 
 def test_pin_defers_install_until_active_runs_drain(garden, fake_github):
