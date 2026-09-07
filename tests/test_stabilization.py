@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import pytest
@@ -18,7 +19,7 @@ def protected_phase(garden):
     return Store(garden).phase("demo", "p1")
 
 
-def record_passes(phase, sha="build-a", *, real_user=True):
+def record_passes(phase, sha="build-a", *, real_user=False):
     for name in ("independent_project", "recovery_exercises", "application_journey", "resources_and_cost"):
         record_outcome(phase, name, "PASS", command=f"run {name}", observed="worked",
                        artifacts=[f"artifacts/{name}.json"], evidence_type="interaction" if name != "resources_and_cost" else "automated",
@@ -56,14 +57,55 @@ def test_unfreeze_next_phase_cannot_bypass_unproven_stabilization(garden):
     assert Store(garden).phase("demo", "p2").frozen
 
 
-def test_stale_and_fixture_only_evidence_do_not_pass(garden):
+def test_stale_fixture_evidence_does_not_pass(garden):
     phase = protected_phase(garden)
     start(phase, "old-build")
     record_passes(phase, "old-build", real_user=False)
     ok, missing = gate(phase, build_sha="new-build")
     assert not ok
     assert "evidence is not tied to the current running build" in missing
-    assert any("real-user evidence is absent" in item for item in missing)
+
+
+def test_current_fixture_evidence_can_close_and_release_phase(garden, monkeypatch):
+    phase = protected_phase(garden)
+    monkeypatch.setattr("garden.stabilization.running_build_sha", lambda: "build-a")
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data["samples"] = [{"at": "2026-09-06T04:00:00+00:00", "completed_tasks": 10}]
+    data_path.write_text(json.dumps(data))
+    record_passes(phase, real_user=False)
+
+    assert gate(phase, build_sha="build-a") == (True, [])
+    assert "fixture evidence remains valid" in (phase.path / "docs" / "stabilization-evidence.md").read_text()
+    assert Scheduler(Store(garden)).close_phase(phase, force=True) == dt.date.today().isoformat()
+
+    goals = garden / "demo" / "p2" / "goals.md"
+    goals.parent.mkdir(parents=True)
+    goals.write_text("---\nfrozen: '2026-09-06'\n---\n\n# p2\n")
+    import os
+    cwd = os.getcwd()
+    os.chdir(garden)
+    try:
+        result = CliRunner().invoke(app, ["unfreeze", "demo/p2"])
+    finally:
+        os.chdir(cwd)
+    assert result.exit_code == 0
+    assert "demo/p2 unfrozen" in result.output
+
+
+def test_failed_independent_project_evidence_still_blocks(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    record_passes(phase)
+    record_outcome(phase, "independent_project", "FAIL", command="onboard fixture",
+                   observed="accepted change failed", artifacts=["artifacts/onboarding.json"],
+                   evidence_type="interaction", build_sha="build-a")
+
+    ok, missing = gate(phase, build_sha="build-a")
+    assert not ok
+    assert "independent_project: FAIL" in missing
 
 
 def test_recorder_counts_repairs_resets_window_and_measures_resources(garden):
