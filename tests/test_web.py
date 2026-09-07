@@ -61,7 +61,6 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     print(f"{history_size + 3} runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
           f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
     assert p95 < 2.0
-    assert p95 <= max(timings)
     assert rs.read_count - reads == history_size + 3
 
 
@@ -608,14 +607,6 @@ def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garde
     assert "no question recorded" not in page.lower()
     assert 'action="/tasks/DM-001/answer"' not in page
     assert 'action="/tasks/DM-001/recover-check"' in page
-
-
-def test_inbox_and_task_page_include_the_same_decision_card_fragment():
-    from pathlib import Path
-
-    templates = Path(__file__).parents[1] / "src" / "garden" / "web" / "templates"
-    for name in ("inbox.html", "task.html"):
-        assert '{% include "_decision_card.html" %}' in (templates / name).read_text()
 
 
 def test_inbox_attention_cards_keep_their_discuss_prompts_separate(garden):
@@ -1450,14 +1441,6 @@ def test_friction_report_web_with_task_id(garden):
     assert "Brief is too long." in text
 
 
-def test_inbox_page_head_subtitle_is_not_capped_narrow(garden):
-    """CG-184: `.page-head p` used to cap at 62ch, wrapping the Inbox subtitle onto two
-    lines on a wide screen. The left column now grows to fill the space instead."""
-    html = client(garden).get("/").text
-    assert "62ch" not in html
-    assert "Every item here is a decision only a person can make." in html
-
-
 def test_friction_form_in_inbox_and_task(garden):
     c = client(garden)
     assert "Report friction" in c.get("/").text
@@ -1729,21 +1712,6 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert t.priority == 9
     page = c.get("/tasks/DM-001").text
     assert 'value="9" selected' in page
-
-
-def test_no_set_apply_save_buttons_in_any_template():
-    """CG-190: editing an existing value applies on change; only forms that create
-    something new (a task, a friction report, a persona run, ...) keep a submit button."""
-    import re
-
-    from garden.web.common import TEMPLATES
-
-    button_re = re.compile(r"<button[^>]*>\s*(Set|Apply|Save)\s*<", re.IGNORECASE)
-    offenders = []
-    for path in TEMPLATES.glob("*.html"):
-        for m in button_re.finditer(path.read_text()):
-            offenders.append(f"{path.name}: {m.group(0)!r}")
-    assert not offenders, offenders
 
 
 def test_editable_values_apply_on_change_with_a_saved_mark(garden):

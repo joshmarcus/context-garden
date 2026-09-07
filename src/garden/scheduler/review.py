@@ -11,6 +11,7 @@ from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
 from ..notify import notify
 from ..review import (
+    enforce_criteria_verdict,
     feedback_from_review,
     parse_review,
     review_brief,
@@ -390,7 +391,7 @@ class ReviewMixin:
             final = collected.get("final_text") or ""
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
-            review = parse_review(final)
+            review = enforce_criteria_verdict(parse_review(final))
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
@@ -466,6 +467,7 @@ class ReviewMixin:
         queue a revise round, or record the verdict. Split out of `reap_review` so a restart can
         re-apply a verdict the previous process reaped but never persisted (`emitted=True` then
         skips the run_finished emit, which the first pass already made)."""
+        review = enforce_criteria_verdict(review)
         st = self.state.get(task.id)
         st["review_run"] = ""
         pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE

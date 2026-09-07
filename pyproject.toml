@@ -37,6 +37,9 @@ packages = ["src/garden"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "needs_remote_clone: test executes an SSH worker against the remote-host checkout",
+]
 
 [tool.ruff]
 line-length = 100
