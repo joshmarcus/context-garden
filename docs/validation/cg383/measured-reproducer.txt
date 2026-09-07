@@ -16,6 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+
 STAT_FIELDS = ("anon", "file", "shmem", "inactive_file", "active_file", "slab_reclaimable")
 EVENT_FIELDS = ("low", "high", "max", "oom", "oom_kill")
 
@@ -121,7 +122,7 @@ def main() -> int:
             one_slot_high_water(slot_bytes)
         launched = sample(group)
     result = {
-        "recorded_at": dt.datetime.now(dt.UTC).isoformat(),
+        "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "reproducer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "python": sys.version,
         "invocation": {"cache_mib": args.cache_mib, "reclaim_mib": args.reclaim_mib,
