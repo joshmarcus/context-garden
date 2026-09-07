@@ -52,22 +52,25 @@ def test_record_from_codex_transcript_uses_latest_cumulative_usage_without_doubl
     path = tmp_path / "rollout-2026-09-06-operator.jsonl"
     path.write_text("\n".join(json.dumps(event) for event in [
         {"timestamp": "2026-09-06T10:00:00Z", "type": "session_meta",
-         "payload": {"id": "codex-operator", "model": "gpt-5.6-sol"}},
+         "payload": {"id": "codex-operator"}},
+        {"timestamp": "2026-09-06T10:00:30Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol"}},
         {"timestamp": "2026-09-06T10:01:00Z", "type": "event_msg", "payload": {
             "type": "token_count", "info": {"total_token_usage": {
                 "input_tokens": 1_000, "cached_input_tokens": 400, "output_tokens": 50,
-                "reasoning_output_tokens": 10}}}},
+                "reasoning_output_tokens": 10, "total_tokens": 1_050}}}},
         {"timestamp": "2026-09-06T10:02:00Z", "type": "event_msg", "payload": {
             "type": "token_count", "info": {"total_token_usage": {
                 "input_tokens": 2_000, "cached_input_tokens": 900, "output_tokens": 120,
-                "reasoning_output_tokens": 30, "cache_write_input_tokens": 20}}}},
+                "reasoning_output_tokens": 30, "cache_write_input_tokens": 20, "total_tokens": 2_120}}}},
     ]) + "\n")
     rec = ops.record_from_transcript(path)
     assert rec["harness"] == "codex"
     assert rec["session"] == "codex-operator"
     assert rec["turns"] == 2
     assert rec["models"] == {"gpt-5.6-sol": 2}
-    assert rec["tokens"] == {"input": 1_100, "cache_read": 900, "cache_write": 20, "output": 150}
+    assert rec["tokens"] == {"input": 1_100, "cache_read": 900, "cache_write": 20, "output": 120}
+    assert rec["tokens"]["input"] + rec["tokens"]["cache_read"] + rec["tokens"]["output"] == 2_120
     assert rec["list_price_usd"] is None
     assert rec["price_status"] == "unavailable"
     assert rec["usage_status"] == "available"

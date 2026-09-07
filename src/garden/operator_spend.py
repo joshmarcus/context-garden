@@ -148,12 +148,14 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     total: dict[str, Any] | None = None
     session = path.stem
     model = ""
+    snapshot_models: dict[str, int] = {}
     first = last = ""
     turns = 0
     for event in events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if event.get("type") == "session_meta":
             session = str(payload.get("id") or session)
+        if event.get("type") == "turn_context":
             model = str(payload.get("model") or model)
         if event.get("type") != "event_msg" or payload.get("type") != "token_count":
             continue
@@ -163,6 +165,8 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         total = usage
         turns += 1
+        if model:
+            snapshot_models[model] = snapshot_models.get(model, 0) + 1
         timestamp = str(event.get("timestamp") or "")
         first = first or timestamp
         last = timestamp or last
@@ -174,12 +178,12 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     cached = int(total.get("cached_input_tokens", 0) or 0)
     input_tokens = max(0, int(total.get("input_tokens", 0) or 0) - cached)
     tokens = {"input": input_tokens,
-              "output": int(total.get("output_tokens", 0) or 0) + int(total.get("reasoning_output_tokens", 0) or 0),
+              "output": int(total.get("output_tokens", 0) or 0),
               "cache_read": cached,
               "cache_write": int(total.get("cache_write_input_tokens", 0) or 0)}
     return {"at": now_iso(), "harness": "codex", "session": session,
             "first_turn": first, "last_turn": last, "turns": turns,
-            "models": {model: turns} if model else {}, "tokens": tokens,
+            "models": snapshot_models, "tokens": tokens,
             "list_price_usd": None, "price_status": "unavailable", "usage_status": "available",
             "avg_context": int(tokens["cache_read"] / max(1, turns))}
 

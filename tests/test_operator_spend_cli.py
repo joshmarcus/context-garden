@@ -44,7 +44,8 @@ def test_operator_spend_record_from_transcript_appends_and_prints(garden, tmp_pa
 def test_operator_spend_record_codex_transcript_marks_unknown_price_unavailable(garden, tmp_path):
     transcript = tmp_path / "rollout-operator.jsonl"
     transcript.write_text("\n".join(json.dumps(event) for event in [
-        {"type": "session_meta", "payload": {"id": "codex-operator", "model": "gpt-5.6-sol"}},
+        {"type": "session_meta", "payload": {"id": "codex-operator"}},
+        {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
         {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
             "input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 30}}}},
     ]) + "\n")
