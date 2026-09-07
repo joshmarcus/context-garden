@@ -118,7 +118,7 @@ def doctor():
     def fail(name: str) -> None:
         failures.append(name)
 
-    console.print(f"root: {store.root}", soft_wrap=True)
+    console.print(f"root: {store.root}")
     self_products = [n for n in (store.config.data.get("products", {}) or {}) if store.config.product_self(n)]
     wd = store.config.work_dir
     inside = wd == store.config.garden_dir or store.root in wd.parents
@@ -127,10 +127,10 @@ def doctor():
         # repo; they must not sit inside the live garden. Refuse rather than warn.
         console.print(f"work dir: {wd}  [red](inside the live garden; product {', '.join(self_products)} "
                       "is the garden's own repo — set work_dir to a path outside the live garden so its "
-                      "clone and worktrees never sit inside the live checkout)[/red]", soft_wrap=True)
+                      "clone and worktrees never sit inside the live checkout)[/red]")
         fail("work dir")
     else:
-        console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""), soft_wrap=True)
+        console.print(f"work dir: {wd}" + ("  [yellow](inside the garden; set work_dir to keep workers' checkouts apart)[/yellow]" if inside else ""))
     min_free_mb = int(store.config.get("doctor.min_free_mb", 2048) or 0)
     for label, path in (("work dir", wd), ("/tmp", Path("/tmp"))):
         try:
@@ -139,8 +139,8 @@ def doctor():
             warning = f"  [yellow](below doctor.min_free_mb={min_free_mb} MB)[/yellow]" if free_mb < min_free_mb else ""
             console.print(f"free space {label}: {free_mb} MB{warning}")
         except OSError as e:
-            console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]", soft_wrap=True)
-    console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"), soft_wrap=True)
+            console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]")
+    console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
     try:
         from playwright.sync_api import sync_playwright
 
@@ -158,12 +158,12 @@ def doctor():
         if gh.is_authenticated():
             login = gh.me()
             gh_line += f" as {login}" if login else ""
-            console.print(gh_line, soft_wrap=True)
+            console.print(gh_line)
         else:
-            console.print(f"[red]{gh_line} [NOT LOGGED IN][/red]  (fix: run `gh auth login`, or set GITHUB_TOKEN)", soft_wrap=True)
+            console.print(f"[red]{gh_line} [NOT LOGGED IN][/red]  (fix: run `gh auth login`, or set GITHUB_TOKEN)")
             fail("github")
     else:
-        console.print(f"[red]{gh_line}[/red]", soft_wrap=True)
+        console.print(f"[red]{gh_line}[/red]")
         fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
@@ -179,18 +179,15 @@ def doctor():
             # a custom harness with no such subcommand is checked the same way.
             ok, detail = h.check_login(scrubbed_env(store.config.data))
             if ok:
-                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}", soft_wrap=True)
+                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
                 fix = detail or f"run {h.bin}'s login command"
-                # soft_wrap: a long worktree path or login-failure detail must never be broken
-                # mid-word by the console width, or the fix hint on the wrapped line is unreadable
-                # (and no longer a reliable contiguous substring for anything scraping this output).
                 console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
-                              f"  (fix: {fix})", soft_wrap=True)
+                              f"  (fix: {fix})")
                 fail(f"harness {hn}")
         else:
             console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"
-                          f"  (fix: install {h.bin} and add it to PATH)", soft_wrap=True)
+                          f"  (fix: install {h.bin} and add it to PATH)")
             fail(f"harness {hn}")
     git_email = ""
     git_name = ""

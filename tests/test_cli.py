@@ -391,6 +391,19 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
+def test_doctor_wraps_long_diagnostics_to_console_width(garden, monkeypatch):
+    from rich.console import Console
+
+    import garden.cli.diagnostics as diagnostics
+
+    narrow = Console(width=40, record=True)
+    monkeypatch.setattr(diagnostics, "console", narrow)
+    result = run(garden, "doctor")
+    assert result.exit_code in (0, 1)
+    lines = narrow.export_text().splitlines()
+    assert lines and max(len(line) for line in lines) <= 40
+
+
 def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
     import subprocess
     from unittest import mock

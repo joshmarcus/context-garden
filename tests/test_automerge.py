@@ -119,6 +119,13 @@ def test_gate_self_product_needs_two_rounds_by_default(sched, fake_github):
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "review round" in reason and "need 2" in reason
     st["review_rounds"] = 2
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "second review" in reason
+    # Persona evidence must be for the current PR head, not an old revision.
+    st["persona_reviews"] = [{"persona": "security", "head": pr.head_sha}]
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+    st["persona_reviews"] = []
     pr.review_decision = "APPROVED"  # independent human approval satisfies the second round
     ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason

@@ -33,13 +33,21 @@ def test_pages_render(garden):
 
 
 def test_backlog_move_has_no_javascript_fallback(garden):
-    page = client(garden).get("/board?view=backlog").text
+    # A second phase makes the selector render.  Submit the same form the noscript button
+    # submits, proving the fallback changes the task rather than merely existing in HTML.
+    (garden / "demo" / "p2" / "goals.md").parent.mkdir(parents=True)
+    (garden / "demo" / "p2" / "goals.md").write_text("# p2\n")
+    c = client(garden)
+    page = c.get("/board?view=backlog").text
     assert "<noscript>" in page
-    # The fixture has one phase, so no move selector is rendered; verify the shared partial
-    # that renders it contains a submit control for multi-phase gardens.
-    from pathlib import Path
-    partial = Path(__file__).parents[1] / "src/garden/web/templates/_backlog.html"
-    assert '<noscript><button class="quiet" type="submit">Move</button></noscript>' in partial.read_text()
+    assert '<noscript><button class="quiet" type="submit">Move</button></noscript>' in page
+    response = c.post("/tasks/DM-001/move", data={"note": "demo/p2"},
+                      headers={"Origin": "http://testserver", "Referer": "http://testserver/board?view=backlog"},
+                      follow_redirects=False)
+    assert response.status_code == 303
+    garden_store = Store(garden)
+    assert garden_store.task("DM-001").phase == "p2"
+    assert "/board?view=backlog" in response.headers["location"]
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])
