@@ -53,7 +53,8 @@ def missing_preflight(value: Any) -> list[str]:
 
 
 def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_description: bool,
-                       ui_changed: bool, captures: list[str], inspection_error: str = "") -> list[dict[str, Any]]:
+                       ui_changed: bool, captures: list[str], inspection_error: str = "",
+                       required_ui: bool | None = None) -> list[dict[str, Any]]:
     """Checks that never need a reviewer or model, one concise failure each."""
     if inspection_error:
         return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {inspection_error}")]
@@ -87,7 +88,7 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
             syntax_error = str(exc).splitlines()[-1]
             break
     results.append(_fail("syntax", f"Python syntax error: {syntax_error}") if syntax_error else _pass("syntax"))
-    ui_changed = ui_changed or any(_is_ui_path(name) for name in names)
+    ui_changed = (ui_changed or any(_is_ui_path(name) for name in names)) if required_ui is None else required_ui
     pngs = [p for p in captures if p.endswith(".png")]
     if ui_changed and not pngs:
         results.append(_fail("UI captures", "UI files changed but this run produced no PNG captures"))

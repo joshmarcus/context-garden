@@ -23,6 +23,7 @@ from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
 from ..preflight import mechanical_results
+from ..review import validation_plan
 from ..runs import Run
 from .report import TickReport
 
@@ -80,17 +81,25 @@ class CheckRunMixin:
                 # this into the mechanical gate, which fails closed with revise feedback.
                 changed = []
                 cont["mechanical_inspection_error"] = str(exc)
-            needs_captures = any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
-            if (needs_captures or any(_is_ui_path(path) for path in changed)) and not any(s.get("name") == "ui" for s in specs):
+            worker = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
+            result = worker.result if worker is not None else {}
+            plan = validation_plan(changed, task.title, task.body,
+                                   str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
+                                   head=gitops.head_sha(worktree), check_specs=specs)
+            # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
+            # request a milestone walkthrough, but cannot turn an unrelated PR into one.
+            if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
-                                  "changed": changed}]
+                                  "changed": changed, "pages": plan["pages"]}]
+            run.env_snapshot = {"validation_plan": plan}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
+        run.save()
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
         cont.setdefault("task_status", task.status.value)
@@ -283,6 +292,8 @@ class CheckRunMixin:
             worktree, base, str(worker_result.get("pr_body") or ""),
             require_description=not bool(task.pr), ui_changed=False, captures=captures,
             inspection_error=str(cont.get("mechanical_inspection_error") or ""),
+            required_ui=(bool(run.env_snapshot["validation_plan"].get("pages"))
+                         if "validation_plan" in run.env_snapshot else None),
         )
         results.extend(mechanical)
         run.result = {"checks": results}

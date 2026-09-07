@@ -13,6 +13,7 @@ from ..criteria import parse_criteria
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
+from ..review import validation_plan
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
@@ -433,9 +434,21 @@ class DispatchMixin:
                 hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []),
                 artifacts=dict(st.get("rebase_artifacts") or {}))
         else:
+            inspection_error = ""
+            try:
+                changed = gitops.diff_names(wt, base) if wt is not None else []
+            except gitops.GitError as exc:
+                changed = []
+                inspection_error = str(exc)
+            plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
+                                   check_specs=self._pre_pr_specs(task))
+            if inspection_error:
+                plan["inspection_error"] = inspection_error
+                plan["reasons"].append({"item": "bounded diff inspection",
+                                        "reason": "changed paths unavailable: " + inspection_error})
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
-                                criteria_snapshot=criteria_snapshot)
+                                criteria_snapshot=criteria_snapshot, validation_plan=plan)
             text = prompt_override or brief.text
         prompt_bytes = len(text.encode("utf-8", "replace"))
         if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
@@ -459,6 +472,8 @@ class DispatchMixin:
         if wt is not None:
             run.worktree = str(wt)
             run.env_snapshot["worktree_baseline"] = gitops.status_lines(wt)
+            if mode != "rebase":
+                run.env_snapshot["validation_plan"] = plan
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
