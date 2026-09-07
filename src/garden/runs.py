@@ -140,7 +140,11 @@ class Run:
     # ---- process state -----------------------------------------------------
     @property
     def no_process(self) -> bool:
-        """A requested/preparing record is not confirmed live until it has a pid."""
+        """A requested/preparing record is not confirmed live until it has a pid.
+
+        A worker-mode record counts it against a worker slot until a tick reaps it, so
+        the Now page shows it as what it is and a review behind it says what it waits for.
+        """
         return (self.status in ("requested", "preparing", "running") and self.pid is None
                 and not (self.path / "stdout.json").exists())
 

@@ -65,6 +65,7 @@
     {% if max_parallel_override is not none %} · live override: <strong>{{ max_parallel_override }}</strong> (in effect){% else %} · no live override{% endif %}
     {% if max_parallel_source == "profile" %} · effective now: <strong>{{ max_parallel_value }}</strong> (from the operating profile <span class="mono">{{ operating_profile_active }}</span>, below){% endif %}
   </p>
+  <p class="muted" style="margin:8px 0 0"><strong>Worker occupancy:</strong> {{ workers_running }}/{{ max_parallel }} — the same worker-mode count used by dispatch and shown in the rail and <span class="mono">garden status</span>.</p>
   <form method="post" action="/config/max-parallel" class="actions" data-autosave>
     <label class="muted" for="max-parallel-override">live override</label>
     <input type="number" id="max-parallel-override" name="value" min="1" placeholder="none — uses {{ max_parallel_file }}"
@@ -73,6 +74,7 @@
     <span class="autosave-mark" aria-live="polite"></span>
   </form>
   <p class="muted" style="margin:8px 0 0">Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.</p>
+  <p class="muted" style="margin:8px 0 0"><strong>Worker slots:</strong> {{ worker_slot_modes }}. Reviews use the separate <span class="mono">reviews</span> cap; checks and edit runs are short machine-bound runs and do not consume worker slots, but they still count toward the shared local execution limit shown in the rail.</p>
 </div>
 
 {% set profile_source = "live override" if operating_profile_override else ("garden.yaml" if operating_profile_file else "") %}

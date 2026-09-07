@@ -217,6 +217,7 @@ class Site:
             "inbox_count": len(decisions(items)),
             "env": s.config.env,
             "running": running_now(s),
+            "worker_busy": len(sched.worker_runs_active()),
             "workers_running": len(sched.worker_runs_active()),
             "reviews_running": len(sched.review_runs_active()),
             "max_parallel": sched.effective_max_parallel(),

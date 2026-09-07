@@ -491,7 +491,7 @@ and the words leave when the stream is back.
 
 | element | source | function |
 |---|---|---|
-| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active`, `check_runs_active`, `review_runs_active` for slots |
+| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active` for worker slots, `check_runs_active` for visible checks, and `review_runs_active` for review slots |
 | a record without a process | the run record | `Run.pid is None` and no `stdout.json` |
 | the clock's start, the server's clock | run records, the request | `Run.started_at` as UTC ISO in `data-started`; `now_iso()` at render in `data-server-now`; `Run.elapsed_minutes` for the first reading |
 | typical | run records | `now1.typical_seconds(runs)`: median elapsed per (mode, harness or token-free, difficulty) over the last seven days, falling back to (mode, harness or token-free) all-time, at least three samples, counting only runs that reached an outcome (done, failed, timeout, blocked): a cancelled, superseded or env_error run says nothing about how long the work takes, and a mechanical rebase must not share a median with an agent one |
