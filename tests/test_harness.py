@@ -54,6 +54,16 @@ def test_codex_usage_limit_is_a_quota_env_error():
     assert out["env_error"] is True and out["env_kind"] == "quota"
 
 
+def test_worker_tool_error_field_is_not_treated_as_harness_error():
+    """Only Codex's top-level error event belongs to the harness error channel."""
+    h = Harness("codex", {})
+    stdout = json.dumps({"type": "item.completed", "item": {
+        "type": "tool_result", "error": "You've hit your usage limit"
+    }})
+    out = h.parse(stdout)
+    assert out["env_error"] is False and out["env_kind"] == ""
+
+
 def test_ordinary_error_is_not_a_quota_env_error():
     h = Harness("claude", {})
     stdout = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,

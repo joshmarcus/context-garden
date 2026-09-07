@@ -148,6 +148,7 @@ DEFAULTS: dict[str, Any] = {
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
     },
     "max_attempts": 2,
+    "max_consecutive_env_errors": 3,
     "max_revisions": 3,
     "timeout_minutes": 90,
     "idle_minutes": 10,           # warn: show "idle N min" once a running worker has gone this long with no output or file change

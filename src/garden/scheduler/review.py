@@ -48,9 +48,16 @@ class ReviewMixin:
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
             max_rounds = int(self.cfg.get("review.max_rounds", 2))
-            if int(st.get("review_rounds", 0)) < max_rounds:
+            rounds = int(st.get("review_rounds", 0))
+            self_product_default = (self.cfg.product_self(task.product)
+                                    and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+            # The garden reviews its own changes. Once the first automated opinion is in,
+            # the default second opinion must be independent evidence (persona or human), not
+            # another automated pass from the same product. An explicit product setting keeps
+            # control of the ordinary automated-round policy.
+            if rounds < max_rounds and not (self_product_default and rounds >= 1):
                 wanted.append({"kind": "review", "count_round": not after_rebase})
-            else:
+            elif not self_product_default:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
                 self._set_needs_human(task, "review_cap", reason)
                 self.events.emit("needs_human", task.id, stop_kind="review_cap", reason=reason)
