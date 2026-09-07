@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ..brief import brief_gaps
@@ -11,45 +10,22 @@ from ..harness import DIFFICULTIES
 from ..model import Status, Task, now_iso
 from ..runs import Run
 
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-# A file path with an extension (bare filename, or a path with slashes), and something that
-# names the symptom: backtick or quoted text, or an `XxxError`/`XxxException` identifier.
-_FILE_RE = re.compile(
-    r"\b(?:[\w.-]+/)+[\w.-]+\.[a-zA-Z]{1,6}\b"
-    r"|\b[\w-]+\.(?:py|ts|tsx|js|jsx|md|yaml|yml|json|toml|sh|rs|go|rb|c|cpp|h|hpp|java|cfg|ini)\b",
-    re.IGNORECASE,
-)
-_ERROR_RE = re.compile(r"`([^`]+)`|\"([^\"]{4,80})\"|\b([A-Z]\w*(?:Error|Exception)\b(?:[:\s][^`\"\n.]{0,60})?)")
-
 
 def _normalise_title(text: str) -> str:
     """Case- and punctuation-insensitive title for matching a discovery against an open
     task: lowercase, words only, whitespace collapsed."""
-    return " ".join(_WORD_RE.findall(str(text or "").lower()))
+    return " ".join("".join(char if char.isalnum() else " " for char in str(text or "").lower()).split())
 
 
-def _finding_signature(text: str) -> tuple[set[str], set[str]]:
-    """Files and symptoms (error text) named in a discovery's free-text body. A backtick or
-    quoted span that turns out to just be one of the file names (agents often wrap a path in
-    backticks too) doesn't count as a symptom on its own."""
-    files = {m.group(0).lower() for m in _FILE_RE.finditer(text)}
-    errors = set()
-    for m in _ERROR_RE.finditer(text):
-        val = next(g for g in m.groups() if g).strip().lower()
-        if val and val not in files:
-            errors.add(val)
-    return files, errors
+def _same_finding(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Two structured discoveries name the same file and error.
 
-
-def _same_finding(a: str, b: str) -> bool:
-    """Two free-text reports name the same finding if they share a file and a symptom;
-    either alone (e.g. two reports touching the same file) is too weak to merge on."""
-    a_files, a_errors = _finding_signature(a)
-    if not a_files or not a_errors:
-        return False
-    b_files, b_errors = _finding_signature(b)
-    return bool(a_files & b_files) and bool(a_errors & b_errors)
+    Both fields are required: a shared file alone is too weak to merge unrelated work.
+    """
+    a_file = str(a.get("file") or "").strip().casefold()
+    a_error = str(a.get("error") or "").strip().casefold()
+    return bool(a_file and a_error and a_file == str(b.get("file") or "").strip().casefold()
+                and a_error == str(b.get("error") or "").strip().casefold())
 
 
 class DiscoveredMixin:
@@ -68,15 +44,14 @@ class DiscoveredMixin:
         return [t for t in self.store.tasks().values()
                 if t.product == task.product and t.phase in scope and not t.status.terminal]
 
-    def _match_existing_discovery(self, title: str, body: str, candidates: list[Task]) -> Task | None:
+    def _match_existing_discovery(self, title: str, item: dict[str, Any], candidates: list[Task]) -> Task | None:
         norm = _normalise_title(title)
         for cand in candidates:
             if norm and norm == _normalise_title(cand.title):
                 return cand
-        if body.strip():
-            for cand in candidates:
-                if _same_finding(body, cand.body):
-                    return cand
+        for cand in candidates:
+            if _same_finding(item, cand.extra):
+                return cand
         return None
 
     def _attach_discovery(self, existing: Task, task: Task, run: Run, title: str) -> None:
@@ -90,7 +65,7 @@ class DiscoveredMixin:
     def _file_discovered(self, task: Task, run: Run, result: dict[str, Any]) -> list[Task]:
         """File a worker's discoveries. Each item carries a `kind` (default `task`):
         `task` becomes a draft task file (as before, unless it matches an already-open task
-        in this phase or the next by title or by file+symptom, in which case it is noted on
+        in this phase or the next by title or by structured file+error fields, in which case it is noted on
         that task instead - see `_attach_discovery`); `duplicate` and `cancel` become
         decision cards for a human (they never file work); `note` goes to the phase's
         friction record and makes no card."""
@@ -114,7 +89,7 @@ class DiscoveredMixin:
                 continue
             title = str(item["title"]).strip()
             body_in = str(item.get("body") or "")
-            match = self._match_existing_discovery(title, body_in, candidates)
+            match = self._match_existing_discovery(title, item, candidates)
             if match is not None:
                 self._attach_discovery(match, task, run, title)
                 continue
@@ -134,6 +109,10 @@ class DiscoveredMixin:
                 difficulty=diff if diff in DIFFICULTIES else "medium",
             )
             t.discovered_from = task.id
+            for field in ("file", "error"):
+                value = str(item.get(field) or "").strip()
+                if value:
+                    t.extra[field] = value
             # A blocking discovery normally skips the `approve` gate straight to ready; but
             # its brief must still be complete (CG-193's brief_gaps), or it dispatches a run
             # against placeholder criteria or a dead reading path. Hold it as a draft instead

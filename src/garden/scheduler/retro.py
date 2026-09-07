@@ -44,6 +44,7 @@ from ..runs import Run
 from .report import TickReport
 
 _RUN_FOOTER_RE = re.compile(r"_garden persona run (\S+)_\s*$")
+_SAFE_RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
 class RetroMixin:
@@ -67,15 +68,15 @@ class RetroMixin:
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
 
-    def _persona_revs(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
         (`reports`, from `persona_reports`) carries only prose, so this recovers the run id from
         its footer line and re-parses that run's `final.md` for the structured findings and the
-        persona's own sections (CG-187, CG-188). Every phase persona run is recorded under the
-        aux task id `_persona` (see `dispatch_aux`, which falls back to `f"_{kind}"` when
-        dispatched with no task), not a per-phase id, so that is where every run's `final.md`
-        lives regardless of which phase it reviewed."""
+        persona's own sections (CG-187, CG-188). Phase persona runs are recorded under their
+        phase-specific auxiliary task id, so reports from separate phases cannot collide."""
         out: dict[str, dict[str, Any]] = {}
+        runs_dir = self.runs.dir.resolve()
+        phase_run_dir = f"_{phase.product}-{phase.name}"
         for name, path in reports.items():
             try:
                 text = path.read_text()
@@ -84,7 +85,15 @@ class RetroMixin:
             m = _RUN_FOOTER_RE.search(text)
             if not m:
                 continue
-            final_path = self.runs.dir / "_persona" / m.group(1) / "final.md"
+            run_id = m.group(1)
+            if not _SAFE_RUN_ID_RE.fullmatch(run_id):
+                continue
+            final_path = self.runs.dir / phase_run_dir / run_id / "final.md"
+            try:
+                if not final_path.resolve().is_relative_to(runs_dir):
+                    continue
+            except OSError:
+                continue
             if not final_path.exists():
                 continue
             out[name] = parse_persona(final_path.read_text())
@@ -94,12 +103,12 @@ class RetroMixin:
         """One draft task per finding needs severity/area/suggestion (CG-187); pull them from
         the parsed verdicts."""
         return {name: [f for f in rev.get("findings") or [] if isinstance(f, dict)]
-                for name, rev in self._persona_revs(reports).items()}
+                for name, rev in self._persona_revs(phase, reports).items()}
 
-    def _persona_sections(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    def _persona_sections(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """Each persona's own declared sections (CG-188); only those that reported a `sections`
         object, so `persona_features` can lift structured features into the retro's list."""
-        return {name: rev["sections"] for name, rev in self._persona_revs(reports).items()
+        return {name: rev["sections"] for name, rev in self._persona_revs(phase, reports).items()
                 if isinstance(rev.get("sections"), dict)}
 
     def _retro_materials(self, phase: Phase, names: list[str]):
@@ -514,7 +523,7 @@ class RetroMixin:
         if entry.get("no_file"):
             filed, filed_findings, followups = [], [], []
         else:
-            persona_feats = persona_features(self._persona_sections(reports))
+            persona_feats = persona_features(self._persona_sections(phase, reports))
             filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, alloc,
                                               persona_feats=persona_feats)
             persona_findings = self._persona_findings(phase, reports)
