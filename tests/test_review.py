@@ -130,6 +130,30 @@ def test_queued_reviews_take_shared_capacity_before_lower_priority_work(sched):
     assert not sched.state.get(critical.id).get("pending_reviews")
 
 
+
+def test_queued_critical_review_precedes_a_lower_priority_check(sched):
+    from garden.scheduler import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    critical = sched.store.task("DM-001")
+    critical.priority = 0
+    critical.status = Status.IN_REVIEW
+    sched.store.save(critical)
+    sched.state.get(critical.id)["pending_reviews"] = [{"kind": "review"}]
+    lower = sched.store.task("DM-002")
+    lower.priority = 3
+    sched.store.save(lower)
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    rep = TickReport()
+    with pytest.raises(ResourcePressureError):
+        sched._dispatch_check_run(lower, worktree=sched.worktree_for(lower),
+                                  branch=lower.default_branch(), base="main", specs=[],
+                                  stage="pre_pr", cont={}, rep=rep)
+    assert rep.dispatched == ["DM-001(review)"]
+    assert not sched.state.get(lower.id).get("check_run")
+    assert not any(r.task_id == lower.id and r.mode == "check" for r in sched.runs.active())
+
 def test_queued_reviews_use_task_order_to_break_equal_priority_ties(sched):
     """Queued reviews are strict by priority and deterministic by task order then id."""
     from garden.scheduler import TickReport
@@ -151,6 +175,19 @@ def test_queued_reviews_use_task_order_to_break_equal_priority_ties(sched):
     assert rep.dispatched == ["DM-002(review)"], rep.errors
     assert sched.state.get(first.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
 
+
+
+def test_queued_review_explanation_matches_equal_priority_drain_order(sched):
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    for task, order in ((first, 10), (second, 20)):
+        task.priority = 0
+        task.order = order
+        task.status = Status.IN_REVIEW
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [{"kind": "review"}]
+    assert sched._queued_review_predecessor(first) is None
+    assert sched._queued_review_predecessor(second).id == first.id
 
 def test_new_equal_priority_review_waits_for_an_established_queue_member(sched):
     """A task cannot repeatedly reclaim the slot while a band-mate is already queued."""

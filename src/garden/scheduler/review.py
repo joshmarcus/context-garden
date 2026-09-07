@@ -223,11 +223,14 @@ class ReviewMixin:
 
     def _queued_review_predecessor(self, task: Task) -> Task | None:
         """The eligible queued task that must be admitted before ``task``, if any."""
+        already_queued = bool(self.state.get(task.id).get("pending_reviews"))
         for candidate in self._queued_review_tasks():
             if candidate.id == task.id:
                 continue
             if candidate.priority > task.priority:
                 break
+            if already_queued and dispatch_sort_key(candidate) >= dispatch_sort_key(task):
+                continue
             if self._worker_holding_reviews(candidate) is not None:
                 continue
             if not self._queued_review_can_start(candidate):
