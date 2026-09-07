@@ -380,8 +380,8 @@ class HumanMixin:
         """When a human asks for one more automated review after the review cap stopped it,
         roll the counter back one so exactly one more review round is dispatchable. Returns
         True if the cap was raised."""
-        max_rounds = int(self.cfg.get("review.max_rounds", 2))
-        if int(st.get("review_rounds", 0)) >= max_rounds:
+        max_rounds = self.cfg.review_max_rounds()
+        if max_rounds is not None and int(st.get("review_rounds", 0)) >= max_rounds:
             st["review_rounds"] = max_rounds - 1
             return True
         return False

@@ -648,9 +648,11 @@ CLI loop like `garden trial --wait`) refreshes only its task/product scan
 (`Store.invalidate_tasks`) between ticks, never garden.yaml itself, so no other code path can
 hand a held reload's executable fields a route around the gate.
 
-Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
-`review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
-Hitting a cap flags the task for a human instead of retrying.
+Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
+`timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`. `review.max_rounds`
+defaults to two but accepts a positive cap or `null` for unlimited review rounds; its
+separate `review.friction_after` threshold emits one non-blocking loop record. Stall
+handling still stops unchanged paid attempts.
 
 **`notify.command`** (`src/garden/notify.py`) is a shell command the scheduler runs
 whenever a task needs a human: `awaiting_triage` (once a pending review's verdict is
