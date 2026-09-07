@@ -60,6 +60,12 @@ flowchart LR
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
   different brief.
+- **Maintenance pause** is the installation boundary. `garden pause` only blocks new
+  dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
+  requests a whole-scheduler freeze and the next transaction acknowledges quiescence without
+  collecting results or starting work. Finished results remain durable and do not block a
+  reinstall; `garden maintenance-status` names them separately from concrete live-process
+  blockers, and `garden maintenance-resume` explicitly permits normal collection again.
 - **GitHub** holds the pull requests and the review conversation. Only the scheduler opens
   PRs and talks to it through the `gh` CLI when it is installed and logged in, otherwise
   the REST API with `GITHUB_TOKEN`. Local workers never push or open PRs; a remote SSH

@@ -142,6 +142,28 @@ def test_design_files_are_safe_and_use_the_product_checkout(garden):
     assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
 
 
+def test_design_routes_select_the_requested_product(garden):
+    """CG-318: a task and walkthrough for a second product never read the first one's art."""
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    second_repo = garden.parent / "second-repo"
+    second_repo.mkdir()
+    (second_repo / "docs" / "design").mkdir(parents=True)
+    (second_repo / "docs" / "design" / "second.md").write_text("# Second product")
+    (garden / "second").mkdir()
+    (garden / "second" / "product.md").write_text("# second\n")
+    config["products"]["second"] = {"repo": str(second_repo), "base_branch": "main", "id_prefix": "SC"}
+    config_path.write_text(yaml.safe_dump(config))
+    c = client(garden)
+
+    response = c.get("/design/second.md?product=second")
+    assert response.status_code == 200 and "Second product" in response.text
+    index = c.get("/design?product=second").text
+    assert "second.md?product=second" in index
+
+
 def test_snapshot_scrubs_sensitive_strings_not_just_field_names():
     value = _safe({"message": "failed in /home/alice/repo with token=abc123 and ghp_secret",
                    "error": "Authorization: Bearer xyz"})
@@ -1597,6 +1619,17 @@ def test_pause_resume_web(garden):
     assert "dispatch paused" not in home
     config_page = c.get("/config").text
     assert "Pause dispatch" in config_page
+
+
+def test_maintenance_pause_web_and_api(garden):
+    c = client(garden)
+    r = c.post("/maintenance/pause", data={"reason": "restart"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert c.get("/api/maintenance").json()["requested"]
+    assert "Maintenance is" in c.get("/config").text
+    r = c.post("/maintenance/resume", follow_redirects=False)
+    assert r.status_code == 303
+    assert not c.get("/api/maintenance").json()["requested"]
 
 
 def test_max_parallel_override_from_config_page(garden):

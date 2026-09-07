@@ -43,6 +43,21 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Installation</div>
+  <h3>Maintenance pause</h3>
+  {% if maintenance.requested %}
+  <p style="margin:0 0 10px">Maintenance is <strong>{{ "quiesced" if maintenance.quiesced else "requested" }}</strong>. Unlike dispatch pause, it freezes collection and every scheduler mutation at a transaction boundary.</p>
+  {% if maintenance.live %}<p class="warn">Reinstall blockers:{% for run in maintenance.live %}<br><span class="mono">{{ run.task }}/{{ run.run }}</span> — {{ run.blocker }}{% endfor %}</p>{% endif %}
+  {% if maintenance.finished_uncollected %}<p class="muted">Finished but uncollected (safe to reinstall): {{ maintenance.finished_uncollected|join(', ') }}.</p>{% endif %}
+  <p><strong>{{ "Reinstall ready" if maintenance.ready else "Reinstall not ready" }}</strong></p>
+  <form method="post" action="/maintenance/resume" class="actions"><button class="primary">Resume maintenance</button></form>
+  {% else %}
+  <p class="muted">Use this before reinstalling or restarting the scheduler. It lets active processes finish and save results, but does not collect them until you explicitly resume. Ordinary dispatch pause still lets collection, checks, reviews and merges continue.</p>
+  <form method="post" action="/maintenance/pause" class="actions"><input type="text" name="reason" placeholder="Reason (optional)" style="width:260px"><button>Freeze for maintenance</button></form>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Capacity</div>
   <h3>Local execution boundary</h3>
   <p class="muted" style="margin:0">

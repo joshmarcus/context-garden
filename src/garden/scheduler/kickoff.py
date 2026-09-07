@@ -32,6 +32,7 @@ class KickoffMixin:
                    for e in self._aux_list())
 
     def start_kickoff(self, phase: Phase) -> Any:
+        self.require_maintenance_running()
         if self.kickoff_pending(phase.key):
             raise RuntimeError(f"{phase.key} already has a kickoff run in flight")
         product = phase.product

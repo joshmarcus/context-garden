@@ -1,5 +1,6 @@
 """Reap: what a finished worker run turns into (retry, fail, push, pre-PR checks, the base probe, manual runs)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ from garden.model import Status
 from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
+from garden.scheduler.snapshot import write_snapshot
 from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
@@ -148,6 +150,21 @@ def test_reap_preserves_dirty_snapshot_without_adding_it_to_the_pr_or_next_round
     sched.tick()  # reap the revise run
     assert "docs/design/snapshot.json" not in gitops.git("diff", "--name-only", "main...HEAD", cwd=worktree)
     assert len(sched.runs.latest("DM-001").recovery_artifacts) == 0
+
+
+def test_design_snapshot_includes_the_real_merge_and_dispatch_queues(sched, tmp_path):
+    """CG-318: queue state belongs to task records, never a nonexistent `_queue` entry."""
+    sched.state.get("DM-001").update(automerge_candidate=True, merge_head=True,
+                                       automerge_ready_at="2026-09-06T12:00:00+00:00")
+    output = tmp_path / "worktree"
+    task = sched.store.task("DM-001")
+    task.title = "Design the queue"
+    write_snapshot(sched, task, output)
+
+    queue = json.loads((output / "docs" / "design" / "snapshot.json").read_text())["queue"]
+    assert queue["merge"] == [{"task": "DM-001", "candidate": True, "head": True,
+                                "ready_at": "2026-09-06T12:00:00+00:00", "blocked": ""}]
+    assert queue["dispatch"] == [{"task": "DM-001", "mode": "work", "reason": "priority 1"}]
 
 
 def test_missing_result_preserves_dirty_new_file_without_discarding_committed_work(sched, fake_github):
@@ -353,7 +370,7 @@ def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fa
     _seed_base_guard(sched, "still-bad")  # base moves, but stays red
 
     # the mechanical rebase onto the moved base never applies cleanly
-    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto: (False, ["sentinel.txt"], {}))
+    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto, **_kwargs: (False, ["sentinel.txt"], {}))
 
     for i in range(3):
         # each cycle reaps the running round, runs the pre-PR check and base probe as detached
@@ -494,7 +511,10 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     task.pr = "https://example.test/acme/widget/pull/7"
     sched.store.save(task)
     wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), task.default_branch(), "main")
-    specs = [{"name": "unit", "command": "kill -TERM $$"}]
+    specs = [{"name": "unit", "command": (
+        "printf 'Traceback (most recent call last):\\n  File \\\"check.py\\\", line 7\\n"
+        "RuntimeError: contention\\n' >&2; kill -TERM $$"
+    )}]
     cont = sched._pre_pr_cont(None, wt, task.default_branch(), "main", "")
     sched._dispatch_check_run(task, worktree=wt, branch=task.default_branch(), base="main", specs=specs,
                               stage="merge_rebase", cont=cont, rep=TickReport())
@@ -511,6 +531,8 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert task.status == Status.IN_REVIEW
     assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
     assert "SIGTERM" in stop["reason"]
+    assert "Traceback (most recent call last):" in stop["reason"]
+    assert "RuntimeError: contention" in stop["reason"]
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 

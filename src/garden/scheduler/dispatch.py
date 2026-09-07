@@ -17,6 +17,8 @@ from ..runs import Run
 from .report import TickReport
 from .selection import worker_candidates
 
+MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
+
 
 class DispatchMixin:
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
@@ -313,6 +315,7 @@ class DispatchMixin:
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
                   reserved_run: Run | None = None) -> Run:
+        self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)
@@ -420,10 +423,14 @@ class DispatchMixin:
 
             text = prompt_override or rebase_brief(
                 self.store, task, branch=branch, base=base,
-                hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []))
+                hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []),
+                artifacts=dict(st.get("rebase_artifacts") or {}))
         else:
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
             text = prompt_override or brief.text
+        prompt_bytes = len(text.encode("utf-8", "replace"))
+        if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
+            raise ValueError(f"serialized prompt is {prompt_bytes:,} bytes; limit is {MAX_SERIALIZED_PROMPT_BYTES:,}")
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")

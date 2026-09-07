@@ -50,6 +50,7 @@ def register(app: FastAPI, site: Site) -> None:
         config_hold = sched.config_hold()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
+        maintenance = sched.maintenance_readiness()
         stop_rows = [{"name": name, "active": name == active, "meaning": describe_stop(stop),
                      **{f: stop.get(f) for f in ("workers", "reviews", "review_difficulty", "retro_difficulty", "observe")}}
                     for name, stop in stops.items()]
@@ -65,6 +66,7 @@ def register(app: FastAPI, site: Site) -> None:
             observe_profile_source=sched.effective_source("observe.profile"),
             observe_profile_effective=sched.effective("observe.profile"),
             operating_profile_file=str(cfg.get("operating_profile") or ""),
+            maintenance=maintenance,
             operating_profile_override=sched.overrides().get("operating_profile"),
             operating_profile_active=active, operating_profile_stop_names=list(stops),
             operating_profile_rows=stop_rows))

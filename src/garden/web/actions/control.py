@@ -56,6 +56,27 @@ def register(app: FastAPI, site: Site) -> None:
             return RedirectResponse(_flash_url(back, "something failed; see the log"), status_code=303)
         return RedirectResponse(back, status_code=303)
 
+    @app.post("/maintenance/pause")
+    async def web_maintenance_pause(request: Request, reason: str = Form("")):
+        back = request.headers.get("referer", "/config")
+        with hub.action_lock:
+            hub.reader().request_maintenance_pause(by="web", reason=reason.strip())
+        hub._log("maintenance pause requested via web")
+        return RedirectResponse(back, status_code=303)
+
+    @app.post("/maintenance/resume")
+    def web_maintenance_resume(request: Request):
+        back = request.headers.get("referer", "/config")
+        with hub.action_lock:
+            hub.reader().resume_maintenance(by="web")
+        hub._log("maintenance resumed via web")
+        return RedirectResponse(back, status_code=303)
+
+    @app.get("/api/maintenance")
+    def maintenance_status():
+        """Read-only maintenance readiness API for installers."""
+        return hub.reader().maintenance_readiness()
+
     @app.post("/config/max-parallel")
     def web_set_max_parallel(request: Request, value: str = Form("")):
         value = value.strip()
