@@ -41,11 +41,32 @@ class ResourceStatus:
     heavy_conflict: str | None
     heavy_running: int
     heavy_waiting: int
-    reasons: tuple[str, ...]
+    pressure_reasons: tuple[str, ...]
+
+    @property
+    def capacity_full(self) -> bool:
+        """Whether ordinary local concurrency, not host pressure, is full."""
+        return self.active >= self.limit
+
+    @property
+    def capacity_reason(self) -> str | None:
+        if self.capacity_full:
+            return f"local execution capacity is full ({self.active}/{self.limit} busy)"
+        return None
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """All admission blockers, with capacity kept distinct from pressure."""
+        return ((self.capacity_reason,) if self.capacity_reason else ()) + self.pressure_reasons
 
     @property
     def pressured(self) -> bool:
-        return bool(self.reasons)
+        """True only for a real host resource gate, never normal occupancy."""
+        return bool(self.pressure_reasons)
+
+    @property
+    def admission_blocked(self) -> bool:
+        return self.capacity_full or self.pressured
 
 
 class ResourcePressureError(RuntimeError):
@@ -196,29 +217,27 @@ class ResourceMixin:
                     continue
                 heavy_running += state == "running"
                 heavy_waiting += state == "waiting"
-        reasons: list[str] = []
-        if active >= limit:
-            reasons.append(f"local execution limit reached ({active}/{limit})")
+        pressure_reasons: list[str] = []
         if memory_min and memory is not None and memory < memory_min:
             if cgroup_memory is not None and cgroup_memory <= (host_memory or memory):
                 prefix = "" if cgroup_boundary == "controller cgroup" else f"{cgroup_boundary} "
-                reasons.append(f"{prefix}available memory {memory} MiB is below {memory_min} MiB")
+                pressure_reasons.append(f"{prefix}available memory {memory} MiB is below {memory_min} MiB")
             else:
-                reasons.append(f"available memory {memory} MiB is below {memory_min} MiB")
+                pressure_reasons.append(f"available memory {memory} MiB is below {memory_min} MiB")
         if any(events.get(name, 0) for name in ("oom", "oom_kill")):
-            reasons.append("execution cgroup memory events report oom pressure")
+            pressure_reasons.append("execution cgroup memory events report oom pressure")
         if temp_min and temp is not None and temp < temp_min:
-            reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
+            pressure_reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
         return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, cgroup_memory,
                               cgroup_boundary, tuple(sorted(events.items())), isolation,
                               requested_heavy_limit, heavy_limit, heavy_conflict,
-                              heavy_running, heavy_waiting, tuple(reasons))
+                              heavy_running, heavy_waiting, tuple(pressure_reasons))
 
     def _record_resource_status(self, status: ResourceStatus) -> None:
         ctrl = self.control()
         old = ctrl.get("resource_pressure")
         if status.pressured:
-            reason = "; ".join(status.reasons)
+            reason = "; ".join(status.pressure_reasons)
             if not old or old.get("reason") != reason:
                 ctrl["resource_pressure"] = {"reason": reason, "at": now_iso()}
                 self.events.emit("resource_pressure", "", reason=reason, active=status.active, limit=status.limit)
@@ -237,13 +256,18 @@ class ResourceMixin:
 
     def local_slots_free(self) -> int:
         status = self.resource_status()
-        if status.pressured:
+        if status.admission_blocked:
             return 0
         return max(0, status.limit - status.active)
 
     def _admit_local_launch(self, kind: str) -> None:
         status = self.refresh_resource_pressure()
-        if status.pressured:
+        if status.admission_blocked:
+            if status.capacity_full and not status.pressured:
+                raise ResourcePressureError(
+                    f"{kind} waits for a local execution slot ({status.active}/{status.limit} busy); "
+                    "eligible work dispatches automatically when one finishes"
+                )
             raise ResourcePressureError(
                 f"{kind} deferred by resource pressure: {'; '.join(status.reasons)}; "
                 "pause dispatch or wait for active runs to drain, then retry"
