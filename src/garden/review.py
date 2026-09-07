@@ -6,6 +6,7 @@ the findings into the normal revise loop."""
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,22 @@ REVIEW_MARKER = "GARDEN_REVIEW:"
 
 INTERACTION_PATHS = (
     "src/garden/web/", "src/garden/tui/", "src/garden/cli/", "src/garden/scheduler/", "src/garden/qa/",
-    "src/garden/inbox.py", "src/garden/model.py",
+    "src/garden/runner/", "src/garden/brief.py", "src/garden/checkrun.py", "src/garden/checks.py",
+    "src/garden/config.py", "src/garden/gitops.py", "src/garden/github.py", "src/garden/harness.py",
+    "src/garden/inbox.py", "src/garden/kickoff.py", "src/garden/model.py", "src/garden/notify.py",
+    "src/garden/outcomes.py", "src/garden/run_supervisor.py", "src/garden/runs.py", "src/garden/store.py",
 )
+
+SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
+
+
+def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
+    if not isinstance(value, list) or len(value) < minimum_items:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item)
+           for item in value):
+        return None
+    return value
 
 
 def interaction_requirement(changed: list[str], task_body: str) -> tuple[bool, bool, str]:
@@ -67,11 +82,28 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         gaps.append("interaction requirements remain unverified")
     if scalability:
         load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
-        required_load = ("served_app", "history_sizes", "cache_expiry_intervals", "executing_processes",
-                         "latencies", "read_scan_counts", "load_kind")
-        absent = [name for name in required_load if not load.get(name)]
-        if absent:
-            gaps.append("scalability interaction is missing " + ", ".join(absent))
+        if not isinstance(load.get("served_app"), str) or not load["served_app"].startswith(("http://", "https://")):
+            gaps.append("scalability served_app must be a served HTTP URL")
+        sizes = _numbers(load.get("history_sizes"), minimum_items=2)
+        if sizes is None or any(size < 0 for size in sizes) or sizes != sorted(set(sizes)):
+            gaps.append("scalability history_sizes must contain at least two distinct increasing numeric sizes")
+        intervals = load.get("cache_expiry_intervals")
+        if isinstance(intervals, bool) or not isinstance(intervals, int) or intervals < 2:
+            gaps.append("scalability cache_expiry_intervals must be an integer of at least two")
+        processes = load.get("executing_processes")
+        if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
+            gaps.append("scalability executing_processes must be a positive integer")
+        latencies = _numbers(load.get("latencies"), minimum_items=2)
+        if latencies is None or any(latency < 0 for latency in latencies):
+            gaps.append("scalability latencies must contain at least two non-negative numeric samples")
+        counts = load.get("read_scan_counts")
+        if not isinstance(counts, dict) or any(
+            isinstance(counts.get(name), bool) or not isinstance(counts.get(name), (int, float))
+            or not math.isfinite(counts[name]) or counts[name] < 0 for name in ("reads", "scans")
+        ):
+            gaps.append("scalability read_scan_counts must contain non-negative numeric reads and scans")
+        if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
+            gaps.append("scalability load_kind must be controlled or real_model_harnesses")
     return gaps
 
 REVIEW_RULES = """\
@@ -144,7 +176,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled or real model harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """

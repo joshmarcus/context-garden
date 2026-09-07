@@ -1,3 +1,4 @@
+import copy
 import pytest
 
 from garden.model import Status
@@ -11,7 +12,7 @@ from garden.review import (
     review_brief,
     review_to_markdown,
 )
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
 
 
@@ -204,6 +205,44 @@ def test_interaction_review_brief_names_running_app_states_and_head(garden):
     )
 
 
+@pytest.mark.parametrize(("behavior", "path"), [
+    ("worker interruption", "src/garden/run_supervisor.py"),
+    ("changed PR head", "src/garden/gitops.py"),
+    ("restart recovery", "src/garden/scheduler/state.py"),
+    ("no_change outcome", "src/garden/outcomes.py"),
+    ("runner execution", "src/garden/runner/local.py"),
+    ("run records", "src/garden/runs.py"),
+    ("harness execution", "src/garden/harness.py"),
+])
+def test_lifecycle_implementations_require_interaction_evidence(behavior, path):
+    required, scalability, reason = interaction_requirement([path], "Lifecycle reliability")
+    assert required and not scalability, behavior
+    assert path in reason, behavior
+
+
+@pytest.mark.parametrize("path", [
+    "src/garden/runner/local.py",
+    "src/garden/runs.py",
+    "src/garden/gitops.py",
+    "src/garden/harness.py",
+])
+def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
+    sched, fake_github, monkeypatch, path,
+):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: [path])
+    task = sched.store.task("DM-001")
+    run = sched.dispatch_review(task)
+
+    assert run.env_snapshot["interaction_required"] is True
+    assert run.process_finished()
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id)
+    assert persisted is not None
+    assert persisted.result["verdict"] == "request_changes"
+    assert "Running-app evidence incomplete" in persisted.result["findings"][-1]["summary"]
+
+
 def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):
     artifact = tmp_path / "journey.json"
     artifact.write_text("{}")
@@ -240,13 +279,48 @@ def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp
         "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
                         "cache_expiry_intervals": 3, "executing_processes": 2,
                         "latencies": [0.1, 0.2], "read_scan_counts": {"reads": 3, "scans": 0},
-                        "load_kind": "controlled, not real model harnesses"},
+                        "load_kind": "controlled"},
     }}
     assert interaction_evidence_gaps(review, required=False, scalability=True, expected_head="h") == []
     del review["interaction"]["scalability"]["read_scan_counts"]
     assert "read_scan_counts" in interaction_evidence_gaps(
         review, required=False, scalability=True, expected_head="h",
     )[0]
+
+
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("history_sizes", [100], "history_sizes"),
+    ("history_sizes", [1000, 100], "history_sizes"),
+    ("history_sizes", [100, 100], "history_sizes"),
+    ("cache_expiry_intervals", 1, "cache_expiry_intervals"),
+    ("cache_expiry_intervals", "3", "cache_expiry_intervals"),
+    ("executing_processes", 0, "executing_processes"),
+    ("executing_processes", True, "executing_processes"),
+    ("latencies", [0.1], "latencies"),
+    ("latencies", [0.1, "slow"], "latencies"),
+    ("read_scan_counts", {"reads": 3}, "read_scan_counts"),
+    ("read_scan_counts", {"reads": 3, "scans": "one"}, "read_scan_counts"),
+    ("load_kind", "synthetic-ish", "load_kind"),
+])
+def test_scalability_evidence_rejects_malformed_boundaries(tmp_path, field, value, message):
+    artifact = tmp_path / "latencies.json"
+    artifact.write_text("[]")
+    interaction = {
+        "head": "h", "environment": "disposable", "command": "serve fixture",
+        "states": {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
+                   for name in ("affected", "empty", "failure_recovery")},
+        "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
+        "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
+                        "cache_expiry_intervals": 3, "executing_processes": 2,
+                        "latencies": [0.1, 0.2], "read_scan_counts": {"reads": 3, "scans": 0},
+                        "load_kind": "controlled"},
+    }
+    malformed = copy.deepcopy(interaction)
+    malformed["scalability"][field] = value
+    gaps = interaction_evidence_gaps(
+        {"interaction": malformed}, required=False, scalability=True, expected_head="h",
+    )
+    assert any(message in gap for gap in gaps)
 
 
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
