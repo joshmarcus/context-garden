@@ -1,3 +1,9 @@
+Latest integration at b964163 includes CG376 unlimited caps and CG372 priority admission.
+140 review/Now/preflight tests passed; two source-identity rejection cases passed separately.
+Two concurrent replay preparations neither recurse nor publish duplicate starts, and a queued
+review reports its actual validation-check gate. The real served journey again passed all
+9 flows / 104 requests. See b964163-manifest.json; this commit adds evidence only.
+
 # Latest operator validation
 
 The operator repaired synchronous replay startup under fast-forward. At b77f4b9,
