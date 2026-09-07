@@ -35,6 +35,7 @@ from ..runs import Run, RunStore
 from ..store import Store
 from ..trials import TrialLog
 from .aux import AuxMixin
+from .browser import BrowserMixin
 from .budget import BudgetMixin
 from .checkruns import CheckRunMixin
 from .discovered import DiscoveredMixin
@@ -79,6 +80,7 @@ CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge che
 
 class Scheduler(
     BudgetMixin,
+    BrowserMixin,
     ResourceMixin,
     ReapMixin,
     CheckRunMixin,

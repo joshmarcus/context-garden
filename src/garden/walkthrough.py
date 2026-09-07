@@ -420,10 +420,18 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
     captures = [str(p) for p in sorted(out_dir.iterdir())
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
+    expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
+    pngs = [path for path in captures if path.endswith(".png")]
+    complete = result.screenshots and len(pngs) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not result.screenshots:
-        summary = f"HTML-only capture; {result.browser_note or 'browser unavailable'}"
-    return {"status": "pass", "summary": summary, "details": result.browser_note,
+    if not complete:
+        summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
+    infrastructure = any(marker in (result.browser_note or "").lower() for marker in (
+        "not installed", "would not launch", "installation failed", "shared librar"))
+    return {"status": "pass" if complete else "fail", "summary": summary,
+            "failure_kind": "infrastructure" if not complete and infrastructure else
+                            ("product" if not complete else ""),
+            "details": result.browser_note or ("missing screenshot files" if not complete else ""),
             "captures": captures, "pages": [p.spec.slug for p in result.pages]}
 
 

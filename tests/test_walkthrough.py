@@ -112,6 +112,15 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
                 assert (tmp_path / "ui" / f"{slug}-{width}-{scheme}.png").exists()
 
 
+def test_ui_check_rejects_html_only_output_as_infrastructure_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: "Chromium would not launch: libnss3.so is missing")
+    result = _seeded_ui_capture(tmp_path / "ui")
+    assert result["status"] == "fail"
+    assert result["failure_kind"] == "infrastructure"
+    assert "0/" in result["summary"]
+    assert not any(path.endswith(".png") for path in result["captures"])
+
+
 def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch):
     worktree = tmp_path / "proposed"
     (worktree / "src").mkdir(parents=True)
