@@ -30,7 +30,8 @@ back before review; include a stated reason rather than silently skipping an ite
 
 # A regular unified diff prefixes newly-added source lines with ``+``.  Match both
 # that form and raw file content, but not a marker removed from the branch.
-_CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
+# A separator alone is also valid Setext Markdown; require a boundary marker.
+_CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|>>>>>>>)(?:[ \t]|$)", re.MULTILINE)
 
 
 def _is_ui_path(path: str) -> bool:

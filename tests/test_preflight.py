@@ -44,6 +44,21 @@ def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
     assert {row["status"] for row in results} == {"pass"}
 
 
+
+def test_mechanical_preflight_allows_setext_heading_and_removed_markers(garden, monkeypatch):
+    from garden import gitops
+
+    worktree = garden / "markdown"
+    worktree.mkdir()
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: (
+        "+Heading\n+=======\n-<<<<<<< ours\n->>>>>>> theirs\n"
+        if "--name-only" not in args else "README.md\n"
+    ))
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+    assert {row["status"] for row in results} == {"pass"}
+
 def test_mechanical_preflight_ignores_deleted_python_modules(garden, monkeypatch):
     worktree = garden / "deleted"
     worktree.mkdir()
