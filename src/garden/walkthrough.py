@@ -235,6 +235,18 @@ NARROW_OUTER_WIDTH = 600
 NARROW_FRAME_HEIGHT = 5400
 
 
+class NarrowViewportError(RuntimeError):
+    """The embedded page loaded, but did not fit the required narrow viewport."""
+
+    def __init__(self, measurements: dict[str, int]) -> None:
+        self.measurements = measurements
+        super().__init__(
+            "narrow frame measured "
+            f"clientWidth {measurements['clientWidth']}, "
+            f"scrollWidth {measurements['scrollWidth']}"
+        )
+
+
 def _narrow_frame(page: object, url: str) -> object:
     """Load a page in a 390px frame so Edge's outer-window floor cannot widen it."""
     import html
@@ -244,23 +256,27 @@ def _narrow_frame(page: object, url: str) -> object:
                f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
                "</body></html>")
     page.set_content(wrapper, wait_until="networkidle", timeout=30000)
-    frame = page.frame(url=url)
+    iframe = page.locator("iframe")
+    handle = getattr(iframe, "element_handle", lambda: None)()
+    frame = handle.content_frame() if handle is not None else page.frame(url=url)
     if frame is None:
         raise RuntimeError(f"narrow frame did not load {url}")
+    wait_for_load_state = getattr(frame, "wait_for_load_state", None)
+    if wait_for_load_state is not None:
+        wait_for_load_state("domcontentloaded", timeout=30000)
     measured = frame.evaluate(
         """() => {
             const width = document.documentElement.clientWidth;
             const scrollWidth = document.documentElement.scrollWidth;
-            if (width !== 390 || scrollWidth !== 390) {
-                throw new Error(`narrow frame measured clientWidth ${width}, scrollWidth ${scrollWidth}`);
-            }
             return {clientWidth: width, scrollWidth, scrollHeight: document.documentElement.scrollHeight};
         }"""
     )
-    page.locator("iframe").evaluate(
+    iframe.evaluate(
         "(iframe, height) => { iframe.style.height = `${Math.max(5400, height)}px`; }",
         measured["scrollHeight"],
     )
+    if measured["clientWidth"] != 390 or measured["scrollWidth"] != 390:
+        raise NarrowViewportError(measured)
     return {"clientWidth": measured["clientWidth"], "scrollWidth": measured["scrollWidth"]}
 
 
@@ -289,15 +305,29 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                         try:
                             url = base_url.rstrip("/") + s.url
                             if narrow:
-                                measurements = _narrow_frame(page, url)
-                                log(f"  narrow frame {s.slug} {scheme}: "
-                                    f"clientWidth={measurements['clientWidth']} "
-                                    f"scrollWidth={measurements['scrollWidth']}")
-                                page.locator("iframe").screenshot(
-                                    path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
-                                )
-                                evidence.append({"page": s.slug, "action": "frame", "viewport": width,
-                                                 "color_scheme": scheme, **measurements})
+                                try:
+                                    measurements = _narrow_frame(page, url)
+                                    log(f"  narrow frame {s.slug} {scheme}: "
+                                        f"clientWidth={measurements['clientWidth']} "
+                                        f"scrollWidth={measurements['scrollWidth']}")
+                                except NarrowViewportError as e:
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                except Exception as e:  # noqa: BLE001 - retain a load diagnostic
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                finally:
+                                    # Keep a diagnostic image when the page itself overflows;
+                                    # the missing/invalid measurement must still fail the check.
+                                    try:
+                                        page.locator("iframe").screenshot(
+                                            path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
+                                        )
+                                    except Exception as e:  # noqa: BLE001 - outer handler logs it
+                                        log(f"  diagnostic screenshot {s.slug} at {width}/{scheme} failed: {e}")
+                                else:
+                                    evidence.append({"page": s.slug, "action": "frame", "viewport": width,
+                                                     "color_scheme": scheme, **measurements})
                             else:
                                 page.goto(url, wait_until="networkidle", timeout=30000)
                                 viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")

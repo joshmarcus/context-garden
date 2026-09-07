@@ -18,6 +18,7 @@ from garden.walkthrough import (
     NARROW_FRAME_HEIGHT,
     NARROW_OUTER_WIDTH,
     VIEWPORTS,
+    NarrowViewportError,
     _narrow_frame,
     _prepare_browser,
     _redact_home,
@@ -140,6 +141,26 @@ def test_narrow_frame_executes_measurement_in_chromium():
         browser.close()
 
     assert measurements == {"clientWidth": 390, "scrollWidth": 390}
+
+
+def test_narrow_frame_rejects_content_overflow_after_measuring_it():
+    class Page:
+        def set_content(self, _wrapper, **_kwargs):
+            pass
+
+        def frame(self, **_kwargs):
+            return self
+
+        def locator(self, _selector):
+            return self
+
+        def evaluate(self, script, *_args):
+            if "scrollHeight" in script:
+                return {"clientWidth": 390, "scrollWidth": 646, "scrollHeight": 5400}
+            return None
+
+    with pytest.raises(NarrowViewportError, match="scrollWidth 646"):
+        _narrow_frame(Page(), "http://localhost:8765/runs")
 
 
 def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
