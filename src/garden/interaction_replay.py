@@ -20,6 +20,8 @@ def main() -> int:
     actual_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual_head != args.head:
         parser.error("replay head differs from the checkout")
+    if subprocess.check_output(["git", "status", "--porcelain", "--", "src", "pyproject.toml"], text=True).strip():
+        parser.error("replay source differs from the committed head")
     started = datetime.now(UTC).isoformat()
     report = run_qa(args.out, scripted=True, keep=False)
     finished = datetime.now(UTC).isoformat()

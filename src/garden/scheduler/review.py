@@ -155,11 +155,11 @@ class ReviewMixin:
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
-        if self._worker_holding_reviews(task) is not None:
+        if self._worker_holding_reviews(task) is not None or st.get("check_run"):
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
-                self.log(f"{task.id}: review deferred while a worker run is in flight")
+                self.log(f"{task.id}: review deferred while a worker or validation check is in flight")
             return
         st.pop("reviews_deferred_for_worker", None)
         # A review requested while an earlier queued review is eligible waits for the
@@ -250,6 +250,8 @@ class ReviewMixin:
             if run.no_process:
                 return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
             return "worker", f"waits for its {run.mode} run to finish"
+        if self.state.get(task.id).get("check_run"):
+            return "check", "waits for its validation check to finish"
         harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         if self.is_harness_paused(harness):
             return "harness", f"{harness} harness paused"
@@ -316,6 +318,8 @@ class ReviewMixin:
     def _queued_review_can_start(self, task: Task) -> bool:
         """Whether one of a queued task's items can use a newly free review slot."""
         st = self.state.get(task.id)
+        if st.get("check_run"):
+            return False
         required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
                              if item["kind"] == "persona"}
         evidence = st.get("required_evidence") or {}

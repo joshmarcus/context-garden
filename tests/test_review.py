@@ -1170,3 +1170,26 @@ def test_interaction_replay_defers_model_review_and_survives_collection(sched, m
     assert run.mode == "review"
     assert run.env_snapshot["interaction_replay_digest"] == digest
     assert sched.state.get(task.id)["review_rounds"] == 1
+
+
+def test_queued_replays_do_not_recursively_drain_or_duplicate_checks(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    runner_type = type(sched.runner_for(sched.store.task("DM-001"), "local"))
+    monkeypatch.setattr(runner_type, "start_checks", lambda *args: None)
+    sched.cfg.data["review_parallel"] = 3
+    sched.cfg.data["resources"] = {"max_parallel": 5}
+    for tid in ("DM-001", "DM-002"):
+        task = sched.store.task(tid)
+        task.status = Status.IN_REVIEW
+        task.priority = 0
+        task.depends_on = []
+        sched.store.save(task)
+        sched.state.get(tid)["pending_reviews"] = [{"kind": "review"}]
+    first = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), first)
+    assert first.dispatched == ["DM-001(check:interaction_replay)", "DM-002(check:interaction_replay)"]
+    assert len([r for r in sched.runs.active() if r.mode == "check"]) == 2
+    second = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), second)
+    assert second.dispatched == []
+    assert sched.review_wait_reason(sched.store.task("DM-001"))[0] == "check"
