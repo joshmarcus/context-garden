@@ -193,7 +193,13 @@ class Site:
         self.templates = templates
         self.plates = plates
 
-    def ctx(self, request: Request, page: str = "", **kw: Any) -> dict[str, Any]:
+    def ctx(
+        self,
+        request: Request,
+        page: str = "",
+        history: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> dict[str, Any]:
         hub = self.hub
         s = hub.fresh()
         sched = hub.reader()
@@ -204,7 +210,7 @@ class Site:
         run_store = sched.runs
         totals = run_store.totals()
         resources = sched.resource_status()
-        rail_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        rail_events = history if history is not None else EventLog(s.config.garden_dir / "events.jsonl").read()
         rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
         rail_metrics = metrics(rail_events, s.tasks())
         return {
