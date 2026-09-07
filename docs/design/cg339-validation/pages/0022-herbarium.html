@@ -144,6 +144,7 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .panel + .panel, .stack > * + * { margin-top:14px; }
 .panel h3 { margin:0 0 10px; font:500 15px/1.2 var(--display); color:var(--ink); }
 .grid2 { display:grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap:16px; align-items:start; }
+.grid2 > * { min-width:0; } /* let wide table scrollers stay inside their grid column */
 @media (max-width: 1000px) { .shell { grid-template-columns: 1fr; } .rail { position:static; height:auto; } .grid2 { grid-template-columns:1fr; } }
 .kpis { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
 .kpi { background:var(--label); border:1px solid var(--line); padding:10px 12px; }
@@ -295,6 +296,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   main { padding:18px 14px 42px; }
+  .kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .item { grid-template-columns:26px minmax(18rem,1fr); gap:8px 10px; }
   .item .card-actions, .item .do { align-items:stretch; }
   .item .do form { align-items:stretch; }
@@ -319,7 +321,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </style>
 
 </head>
-<body class="" data-server-now="2026-09-07T06:06:12+00:00">
+<body class="" data-server-now="2026-09-07T10:43:31+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -477,7 +479,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div class="foot">
     
-    <span>scheduler loop on · tick <span data-tick-at>06:06:11Z</span></span>
+    <span>scheduler loop on · tick <span data-tick-at>10:43:31Z</span></span>
     
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>

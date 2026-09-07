@@ -1,23 +1,24 @@
 # CG-339 running-application validation
 
-The proposed worktree was exercised with:
+Commit `eb445f6c9e48225d3895040fcc94ae6319f45dbc` was exercised with:
 
 ```sh
-PYTHONPATH=src .venv/bin/python -c 'from pathlib import Path; from garden.qa import run_qa; r=run_qa(Path("docs/design/cg339-validation"), scripted=True, keep=False, log=print); print(r.summary()); raise SystemExit(0 if r.ok else 1)'
+PYTHONPATH=src .venv/bin/python -m garden.interaction_replay --out /tmp/cg339-final-replay --head eb445f6c9e48225d3895040fcc94ae6319f45dbc --nonce durable-cg339-20260907
 ```
 
 This starts the real web application from the proposed source on an ephemeral port, against a
 disposable garden and pretend GitHub. The scripted operator performs HTTP GETs and form POSTs;
 it is controlled interaction, not a real model harness or a visual browser session. The command
-completed all nine flows.
+completed all nine flows and recorded 100 served HTTP requests/responses. `result.json` is the
+tool-produced manifest: it contains the issued nonce, tested head, start/finish timestamps,
+chronological state events, per-flow requests and responses, and durable artifact paths.
 
 - Affected objective: the operator planned and approved work, dispatched it, answered a meaningful
   database question, sent a revision back, reconciled a justified nothing-to-change result, merged
   the work, and closed the phase. The actions and outcomes are in `result.json`; rendered responses
   are under `pages/`.
-- Empty outcome: `findings.json` is an empty list after every flow completed, while the final phase
-  and herbarium responses show the completed/closed state (`pages/0021-phases-demo-p1.html` and
-  `pages/0022-herbarium.html`). This does not claim a visual empty-Inbox inspection.
+- Empty outcome: the final action fetched the Inbox and asserted its rendered `Inbox zero` outcome;
+  the response is `pages/0023-index.html`.
 - Failure/recovery: the `send back with a note` flow POSTed a changes request, observed the task in
   changes requested with a revise action, dispatched recovery, and observed it return to triage.
   The task responses are `pages/0011-tasks-dm-003.html` through

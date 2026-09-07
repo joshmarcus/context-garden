@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>demo/p1 · qa</title>
+<title>DM-003 · qa</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
@@ -448,9 +448,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </nav>
   <div>
     <h4>Phases</h4>
+    <a class="drawer " href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
     
-    <span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">demo has no open phase — <code>garden new-phase</code> starts the next one</span>
-    <a class="drawer " href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>1 closed phase</span></span></a>
+    
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
@@ -488,80 +488,166 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 
 
 <div class="page-head">
-  <div><span class="eyebrow">demo</span><h1>p1</h1>
-    <p>closed 2026-09-07 · worked 2026-09-07 → 2026-09-07 · 3 of 4 tasks done · 3 PR(s) merged · spent $0.22</p></div>
-  <div class="tools"><a class="btn" href="/herbarium">Herbarium</a><a class="btn" href="/board?product=demo&phase=p1">Board</a><a class="btn" href="/trellis?product=demo&phase=p1">Trellis</a></div>
+  <div><span class="eyebrow">demo / p1 · <a href="/tasks/DM-003" class="id">DM-003</a></span><h1>Planned: a plain task</h1>
+    <p style="display:flex;align-items:center;gap:10px"><svg class="stage" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg><span class="state s-done">done <span class="stage-word">in fruit</span></span><span class="muted">priority next · 1 · easy · S · <a href="/qa/github/pull/1" target="_blank">PR ↗</a></span></p></div>
+  <div class="tools"><a class="btn" href="/tasks/DM-003/brief" target="_blank">Brief</a><a class="btn" href="/runs/DM-003/20260907T104325Z-revise">Latest run</a></div>
 </div>
+
+
+
+
+
+
+
+<div class="actions" style="margin-bottom:14px">
+  
+  
+  
+  
+  <form class="inline" method="post" action="/tasks/DM-003/reset-revisions"><button class="quiet">Reset revision counter (1)</button></form>
+  
+  <button class="quiet" data-toggle="persona-form">Persona review…</button>
+  <form class="inline" method="post" action="/tasks/DM-003/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()"><option value="easy" selected>easy</option><option value="medium">medium</option><option value="hard">hard</option></select><span class="autosave-mark" aria-live="polite"></span></form>
+  <form class="inline" method="post" action="/tasks/DM-003/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()"><option value="0">first · 0</option><option value="1" selected>next · 1</option><option value="2">normal · 2</option><option value="3">later · 3</option><option value="4">someday · 4</option></select><span class="autosave-mark" aria-live="polite"></span></form>
+  
+
+  <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
+  
+  <button class="quiet" data-toggle="friction-form">Report friction…</button>
+  
+  
+  
+  
+</div>
+<div id="persona-form" class="panel" hidden><form method="post" action="/tasks/DM-003/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: designer, product-manager, project-manager, security, staff-engineer, usability-expert, user</span></form></div>
+<div id="trial-form" class="panel" hidden>
+  <div class="eyebrow">Start a model trial</div>
+  
+  <form method="post" action="/tasks/DM-003/trial" class="trial-form" data-trial-form data-harnesses='{"claude": ["qa-easy", "qa-medium", "qa-hard", "sonnet", "opus", "haiku", "fable", "claude-sonnet-5", "claude-opus-4-8"]}' data-default-harness="claude">
+    <input type="hidden" name="note">
+    
+    <div class="trial-rows"></div>
+    <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">Start trial</button></div>
+  </form>
+</div>
+<div id="suggest-form" class="panel" hidden>
+  <div class="eyebrow">Suggest a change to this task</div>
+  <p class="muted" style="margin:4px 0 8px">A person's wording is rarely the final wording. Write what the task should say; an agent folds it into the task file for you.</p>
+  <form method="post" action="/tasks/DM-003/suggest" style="margin-top:6px">
+    <div class="actions" style="margin-bottom:6px"><label class="muted" for="applies_to">applies to</label><select id="applies_to" name="applies_to"><option value="goal">goal</option><option value="context">context</option><option value="acceptance">acceptance</option><option value="reading">reading</option><option value="priority">priority</option><option value="difficulty">difficulty</option><option value="anything">anything</option></select></div>
+    <textarea name="note" placeholder="e.g. the acceptance criteria should also require a test for the empty case" required style="width:100%;box-sizing:border-box"></textarea>
+    <div class="actions" style="margin-top:6px"><button class="primary">Suggest</button><span class="faint">it lands in the task file and is integrated on the next tick</span></div>
+  </form>
+</div>
+<div id="friction-form" class="panel" hidden>
+  <div class="eyebrow">Report friction about this process</div>
+  <form method="post" action="/friction-report" style="margin-top:8px">
+    <input type="hidden" name="product" value="demo">
+    <input type="hidden" name="phase" value="p1">
+    <input type="hidden" name="page" value="/tasks/DM-003">
+    <input type="hidden" name="task_id" value="DM-003">
+    <textarea name="text" placeholder="What felt slow, unclear, or missing?" required style="width:100%;box-sizing:border-box"></textarea>
+    <div class="actions" style="margin-top:6px"><button class="primary">File report</button></div>
+  </form>
+</div>
+
+
+<div class="kpis">
+  <div class="kpi"><div class="v">$0.10</div><div class="l">cost across 2 runs</div></div>
+  <div class="kpi"><div class="v">200</div><div class="l">input tokens</div></div>
+  <div class="kpi"><div class="v">40</div><div class="l">output tokens</div></div>
+  <div class="kpi"><div class="v">0</div><div class="l">cache reads · 0.0 min</div></div>
+</div>
+
 <div class="grid2">
   <div class="stack">
-    
-    <div class="panel"><div class="eyebrow">Persona reviews</div>
-      <div class="empty">no persona reviews were run in this phase</div>
-    </div>
-    <div class="panel"><div class="eyebrow">Outcomes</div>
-      <div class="prose"><h1>p1 goals</h1>
-<p>Drive the loop end to end.</p></div>
-      <table style="margin-top:14px; font-size:13px">
-        <tr><th>tasks done</th><th>PRs merged</th><th>revise rounds</th><th>avg lead</th><th>first pass</th><th>cost</th><th>dates</th></tr>
-        <tr><td>3 / 4</td><td>3</td><td>2</td>
-          <td>0.0 h</td>
-          <td></td>
-          <td>$0.22</td>
-          <td class="mono">2026-09-07 → 2026-09-07</td></tr>
+    <div class="panel prose"><h2>Goal</h2>
+<p>A task the planner wrote. The worker finishes it in one round.</p>
+<h2>Acceptance criteria</h2>
+<ul>
+<li>[ ] The plain task lands with a passing test.</li>
+</ul>
+<p>qa-worker: done</p></div>
+    <div class="panel"><div class="eyebrow">Acceptance criteria</div>
+      <table style="margin-top:6px;width:100%">
+        <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>
+        
+        <tr>
+          <td style="vertical-align:top">The plain task lands with a passing test.</td>
+          <td style="vertical-align:top"><span class="faint">—</span></td>
+          <td style="vertical-align:top"><span class="faint">—</span></td>
+        </tr>
+        
       </table>
-      
-      <table style="margin-top:10px; font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
-      <tr><td>easy</td><td>3</td><td>3</td><td>0.67</td><td></td><td>$0.22</td></tr></table>
     </div>
-    <div class="panel"><div class="eyebrow">Pull requests</div>
-      <div class="scroll"><table>
-        <tr><th>pr</th><th>task</th><th>title</th><th>tier</th><th>merged</th></tr>
-        <tr><td><a href="/qa/github/pull/2" target="_blank">#2</a></td><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td class="title">A worker that asks a question</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/3" target="_blank">#3</a></td><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td class="title">A round with nothing to change</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/1" target="_blank">#1</a></td><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td class="title">Planned: a plain task</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        
-      </table></div>
-      
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    <div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr><tr><td>revise</td><td>1</td><td>100</td><td>0</td><td>20</td><td>$0.05</td></tr><tr><td>work</td><td>1</td><td>100</td><td>0</td><td>20</td><td>$0.05</td></tr></table></div>
+    
+    <div class="panel"><div class="eyebrow">Runs</div>
+      <div id="runs" data-poll="/partials/tasks/DM-003/runs" data-every="5000" style="margin-top:6px">
+<div class="scroll"><table>
+<tr><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th><th></th></tr>
+
+<tr>
+  <td class="mono">20260907T104325Z-revise</td><td>revise</td><td><span class="pill s-done">done</span></td>
+  <td class="mono">claude:qa-easy</td><td>0</td><td>1,951</td>
+  <td>100</td><td></td><td>20</td>
+  <td>$0.05</td>
+  <td><a href="/runs/DM-003/20260907T104325Z-revise">open run</a></td>
+</tr>
+
+<tr>
+  <td class="mono">20260907T104321Z-work</td><td>work</td><td><span class="pill s-done">done</span></td>
+  <td class="mono">claude:qa-easy</td><td>0</td><td>1,644</td>
+  <td>100</td><td></td><td>20</td>
+  <td>$0.05</td>
+  <td><a href="/runs/DM-003/20260907T104321Z-work">open run</a></td>
+</tr>
+
+</table></div>
+</div>
     </div>
-    <div class="panel"><div class="eyebrow">Tasks</div>
-      <div class="scroll"><table>
-        <tr><th>id</th><th>status</th><th>tier</th><th>title</th><th>pr</th><th>cost</th></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A worker that asks a question</td>
-          <td><a href="/qa/github/pull/2" target="_blank">#2</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A round with nothing to change</td>
-          <td><a href="/qa/github/pull/3" target="_blank">#3</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">Planned: a plain task</td>
-          <td><a href="/qa/github/pull/1" target="_blank">#1</a></td>
-          <td class="mono">$0.10</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-004">DM-004</a></td><td><span class="state s-cancelled" title="pressed"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pressed"><title>pressed</title><use href="#st-pressed"/></svg>cancelled</span></td><td>easy</td><td class="title">Planned: a follow-up</td>
-          <td></td>
-          <td class="mono"></td></tr>
-        
-      </table></div>
-    </div>
+    <div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px"><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>in_review → done: PR merged: /qa/github/pull/1</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>awaiting_triage → in_review: triage: marked ready for review</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">triaged</span><span>ready by human</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>running → awaiting_triage: pushed revision to /qa/github/pull/1: revised per feedback cost=$0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">run_finished</span><span>revise done $0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>changes_requested → running: dispatched revise run 20260907T104325Z-revise via local [claude model=qa-easy] (fresh session, base main, ~1951 tokens)</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">dispatch</span><span>revise qa-easy  base main</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>awaiting_triage → changes_requested: triage: changes requested by hand: tighten the tests</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">triaged</span><span>changes by human</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>running → awaiting_triage: opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">pr_opened</span><span>/qa/github/pull/1 (draft)</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">run_finished</span><span>work done $0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>ready → running: dispatched work run 20260907T104321Z-work via local [claude model=qa-easy] (fresh session, base main, ~1644 tokens)</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">dispatch</span><span>work qa-easy  base main</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>draft → ready: approved (web)</span></li></ul></div>
+    <div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">2026-09-07T10:43:21+00:00 approved (web)
+2026-09-07T10:43:21+00:00 dispatched work run 20260907T104321Z-work via local [claude model=qa-easy] (fresh session, base main, ~1644 tokens)
+2026-09-07T10:43:22+00:00 opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05
+2026-09-07T10:43:25+00:00 triage: changes requested by hand: tighten the tests
+2026-09-07T10:43:25+00:00 dispatched revise run 20260907T104325Z-revise via local [claude model=qa-easy] (fresh session, base main, ~1951 tokens)
+2026-09-07T10:43:26+00:00 pushed revision to /qa/github/pull/1: revised per feedback cost=$0.05
+2026-09-07T10:43:26+00:00 triage: marked ready for review
+2026-09-07T10:43:30+00:00 PR merged: /qa/github/pull/1
+</div></div>
   </div>
   <div class="stack">
-    <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
-      <span class="tape" style="left:46%; top:150px; transform:rotate(-8deg)"></span>
-      
-      <div class="plate-mount"><img class="plate" src="/static/plates/pea.webp" alt="Pisum sativum, plate from Thomé, Flora von Deutschland, 1885" width="300" height="420"></div>
-      
-      <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
-      <div class="lbl" style="right:16px; bottom:16px"><b>demo · plate I</b><br>p1<br><i>Pisum sativum</i> — garden pea<br>3 of 4 tasks done · 3 merged<br>closed 2026-09-07 · spent $0.22<br><span class="muted">plate: Thomé, Flora von Deutschland, 1885</span></div>
-      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
-    </div>
-    <div class="panel"><div class="eyebrow">Artifacts</div>
-      <ul style="margin:8px 0 0; padding-left:18px; font-size:13px">
-        <li><a href="/phases/demo/p1/doc/specs/spec.md">demo/p1/specs/spec.md</a></li>
+    <div class="panel">
+      <dl class="kv">
+        <dt>file</dt><dd class="mono">demo/p1/tasks/DM-003-planned-a-plain-task.md</dd>
         
         
-      </ul>
+        
+        
+        <dt>depends on</dt><dd><span class="faint">—</span></dd>
+        <dt>unblocks</dt><dd><a href="/tasks/DM-004">DM-004</a> </dd>
+        <dt>reading</dt><dd><span class="mono">demo/p1/specs/spec.md</span><br></dd>
+        <dt>branch</dt><dd class="mono">garden/dm-003-planned-a-plain-task</dd>
+        <dt>PR</dt><dd><a href="/qa/github/pull/1" target="_blank">/qa/github/pull/1</a></dd>
+        
+        
+        
+        
+        <dt>attempts</dt><dd>1 · 1 revision(s)</dd>
+        <dt>runner</dt><dd>default / default harness</dd>
+        <dt>updated</dt><dd class="mono">2026-09-07T10:43</dd>
+      </dl>
     </div>
   </div>
 </div>

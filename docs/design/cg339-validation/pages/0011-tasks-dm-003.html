@@ -144,6 +144,7 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .panel + .panel, .stack > * + * { margin-top:14px; }
 .panel h3 { margin:0 0 10px; font:500 15px/1.2 var(--display); color:var(--ink); }
 .grid2 { display:grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap:16px; align-items:start; }
+.grid2 > * { min-width:0; } /* let wide table scrollers stay inside their grid column */
 @media (max-width: 1000px) { .shell { grid-template-columns: 1fr; } .rail { position:static; height:auto; } .grid2 { grid-template-columns:1fr; } }
 .kpis { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
 .kpi { background:var(--label); border:1px solid var(--line); padding:10px 12px; }
@@ -295,6 +296,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   main { padding:18px 14px 42px; }
+  .kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .item { grid-template-columns:26px minmax(18rem,1fr); gap:8px 10px; }
   .item .card-actions, .item .do { align-items:stretch; }
   .item .do form { align-items:stretch; }
@@ -319,7 +321,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </style>
 
 </head>
-<body class="" data-server-now="2026-09-07T06:06:09+00:00">
+<body class="" data-server-now="2026-09-07T10:43:25+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -477,7 +479,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div class="foot">
     
-    <span>scheduler loop on · tick <span data-tick-at>06:06:09Z</span></span>
+    <span>scheduler loop on · tick <span data-tick-at>10:43:24Z</span></span>
     
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
@@ -488,7 +490,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 <div class="page-head">
   <div><span class="eyebrow">demo / p1 · <a href="/tasks/DM-003" class="id">DM-003</a></span><h1>Planned: a plain task</h1>
     <p style="display:flex;align-items:center;gap:10px"><svg class="stage" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="in bud"><title>in bud</title><use href="#st-bud"/></svg><span class="state s-awaiting_triage">awaiting triage <span class="stage-word">in bud</span></span><span class="muted">priority next · 1 · easy · S · <a href="/qa/github/pull/1" target="_blank">PR ↗</a></span></p></div>
-  <div class="tools"><a class="btn" href="/tasks/DM-003/brief" target="_blank">Brief</a><a class="btn" href="/runs/DM-003/20260907T060607Z-work">Latest run</a></div>
+  <div class="tools"><a class="btn" href="/tasks/DM-003/brief" target="_blank">Brief</a><a class="btn" href="/runs/DM-003/20260907T104321Z-work">Latest run</a></div>
 </div>
 
 
@@ -606,20 +608,20 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 <tr><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th><th></th></tr>
 
 <tr>
-  <td class="mono">20260907T060607Z-work</td><td>work</td><td><span class="pill s-done">done</span></td>
-  <td class="mono">claude:qa-easy</td><td>0</td><td>1,640</td>
+  <td class="mono">20260907T104321Z-work</td><td>work</td><td><span class="pill s-done">done</span></td>
+  <td class="mono">claude:qa-easy</td><td>0</td><td>1,644</td>
   <td>100</td><td></td><td>20</td>
   <td>$0.05</td>
-  <td><a href="/runs/DM-003/20260907T060607Z-work">open run</a></td>
+  <td><a href="/runs/DM-003/20260907T104321Z-work">open run</a></td>
 </tr>
 
 </table></div>
 </div>
     </div>
-    <div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px"><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>running → awaiting_triage: opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">pr_opened</span><span>/qa/github/pull/1 (draft)</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">run_finished</span><span>work done $0.05</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>ready → running: dispatched work run 20260907T060607Z-work via local [claude model=qa-easy] (fresh session, base main, ~1640 tokens)</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">dispatch</span><span>work qa-easy  base main</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>draft → ready: approved (web)</span></li></ul></div>
-    <div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">2026-09-07T06:06:07+00:00 approved (web)
-2026-09-07T06:06:07+00:00 dispatched work run 20260907T060607Z-work via local [claude model=qa-easy] (fresh session, base main, ~1640 tokens)
-2026-09-07T06:06:07+00:00 opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05
+    <div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px"><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>running → awaiting_triage: opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">pr_opened</span><span>/qa/github/pull/1 (draft)</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">run_finished</span><span>work done $0.05</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>ready → running: dispatched work run 20260907T104321Z-work via local [claude model=qa-easy] (fresh session, base main, ~1644 tokens)</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">dispatch</span><span>work qa-easy  base main</span></li><li><span class="faint mono">09-07T10:43</span><span class="k">transition</span><span>draft → ready: approved (web)</span></li></ul></div>
+    <div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">2026-09-07T10:43:21+00:00 approved (web)
+2026-09-07T10:43:21+00:00 dispatched work run 20260907T104321Z-work via local [claude model=qa-easy] (fresh session, base main, ~1644 tokens)
+2026-09-07T10:43:22+00:00 opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05
 </div></div>
   </div>
   <div class="stack">
@@ -641,7 +643,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
         
         <dt>attempts</dt><dd>1</dd>
         <dt>runner</dt><dd>default / default harness</dd>
-        <dt>updated</dt><dd class="mono">2026-09-07T06:06</dd>
+        <dt>updated</dt><dd class="mono">2026-09-07T10:43</dd>
       </dl>
     </div>
   </div>

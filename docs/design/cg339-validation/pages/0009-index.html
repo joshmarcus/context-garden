@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>demo/p1 · qa</title>
+<title>Inbox · qa</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
@@ -321,7 +321,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </style>
 
 </head>
-<body class="" data-server-now="2026-09-07T10:43:31+00:00">
+<body class="" data-server-now="2026-09-07T10:43:23+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -435,7 +435,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <nav class="nav">
     <a href="/now1" class="">Now 1</a>
     <a href="/now2" class="">Now 2</a>
-    <a href="/" class="">Inbox <span class="count ">0</span></a>
+    <a href="/" class="on">Inbox <span class="count hot">2</span></a>
     <a href="/now2" class="">Now 2</a>
     <a href="/board" class="">Board</a>
     <a href="/trellis" class="">Trellis</a>
@@ -448,9 +448,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </nav>
   <div>
     <h4>Phases</h4>
+    <a class="drawer " href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
     
-    <span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">demo has no open phase — <code>garden new-phase</code> starts the next one</span>
-    <a class="drawer " href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>1 closed phase</span></span></a>
+    
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
@@ -471,7 +471,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
     
-    <span class="faint" style="display:block">$0.22/hr last hour</span>
+    <span class="faint" style="display:block">$0.06/hr last hour</span>
   </div>
   <div class="notify" id="notify">
     <label class="check"><input type="checkbox" id="notify-toggle"> Notify me in this browser</label>
@@ -479,7 +479,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div class="foot">
     
-    <span>scheduler loop on · tick <span data-tick-at>10:43:31Z</span></span>
+    <span>scheduler loop on · tick <span data-tick-at>10:43:23Z</span></span>
     
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
@@ -488,81 +488,120 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 
 
 <div class="page-head">
-  <div><span class="eyebrow">demo</span><h1>p1</h1>
-    <p>closed 2026-09-07 · worked 2026-09-07 → 2026-09-07 · 3 of 4 tasks done · 3 PR(s) merged · spent $0.22</p></div>
-  <div class="tools"><a class="btn" href="/herbarium">Herbarium</a><a class="btn" href="/board?product=demo&phase=p1">Board</a><a class="btn" href="/trellis?product=demo&phase=p1">Trellis</a></div>
+  <div><h1>What needs you</h1><p>Every item here is a decision only a person can make. Beyond that, the garden grows.</p></div>
+  <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
-<div class="grid2">
-  <div class="stack">
+<div class="panel" style="margin-bottom:12px"><div class="eyebrow">Serving build</div><p><b>unversioned</b></p></div>
+<div class="kpis">
+  <div class="kpi hot"><div class="v">2</div><div class="l">need you</div></div>
+  <div class="kpi"><div class="v">0/4</div><div class="l">workers running</div></div>
+  <div class="kpi"><div class="v">0/4</div><div class="l">reviews running</div></div>
+  <div class="kpi"><div class="v">1</div><div class="l">PRs open</div></div>
+  
+  <div class="kpi"><div class="v">$0.06</div><div class="l">spent in 24h</div></div>
+</div>
+
+
+
+<section class="group ">
+  <header><span class="stamp">question</span><h2>Questions to answer</h2><p>A worker, kickoff, or retrospective is waiting for your answer.</p></header>
+  
+  <div class="item q-open">
+    <div><svg class="stage" viewBox="0 0 24 24" width="26" height="26" role="img" aria-label="bud, tagged"><title>bud, tagged</title><use href="#st-tag"/></svg></div>
+    <div class="who"><a class="id" href="/tasks/DM-001">DM-001</a><span class="state s-waiting_human">waiting human</span><span class="age">bud, tagged · easy · 0m</span></div>
+    <div class="what decision-content">
+      <div class="t"><a href="/tasks/DM-001" style="text-decoration:none">A worker that asks a question</a></div>
+      
+      <div class="panel decision-card" style="border-color:var(--s-waiting_human);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--s-waiting_human)">The worker is waiting for you</div>
+  <p style="margin:6px 0 2px"><b>Postgres or SQLite?</b></p>
+  <p class="muted" style="margin:2px 0 8px">Its session resumes with your answer.</p>
+  <ul class="decision-evidence" style="margin:0 0 10px;padding-left:18px"><li class="muted">run 20260907T104322Z-work (work): waiting — need a decision</li></ul>
+  
+  
+    <form method="post" action="/tasks/DM-001/answer"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><div class="actions" style="margin-top:8px"><button class="primary">Answer and resume</button></div></form>
+  
+</div>
+      
+      
+      
+      
+      
+    </div>
+    <div class="card-actions decision-actions">
+    <div class="do">
+      
+      
+    </div>
     
-    <div class="panel"><div class="eyebrow">Persona reviews</div>
-      <div class="empty">no persona reviews were run in this phase</div>
-    </div>
-    <div class="panel"><div class="eyebrow">Outcomes</div>
-      <div class="prose"><h1>p1 goals</h1>
-<p>Drive the loop end to end.</p></div>
-      <table style="margin-top:14px; font-size:13px">
-        <tr><th>tasks done</th><th>PRs merged</th><th>revise rounds</th><th>avg lead</th><th>first pass</th><th>cost</th><th>dates</th></tr>
-        <tr><td>3 / 4</td><td>3</td><td>2</td>
-          <td>0.0 h</td>
-          <td></td>
-          <td>$0.22</td>
-          <td class="mono">2026-09-07 → 2026-09-07</td></tr>
-      </table>
-      
-      <table style="margin-top:10px; font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
-      <tr><td>easy</td><td>3</td><td>3</td><td>0.67</td><td></td><td>$0.22</td></tr></table>
-    </div>
-    <div class="panel"><div class="eyebrow">Pull requests</div>
-      <div class="scroll"><table>
-        <tr><th>pr</th><th>task</th><th>title</th><th>tier</th><th>merged</th></tr>
-        <tr><td><a href="/qa/github/pull/2" target="_blank">#2</a></td><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td class="title">A worker that asks a question</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/3" target="_blank">#3</a></td><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td class="title">A round with nothing to change</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/1" target="_blank">#1</a></td><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td class="title">Planned: a plain task</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        
-      </table></div>
-      
-    </div>
-    <div class="panel"><div class="eyebrow">Tasks</div>
-      <div class="scroll"><table>
-        <tr><th>id</th><th>status</th><th>tier</th><th>title</th><th>pr</th><th>cost</th></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A worker that asks a question</td>
-          <td><a href="/qa/github/pull/2" target="_blank">#2</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A round with nothing to change</td>
-          <td><a href="/qa/github/pull/3" target="_blank">#3</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">Planned: a plain task</td>
-          <td><a href="/qa/github/pull/1" target="_blank">#1</a></td>
-          <td class="mono">$0.10</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-004">DM-004</a></td><td><span class="state s-cancelled" title="pressed"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pressed"><title>pressed</title><use href="#st-pressed"/></svg>cancelled</span></td><td>easy</td><td class="title">Planned: a follow-up</td>
-          <td></td>
-          <td class="mono"></td></tr>
-        
-      </table></div>
     </div>
   </div>
-  <div class="stack">
-    <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
-      <span class="tape" style="left:46%; top:150px; transform:rotate(-8deg)"></span>
+  
+</section>
+
+<section class="group ">
+  <header><span class="stamp">triage</span><h2>Triage a draft PR</h2><p>A worker finished and opened a draft. Your first look decides: ready for review, or send it back.</p></header>
+  
+  <div class="item ">
+    <div><svg class="stage" viewBox="0 0 24 24" width="26" height="26" role="img" aria-label="in bud"><title>in bud</title><use href="#st-bud"/></svg></div>
+    <div class="who"><a class="id" href="/tasks/DM-003">DM-003</a><span class="state s-awaiting_triage">awaiting triage</span><span class="age">in bud · easy · 0m</span></div>
+    <div class="what decision-content">
+      <div class="t"><a href="/tasks/DM-003" style="text-decoration:none">Planned: a plain task</a></div>
+      <div class="why">draft PR open · 1 file changed, 1 insertion(+)</div>
       
-      <div class="plate-mount"><img class="plate" src="/static/plates/pea.webp" alt="Pisum sativum, plate from Thomé, Flora von Deutschland, 1885" width="300" height="420"></div>
       
-      <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
-      <div class="lbl" style="right:16px; bottom:16px"><b>demo · plate I</b><br>p1<br><i>Pisum sativum</i> — garden pea<br>3 of 4 tasks done · 3 merged<br>closed 2026-09-07 · spent $0.22<br><span class="muted">plate: Thomé, Flora von Deutschland, 1885</span></div>
-      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
+      
+      
+      
+      
     </div>
-    <div class="panel"><div class="eyebrow">Artifacts</div>
-      <ul style="margin:8px 0 0; padding-left:18px; font-size:13px">
-        <li><a href="/phases/demo/p1/doc/specs/spec.md">demo/p1/specs/spec.md</a></li>
-        
-        
-      </ul>
+    <div class="card-actions decision-actions">
+    <div class="do">
+      
+        <form method="post" action="/tasks/DM-003/triage-ready"><button class="primary">Ready for review</button><a class="btn quiet" href="/qa/github/pull/1" target="_blank">Open PR ↗</a></form>
+        <form method="post" action="/tasks/DM-003/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
+      
     </div>
+    
+    </div>
+  </div>
+  
+</section>
+
+<div class="grid2" style="margin-top:8px">
+  <div class="panel"><div class="eyebrow">Progress</div><h3>Merged work against scope, all phases</h3><svg class="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Tasks merged over time">
+<line x1="36" x2="624" y1="192.0" y2="192.0" stroke="var(--line)" stroke-width="1"/>
+<text x="30" y="196.0" text-anchor="end" fill="var(--muted)" font-size="11">0</text>
+<line x1="36" x2="624" y1="111.0" y2="111.0" stroke="var(--line)" stroke-width="1"/>
+<text x="30" y="115.0" text-anchor="end" fill="var(--muted)" font-size="11">2</text>
+<line x1="36" x2="624" y1="30.0" y2="30.0" stroke="var(--line)" stroke-width="1"/>
+<text x="30" y="34.0" text-anchor="end" fill="var(--muted)" font-size="11">4</text>
+<line x1="36" x2="624" y1="30.0" y2="30.0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="624" y="43.0" text-anchor="end" fill="var(--muted)" font-size="11">4 in scope</text>
+<polyline fill="none" stroke="var(--viz-2)" stroke-width="1.5" stroke-dasharray="2,3" points="36.0,192.0 36.2,192.0 36.2,151.5 36.4,151.5"/>
+<text x="36" y="212" fill="var(--muted)" font-size="11">Sep 07</text>
+<text x="624" y="212" text-anchor="end" fill="var(--muted)" font-size="11">Sep 07 10:43</text>
+<g font-size="11" fill="var(--muted)"><rect x="36" y="8" width="12" height="3" fill="var(--viz-1)"/><text x="52" y="12">merged (0)</text><rect x="132" y="8" width="12" height="3" fill="var(--viz-2)"/><text x="148" y="12">PRs opened (1)</text></g>
+</svg></div>
+  <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3><svg class="chart" viewBox="0 0 360 42" width="100%" role="img" aria-label="By difficulty tier">
+<text x="56" y="25.0" text-anchor="end" fill="var(--ink)" font-size="12">easy</text>
+<rect x="64" y="10" width="236.0" height="22" rx="3" fill="var(--viz-ord-1)"><title>easy: $0.06 over 2 task(s)</title></rect>
+<text x="308.0" y="25.0" fill="var(--muted)" font-size="11">$0.06 · 2 tasks</text>
+</svg><p class="muted" style="margin:8px 0 0;font-size:12px">If a tier's revisions climb, its model is too cheap for the work; see <a href="/events">metrics</a>.</p></div>
+</div>
+<div class="panel" style="margin-top:8px">
+  <button class="quiet" data-toggle="friction-form" style="margin-bottom:0">Report friction…</button>
+  <div id="friction-form" hidden style="margin-top:10px">
+    <div class="eyebrow">Report friction about this process</div>
+    <form method="post" action="/friction-report" style="margin-top:8px">
+      <input type="hidden" name="page" value="/inbox">
+      <select name="product" data-phases='{"demo": ["p1"]}' data-phase-target="friction-phase" style="margin-bottom:6px">
+        <option value="demo">demo</option>
+      </select>
+      <select name="phase" id="friction-phase" style="margin-bottom:6px"></select>
+      <textarea name="text" placeholder="What felt slow, unclear, or missing?" required style="width:100%;box-sizing:border-box"></textarea>
+      <div class="actions" style="margin-top:6px"><button class="primary">File report</button></div>
+    </form>
   </div>
 </div>
 

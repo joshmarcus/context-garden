@@ -321,7 +321,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </style>
 
 </head>
-<body class="" data-server-now="2026-09-07T10:43:31+00:00">
+<body class="" data-server-now="2026-09-07T10:43:21+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -435,7 +435,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <nav class="nav">
     <a href="/now1" class="">Now 1</a>
     <a href="/now2" class="">Now 2</a>
-    <a href="/" class="">Inbox <span class="count ">0</span></a>
+    <a href="/" class="">Inbox <span class="count hot">2</span></a>
     <a href="/now2" class="">Now 2</a>
     <a href="/board" class="">Board</a>
     <a href="/trellis" class="">Trellis</a>
@@ -448,9 +448,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </nav>
   <div>
     <h4>Phases</h4>
+    <a class="drawer on" href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
     
-    <span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">demo has no open phase — <code>garden new-phase</code> starts the next one</span>
-    <a class="drawer " href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>1 closed phase</span></span></a>
+    
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
@@ -471,7 +471,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
     
-    <span class="faint" style="display:block">$0.22/hr last hour</span>
+    
   </div>
   <div class="notify" id="notify">
     <label class="check"><input type="checkbox" id="notify-toggle"> Notify me in this browser</label>
@@ -479,7 +479,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div class="foot">
     
-    <span>scheduler loop on · tick <span data-tick-at>10:43:31Z</span></span>
+    <span>scheduler loop on · tick <span data-tick-at>10:43:21Z</span></span>
     
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
@@ -487,64 +487,128 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 <main>
 
 
+
 <div class="page-head">
   <div><span class="eyebrow">demo</span><h1>p1</h1>
-    <p>closed 2026-09-07 · worked 2026-09-07 → 2026-09-07 · 3 of 4 tasks done · 3 PR(s) merged · spent $0.22</p></div>
-  <div class="tools"><a class="btn" href="/herbarium">Herbarium</a><a class="btn" href="/board?product=demo&phase=p1">Board</a><a class="btn" href="/trellis?product=demo&phase=p1">Trellis</a></div>
+    <p>spent $0.00 · 0 PR(s) tracked · fixed brief cost ~1,569 tokens (head + rules + digest + product + goals)</p>
+    <form class="inline" method="post" action="/phases/demo/p1/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
+      <span class="muted">Budget $</span>
+      <input type="number" name="amount" step="1" min="0" value="" placeholder="no cap" style="width:90px" onblur="this.form.requestSubmit()">
+      <span class="autosave-mark" aria-live="polite"></span>
+    </form></div>
+  <div class="tools"><a class="btn" href="/board?product=demo&phase=p1">Board</a><a class="btn" href="/trellis?product=demo&phase=p1">Trellis</a></div>
 </div>
+
 <div class="grid2">
   <div class="stack">
     
-    <div class="panel"><div class="eyebrow">Persona reviews</div>
-      <div class="empty">no persona reviews were run in this phase</div>
+    <div class="panel"><div class="eyebrow">Progress</div><h3>Merged against scope</h3><div class="empty">No merges yet. The burn-up starts with the first merged PR.</div></div>
+    <div class="panel">
+      <script>
+      (function() {
+        var key = "garden.phaseHideDone:demo/p1";
+        var hide = new URLSearchParams(location.search).get("hide");
+        if (hide === "done") localStorage.setItem(key, "done");
+        else localStorage.removeItem(key);
+      })();
+      </script>
+      <div class="actions" style="margin-bottom:10px">
+        <a href="?hide=done" class="btn quiet" data-hide-toggle>hide 0 done</a>
+      </div>
+      <div class="scroll"><table>
+      <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>brief</th><th>tokens</th><th>cost</th></tr>
+      
+      <tr><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td><span class="state s-ready" title="sprout"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg>ready</span></td><td>next · 1</td><td>easy</td><td class="title">A worker that asks a question</td><td class="mono"></td>
+        <td></td>
+        <td class="muted"></td>
+        <td class="muted" title=""></td>
+        <td class="muted"></td>
+        <td class="muted mono">~1,590</td>
+        <td class="muted mono" title="input / cache-read / output"></td>
+        <td class="mono"></td></tr>
+      
+      <tr><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td><span class="state s-ready" title="sprout"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg>ready</span></td><td>next · 1</td><td>easy</td><td class="title">A round with nothing to change</td><td class="mono"></td>
+        <td></td>
+        <td class="muted"></td>
+        <td class="muted" title=""></td>
+        <td class="muted"></td>
+        <td class="muted mono">~1,590</td>
+        <td class="muted mono" title="input / cache-read / output"></td>
+        <td class="mono"></td></tr>
+      
+      <tr><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td><span class="state s-draft" title="seed"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="seed"><title>seed</title><use href="#st-seed"/></svg>draft</span></td><td>next · 1</td><td>easy</td><td class="title">Planned: a plain task</td><td class="mono"></td>
+        <td></td>
+        <td class="muted"></td>
+        <td class="muted" title=""></td>
+        <td class="muted"></td>
+        <td class="muted mono">~1,590</td>
+        <td class="muted mono" title="input / cache-read / output"></td>
+        <td class="mono"></td></tr>
+      
+      <tr><td><a class="id" href="/tasks/DM-004">DM-004</a></td><td><span class="state s-blocked" title="seed, waiting"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="seed, waiting"><title>seed, waiting</title><use href="#st-seed"/></svg>blocked</span></td><td>normal · 2</td><td>easy</td><td class="title">Planned: a follow-up</td><td class="mono">DM-003</td>
+        <td></td>
+        <td class="muted"></td>
+        <td class="muted" title=""></td>
+        <td class="muted"></td>
+        <td class="muted mono">~1,590</td>
+        <td class="muted mono" title="input / cache-read / output"></td>
+        <td class="mono"></td></tr>
+      
+      </table></div>
+      <div class="actions" style="margin-top:12px">
+        <form class="inline" method="post" action="/phases/demo/p1/approve-all"><button>Approve all drafts</button></form>
+        <form class="inline" method="post" action="/phases/demo/p1/plan" style="display:inline-flex; gap:6px; align-items:center">
+          <input type="text" name="guidance" placeholder="optional guidance for the planner" style="min-width:260px">
+          <button class="primary" title="One model call: goals + specs + docs -> tasks">Plan phase</button>
+        </form>
+        <span class="muted">done 2026-09-07T10:43:21+00:00: created DM-003, DM-004</span>
+        <form class="inline" method="post" action="/phases/demo/p1/close" style="margin-left:auto"><button class="quiet" title="Once every task is done or cancelled: the phase leaves the rail and joins the herbarium">Close phase</button></form>
+      </div>
+      <form method="post" action="/phases/demo/p1/persona" class="actions" style="margin-top:10px">
+        <span class="muted">Persona review of the body of work:</span>
+        <input type="text" name="personas" placeholder="designer, product-manager, project-manager, security, staff-engineer, usability-expert, user" style="min-width:300px">
+        <label class="check"><input type="checkbox" name="file_tasks" value="1"> file high findings as tasks</label>
+        <button>Run personas</button>
+      </form>
+      <div class="panel" id="kickoff" style="margin-bottom:16px">
+  <div class="eyebrow">Kickoff</div>
+  
+    <p>No kickoff report yet. Before this phase's tasks start taking runs, a planner-tier review can flag design gaps, goals with no measurable outcome, questions for you, and docs that need attention.</p>
+    <form method="post" action="/phases/demo/p1/kickoff"><button class="primary">Kick off</button></form>
+  
+</div>
     </div>
-    <div class="panel"><div class="eyebrow">Outcomes</div>
-      <div class="prose"><h1>p1 goals</h1>
+    <details class="panel" id="new-task">
+      <summary>New task</summary>
+      <form method="post" action="/phases/demo/p1/new-task" style="margin-top:10px; display:flex; flex-direction:column; gap:10px">
+        <label style="display:block">Title<br><input type="text" name="title" value="" placeholder="one line" required style="width:100%; box-sizing:border-box"></label>
+        <label style="display:block">Goal<br><textarea name="goal" rows="2" placeholder="One or two sentences."></textarea></label>
+        <label style="display:block">Context<br><textarea name="context" rows="3" placeholder="What the agent needs to know that is not in the reading list."></textarea></label>
+        <label style="display:block">Acceptance criteria<br><textarea name="acceptance" rows="4">- [ ] 
+- [ ] 
+- [ ] </textarea></label>
+        <div class="actions">
+          <label>Difficulty
+            <select name="difficulty">
+              <option value="easy" >easy</option><option value="medium" selected>medium</option><option value="hard" >hard</option>
+            </select>
+          </label>
+          <label>Priority
+            <select name="priority">
+              <option value="0" >first · 0</option><option value="1" >next · 1</option><option value="2" >normal · 2</option><option value="3" selected>later · 3</option><option value="4" >someday · 4</option>
+            </select>
+          </label>
+        </div>
+        <label style="display:block">Reading list<br><textarea name="reading" rows="2" placeholder="one path per line, e.g. demo/p1/specs/spec.md"></textarea></label>
+        <label style="display:block">Dependencies<br><input type="text" name="depends_on" value="" placeholder="task ids, comma separated" style="width:100%; box-sizing:border-box"></label>
+        <div class="actions">
+          <label class="check"><input type="checkbox" name="ready" value="1" > approve now</label>
+          <button class="primary">Create task</button>
+        </div>
+      </form>
+    </details>
+    <div class="panel prose"><div class="eyebrow">Goals</div><h1>p1 goals</h1>
 <p>Drive the loop end to end.</p></div>
-      <table style="margin-top:14px; font-size:13px">
-        <tr><th>tasks done</th><th>PRs merged</th><th>revise rounds</th><th>avg lead</th><th>first pass</th><th>cost</th><th>dates</th></tr>
-        <tr><td>3 / 4</td><td>3</td><td>2</td>
-          <td>0.0 h</td>
-          <td></td>
-          <td>$0.22</td>
-          <td class="mono">2026-09-07 → 2026-09-07</td></tr>
-      </table>
-      
-      <table style="margin-top:10px; font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
-      <tr><td>easy</td><td>3</td><td>3</td><td>0.67</td><td></td><td>$0.22</td></tr></table>
-    </div>
-    <div class="panel"><div class="eyebrow">Pull requests</div>
-      <div class="scroll"><table>
-        <tr><th>pr</th><th>task</th><th>title</th><th>tier</th><th>merged</th></tr>
-        <tr><td><a href="/qa/github/pull/2" target="_blank">#2</a></td><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td class="title">A worker that asks a question</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/3" target="_blank">#3</a></td><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td class="title">A round with nothing to change</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        <tr><td><a href="/qa/github/pull/1" target="_blank">#1</a></td><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td class="title">Planned: a plain task</td><td>easy</td><td class="mono">2026-09-07</td></tr>
-        
-      </table></div>
-      
-    </div>
-    <div class="panel"><div class="eyebrow">Tasks</div>
-      <div class="scroll"><table>
-        <tr><th>id</th><th>status</th><th>tier</th><th>title</th><th>pr</th><th>cost</th></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A worker that asks a question</td>
-          <td><a href="/qa/github/pull/2" target="_blank">#2</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A round with nothing to change</td>
-          <td><a href="/qa/github/pull/3" target="_blank">#3</a></td>
-          <td class="mono">$0.06</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">Planned: a plain task</td>
-          <td><a href="/qa/github/pull/1" target="_blank">#1</a></td>
-          <td class="mono">$0.10</td></tr>
-        
-        <tr><td><a class="id" href="/tasks/DM-004">DM-004</a></td><td><span class="state s-cancelled" title="pressed"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pressed"><title>pressed</title><use href="#st-pressed"/></svg>cancelled</span></td><td>easy</td><td class="title">Planned: a follow-up</td>
-          <td></td>
-          <td class="mono"></td></tr>
-        
-      </table></div>
-    </div>
   </div>
   <div class="stack">
     <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
@@ -553,16 +617,17 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <div class="plate-mount"><img class="plate" src="/static/plates/pea.webp" alt="Pisum sativum, plate from Thomé, Flora von Deutschland, 1885" width="300" height="420"></div>
       
       <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
-      <div class="lbl" style="right:16px; bottom:16px"><b>demo · plate I</b><br>p1<br><i>Pisum sativum</i> — garden pea<br>3 of 4 tasks done · 3 merged<br>closed 2026-09-07 · spent $0.22<br><span class="muted">plate: Thomé, Flora von Deutschland, 1885</span></div>
-      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
+      <div class="lbl" style="right:16px; bottom:16px"><b>demo · plate I</b><br>p1<br><i>Pisum sativum</i> — garden pea<br>4 tasks · 0 merged · 0 PRs open<br>spent $0.00<br><span class="muted">plate: Thomé, Flora von Deutschland, 1885</span></div>
+      <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">open</span></div>
     </div>
-    <div class="panel"><div class="eyebrow">Artifacts</div>
-      <ul style="margin:8px 0 0; padding-left:18px; font-size:13px">
-        <li><a href="/phases/demo/p1/doc/specs/spec.md">demo/p1/specs/spec.md</a></li>
-        
-        
-      </ul>
+    <div class="panel"><div class="eyebrow">Spend</div><h3>Cost by difficulty tier</h3><div class="empty">No runs recorded yet.</div>
+      
+      <p style="margin:10px 0 0"><a href="/costs?phase=demo/p1" class="mono">spend over time for this phase →</a></p>
     </div>
+    <details class="panel" open><summary class="mono">demo/p1/specs/spec.md</summary><div class="prose" style="margin-top:8px"><h1>spec</h1>
+<p>Nothing to it.</p></div></details>
+    
+    
   </div>
 </div>
 
