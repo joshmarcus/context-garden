@@ -32,6 +32,9 @@ RECOVERY_EXERCISES = frozenset({
 INTERVENTION_KINDS = frozenset({
     "operator_repair", "requeue", "retry", "set_status", "redispatch", "mark_done",
 })
+NON_OPERATIVE_KINDS = frozenset({"status_question", "conversation"})
+ACTION_KINDS = INTERVENTION_KINDS | NON_OPERATIVE_KINDS
+ACTORS = frozenset({"human_owner", "delegated_operator", "automated_scheduler", "unknown"})
 
 
 def running_build_sha() -> str:
@@ -75,14 +78,19 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
     phase_events = [e for e in events.read(since=since) if e.get("phase") == phase.key or
                     any(t.id == e.get("task") for t in phase.tasks)]
     phase_task_ids = {task.id for task in phase.tasks}
-    repairs = [e for e in phase_events if e.get("kind") in INTERVENTION_KINDS]
-    known = {(i.get("at"), i.get("kind")) for i in data.get("interventions", [])}
-    new_repairs = [e for e in repairs if (e.get("at"), e.get("kind")) not in known]
-    if new_repairs:
-        for event in new_repairs:
-            data.setdefault("interventions", []).append({"at": event.get("at"), "kind": event.get("kind"),
-                                                          "reason": event.get("reason") or event.get("note") or "recorded operator action"})
-        data["started_at"] = str(new_repairs[-1].get("at") or at)
+    actions = [e for e in phase_events if e.get("kind") in INTERVENTION_KINDS]
+    known = {(i.get("at"), i.get("kind"), i.get("actor") or "unknown") for i in data.get("interventions", [])}
+    new_actions = [e for e in actions if (e.get("at"), e.get("kind"), e.get("actor", "unknown")) not in known]
+    owner_actions = [e for e in new_actions if e.get("actor") == "human_owner"]
+    if new_actions:
+        for event in new_actions:
+            data.setdefault("interventions", []).append(_action_row(
+                at=str(event.get("at") or at), kind=str(event["kind"]),
+                actor=str(event.get("actor") or "unknown"),
+                reason=str(event.get("reason") or event.get("note") or "recorded action"),
+            ))
+    if owner_actions:
+        data["started_at"] = str(owner_actions[-1].get("at") or at)
         data["samples"] = []
         since = str(data["started_at"])
         phase_events = [e for e in phase_events if str(e.get("at") or "") >= since]
@@ -103,12 +111,20 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
     return row
 
 
-def intervene(phase: Phase, reason: str, *, kind: str = "operator_repair", at: str | None = None) -> None:
+def intervene(phase: Phase, reason: str, *, kind: str = "operator_repair", actor: str = "unknown",
+              at: str | None = None) -> None:
+    if kind not in ACTION_KINDS:
+        raise ValueError("unknown stabilization action kind")
+    if actor not in ACTORS:
+        raise ValueError("unknown stabilization actor")
     data = load_evidence(phase)
-    data.setdefault("interventions", []).append({"at": at or now_iso(), "kind": kind, "reason": reason})
-    # An operator repair starts a new candidate unattended window, while preserving its count.
-    data["started_at"] = at or now_iso()
-    data["samples"] = []
+    recorded_at = at or now_iso()
+    data.setdefault("interventions", []).append(_action_row(
+        at=recorded_at, kind=kind, actor=actor, reason=reason,
+    ))
+    if kind in INTERVENTION_KINDS and actor == "human_owner":
+        data["started_at"] = recorded_at
+        data["samples"] = []
     _save(phase, data)
 
 
@@ -178,7 +194,11 @@ def render_report(phase: Phase, *, build_sha: str | None = None) -> str:
                 "",
             ]
     lines += ["## Unverified requirements", ""] + ([f"- {item}" for item in missing] if missing else ["- None."])
-    lines += ["", f"Recorder samples: {len(data.get('samples') or [])}; operator interventions: {len(data.get('interventions') or [])}", ""]
+    actions = data.get("interventions") or []
+    counts = {actor: sum(a.get("actor", "unknown") == actor for a in actions) for actor in ACTORS}
+    lines += ["", "## No-owner-action window", "",
+              "Only required human-owner unblock or repair actions restart this window. Delegated operator and automated scheduler actions remain recorded for reliability and cost accounting. Unknown actor provenance leaves the window unproven.",
+              "", f"Recorder samples: {len(data.get('samples') or [])}; actions: {len(actions)} (human owner {counts['human_owner']}, delegated operator {counts['delegated_operator']}, automated scheduler {counts['automated_scheduler']}, unknown {counts['unknown']})", ""]
     return "\n".join(lines)
 
 
@@ -192,7 +212,17 @@ def _check_soak(data: dict[str, Any], row: dict[str, Any], missing: list[str]) -
         hours = 0
     completed = max((int(s.get("completed_tasks", 0)) for s in samples), default=0)
     if hours < 4 or completed < 10 or row.get("status") != "PASS":
-        missing.append(f"productive_unattended: need 4 consecutive hours and 10 completed tasks since the last repair (recorded {hours:.2f}h, {completed} tasks; {len(data.get('interventions') or [])} total interventions counted)")
+        missing.append(f"productive_unattended: need 4 consecutive hours and 10 completed tasks without a required owner action (recorded {hours:.2f}h, {completed} tasks; {len(data.get('interventions') or [])} actions recorded)")
+    start_at = str(data.get("started_at") or "")
+    unknown = [a for a in data.get("interventions") or []
+               if a.get("actor", "unknown") == "unknown" and str(a.get("at") or "") >= start_at]
+    if unknown:
+        missing.append("productive_unattended: unknown actor provenance in the candidate window")
+
+
+def _action_row(*, at: str, kind: str, actor: str, reason: str) -> dict[str, str | bool]:
+    return {"at": at, "kind": kind, "actor": actor, "reason": reason,
+            "operative": kind in INTERVENTION_KINDS}
 
 
 def _unattended_completed_tasks(

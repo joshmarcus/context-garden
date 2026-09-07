@@ -123,29 +123,68 @@ def test_fixture_evidence_does_not_bypass_recovery_gate(garden):
     assert "recovery_exercises: FAIL" in missing
 
 
-def test_recorder_counts_repairs_resets_window_and_measures_resources(garden):
+def test_delegated_repairs_do_not_reset_window_and_remain_visible(garden):
     phase = protected_phase(garden)
     start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data_path.write_text(json.dumps(data))
     events = EventLog(garden / ".garden" / "events.jsonl")
     for i in range(10):
         events.emit("transition", f"DM-{i:03}", phase=phase.key, to="done")
     first = sample(phase, events, at="2026-09-06T04:00:00+00:00")
     assert first["completed_tasks"] == 10 and "memory_available_bytes" in first
-    intervene(phase, "requeued a stuck worker", at="2026-09-06T05:00:00+00:00")
+    intervene(phase, "repaired a stalled worker", actor="delegated_operator",
+              at="2026-09-06T04:30:00+00:00")
+    intervene(phase, "requeued a stuck worker", kind="requeue", actor="delegated_operator",
+              at="2026-09-06T05:00:00+00:00")
+    intervene(phase, "retried failed check", kind="retry", actor="delegated_operator",
+              at="2026-09-06T05:30:00+00:00")
+    intervene(phase, "merged verified task", kind="mark_done", actor="automated_scheduler",
+              at="2026-09-06T06:00:00+00:00")
     data = json.loads((phase.path / "docs" / "stabilization-evidence.json").read_text())
-    assert data["samples"] == [] and len(data["interventions"]) == 1
-    assert data["started_at"] == "2026-09-06T05:00:00+00:00"
+    assert len(data["samples"]) == 1 and len(data["interventions"]) == 4
+    assert data["started_at"] != "2026-09-06T05:00:00+00:00"
+    record_passes(phase)
+    assert gate(phase, build_sha="build-a") == (True, [])
+    report = (phase.path / "docs" / "stabilization-evidence.md").read_text()
+    assert "delegated operator 3, automated scheduler 1" in report
 
 
-def test_sample_detects_operator_action_event_and_resets_automatically(garden):
+def test_required_owner_action_resets_window_but_a_status_question_does_not(garden):
     phase = protected_phase(garden)
     start(phase, "build-a")
-    events = EventLog(garden / ".garden" / "events.jsonl")
-    repair = events.emit("retry", "DM-001", phase=phase.key, reason="unstick worker")
-    sample(phase, events)
+    intervene(phase, "asked for status", kind="status_question", actor="human_owner",
+              at="2026-09-06T04:00:00+00:00")
     data = json.loads((phase.path / "docs" / "stabilization-evidence.json").read_text())
-    assert data["started_at"] == repair["at"]
-    assert data["interventions"] == [{"at": repair["at"], "kind": "retry", "reason": "unstick worker"}]
+    assert data["started_at"] != "2026-09-06T04:00:00+00:00"
+    intervene(phase, "approved the required repair", actor="human_owner", at="2026-09-06T05:00:00+00:00")
+    data = json.loads((phase.path / "docs" / "stabilization-evidence.json").read_text())
+    assert data["started_at"] == "2026-09-06T05:00:00+00:00"
+    assert data["samples"] == []
+
+
+def test_unknown_actor_provenance_cannot_manufacture_a_passing_window(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data["samples"] = [{"at": "2026-09-06T04:00:00+00:00", "completed_tasks": 10}]
+    data_path.write_text(json.dumps(data))
+    intervene(phase, "historical retry lacks provenance", kind="retry", at="2026-09-06T02:00:00+00:00")
+    record_passes(phase)
+    ok, missing = gate(phase, build_sha="build-a")
+    assert not ok
+    assert "productive_unattended: unknown actor provenance in the candidate window" in missing
+
+
+def test_intervention_cli_explains_no_owner_action_semantics():
+    result = CliRunner().invoke(app, ["stabilization", "intervene", "--help"])
+    assert result.exit_code == 0
+    assert "human-owner repair resets" in result.output
+    assert "delegated_operator" in result.output
 
 
 def test_sample_excludes_a_completed_merged_external_pr_from_unattended_work(sched, fake_github, monkeypatch):
