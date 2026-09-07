@@ -741,6 +741,10 @@ def test_status_names_tasks_waiting_for_a_paused_harness(garden):
     out = run(garden, "status").output
     assert "waiting for claude to resume: DM-001" in out
 
+    sched.resume_harness("claude")
+    out = run(garden, "status").output
+    assert "waiting for claude to resume" not in out
+
 
 def test_config_accept_with_nothing_held(garden):
     r = run(garden, "config", "accept")

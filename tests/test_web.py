@@ -1112,6 +1112,11 @@ def test_task_page_names_harness_hold(garden):
     assert "Waiting for claude to resume" in page
     assert "will return to the dispatch queue automatically" in page
 
+    sched.resume_harness("claude")
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Waiting for claude to resume" not in page
+    assert 'class="state s-ready"' in page
+
 
 def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden):
     """A long run id must not squeeze the decision text under an action column."""
