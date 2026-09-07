@@ -4,10 +4,12 @@ import multiprocessing
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from garden.observe import resolve, status_line
 from garden.scheduler import State
 from garden.scheduler.resources import ResourcePressureError
+from garden.web.app import create_app
 
 
 def _set_resource_limit(sched, key: str, value: int) -> None:
@@ -116,6 +118,85 @@ def test_effective_memory_uses_tighter_cgroup_headroom(sched, monkeypatch):
     assert status.memory_available_mb == 900
     assert status.cgroup_available_mb == 900
     assert "available memory 900 MiB is below 1500 MiB" in status.reasons
+
+
+def test_configured_execution_cgroup_is_the_admission_boundary(sched, monkeypatch, tmp_path):
+    """A roomy controller cannot admit work beyond the configured execution budget."""
+    import garden.scheduler.resources as resources
+
+    execution = tmp_path / "execution"
+    execution.mkdir()
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: {
+        "resources.min_memory_available_mb": 1500,
+        "resources.execution_cgroup": str(execution),
+    }.get(key, default))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 7000)
+
+    def cgroup_status(path):
+        return (900, {"high": 3, "max": 0, "oom": 0, "oom_kill": 0}) if path == execution else (7000, {})
+
+    monkeypatch.setattr(resources, "_cgroup_memory_status", cgroup_status)
+    status = sched.resource_status()
+
+    assert status.memory_available_mb == 900
+    assert status.cgroup_boundary == "execution cgroup"
+    assert status.cgroup_events == (("high", 3), ("max", 0), ("oom", 0), ("oom_kill", 0))
+    assert "execution cgroup available memory 900 MiB is below 1500 MiB" in status.reasons
+    with pytest.raises(ResourcePressureError, match="execution cgroup available memory"):
+        sched._admit_local_launch("work")
+
+
+def test_resource_status_reports_authoritative_capacity_conflict(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
+    _set_resource_limit(sched, "heavy_test_parallel", 1)
+    assert sched.resource_status().heavy_limit == 1
+    _set_resource_limit(sched, "heavy_test_parallel", 2)
+    status = sched.resource_status()
+    assert status.requested_heavy_limit == 2
+    assert status.heavy_limit == 1
+    assert status.heavy_conflict == "configured limit 2 conflicts with authoritative limit 1"
+
+
+def test_authoritative_capacity_conflict_agrees_across_operator_surfaces(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
+    _set_resource_limit(sched, "heavy_test_parallel", 1)
+    assert sched.resource_status().heavy_limit == 1
+    _set_resource_limit(sched, "heavy_test_parallel", 2)
+
+    def rendered() -> tuple[str, str, str]:
+        app = TestClient(create_app(sched.store, watch=False))
+        return status_line(sched.store, sched, resolve(sched.cfg, sched)), app.get("/").text, app.get("/config").text
+
+    conflict = "configured limit 2 conflicts with authoritative limit 1"
+    observe, rail, config = rendered()
+    assert "heavy 0/1 authoritative (requested 2; 0 waiting)" in observe
+    assert f"conflict {conflict}" in observe
+    assert "heavy 0/1 authoritative (requested 2)" in rail
+    assert f"capacity conflict: {conflict}" in rail
+    assert "heavy execution: <strong>0/1</strong> authoritative" in config
+    assert "(requested 2)" in config and f"Heavy capacity conflict: {conflict}" in config
+
+    running = sched.runs.new_run("DM-001", "local", mode="check")
+    (running.path / "execution.json").write_text('{"state": "running"}')
+    running.save()
+    waiting = sched.runs.new_run("DM-002", "local", mode="check")
+    (waiting.path / "execution.json").write_text('{"state": "waiting"}')
+    waiting.save()
+
+    observe, rail, config = rendered()
+    assert "heavy 1/1 authoritative (requested 2; 1 waiting)" in observe
+    assert "heavy 1/1 authoritative (requested 2) (1 waiting)" in rail
+    assert "heavy execution: <strong>1/1</strong> authoritative" in config
+    assert "(1 waiting: heavy-test budget full)" in config
 
 
 def test_writable_but_unbounded_execution_cgroup_is_not_enforced(sched, monkeypatch, tmp_path):

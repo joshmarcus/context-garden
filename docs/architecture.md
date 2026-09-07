@@ -326,8 +326,10 @@ name the effective bound and recovery action. Queue-specific `max_parallel` and
 
 Supported local setup, checks, probes and worker-issued validations additionally share
 `resources.heavy_test_parallel` kernel leases across every garden owned by the same OS user
-(one by default). The first limit stored in the shared runtime directory is authoritative;
-conflicting garden limits are recorded and use that capacity rather than minting more slots.
+(one by default). The first limit stored in a user-owned private `0700` runtime child is
+authoritative; conflicting garden limits are recorded and use that capacity rather than minting
+more slots. Lock and metadata files reject symlinks, foreign owners and non-regular files, so a
+predictable `/tmp` path is never followed.
 Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
 cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
 release its `flock`, so reservations cannot become stale. A supported worker-issued validation
