@@ -424,7 +424,7 @@ def test_last_period_reads_the_windows_events(garden):
         log.emit("dispatch", task, mode="work", model=model, harness="claude")
         for ev in (("run_finished", {"mode": "work", "model": model, "harness": "claude", "cost_usd": cost, "status": "done"}),
                    ("review", {"verdict": "approve" if i == 0 else "request_changes"}),
-                   ("transition", {"from": "in_review", "to": "done"})):
+                   ("transition", {"from": "in_review", "to": "done", "note": "PR merged: https://example.test"})):
             log.emit(ev[0], task, **ev[1])
     log.emit("answer", "DM-001", question="q", answer="a")
     log.emit("profile_changed", "", **{"from": "", "to": "steady"})
@@ -474,7 +474,10 @@ def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(ga
     log.emit("run_finished", "DM-002", run="r3", mode="rebase", model="sonnet", harness="claude", cost_usd=1.0, status="done")
     log.emit("automerged", "DM-001", pr="https://example/1", method="merge")
     for task in ("DM-001", "DM-002"):
-        log.emit("transition", task, **{"from": "in_review", "to": "done"})
+        transition = {"from": "in_review", "to": "done"}
+        if task == "DM-002":
+            transition["note"] = "PR merged: https://example.test/2"
+        log.emit("transition", task, **transition)
     lines = log.path.read_text().splitlines()
     log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
     ledger = garden / "docs" / "operator-spend.jsonl"
