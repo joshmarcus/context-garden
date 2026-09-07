@@ -385,6 +385,27 @@ def test_live_garden_escape_logs_tool_evidence_and_keeps_worktree_writes(sched, 
     assert worker_output.exists()
 
 
+def test_fence_attributes_codex_command_execution(sched, tmp_path):
+    """Codex JSONL represents a shell redirect as a command_execution item."""
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+    escaped = clone / "rogue.py"
+
+    sched._fence_snapshot(task)
+    escaped.write_text("escaped\n")
+    run = sched.runs.new_run("DM-001", "local")
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "item.completed",
+        "item": {"type": "command_execution", "command": f"printf escaped > {escaped}"},
+    }))
+
+    violations = sched._fence_check(task, run)
+
+    assert violations and violations[0]["files"] == ["rogue.py"]
+    assert violations[0]["evidence"] == {"rogue.py": ["Codex command_execution names rogue.py"]}
+    assert not escaped.exists()
+
+
 def test_fence_attributes_paths_named_relative_to_the_worktree(sched, tmp_path):
     """A worker that names a fenced path relative to its worktree (its cwd) rather than by an
     absolute path is still attributed and reverted; matching is not limited to absolute forms."""

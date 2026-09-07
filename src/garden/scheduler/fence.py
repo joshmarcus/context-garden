@@ -474,6 +474,27 @@ class FenceMixin:
                                 if any(candidate in value for value in values)), "")
                 if matched:
                     evidence.append(f"{name} tool call names {rel}")
+            # `codex exec --json` records shell activity as a completed
+            # command_execution item, rather than a Claude-style tool_use.  It is still
+            # first-party audit evidence: the command came from this run's transcript.
+            # Agent messages are deliberately not examined here; they are only prose.
+            item = event.get("item")
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "command_execution":
+                command = item.get("command")
+                if isinstance(command, str) and any(candidate in command for candidate in candidates):
+                    evidence.append(f"Codex command_execution names {rel}")
+            elif item_type == "file_change":
+                changes = item.get("changes")
+                if isinstance(changes, list) and any(
+                    isinstance(change, dict)
+                    and isinstance(change.get("path"), str)
+                    and any(candidate in change["path"] for candidate in candidates)
+                    for change in changes
+                ):
+                    evidence.append(f"Codex file_change names {rel}")
         return evidence
 
     @staticmethod
