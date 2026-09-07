@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shlex
@@ -464,6 +465,88 @@ def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, 
     hostile.symlink_to(tmp_path / "outside")
     with pytest.raises(RuntimeError, match="unsafe runtime file"):
         supervisor._authoritative_limit(1)
+
+
+@pytest.mark.parametrize("name", [
+    "garden-heavy-test-{uid}-capacity.json",
+    "garden-heavy-test-{uid}-capacity.lock",
+    "garden-heavy-test-{uid}-0.lock",
+    "garden-heavy-test-{uid}-owner-owner.lock",
+])
+@pytest.mark.parametrize("mode", [stat.S_IFIFO, stat.S_IFDIR])
+def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path, monkeypatch, name, mode):
+    """Every metadata and lease-file name fails closed on an unsafe fstat result."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    root = supervisor._private_runtime_dir()
+    expected_name = name.format(uid=os.getuid())
+    real_fstat = supervisor.os.fstat
+
+    monkeypatch.setattr(
+        supervisor.os,
+        "fstat",
+        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid() + 1, "st_mode": stat.S_IFREG | 0o600})()
+        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+    )
+    with pytest.raises(RuntimeError, match="not a user-owned regular file"):
+        supervisor._safe_runtime_file(root, expected_name)
+
+    monkeypatch.setattr(
+        supervisor.os,
+        "fstat",
+        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid(), "st_mode": mode | 0o600})()
+        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+    )
+    with pytest.raises(RuntimeError, match="not a user-owned regular file"):
+        supervisor._safe_runtime_file(root, expected_name)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+@pytest.mark.parametrize("lease", ["metadata", "guard", "slot", "owner"])
+def test_runtime_leases_reject_precreated_hostile_files(tmp_path, monkeypatch, kind, lease):
+    """Capacity metadata and every lock class refuse substitutions without following them."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    root = supervisor._private_runtime_dir()
+    uid = os.getuid()
+    target = tmp_path / "substitution-target"
+    target.write_text("untouched")
+    names = {
+        "metadata": f"garden-heavy-test-{uid}-capacity.json",
+        "guard": f"garden-heavy-test-{uid}-capacity.lock",
+        "slot": f"garden-heavy-test-{uid}-0.lock",
+        "owner": f"garden-heavy-test-{uid}-owner-{hashlib.sha256(b'owner').hexdigest()[:20]}.lock",
+    }
+
+    if lease == "slot":
+        assert supervisor._authoritative_limit(1) == (1, None)
+    path = root / names[lease]
+    if kind == "symlink":
+        path.symlink_to(target)
+    else:
+        os.mkfifo(path)
+
+    run_dir = tmp_path / f"run-{lease}-{kind}"
+    run_dir.mkdir()
+    if lease == "owner":
+        monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owner")
+
+    def action() -> object:
+        if lease in {"metadata", "guard"}:
+            return supervisor._authoritative_limit(1)
+        if lease == "slot":
+            return supervisor._execution_slot(run_dir, lambda: False)
+        return supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
+
+    with pytest.raises(RuntimeError, match="unsafe runtime file"):
+        action()
+    assert target.read_text() == "untouched"
 
 
 def test_two_validations_from_one_worker_are_serialized(tmp_path):
