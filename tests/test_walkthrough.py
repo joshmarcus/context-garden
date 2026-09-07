@@ -20,6 +20,7 @@ from garden.walkthrough import (
     VIEWPORTS,
     NarrowViewportError,
     _narrow_frame,
+    PageSpec,
     _prepare_browser,
     _redact_home,
     _scrub_stderr,
@@ -75,6 +76,18 @@ def test_capture_writes_pages_and_index(garden):
     assert run.run_id in inbox_capture
     assert 'class="decision-evidence"' in inbox_capture
     assert 'class="card-actions decision-actions"' in inbox_capture
+    decision = next(pr for pr in result.pages if pr.spec.slug == "task-decision")
+    assert decision.spec.url == "/tasks/DM-001"
+    assert 'class="panel decision-card"' in (out / "task-decision.html").read_text()
+
+
+def test_capture_marks_empty_or_failed_documents(garden, monkeypatch, tmp_path):
+    store = Store(garden)
+    phase = store.phase("demo", "p1")
+    monkeypatch.setattr("garden.walkthrough._fetch", lambda *_args: {"now": (200, "")})
+    monkeypatch.setattr("garden.walkthrough.pages_for", lambda *_args: [PageSpec("now", "/", "Now", "", "")])
+    result = capture(store, phase, tmp_path / "empty", screenshots=False)
+    assert result.pages[0].note == "empty or unsuccessful document"
 
 
 def test_pages_include_the_phase_and_a_task(garden):

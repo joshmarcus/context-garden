@@ -16,6 +16,7 @@ import markdown as md
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
+from .. import operator_spend as ops
 from ..events import EventLog, metrics, parse_since
 from ..graph import blockers, effective_status, validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
@@ -203,7 +204,9 @@ class Site:
         run_store = sched.runs
         totals = run_store.totals()
         resources = sched.resource_status()
-        rail_metrics = metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), s.tasks())
+        rail_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
+        rail_metrics = metrics(rail_events, s.tasks())
         return {
             "request": request,
             "page": page,

@@ -30,6 +30,7 @@ from pathlib import Path
 from .browser import browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
+from .scheduler import State
 from .store import Store
 
 Log = Callable[[str], None]
@@ -89,6 +90,19 @@ def _task_and_run(store: Store, phase: Phase) -> tuple[str, str]:
     return task_id, run_id
 
 
+def _decision_task(store: Store, phase: Phase) -> str:
+    """Choose an open task whose page renders the same decision card a person must act on."""
+    state = State(store.config.garden_dir / "state.json")
+    for task in phase.tasks:
+        if task.status.terminal:
+            continue
+        facts = state.get(task.id)
+        if (facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human")):
+            return task.id
+    return ""
+
+
 def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     """The pages to capture, in the order a person uses them, with the data this phase has."""
     key = phase.key
@@ -124,9 +138,18 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
+    decision_id = _decision_task(store, phase)
+    if decision_id:
+        specs.append(PageSpec("task-decision", f"/tasks/{decision_id}", "Task decision",
+                              "A task page with an active worker decision or needs-you card.",
+                              "Does the page explain the decision and give the person a clear recovery action?"))
     if task_id:
         specs.append(PageSpec("task", f"/tasks/{task_id}", "Task",
                               "A task page: state, tier and priority controls, runs, the live log, the actions.",
+                              "Are the controls and the run history legible, and is it clear what happens next?"))
+    if decision_id and decision_id != task_id:
+        specs.append(PageSpec("task-ordinary", f"/tasks/{task_id}", "Task",
+                              "An ordinary task page: state, runs, the live log and actions.",
                               "Are the controls and the run history legible, and is it clear what happens next?"))
     if task_id and run_id:
         specs.append(PageSpec("run", f"/runs/{task_id}/{run_id}", "Run",
@@ -552,8 +575,13 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                                     evidence.append({"page": s.slug, "action": "frame", "viewport": width,
                                                      "color_scheme": scheme, **measurements})
                             else:
-                                page.goto(url, wait_until="networkidle", timeout=30000)
-                                viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
+                                response = page.goto(url, wait_until="networkidle", timeout=30000)
+                                if response is None or not 200 <= response.status < 300:
+                                    raise RuntimeError(f"HTTP {response.status if response else 'no response'}")
+                                viewport = page.evaluate("""() => {
+                                    if (!document.body || !document.body.innerHTML.trim()) throw new Error('empty document');
+                                    return {clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth};
+                                }""")
                                 page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
                                 evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
                                                  "color_scheme": scheme, **viewport})
@@ -684,7 +712,10 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
             page = _scrub_stderr(page)
         (out_dir / f"{s.slug}.html").write_text(page)
         (out_dir / f"{s.slug}.txt").write_text(html_to_text(page))
-        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot))
+        note = ""
+        if not (200 <= status < 300) or not page.strip():
+            note = "empty or unsuccessful document"
+        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot, note=note))
         log(f"  {s.slug:<14} {s.url}  ({status}, {len(page.encode()) // 1024} KB){'  +png' if s.slug in shot else ''}")
 
     (out_dir / "index.md").write_text(_index_md(phase, result))
