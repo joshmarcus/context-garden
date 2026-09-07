@@ -779,12 +779,13 @@ def test_new_task_approve_now_refusal_keeps_it_draft_and_flashes_the_gap(garden)
 
 
 def test_inline_edit_clears_brief_gate(garden):
-    """A draft with a missing checklist can repair its brief on its task page and approve."""
+    """A draft with a missing reading list can repair its brief on its task page and approve."""
     from garden.model import Status
 
     store = Store(garden)
     task = store.task("DM-001")
     task.status = Status.DRAFT
+    task.reading = []
     store.save(task)
     c = client(garden)
 

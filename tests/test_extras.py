@@ -62,10 +62,10 @@ def test_check_runner_records_failures_before_running_checks(tmp_path, monkeypat
         RuntimeError("plugin import failed")))
 
     assert garden.checkrun.main([str(run_dir)]) == 0
-    assert json.loads((run_dir / "checks.json").read_text()) == [{
-        "name": "checks", "status": "error",
-        "summary": "check runner failed: RuntimeError: plugin import failed", "details": "",
-    }]
+    result = json.loads((run_dir / "checks.json").read_text())[0]
+    assert result["name"] == "checks" and result["status"] == "error"
+    assert result["summary"] == "check runner crashed: RuntimeError: plugin import failed"
+    assert "RuntimeError: plugin import failed" in result["details"]
 
 
 def test_run_check_killed_or_empty_did_not_finish(tmp_path):
