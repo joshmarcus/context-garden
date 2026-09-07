@@ -1604,6 +1604,7 @@ def test_max_parallel_override_from_config_page(garden):
     # the field applies on blur/Enter; no Set button beside it
     assert 'data-autosave' in config_page and 'onblur="this.form.requestSubmit()"' in config_page
     assert "work, revise, resume, trial, rebase" in config_page
+    assert "Worker occupancy:</strong> 0/2" in config_page
     assert "still count toward the shared local execution limit shown in the rail" in config_page
     assert "<button class=\"primary\">Set</button>" not in config_page
     assert "0/2" in c.get("/").text  # inbox header: workers running / live limit
