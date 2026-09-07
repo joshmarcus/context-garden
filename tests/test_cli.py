@@ -785,6 +785,14 @@ def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "resume").exit_code != 0
 
 
+def test_maintenance_commands_report_requested_then_quiesced(garden):
+    assert run(garden, "maintenance-pause", "--reason", "restart").exit_code == 0
+    assert "requested" in run(garden, "maintenance-status").output
+    assert run(garden, "tick").exit_code == 0
+    assert "quiesced" in run(garden, "maintenance-status").output
+    assert run(garden, "maintenance-resume").exit_code == 0
+
+
 def test_take_finish_revise_and_cost(garden):
     """CG-158: `garden take` on a changes_requested task dispatches a revise round (not a
     fresh work round), and `garden finish --cost` records what the round cost so a manual

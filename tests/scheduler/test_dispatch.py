@@ -3,12 +3,16 @@
 import os
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status
+from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
+from garden.scheduler.report import TickReport
+from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
 
@@ -154,6 +158,92 @@ def test_revise_brief_names_rebase_conflict_without_github_feedback(sched):
     assert "rebase conflict" in brief
 
 
+def test_oversized_prompt_is_rejected_before_the_runner_starts(sched, monkeypatch):
+    """The scheduler must not spend a turn on a harness input it already knows is invalid."""
+    task = sched.store.task("DM-001")
+    runner = sched.runner_for(task)
+    started = False
+
+    def start(*args, **kwargs):
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(runner, "start", start)
+    with pytest.raises(ValueError, match="serialized prompt"):
+        sched.dispatch(task, prompt_override="x" * (MAX_SERIALIZED_PROMPT_BYTES + 1))
+    assert not started
+
+
+def test_large_invalid_utf8_rebase_conflict_recovers_once_and_preserves_stages(sched, monkeypatch):
+    """A real oversized invalid-UTF-8 conflict recovers unattended, retaining Git's exact stages."""
+    from garden import gitops
+    from tests.conftest import git
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/pull/1"
+    task.branch = task.default_branch()
+    sched.store.save(task)
+    path = "docs/design/snapshot.json"
+    repo = sched.repo_for(task)
+    wt = sched.worktree_for(task)
+
+    # Invalid UTF-8 proves the artifacts come from Git's index stages, not a decoded worktree
+    # rendering, while the large generated payload forces the bounded-summary path.
+    original = b"original\xff\n"
+    main_blob = b"main\xff\n" + b"m" * (1024 * 1024 + 128)
+    branch_blob = b"branch\xfe\n" + b"b" * (1024 * 1024 + 256)
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(original)
+    git("add", path, cwd=repo)
+    git("commit", "-q", "-m", "add generated snapshot", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+
+    gitops.prepare_worktree(repo, wt, task.branch, "main")
+    (wt / path).write_bytes(branch_blob)
+    git("add", path, cwd=wt)
+    git("commit", "-q", "-m", "branch snapshot", cwd=wt)
+    git("push", "-q", "-u", "origin", task.branch, cwd=wt)
+
+    target.write_bytes(main_blob)
+    git("add", path, cwd=repo)
+    git("commit", "-q", "-m", "main snapshot", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+
+    outcome = sched._rebase_and_record(task, "main", wt=wt)
+    assert outcome.status == "conflict"
+    assert outcome.files == [path]
+    # Make the actual rebase dispatch salvage a dirty worktree before the resolving agent runs.
+    (wt / "leftover.txt").write_text("preserve me\n")
+    sched._dispatch_rebase_agent(task, "main", outcome.files, outcome.hunks, outcome.artifacts,
+                                 TickReport(), "fixture")
+    state = sched.state.get(task.id)
+    artifact = state["rebase_artifacts"][path]
+    stages = {entry["stage"]: entry for entry in artifact["stages"]}
+    assert Path(stages[1]["path"]).read_bytes() == original
+    # During a rebase Git's stage 2 is the onto/base side and stage 3 is the rebased commit.
+    assert Path(stages[2]["path"]).read_bytes() == main_blob
+    assert Path(stages[3]["path"]).read_bytes() == branch_blob
+    assert all(len(entry["sha256"]) == 64 for entry in stages.values())
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "rebase-resolve")
+    run = sched.dispatch(task, mode="rebase")
+    brief = (run.path / "brief.md").read_text()
+    assert len(brief.encode("utf-8")) <= MAX_SERIALIZED_PROMPT_BYTES
+    assert "Large conflict omitted from this prompt" in brief
+    assert str(stages[2]["path"]) in brief
+    assert "b" * 128 not in brief
+    assert state["stashes"][-1]["sha"] and state["stashes"][-1]["reason"] == "pre-dispatch"
+
+    sched.tick()  # reap the one resolving agent
+    sched.tick()  # continue through the ordinary post-rebase poll/dispatch path
+    agent_runs = [item for item in sched.runs.runs_for(task.id) if item.mode == "rebase"]
+    assert len(agent_runs) == 1
+    assert not state.get("rebase_run_retries") and not state.get("needs_human")
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
 def test_redispatched_work_brief_lists_prior_commits(sched):
     """CG-125: a fresh work round that lands on a worktree an interrupted attempt left with
     commits gets those commits listed in its brief ("Already on this branch"), so it builds
@@ -277,6 +367,49 @@ def test_review_runs_do_not_consume_worker_slots(sched):
     assert sched.review_slots_free() == 0
 
 
+def test_checks_and_edits_do_not_consume_worker_slots(sched):
+    """The max_parallel count is the same worker-only count shown by the UI and CLI.
+    A check in flight must not prevent a ready task from taking a worker slot."""
+    check_run = sched.runs.new_run("DM-001", "local", mode="check")
+    check_run.status = "running"
+    check_run.save()
+    edit_run = sched.runs.new_run("DM-002", "local", mode="edit")
+    edit_run.status = "running"
+    edit_run.save()
+
+    assert len(sched.check_runs_active()) == 1
+    assert sched.slots_free() == 2
+    from garden.now1 import render_text, snapshot
+
+    snap = snapshot(sched.store, sched)
+    assert snap["garden"]["worker_busy"] == 0
+    assert "0 of 2 worker slots" in render_text(snap)
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
+    assert len(sched.worker_runs_active()) == 1
+    assert sched.slots_free() == 1
+
+
+def test_edit_dispatch_is_not_blocked_by_full_worker_cap(sched):
+    """An edit is slot-free, so pending suggestions are integrated even when workers are full."""
+    worker = sched.runs.new_run("DM-001", "local", mode="work")
+    worker.status = "running"
+    worker.save()
+    sched.set_override("max_parallel", 1)
+
+    task = sched.store.task("DM-002")
+    record_suggestion(sched.store, task, "cover the empty case", author="josh")
+
+    from garden.scheduler import TickReport
+
+    rep = TickReport()
+    sched.dispatch_edits(rep)
+
+    assert sched.slots_free() == 0
+    assert "DM-002(edit)" in rep.dispatched
+    assert sched.state.get("DM-002").get("edit_run")
+
+
 def test_pause_stops_dispatch(sched, fake_github):
     sched.pause(by="cli", reason="testing")
     assert sched.is_dispatch_paused()
@@ -319,6 +452,50 @@ def test_pause_state_persists_in_state_json(sched, fake_github):
     from garden.scheduler import State
     fresh = State(path).get("_control")
     assert fresh["dispatch"] == "paused" and fresh["reason"] == "hold" and fresh["by"] == "cli"
+
+
+def test_maintenance_pause_freezes_collection_until_explicit_resume(sched, fake_github):
+    """A finished worker result remains durable through a scheduler restart boundary."""
+    sched.tick()  # start DM-001's fake worker
+    run = sched.latest_worker_run("DM-001")
+    assert run is not None and run.status == "running"
+
+    sched.request_maintenance_pause(by="test", reason="reinstall")
+    status = sched.maintenance_readiness()
+    assert status["requested"] and not status["quiesced"]
+    sched.tick()  # acknowledgement pass: must not reap the result
+    assert sched.maintenance_quiesced()
+    assert sched.store.task("DM-001").status == Status.RUNNING
+    assert sched.latest_worker_run("DM-001").status == "running"
+
+    with pytest.raises(RuntimeError, match="maintenance pause"):
+        sched.dispatch(sched.store.task("DM-002"))
+    sched.resume_maintenance(by="test")
+    sched.tick()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+
+def test_maintenance_readiness_keeps_uncollected_result_separate_from_live_blockers(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="work")
+    run.status = "done"
+    run.finished_at = "2026-01-01T00:00:00+00:00"
+    run.save()
+    sched.request_maintenance_pause(by="test")
+    sched.tick()
+    status = sched.maintenance_readiness()
+    assert status["ready"]
+    assert run.run_id in status["finished_uncollected"]
+
+    live = sched.runs.new_run("DM-002", "local", mode="work")
+    live.status = "running"
+    live.pid = 12345
+    live.save()
+    status = sched.maintenance_readiness()
+    assert not status["ready"]
+    assert "installed runtime" in status["live"][0]["blocker"]
 
 
 def test_pause_overrides_auto_dispatch_true(sched, fake_github):

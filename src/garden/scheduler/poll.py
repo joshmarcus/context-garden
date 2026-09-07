@@ -528,7 +528,8 @@ class PollMixin:
             return
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=outcome.files)
         # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
-        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, rep, f"parent {parent_id} merged")
+        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, outcome.artifacts,
+                                    rep, f"parent {parent_id} merged")
 
     def _reopen_if_base_deleted(self, task: Task, slug: str | None, pr: PRInfo, rep: TickReport) -> bool:
         """A PR GitHub closed because its base branch was deleted (a stack parent that merged with

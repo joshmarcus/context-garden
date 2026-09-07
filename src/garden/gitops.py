@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -136,7 +138,8 @@ def _ensure_not_blocked(cwd: Path | None) -> None:
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
     _ensure_not_blocked(cwd)
     with _git_env() as env:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env)
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                              errors="replace", env=env)
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} (in {cwd}): {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout
@@ -440,7 +443,7 @@ def sync_to_origin_head(worktree: Path, branch: str, backup_ref: str) -> list[st
     return subjects
 
 
-def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
+def sync_remote_branch(worktree: Path, branch: str, *, artifact_dir: Path | None = None) -> tuple[bool, list[str]]:
     """Before a rebase round, fold in commits that exist only on `origin/<branch>`.
 
     A rebase round rewrites the branch in the worktree and force-pushes it. If the remote
@@ -448,6 +451,7 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
     the force-push would discard them. Rebasing the worktree's local commits onto
     `origin/<branch>` first keeps them. Returns (ok, conflicted files); on conflict the
     rebase is aborted so the worktree is left clean and the round resolves it like any other.
+    When ``artifact_dir`` is given, the unmerged index stages survive the abort there.
     """
     fetch(worktree)
     if not remote_url(worktree):
@@ -463,21 +467,63 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
         return True, []
     except GitError:
         files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        if artifact_dir is not None:
+            capture_conflict_artifacts(worktree, files, artifact_dir)
         git("rebase", "--abort", cwd=worktree, check=False)
         return False, files
 
 
-def rebase_onto_capture(worktree: Path, onto: str) -> tuple[bool, list[str], dict[str, str]]:
+def _index_blob(worktree: Path, stage: int, path: str) -> bytes | None:
+    """Return one unmerged index stage without decoding its possibly-binary contents."""
+    _ensure_not_blocked(worktree)
+    with _git_env() as env:
+        proc = subprocess.run(["git", "show", f":{stage}:{path}"], cwd=worktree,
+                              capture_output=True, env=env)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def capture_conflict_artifacts(worktree: Path, files: list[str], artifact_dir: Path) -> dict[str, dict[str, object]]:
+    """Persist every available unmerged index blob before a rebase aborts.
+
+    The worktree rendering is useful for a small prompt excerpt, but it is lossy for binary
+    files and is gone after ``rebase --abort``.  These stage files are the recovery source of
+    truth: each is written byte-for-byte with its digest in a manifest beside it.
+    """
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    captured: dict[str, dict[str, object]] = {}
+    for path in files:
+        stages: list[dict[str, object]] = []
+        path_key = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+        for stage in (1, 2, 3):
+            blob = _index_blob(worktree, stage, path)
+            if blob is None:
+                continue
+            digest = hashlib.sha256(blob).hexdigest()
+            artifact = artifact_dir / f"{path_key}.stage-{stage}.{digest[:16]}.blob"
+            artifact.write_bytes(blob)
+            stages.append({"stage": stage, "path": str(artifact), "bytes": len(blob), "sha256": digest})
+        captured[path] = {"stages": stages}
+    manifest = artifact_dir / "manifest.json"
+    manifest.write_text(json.dumps(captured, indent=2, sort_keys=True) + "\n")
+    for item in captured.values():
+        item["manifest"] = str(manifest)
+    return captured
+
+
+def rebase_onto_capture(worktree: Path, onto: str, *, artifact_dir: Path | None = None) -> tuple[bool, list[str], dict[str, str]]:
     """Rebase the worktree branch onto `onto` (e.g. origin/main). Returns (ok, conflicted files,
     {path: file contents}); on a textual conflict each conflicted file's contents (with conflict
-    markers) are captured before aborting, so a rebase brief can carry the conflicting hunks. The
-    rebase is aborted on conflict so the worktree is left clean for the agent to redo and resolve."""
+    markers) are captured before aborting, so a rebase brief can carry the conflicting hunks. If
+    ``artifact_dir`` is given, every available index stage is also preserved byte-for-byte there.
+    The rebase is aborted on conflict so the worktree is left clean for the agent to redo and resolve."""
     fetch(worktree)
     try:
         git("rebase", onto, cwd=worktree)
         return True, [], {}
     except GitError:
         files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        if artifact_dir is not None:
+            capture_conflict_artifacts(worktree, files, artifact_dir)
         hunks: dict[str, str] = {}
         for f in files:
             try:
@@ -488,7 +534,7 @@ def rebase_onto_capture(worktree: Path, onto: str) -> tuple[bool, list[str], dic
         return False, files, hunks
 
 
-def sync_and_rebase(worktree: Path, branch: str, base: str) -> tuple[bool, list[str], dict[str, str]]:
+def sync_and_rebase(worktree: Path, branch: str, base: str, *, artifact_dir: Path | None = None) -> tuple[bool, list[str], dict[str, str]]:
     """Bring the worktree branch onto `base`, folding in commits that live only on
     `origin/<branch>` first (`sync_remote_branch`) so a later force-push never discards them,
     then rebasing onto the base (`rebase_onto_capture`). This is the one sync-then-rebase
@@ -497,10 +543,10 @@ def sync_and_rebase(worktree: Path, branch: str, base: str) -> tuple[bool, list[
     (ok, conflicted files, {path: contents with markers}); on a conflict at either step the
     rebase is aborted so the worktree is left clean, and the hunks (empty for a sync conflict)
     carry the textual conflict for a rebase brief."""
-    ok, files = sync_remote_branch(worktree, branch)
+    ok, files = sync_remote_branch(worktree, branch, artifact_dir=artifact_dir)
     if not ok:
         return False, files, {}
-    return rebase_onto_capture(worktree, base_ref(worktree, base))
+    return rebase_onto_capture(worktree, base_ref(worktree, base), artifact_dir=artifact_dir)
 
 
 def diff_hash(worktree: Path, base: str) -> str:

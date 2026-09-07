@@ -60,6 +60,12 @@ flowchart LR
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
   different brief.
+- **Maintenance pause** is the installation boundary. `garden pause` only blocks new
+  dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
+  requests a whole-scheduler freeze and the next transaction acknowledges quiescence without
+  collecting results or starting work. Finished results remain durable and do not block a
+  reinstall; `garden maintenance-status` names them separately from concrete live-process
+  blockers, and `garden maintenance-resume` explicitly permits normal collection again.
 - **GitHub** holds the pull requests and the review conversation. Only the scheduler opens
   PRs and talks to it through the `gh` CLI when it is installed and logged in, otherwise
   the REST API with `GITHUB_TOKEN`. Local workers never push or open PRs; a remote SSH
@@ -326,8 +332,10 @@ name the effective bound and recovery action. Queue-specific `max_parallel` and
 
 Supported local setup, checks, probes and worker-issued validations additionally share
 `resources.heavy_test_parallel` kernel leases across every garden owned by the same OS user
-(one by default). The first limit stored in the shared runtime directory is authoritative;
-conflicting garden limits are recorded and use that capacity rather than minting more slots.
+(one by default). The first limit stored in a user-owned private `0700` runtime child is
+authoritative; conflicting garden limits are recorded and use that capacity rather than minting
+more slots. Lock and metadata files reject symlinks, foreign owners and non-regular files, so a
+predictable `/tmp` path is never followed.
 Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
 cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
 release its `flock`, so reservations cannot become stale. A supported worker-issued validation
@@ -753,6 +761,23 @@ runs it all in well under a minute; CI for this repository runs the same in
 `.github/workflows/ci.yml`. `.github/workflows/qa.yml` runs `garden qa --scripted` daily
 and on demand (`workflow_dispatch`), so a page regression is caught between phases without
 spending tokens; a failed flow exits non-zero and fails the job.
+
+## Incident control path
+
+`GET /healthz`, `GET /api/control/status`, `POST /pause`, and
+`POST /api/control/tasks/<task>/launch` are the overload-safe control path. They run
+independently of the ordinary request-worker pool and do not discover the garden or read
+full run history. On the supported single-operator deployment each accepts or answers
+within 500 ms even when ordinary read workers are exhausted.
+
+Recovery launch accepts JSON `idempotency_key` and `expected_run_id` (the empty string
+means the client observed no current run). Under a cross-process compare-and-act lock it
+either reserves one durable requested run, replays the operation already carrying that
+key, or returns 409 with the actual current run. Its 202 JSON and `Location` header name
+`GET /api/operations/<task>/<run>`; only after the response is sent does worktree/setup
+preparation begin. A retry after server restart resumes the same preparing record. Its
+server preparation PID is bookkeeping, not a worker PID and never counts as confirmed
+live work.
 
 ## Rules the code keeps
 

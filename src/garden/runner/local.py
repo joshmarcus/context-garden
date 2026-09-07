@@ -108,6 +108,7 @@ class LocalRunner(Runner):
             start_new_session=True,
         )
         run.pid = proc.pid
+        run.status = "running"
         run.harness = self.harness.name
         run.save()
         (d / "command.txt").write_text(script + "\n")
@@ -133,6 +134,7 @@ class LocalRunner(Runner):
             start_new_session=True,
         )
         run.pid = proc.pid
+        run.status = "running"
         run.save()
         (d / "command.txt").write_text(script + "\n")
 

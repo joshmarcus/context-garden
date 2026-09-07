@@ -36,7 +36,7 @@ def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
         names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
     except Exception:  # noqa: BLE001
         return []
-    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}"}
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}&product={task.product}"}
             for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
 
 

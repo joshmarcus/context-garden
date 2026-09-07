@@ -1,6 +1,7 @@
 """Tests for gitops.push rebase-detection logic."""
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -202,6 +203,46 @@ def test_sync_remote_branch_noop_without_remote_commits(origin_repo: tuple[Path,
     ok, files = gitops.sync_remote_branch(repo, "feature")  # no origin/feature yet
 
     assert ok and files == [] and _sha(repo) == head
+
+
+def test_sync_remote_branch_preserves_conflict_stages_before_abort(
+    origin_repo: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    """A synchronization conflict retains its byte-exact index stages for the rebase agent."""
+    repo, remote = origin_repo
+    path = repo / "docs" / "design" / "snapshot.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"base\xff\n")
+    _git("add", str(path.relative_to(repo)), cwd=repo)
+    _git("commit", "-q", "-m", "add snapshot", cwd=repo)
+    _git("push", "-q", "origin", "main", cwd=repo)
+    _git("checkout", "-b", "feature", cwd=repo)
+    _git("push", "-q", "-u", "origin", "feature", cwd=repo)
+
+    other = repo.parent / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    _git("checkout", "feature", cwd=other)
+    remote_blob = b"remote\xff\n"
+    (other / "docs" / "design" / "snapshot.json").write_bytes(remote_blob)
+    _git("add", "docs/design/snapshot.json", cwd=other)
+    _git("commit", "-q", "-m", "remote snapshot", cwd=other)
+    _git("push", "-q", "origin", "feature", cwd=other)
+
+    local_blob = b"local\xfe\n"
+    path.write_bytes(local_blob)
+    _git("add", "docs/design/snapshot.json", cwd=repo)
+    _git("commit", "-q", "-m", "local snapshot", cwd=repo)
+
+    artifact_dir = tmp_path / "artifacts"
+    ok, files = gitops.sync_remote_branch(repo, "feature", artifact_dir=artifact_dir)
+
+    assert not ok and files == ["docs/design/snapshot.json"]
+    manifest = json.loads((artifact_dir / "manifest.json").read_text())
+    stages = {item["stage"]: item for item in manifest[files[0]]["stages"]}
+    assert Path(stages[1]["path"]).read_bytes() == b"base\xff\n"
+    assert Path(stages[2]["path"]).read_bytes() == remote_blob
+    assert Path(stages[3]["path"]).read_bytes() == local_blob
+    assert path.read_bytes() == local_blob  # the abort returns the worktree to its clean state
 
 
 # ---- CG-220: sync_to_origin_head and a lease-protected push ------------------

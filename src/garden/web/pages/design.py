@@ -22,10 +22,11 @@ CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", "
 INTERNAL_CAPTURE_NAMES = frozenset({"brief.md", "exit_code", "final.md", "run.json", "stderr.log", "stdout.json"})
 
 
-def _design_root(store: Store) -> Path:
-    """The checkout for the garden's first product (the self-product in normal use)."""
-    product = store.products()[0]
-    return product_checkout(store, product.name)
+def _design_root(store: Store, product: str) -> Path:
+    """The checkout for the requested product's design artifacts."""
+    if product not in {item.name for item in store.products()}:
+        raise HTTPException(404)
+    return product_checkout(store, product)
 
 
 def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
@@ -77,20 +78,22 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.get("/design")
     @app.get("/design/{path:path}")
-    def design_file(request: Request, path: str = "", ref: str = ""):
+    def design_file(request: Request, path: str = "", ref: str = "", product: str = ""):
         relative = safe_relative_path(path)
         if path and not relative:
             raise HTTPException(404)
         if not relative:
             store = hub.fresh()
-            root = product_design_root(store, store.products()[0].name)
+            selected = product or store.products()[0].name
+            root = product_design_root(store, selected)
             files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
             links = "<h1>Design</h1><ul>" + "".join(
-                f'<li><a href="/design/{html.escape(f, quote=True)}">{html.escape(f)}</a></li>' for f in files
+                f'<li><a href="/design/{html.escape(f, quote=True)}?product={html.escape(selected, quote=True)}">{html.escape(f)}</a></li>' for f in files
             ) + "</ul>"
             return templates.TemplateResponse(request, "design.html", ctx(request, page="design", name="Design", content=links, ref=ref))
         store = hub.fresh()
-        root = _design_root(store)
+        selected = product or store.products()[0].name
+        root = _design_root(store, selected)
         if ref.startswith("-"):
             raise HTTPException(404)
         if ref:
