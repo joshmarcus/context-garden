@@ -432,9 +432,24 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
 def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
     import garden.run_supervisor as supervisor
 
+    fallback = tmp_path / "tmp"
+    fallback.mkdir()
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-    monkeypatch.setattr(supervisor, "os", supervisor.os)
-    monkeypatch.setattr(supervisor, "Path", lambda value: tmp_path if value == "/tmp" else Path(value))
+    monkeypatch.setattr(supervisor, "Path", lambda value: fallback if value == "/tmp" else Path(value))
+    original_lstat = supervisor.os.lstat
+
+    def fallback_lstat(path, *args, **kwargs):
+        result = original_lstat(path, *args, **kwargs)
+        if Path(path) == fallback:
+            return type("FallbackStat", (), {"st_mode": result.st_mode | 0o1000, "st_uid": 0})()
+        return result
+
+    monkeypatch.setattr(supervisor.os, "lstat", fallback_lstat)
+    root = fallback / f"garden-{os.getuid()}"
+    root.symlink_to(tmp_path / "outside")
+    with pytest.raises(RuntimeError, match="private runtime directory"):
+        supervisor._private_runtime_dir()
+    root.unlink()
     root = supervisor._private_runtime_dir()
     assert root.name == f"garden-{os.getuid()}"
     assert root.stat().st_mode & 0o777 == 0o700

@@ -140,8 +140,8 @@ per-user heavy-execution lease shared by every garden using the same runtime dir
 first configured limit recorded there is authoritative; a different limit is reported in the
 run's `execution.json` and uses the authoritative capacity instead of creating extra slots.
 Lease metadata and locks live in a user-owned private `0700` `garden-<uid>` directory below
-`$XDG_RUNTIME_DIR` (or below `/tmp` when XDG is absent); symlinks, foreign-owned files and
-non-regular files are rejected. Change capacity only while idle: stop local garden runs, verify
+`$XDG_RUNTIME_DIR` (or below the root-owned sticky `/tmp` when XDG is absent); symlinks,
+foreign-owned files and non-regular files are rejected. Change capacity only while idle: stop local garden runs, verify
 there are no active lease holders, then remove only your own capacity metadata from that private
 directory before restarting with one consistent configuration. Never delete slot locks or any
 other user's runtime files.

@@ -67,17 +67,22 @@ def _private_runtime_dir() -> Path:
         base_stat = base.lstat()
     except OSError as exc:
         raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
-    if not base.is_dir() or base.is_symlink() or base_stat.st_uid != uid:
-        raise RuntimeError("runtime directory is not a user-owned directory")
-    if raw and base_stat.st_mode & 0o077:
-        raise RuntimeError("XDG_RUNTIME_DIR is not private (requires mode 0700)")
+    if not base.is_dir() or base.is_symlink():
+        raise RuntimeError("runtime directory is not a real directory")
+    if raw:
+        if base_stat.st_uid != uid:
+            raise RuntimeError("XDG_RUNTIME_DIR is not a user-owned directory")
+        if base_stat.st_mode & 0o077:
+            raise RuntimeError("XDG_RUNTIME_DIR is not private (requires mode 0700)")
+    elif base_stat.st_uid != 0 or not base_stat.st_mode & stat.S_ISVTX:
+        raise RuntimeError("/tmp fallback is not a root-owned sticky directory")
     root = base / f"garden-{uid}"
     try:
         root.mkdir(mode=0o700, exist_ok=True)
-        stat = root.lstat()
+        root_stat = root.lstat()
     except OSError as exc:
         raise RuntimeError(f"cannot create private runtime directory: {exc}") from exc
-    if root.is_symlink() or not root.is_dir() or stat.st_uid != uid or stat.st_mode & 0o077:
+    if root.is_symlink() or not root.is_dir() or root_stat.st_uid != uid or root_stat.st_mode & 0o077:
         raise RuntimeError("private runtime directory must be user-owned, non-symlink, and mode 0700")
     return root
 
