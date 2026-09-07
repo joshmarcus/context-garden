@@ -67,7 +67,7 @@ def _advance_main(repo, marker: str = "merged.md") -> str:
     write(repo / marker, "moved forward\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", f"merge {marker}", cwd=repo)
-    git("push", "-q", "origin", "HEAD:main", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
 
 
@@ -357,7 +357,7 @@ def _wait_for(predicate, *, timeout: float = 45) -> None:
 def _commit(repo: Path, message: str) -> str:
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", message, cwd=repo)
-    git("push", "-q", "origin", "main", cwd=repo)
+    git("push", "-q", "origin", "HEAD:main", cwd=repo)
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
