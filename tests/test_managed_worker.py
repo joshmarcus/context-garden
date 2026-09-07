@@ -22,7 +22,11 @@ def test_host_slot_prevents_second_process_entry(tmp_path):
 
 
 def test_resource_gate_precedes_claim(tmp_path, monkeypatch):
+    import tempfile
+
     import garden.managed_worker as worker
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(worker, "resources", lambda root: {"memory_available_bytes": 0, "disk_free_bytes": 0})
     monkeypatch.setattr(worker.AttributedClient, "post", lambda *args: pytest.fail("resource gate bypassed"))
     run({"work_dir": str(tmp_path), "endpoint": "https://garden.example", "worker_token": "synthetic"}, once=True)
