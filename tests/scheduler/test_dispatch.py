@@ -365,6 +365,50 @@ def test_pause_state_persists_in_state_json(sched, fake_github):
     assert fresh["dispatch"] == "paused" and fresh["reason"] == "hold" and fresh["by"] == "cli"
 
 
+def test_maintenance_pause_freezes_collection_until_explicit_resume(sched, fake_github):
+    """A finished worker result remains durable through a scheduler restart boundary."""
+    sched.tick()  # start DM-001's fake worker
+    run = sched.latest_worker_run("DM-001")
+    assert run is not None and run.status == "running"
+
+    sched.request_maintenance_pause(by="test", reason="reinstall")
+    status = sched.maintenance_readiness()
+    assert status["requested"] and not status["quiesced"]
+    sched.tick()  # acknowledgement pass: must not reap the result
+    assert sched.maintenance_quiesced()
+    assert sched.store.task("DM-001").status == Status.RUNNING
+    assert sched.latest_worker_run("DM-001").status == "running"
+
+    with pytest.raises(RuntimeError, match="maintenance pause"):
+        sched.dispatch(sched.store.task("DM-002"))
+    sched.resume_maintenance(by="test")
+    sched.tick()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+
+def test_maintenance_readiness_keeps_uncollected_result_separate_from_live_blockers(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="work")
+    run.status = "done"
+    run.finished_at = "2026-01-01T00:00:00+00:00"
+    run.save()
+    sched.request_maintenance_pause(by="test")
+    sched.tick()
+    status = sched.maintenance_readiness()
+    assert status["ready"]
+    assert run.run_id in status["finished_uncollected"]
+
+    live = sched.runs.new_run("DM-002", "local", mode="work")
+    live.status = "running"
+    live.pid = 12345
+    live.save()
+    status = sched.maintenance_readiness()
+    assert not status["ready"]
+    assert "installed runtime" in status["live"][0]["blocker"]
+
+
 def test_pause_overrides_auto_dispatch_true(sched, fake_github):
     sched.cfg.data["auto_dispatch"] = True
     sched.pause(by="web")

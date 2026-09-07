@@ -57,6 +57,7 @@ class CheckRunMixin:
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        self.require_maintenance_running()
         runner = self.runner_for(task, "local")
         run = self._new_local_run(task.id, "check", f"{stage} check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"

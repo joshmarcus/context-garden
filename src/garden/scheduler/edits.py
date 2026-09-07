@@ -67,6 +67,8 @@ class EditsMixin:
         The old body is kept in the run directory so the page can show the diff."""
         from ..suggestions import edit_brief, pending_suggestions
 
+        self.require_maintenance_running()
+
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)
         runner.config = {**runner.config, "setup": {}}  # a text edit needs no product env
