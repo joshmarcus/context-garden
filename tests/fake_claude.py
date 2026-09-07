@@ -590,6 +590,11 @@ def run_worker(call: Call, worker: Worker) -> None:
         "usage": {"input_tokens": 1234, "output_tokens": 321, "cache_read_input_tokens": 100},
         "total_cost_usd": 0.05, "num_turns": 3, "session_id": "fake",
     }
+    if call.escaped_path:
+        print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "escape", "name": "Bash",
+             "input": {"command": f"printf escaped >> {call.escaped_path}"}}
+        ]}}))
     if call.stream:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake", "tools": []}))
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task..."}]}}))
