@@ -387,6 +387,39 @@ def test_read_command_and_quoted_redirect_character_are_not_write_evidence(sched
     assert not sched._worker_named(transcript, sched.store.root, "garden.yaml")
 
 
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("command", ["cat {target} > elsewhere.txt", "cp {target} elsewhere.txt"])
+def test_shell_read_operand_is_not_write_evidence(sched, harness, command):
+    target = sched.store.root / "garden.yaml"
+    command = command.format(target=target)
+    if harness == "claude":
+        event = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": command}}
+        ]}}
+    else:
+        event = {"type": "item.completed", "item": {
+            "type": "command_execution", "command": command, "aggregated_output": "",
+        }}
+
+    assert not sched._worker_named(json.dumps(event), sched.store.root, "garden.yaml")
+
+
+@pytest.mark.parametrize("command", [
+    "cat input.txt > {target}",
+    "cp input.txt {target}",
+    "touch {target}",
+    "rm {target}",
+])
+def test_shell_explicit_destination_is_write_evidence(sched, command):
+    target = sched.store.root / "garden.yaml"
+    event = {"type": "item.completed", "item": {
+        "type": "command_execution", "command": command.format(target=target),
+        "aggregated_output": "",
+    }}
+
+    assert sched._worker_named(json.dumps(event), sched.store.root, "garden.yaml")
+
+
 def test_write_to_path_with_target_as_prefix_is_not_attributed(sched):
     target = sched.store.root / "garden.yaml"
     event = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Write",

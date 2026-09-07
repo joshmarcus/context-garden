@@ -562,8 +562,8 @@ class FenceMixin:
                             evidence.append(str(path))
                     elif name == "Bash":
                         command = tool_input.get("command")
-                        if isinstance(command, str) and FenceMixin._shell_command_writes(command):
-                            evidence.append(command)
+                        if isinstance(command, str):
+                            evidence.extend(FenceMixin._shell_write_paths(command))
             if event.get("type") in {"item.started", "item.completed"}:  # Codex JSONL
                 item = event.get("item") or {}
                 if not isinstance(item, dict):
@@ -573,8 +573,8 @@ class FenceMixin:
                     evidence.extend(FenceMixin._paths_in_file_change(item))
                 elif kind == "command_execution":
                     command = item.get("command")
-                    if isinstance(command, str) and FenceMixin._shell_command_writes(command):
-                        evidence.append(command)
+                    if isinstance(command, str):
+                        evidence.extend(FenceMixin._shell_write_paths(command))
         return evidence
 
     @staticmethod
@@ -592,50 +592,78 @@ class FenceMixin:
         return paths
 
     @staticmethod
-    def _shell_command_writes(command: str) -> bool:
-        """Recognise shell syntax whose write effect is visible in the command itself."""
-        if FenceMixin._has_unquoted_redirect(command):
-            return True
+    def _shell_write_paths(command: str) -> list[str]:
+        """Return destinations made explicit by a small, unambiguous shell subset.
+
+        Unsupported commands and option-heavy forms are deliberately unattributed. A command
+        being mutating does not make its read operands evidence of writes.
+        """
         try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+            redirect_marker = "\ue000"
+            masked_command = FenceMixin._mask_quoted_redirects(command, redirect_marker)
+            lexer = shlex.shlex(masked_command, posix=True, punctuation_chars=";&|<>")
             lexer.whitespace_split = True
             lexer.commenters = "#"
             words = list(lexer)
         except ValueError:
-            return False
-        mutators = {"cp", "install", "ln", "mkdir", "mv", "rm", "rmdir", "touch", "truncate"}
-        command_indexes = [0] + [index + 1 for index, word in enumerate(words) if word in {";", "&", "&&", "|", "||"}]
-        for index in command_indexes:
-            if index >= len(words):
+            return []
+        writes: list[str] = []
+        separators = {";", "&", "&&", "|", "||"}
+        start = 0
+        for end in range(len(words) + 1):
+            if end < len(words) and words[end] not in separators:
                 continue
-            word = words[index]
-            executable = Path(word).name
-            if executable in mutators or executable == "tee":
-                return True
-            if executable in {"sed", "perl"} and any(arg.startswith("-i") for arg in words[index + 1:]):
-                return True
-        return False
+            segment = words[start:end]
+            start = end + 1
+            operands: list[str] = []
+            index = 0
+            while index < len(segment):
+                word = segment[index]
+                if word in {">", ">>"} and index + 1 < len(segment):
+                    writes.append(segment[index + 1])
+                    index += 2
+                    continue
+                # shlex separates a file-descriptor prefix: ``2 > errors.log``.
+                if (word.isdigit() and index + 2 < len(segment)
+                        and segment[index + 1] in {">", ">>"}):
+                    writes.append(segment[index + 2])
+                    index += 3
+                    continue
+                operands.append(word)
+                index += 1
+            if not operands:
+                continue
+            executable = Path(operands[0]).name
+            args = operands[1:]
+            if any(arg.startswith("-") and arg != "--" for arg in args):
+                continue
+            args = [arg for arg in args if arg != "--"]
+            if executable in {"cp", "install", "ln", "mv"} and len(args) >= 2:
+                writes.append(args[-1])
+            elif executable in {"mkdir", "rm", "rmdir", "touch", "truncate", "tee"}:
+                writes.extend(args)
+        return [path.replace(redirect_marker, ">") for path in writes]
 
     @staticmethod
-    def _has_unquoted_redirect(command: str) -> bool:
+    def _mask_quoted_redirects(command: str, marker: str) -> str:
+        """Keep a quoted ``>`` from becoming shell punctuation during tokenisation."""
         quote = ""
         escaped = False
-        for index, char in enumerate(command):
+        masked: list[str] = []
+        for char in command:
             if escaped:
                 escaped = False
+                masked.append(marker if char == ">" else char)
                 continue
-            if char == "\\" and quote != "'":
+            elif char == "\\" and quote != "'":
                 escaped = True
-                continue
-            if quote:
+            elif quote:
                 if char == quote:
                     quote = ""
-                continue
-            if char in {"'", '"'}:
+            elif char in {"'", '"'}:
                 quote = char
-            elif char == ">" and (index == 0 or command[index - 1] != "<"):
-                return True
-        return False
+            masked.append(marker if quote and char == ">" else char)
+        return "".join(masked)
 
     def _fence_check(self, task: Task, run: Run | None = None) -> list[dict[str, Any]]:
         """Compare each guarded repo against its dispatch snapshot; revert and report only the
