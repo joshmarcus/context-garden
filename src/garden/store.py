@@ -307,6 +307,7 @@ class Store:
         task_id: str | None = None,
         difficulty: str = "medium",
         discovered_from: str = "",
+        kind: str = "",
     ) -> Task:
         from .model import Status, slugify
 
@@ -320,6 +321,7 @@ class Store:
                 product=product,
                 phase=phase,
                 depends_on=list(depends_on or []),
+                kind=kind,
                 priority=priority,
                 estimate=estimate,
                 reading=list(reading or []),
