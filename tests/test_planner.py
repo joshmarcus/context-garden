@@ -69,8 +69,10 @@ def test_import_resolves_title_deps(garden):
     store = Store(garden)
     criteria = "\n\n## Acceptance criteria\n\n- [ ] It does the thing, proven by a test.\n"
     created = import_plan(store, "demo", "p1", [
-        {"title": "Alpha", "priority": 1, "body": "## Goal\n\na" + criteria, "depends_on": ["DM-001"]},
-        {"title": "Beta", "priority": 2, "body": "## Goal\n\nb" + criteria, "depends_on": ["alpha", "Nope"]},
+        {"title": "Alpha", "priority": 1, "body": "## Goal\n\na" + criteria,
+         "reading": ["demo/p1/specs/spec.md"], "depends_on": ["DM-001"]},
+        {"title": "Beta", "priority": 2, "body": "## Goal\n\nb" + criteria,
+         "reading": ["demo/p1/specs/spec.md"], "depends_on": ["alpha", "Nope"]},
         {"title": "First task", "body": "duplicate of an existing title"},
     ])
     assert [t.id for t in created] == ["DM-003", "DM-004"]
@@ -85,8 +87,9 @@ def test_import_resolves_title_deps(garden):
 
 def test_import_plan_leaves_incomplete_brief_a_draft_despite_auto_approve(garden):
     """A generated task's brief goes through the same gate `approve` uses (`brief_gaps`):
-    placeholder acceptance criteria (or none at all) leave it a draft, never straight to
-    ready, however `plan.auto_approve` is set."""
+    an empty reading list leaves it a draft, never straight to ready, however
+    `plan.auto_approve` is set. Acceptance criteria are optional; the Goal is their
+    contract when omitted."""
     store = Store(garden)
     created = import_plan(store, "demo", "p1", [
         {"title": "No criteria yet", "body": "## Goal\n\nDo the thing."},
@@ -94,7 +97,7 @@ def test_import_plan_leaves_incomplete_brief_a_draft_despite_auto_approve(garden
     t = store.task(created[0].id)
     assert t.status.value == "draft"
     assert "incomplete brief" in t.body
-    assert "no `## Acceptance criteria`" in t.body
+    assert "reading list is empty" in t.body
 
 
 def test_import_supersedes_cancels_tasks(garden):

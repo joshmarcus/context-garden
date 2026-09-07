@@ -7,6 +7,7 @@ from pathlib import Path
 
 from garden import gitops
 from garden.model import Status
+from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from tests import fake_claude
@@ -28,6 +29,49 @@ def drive(sched, until, n=8):
         if until(sched):
             break
     return dispatched, transitions
+
+
+def test_reap_persists_criteria_amendment_once_when_finalize_is_repeated(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original outcome works.\n"
+    sched.store.save(task)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "criteria-amend")
+
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    real_push = gitops.push
+    monkeypatch.setattr(gitops, "push", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("crash after amendment")))
+    sched.tick()
+    monkeypatch.setattr(gitops, "push", real_push)
+    sched.tick()
+
+    sched.store.invalidate()
+    amended = sched.store.task("DM-001")
+    assert "- [ ] The corrected outcome works." in amended.body
+    assert "acceptance criterion 1 amended: The original outcome was false." in amended.body
+    assert amended.extra["criteria_amended"][0]["text"] == "The corrected outcome works."
+    assert len(amended.extra["criteria_amended"]) == 1
+    events = [event for event in sched.events.read(task_id="DM-001", kinds=["criteria_amended"])
+              if event.get("run") == run.run_id]
+    assert len(events) == 1
+
+
+def test_worker_amendment_round_trip_reaches_review_brief(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original outcome works.\n"
+    sched.store.save(task)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "criteria-amend")
+
+    sched.tick()
+    sched.tick()
+
+    sched.store.invalidate()
+    amended = sched.store.task("DM-001")
+    brief = review_brief(sched.store, amended, branch="garden/DM-001-first", base="main",
+                         pr_title="Amended criterion", pr_body="", diff="", max_diff_chars=1000)
+    assert "The corrected outcome works." in brief
+    assert "amended — The original outcome was false." in brief
+    assert "Judge each amended line against its stated outcome" in brief
 
 
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):

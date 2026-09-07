@@ -207,7 +207,9 @@ def retro(call: Call) -> None:
         if os.environ.get("FAKE_CLAUDE_RETRO_INCOMPLETE"):
             blocking.append({"title": "Document the base failure", "difficulty": "easy", "priority": 2,
                              "body": "Capture the remaining base failure.", "reason": "operators need the cause",
-                             "acceptance": [], "reading": ["gdn/product.md"]})
+                             # Criteria may be absent, so use the same placeholder the brief gate
+                             # rejects to keep this fixture's incomplete-blocker path meaningful.
+                             "acceptance": ["..."], "reading": ["gdn/product.md"]})
     questions = []
     if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
         questions = [
@@ -517,6 +519,14 @@ def skip_a_criterion(call: Call, result: dict) -> None:
     result["verified"] = verified_for(call, skip=True)
 
 
+def amend_a_criterion(call: Call, result: dict) -> None:
+    result["criteria_amended"] = [{
+        "index": 0,
+        "text": "The corrected outcome works.",
+        "reason": "The original outcome was false.",
+    }]
+
+
 WORKERS: dict[str, Worker] = {
     "done": Worker(),
     "nocommit": Worker(commits=False),
@@ -541,6 +551,7 @@ WORKERS: dict[str, Worker] = {
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),
     "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
+    "criteria-amend": Worker(tweak=amend_a_criterion),
 }
 
 

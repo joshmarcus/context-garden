@@ -89,6 +89,42 @@ def parse_criteria(body: str) -> list[str]:
     return out
 
 
+def amend_criteria(body: str, amendments: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Apply valid worker amendments to checklist lines, preserving their order.
+
+    Indexes are zero-based, matching the result's ordered ``verified`` list.  Invalid
+    entries are ignored: a worker result must never be able to rewrite arbitrary task
+    prose by supplying an out-of-range index.
+    """
+    if not isinstance(amendments, list):
+        return body, []
+    lines = body.splitlines()
+    criterion_lines: list[int] = []
+    in_section = False
+    for n, line in enumerate(lines):
+        heading = _HEADING_RE.match(line)
+        if heading:
+            in_section = heading.group(1).strip().lower().startswith("acceptance criteria")
+            continue
+        if in_section and _CHECK_RE.match(line):
+            criterion_lines.append(n)
+    applied: list[dict[str, Any]] = []
+    for item in amendments:
+        if not isinstance(item, dict) or not isinstance(item.get("index"), int):
+            continue
+        index = item["index"]
+        text, reason = str(item.get("text") or "").strip(), str(item.get("reason") or "").strip()
+        if not (0 <= index < len(criterion_lines) and text and reason):
+            continue
+        line_no = criterion_lines[index]
+        prefix = re.match(r"^(\s*[-*]\s+\[[ xX]\]\s+)", lines[line_no])
+        if prefix is None:
+            continue
+        lines[line_no] = prefix.group(1) + text
+        applied.append({"index": index, "text": text, "reason": reason})
+    return "\n".join(lines) + ("\n" if body.endswith("\n") else ""), applied
+
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", str(s).lower())).strip()
 

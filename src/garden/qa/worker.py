@@ -25,9 +25,9 @@ from pathlib import Path
 MARKER = re.compile(r"^qa-worker:\s*([a-z_]+)\s*$", re.M)
 
 PLAN = [
-    {"title": "Planned: a plain task", "priority": 1, "estimate": "S", "difficulty": "easy", "depends_on": [], "reading": [],
+    {"title": "Planned: a plain task", "priority": 1, "estimate": "S", "difficulty": "easy", "depends_on": [], "reading": ["demo/p1/specs/spec.md"],
      "body": "## Goal\n\nA task the planner wrote. The worker finishes it in one round.\n\n## Acceptance criteria\n\n- [ ] The plain task lands with a passing test.\n\nqa-worker: done\n"},
-    {"title": "Planned: a follow-up", "priority": 2, "estimate": "S", "difficulty": "easy", "depends_on": ["Planned: a plain task"], "reading": [],
+    {"title": "Planned: a follow-up", "priority": 2, "estimate": "S", "difficulty": "easy", "depends_on": ["Planned: a plain task"], "reading": ["demo/p1/specs/spec.md"],
      "body": "## Goal\n\nA second planned task, after the first.\n\n## Acceptance criteria\n\n- [ ] The follow-up builds on the first task and is tested.\n\nqa-worker: done\n"},
 ]
 

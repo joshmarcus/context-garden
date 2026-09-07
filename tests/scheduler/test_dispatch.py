@@ -86,11 +86,8 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     assert not sched.worktree_for(sched.store.task("DM-001")).exists()
 
 
-def test_brief_inlines_reading_from_the_target_checkout(sched, tmp_path):
-    """A reading-list file that exists on the task's branch but not on the product base must be
-    inlined from the worktree the worker actually gets — the target checkout — and not marked
-    'not found' because the base repo does not have it yet. The worktree is prepared before the
-    brief is built for exactly this reason (a stacked task's parent-created files, too)."""
+def test_brief_drops_reading_not_present_at_the_task_base(sched, tmp_path):
+    """A branch-only file is not context at the task's base and must not leak into its brief."""
     from tests.conftest import git, write
 
     repo = tmp_path / "repo"
@@ -109,8 +106,24 @@ def test_brief_inlines_reading_from_the_target_checkout(sched, tmp_path):
 
     sched.tick()  # dispatch DM-001 (the in-process worker runs synchronously)
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    assert "### src/onbranch.py" in brief and "ANSWER = 42" in brief
-    assert "not found when the brief was built" not in brief
+    assert "### src/onbranch.py" not in brief and "ANSWER = 42" not in brief
+    assert "## Brief gaps" in brief and "- `src/onbranch.py`" in brief
+
+
+def test_revise_brief_names_rebase_conflict_without_github_feedback(sched):
+    from garden.model import Status
+
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    state = sched.state.get(task.id)
+    state["pending_feedback_rebase"] = True
+    sched.dispatch(task, mode="revise")
+    brief = (sched.runs.latest(task.id).path / "brief.md").read_text()
+    assert "## Concrete blocker" in brief
+    assert "GitHub has no open review comments" in brief
+    assert "rebase conflict" in brief
 
 
 def test_redispatched_work_brief_lists_prior_commits(sched):

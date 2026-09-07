@@ -18,6 +18,22 @@ def statuses(sched):
 
 
 # ---- checks -------------------------------------------------------------------
+def test_checkrun_writes_a_structured_error_when_the_job_crashes(tmp_path, monkeypatch):
+    from garden import checkrun
+
+    (tmp_path / "checks_input.json").write_text("{}")
+
+    def crash(_payload):
+        raise RuntimeError("lost the check worker")
+
+    monkeypatch.setattr(checkrun, "run_check_job", crash)
+    assert checkrun.main([str(tmp_path)]) == 0
+    result = json.loads((tmp_path / "checks.json").read_text())[0]
+    assert result["status"] == "error"
+    assert "RuntimeError: lost the check worker" in result["summary"]
+    assert "RuntimeError: lost the check worker" in result["details"]
+
+
 def test_run_check_command_and_python(tmp_path, monkeypatch):
     ok = run_check({"name": "true", "command": "echo hi"}, {"branch": "b"}, cwd=tmp_path)
     assert ok["status"] == "pass"
@@ -46,10 +62,10 @@ def test_check_runner_records_failures_before_running_checks(tmp_path, monkeypat
         RuntimeError("plugin import failed")))
 
     assert garden.checkrun.main([str(run_dir)]) == 0
-    assert json.loads((run_dir / "checks.json").read_text()) == [{
-        "name": "checks", "status": "error",
-        "summary": "check runner failed: RuntimeError: plugin import failed", "details": "",
-    }]
+    result = json.loads((run_dir / "checks.json").read_text())[0]
+    assert result["name"] == "checks" and result["status"] == "error"
+    assert result["summary"] == "check runner crashed: RuntimeError: plugin import failed"
+    assert "RuntimeError: plugin import failed" in result["details"]
 
 
 def test_run_check_killed_or_empty_did_not_finish(tmp_path):
