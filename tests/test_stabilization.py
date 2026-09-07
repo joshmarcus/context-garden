@@ -180,6 +180,51 @@ def test_unknown_actor_provenance_cannot_manufacture_a_passing_window(garden):
     assert "productive_unattended: unknown actor provenance in the candidate window" in missing
 
 
+def test_event_log_delegated_actions_and_automated_merge_preserve_passing_window(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data_path.write_text(json.dumps(data))
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    for i in range(10):
+        events.emit("transition", f"DM-{i:03}", phase=phase.key, to="done", at="2026-09-06T01:00:00+00:00")
+    events.emit("retry", "DM-001", phase=phase.key, actor="delegated_operator", reason="retry check", at="2026-09-06T02:00:00+00:00")
+    events.emit("operator_repair", "DM-002", phase=phase.key, actor="delegated_operator", reason="repair worker", at="2026-09-06T03:00:00+00:00")
+    events.emit("automerged", "DM-003", phase=phase.key, at="2026-09-06T03:30:00+00:00")
+
+    sample(phase, events, at="2026-09-06T04:00:00+00:00")
+    record_passes(phase)
+
+    assert gate(phase, build_sha="build-a") == (True, [])
+    actions = json.loads(data_path.read_text())["interventions"]
+    assert [(a["kind"], a["actor"]) for a in actions] == [
+        ("retry", "delegated_operator"),
+        ("operator_repair", "delegated_operator"),
+        ("mark_done", "automated_scheduler"),
+    ]
+
+
+def test_unknown_nonoperative_event_log_entries_do_not_block_a_passing_window(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data_path.write_text(json.dumps(data))
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    for i in range(10):
+        events.emit("transition", f"DM-{i:03}", phase=phase.key, to="done", at="2026-09-06T01:00:00+00:00")
+    events.emit("status_question", "DM-001", phase=phase.key, at="2026-09-06T02:00:00+00:00")
+    events.emit("conversation", "DM-001", phase=phase.key, at="2026-09-06T03:00:00+00:00")
+
+    sample(phase, events, at="2026-09-06T04:00:00+00:00")
+    record_passes(phase)
+
+    assert gate(phase, build_sha="build-a") == (True, [])
+
+
 def test_intervention_cli_explains_no_owner_action_semantics():
     result = CliRunner().invoke(app, ["stabilization", "intervene", "--help"])
     assert result.exit_code == 0

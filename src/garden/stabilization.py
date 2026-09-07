@@ -36,6 +36,10 @@ NON_OPERATIVE_KINDS = frozenset({"status_question", "conversation"})
 ACTION_KINDS = INTERVENTION_KINDS | NON_OPERATIVE_KINDS
 ACTORS = frozenset({"human_owner", "delegated_operator", "automated_scheduler", "unknown"})
 
+# ``automerged`` is emitted only after Scheduler has completed the merge.  It is therefore
+# authoritative scheduler provenance even in an older event row that predates ``actor``.
+_EVENT_ACTION_KINDS = {**{kind: kind for kind in ACTION_KINDS}, "automerged": "mark_done"}
+
 
 def running_build_sha() -> str:
     if sha := installed_commit():
@@ -78,19 +82,14 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
     phase_events = [e for e in events.read(since=since) if e.get("phase") == phase.key or
                     any(t.id == e.get("task") for t in phase.tasks)]
     phase_task_ids = {task.id for task in phase.tasks}
-    actions = [e for e in phase_events if e.get("kind") in INTERVENTION_KINDS]
+    actions = [action for event in phase_events if (action := _action_from_event(event))]
     known = {(i.get("at"), i.get("kind"), i.get("actor") or "unknown") for i in data.get("interventions", [])}
-    new_actions = [e for e in actions if (e.get("at"), e.get("kind"), e.get("actor", "unknown")) not in known]
-    owner_actions = [e for e in new_actions if e.get("actor") == "human_owner"]
+    new_actions = [a for a in actions if (a["at"], a["kind"], a["actor"]) not in known]
+    owner_actions = [a for a in new_actions if a["operative"] and a["actor"] == "human_owner"]
     if new_actions:
-        for event in new_actions:
-            data.setdefault("interventions", []).append(_action_row(
-                at=str(event.get("at") or at), kind=str(event["kind"]),
-                actor=str(event.get("actor") or "unknown"),
-                reason=str(event.get("reason") or event.get("note") or "recorded action"),
-            ))
+        data.setdefault("interventions", []).extend(new_actions)
     if owner_actions:
-        data["started_at"] = str(owner_actions[-1].get("at") or at)
+        data["started_at"] = str(owner_actions[-1]["at"] or at)
         data["samples"] = []
         since = str(data["started_at"])
         phase_events = [e for e in phase_events if str(e.get("at") or "") >= since]
@@ -215,7 +214,8 @@ def _check_soak(data: dict[str, Any], row: dict[str, Any], missing: list[str]) -
         missing.append(f"productive_unattended: need 4 consecutive hours and 10 completed tasks without a required owner action (recorded {hours:.2f}h, {completed} tasks; {len(data.get('interventions') or [])} actions recorded)")
     start_at = str(data.get("started_at") or "")
     unknown = [a for a in data.get("interventions") or []
-               if a.get("actor", "unknown") == "unknown" and str(a.get("at") or "") >= start_at]
+               if a.get("operative", a.get("kind") in INTERVENTION_KINDS)
+               and a.get("actor", "unknown") == "unknown" and str(a.get("at") or "") >= start_at]
     if unknown:
         missing.append("productive_unattended: unknown actor provenance in the candidate window")
 
@@ -250,6 +250,23 @@ def _unattended_completed_tasks(
         and str(event.get("task")) not in supervised
     }
     return len(completed)
+
+
+def _action_from_event(event: dict[str, Any]) -> dict[str, str | bool] | None:
+    """Normalize a relevant event-log row without inventing human provenance."""
+    source_kind = str(event.get("kind") or "")
+    kind = _EVENT_ACTION_KINDS.get(source_kind)
+    if kind is None:
+        return None
+    actor = str(event.get("actor") or "")
+    if not actor and source_kind == "automerged":
+        actor = "automated_scheduler"
+    if actor not in ACTORS:
+        actor = "unknown"
+    return _action_row(
+        at=str(event.get("at") or ""), kind=kind, actor=actor,
+        reason=str(event.get("reason") or event.get("note") or "recorded action"),
+    )
 
 
 def _memory() -> tuple[int, int]:

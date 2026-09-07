@@ -392,6 +392,7 @@ class RebaseMixin:
         st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
                             "verdict": "approve", "review_rounds": rounds}
         self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,
+                         actor="automated_scheduler",
                          verdict="approve", review_rounds=rounds)
         self.log(f"{task.id}: merged by the garden ({method}); all gates green")
         try:
