@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,14 @@ PHASE_VERDICTS: dict[str, str] = {
     "close_with_followups": "Close with follow-ups",
     "reopen": "Reopen",
 }
+
+
+def normalize_question(text: str) -> str:
+    """Return the stable text key used to deduplicate owner questions."""
+    text = unicodedata.normalize("NFKC", str(text or "")).lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    words = [word for word in text.split() if word not in {"a", "an", "the"}]
+    return " ".join(words)
 
 
 def normalize_verdict(v: Any) -> str:
@@ -280,6 +289,8 @@ def questions_section(filed: list[dict[str, Any]]) -> str:
         if item.get("blocking"):
             suffix += " (blocking)"
         out.append(f"- **{question}**{suffix}")
+        if item.get("answer"):
+            out.append(f"  - answered: {item['answer']}")
         if item.get("context"):
             out.append(f"  - {item['context']}")
         if item.get("options"):
@@ -552,9 +563,12 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
                      followups: list[dict[str, Any]] | None = None,
                      blocking: list[dict[str, Any]] | None = None,
                      next_phase: str = "",
-                     difficulty: str = "", model: str = "", numbers: str = "") -> str:
+                     difficulty: str = "", model: str = "", numbers: str = "",
+                     no_file: bool = False) -> str:
     tier = f" · {difficulty} tier ({model})" if difficulty else ""
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}{tier}_", ""]
+    if no_file:
+        out += ["> Task filing is disabled for this judge-only retro; no features, follow-ups, blocking tasks, or persona findings are filed.", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
         out += ["## What changed", "", summary, ""]

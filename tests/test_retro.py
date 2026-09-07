@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from garden.retro import (
     features_section,
+    normalize_question,
     numbers_section,
     reconcile_brief,
     render_retro_doc,
@@ -80,6 +81,28 @@ def test_resolve_features_flags_a_title_match_and_an_explicit_duplicate():
 def test_resolve_features_empty():
     assert resolve_features({}, {}) == []
     assert resolve_features({"features": []}, {}) == []
+
+
+def test_retro_question_normalization_ignores_case_articles_and_punctuation():
+    assert normalize_question("Which rollout should the next phase use?") == normalize_question(
+        "which rollout should next phase use"
+    )
+
+
+def test_retro_questions_reuse_an_answered_card_across_runs(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    sched = Scheduler(Store(root), github=fake_github, log=print)
+    phase = sched.store.phase("gdn", "p1")
+    first = sched._file_question(phase, {"question": "Which rollout should the next phase use?"}, 0,
+                                 "retro-one", source="retro:gdn/p1")
+    sched.answer_question(first["decision_id"], "gradual")
+    second = sched._file_question(phase, {"question": "Which rollout should next phase use"}, 0,
+                                  "retro-two", source="retro:gdn/p1")
+    assert second["decision_id"] == first["decision_id"]
+    assert second["answer"] == "gradual"
+    assert sched.pending_decisions() == []
 
 
 def test_features_section_renders_rank_ids_and_skips():
@@ -342,6 +365,25 @@ def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, 
 
     pr = fake_github.created[-1]
     assert "2 feature(s) filed" in pr["body"] and "1 duplicate(s) skipped" in pr["body"]
+
+
+def test_retro_no_file_writes_only_the_judge_documents(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    phase = store.phase("gdn", "p1")
+    sched.start_retro(phase, ["designer"], skip_personas=True, no_file=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    assert "Task filing is disabled" in (wt / "gdn/p1/docs/retro.md").read_text()
+    assert not (wt / "gdn/p2/tasks").exists()
+    assert not (root / "gdn/p2").exists()
+    assert not store.phase("gdn", "p1").closed
 
 
 def test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collides(tmp_path, fake_github, monkeypatch):
