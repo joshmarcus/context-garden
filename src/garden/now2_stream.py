@@ -15,8 +15,10 @@ from pathlib import Path
 from .operator_spend import default_path
 
 
-def versions(root: Path, garden_dir: Path) -> tuple:
-    paths = [garden_dir / "events.jsonl", garden_dir / "state.json", default_path(root)]
+def versions(root: Path, garden_dir: Path, config: object | None = None,
+             product_path: Path | str | None = None) -> tuple:
+    paths = [garden_dir / "events.jsonl", garden_dir / "state.json",
+             default_path(root, config, product_path)]
     paths += list(root.glob("*/*/goals.md")) + list(root.glob("*/*/tasks/*.md"))
     paths += list(garden_dir.glob("runs/*/*/run.json")) + list(garden_dir.glob("runs/*/*/stdout.json"))
     result = []

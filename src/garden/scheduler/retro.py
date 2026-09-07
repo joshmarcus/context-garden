@@ -532,11 +532,11 @@ class RetroMixin:
                                                         existing_titles, alloc)
             followups = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, alloc)
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
-        ledger_path = operator_spend_path(self.store.root, self.cfg)
+        ledger_path = operator_spend_path(self.store.root, self.cfg, phase.path.parent)
         operator_records = read_operator_records(ledger_path)
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
         numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
-                                  operator_turns=operator_total_turns(operator_records),
+                                  operator_turns=operator_total_turns(operator_records, since=summary["first_dispatch"]),
                                   operator_ledger_path=ledger_path)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
