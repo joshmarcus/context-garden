@@ -104,11 +104,6 @@ def status(
         if up.get("reason"):
             line += f" — {up['reason']}"
         console.print(f"[cyan]{line}[/cyan]" + (" — run `garden upgrade`" if state in {"available", "held"} else ""))
-        console.print(f"[cyan]{line}[/cyan] — run `garden upgrade`")
-=======
-        if up.get("reason"):
-            line += f" — {up['reason']}"
-        console.print(f"[cyan]{line}[/cyan]" + (" — run `garden upgrade`" if state in {"available", "held"} else ""))
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
