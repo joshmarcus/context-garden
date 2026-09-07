@@ -139,8 +139,12 @@ Supported local setup, checks, probes, and worker-issued validations take a kern
 per-user heavy-execution lease shared by every garden using the same runtime directory. The
 first configured limit recorded there is authoritative; a different limit is reported in the
 run's `execution.json` and uses the authoritative capacity instead of creating extra slots.
-Change capacity only while idle by removing the user-owned `garden-heavy-test-*-capacity.json`
-from `$XDG_RUNTIME_DIR` (or `/tmp`) before restarting with one consistent configuration.
+Lease metadata and locks live in a user-owned private `0700` `garden-<uid>` directory below
+`$XDG_RUNTIME_DIR` (or below `/tmp` when XDG is absent); symlinks, foreign-owned files and
+non-regular files are rejected. Change capacity only while idle: stop local garden runs, verify
+there are no active lease holders, then remove only your own capacity metadata from that private
+directory before restarting with one consistent configuration. Never delete slot locks or any
+other user's runtime files.
 Model sessions and remote-CI waits do not hold this lease, so independently configured local
 run capacity can keep agents thinking while heavy commands remain serial. Extra heavy work is visible as waiting;
 cancellation works while waiting, and process exit or a crash releases the lease without stale

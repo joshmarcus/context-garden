@@ -429,6 +429,22 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
     assert status["state"] == "running" and status["owner_scoped"] is True
 
 
+def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(supervisor, "os", supervisor.os)
+    monkeypatch.setattr(supervisor, "Path", lambda value: tmp_path if value == "/tmp" else Path(value))
+    root = supervisor._private_runtime_dir()
+    assert root.name == f"garden-{os.getuid()}"
+    assert root.stat().st_mode & 0o777 == 0o700
+
+    hostile = root / f"garden-heavy-test-{os.getuid()}-capacity.json"
+    hostile.symlink_to(tmp_path / "outside")
+    with pytest.raises(RuntimeError, match="unsafe runtime file"):
+        supervisor._authoritative_limit(1)
+
+
 def test_two_validations_from_one_worker_are_serialized(tmp_path):
     """Competing supported validation wrappers cannot multiply one worker's workload."""
     from garden.harness import Harness

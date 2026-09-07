@@ -178,7 +178,7 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
         f"service {_service_state(store, sched)}",
         f"workers {len(sched.worker_runs_active())}/{sched.effective_max_parallel()}",
         f"local {len(sched.local_runs_active())}/{sched.resource_parallel_limit()}",
-        f"heavy {pressure.heavy_running}/{pressure.heavy_limit} ({pressure.heavy_waiting} waiting)",
+        f"heavy {pressure.heavy_running}/{pressure.heavy_limit} authoritative (requested {pressure.requested_heavy_limit}; {pressure.heavy_waiting} waiting)",
         f"isolation {pressure.isolation}",
         f"spend ${totals['cost_usd']:.2f}",
     ]

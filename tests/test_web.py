@@ -1984,7 +1984,7 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
                                             "XDG_RUNTIME_DIR": str(tmp_path),
                                             "GARDEN_HEAVY_EXECUTION": "1",
-                                            "GARDEN_EXECUTION_CGROUP": ""})
+                                            "GARDEN_EXECUTION_CGROUP": os.environ.get("CG365_EXECUTION_CGROUP", "")})
         launched.append(run)
 
     deadline = time.monotonic() + 3
@@ -1996,8 +1996,12 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             break
         time.sleep(0.01)
     assert states == {"running", "waiting"}
+    if os.environ.get("CG365_EXECUTION_CGROUP"):
+        isolation = [json.loads((run.path / "isolation.json").read_text()) for run in launched]
+        assert all(status["enforced"] for status in isolation)
 
-    cgroup = _process_cgroup_path()
+    configured_cgroup = os.environ.get("CG365_EXECUTION_CGROUP")
+    cgroup = Path(configured_cgroup) if configured_cgroup else _process_cgroup_path()
     event_names = ("high", "oom", "oom_kill")
 
     def pressure() -> dict[str, object]:
