@@ -1,0 +1,6 @@
+Running as unit: operator-cg339-journey.service; invocation ID: 6ab2a1db0d3c41c8938b8770528d64b7
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 4.995s
+             CPU time consumed: 2.411s
+                   Memory peak: 116M (swap: 0B)

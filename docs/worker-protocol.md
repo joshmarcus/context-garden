@@ -140,6 +140,17 @@ have had to make:
 
 ### 2. Starting the process (the runner, in `start`)
 
+Before potentially slow worktree or setup work, dispatch writes the run identity as
+`requested`, then advances it to `preparing`. Only recording the detached worker PID
+advances it to `running`; terminal outcomes are presented as `finished` by the operation
+API. All three startup states reserve the task and capacity, so a timed-out retry cannot
+start another run. After restart, a `requested` or `preparing` record with no PID is not
+live. Ordinary launches are closed once and left retryable. Recovery API launches retain
+their client idempotency key and are resumed on the same record when that client replays
+after restart; the runner's setup lock/stamp makes an escaped setup child and the resumed
+server reconcile preparation once. The preparation server's PID is never exposed as the
+worker PID.
+
 The local runner writes the brief to `brief.md` in the run directory and starts a small
 supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
 survives the scheduler exiting. On Linux the supervisor is a child subreaper: even a test
@@ -293,6 +304,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
+                "pre_flight": [{"item", "status", "evidence"}],
                 "friction": ["short item"], "notes": "...",
                 "discovered": [{"kind", "title", "body", "file", "error", "difficulty", "blocking"}]}
 ```
@@ -314,6 +326,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   automated review is shown the same list to check each claim against the diff, and
   `garden metrics` reports criteria met on the first review per tier. A criterion with no
   evidence is a finding, not a pass.
+- `pre_flight` has one row for every item in the review rubric the brief gives the worker:
+  criterion evidence, lint, conflict markers, UI captures where relevant, PR description, and
+  criteria-by-name. Each row says `pass`, `not_applicable`, or `fail` and gives short evidence.
+  A missing row is mechanically sent back before a PR opens; conflict markers, Python syntax,
+  missing UI PNGs for a UI diff, and an empty initial description are token-free pre-PR failures.
 - `friction` is a list of short items (missing context, a confusing spec, tooling pain). The
   scheduler posts them as one marked PR comment and appends them to the phase's friction
   record; `garden friction` harvests them for the next planning round. Friction never goes in

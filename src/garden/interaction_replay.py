@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +17,9 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--nonce", required=True)
     args = parser.parse_args()
+    actual_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if actual_head != args.head:
+        parser.error("replay head differs from the checkout")
     started = datetime.now(UTC).isoformat()
     report = run_qa(args.out, scripted=True, keep=False)
     finished = datetime.now(UTC).isoformat()

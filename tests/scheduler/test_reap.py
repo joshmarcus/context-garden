@@ -1,5 +1,6 @@
 """Reap: what a finished worker run turns into (retry, fail, push, pre-PR checks, the base probe, manual runs)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -7,9 +8,11 @@ from pathlib import Path
 
 from garden import gitops
 from garden.model import Status
+from garden.preflight import PREFLIGHT_ITEMS
 from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
+from garden.scheduler.snapshot import write_snapshot
 from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
@@ -150,6 +153,21 @@ def test_reap_preserves_dirty_snapshot_without_adding_it_to_the_pr_or_next_round
     assert len(sched.runs.latest("DM-001").recovery_artifacts) == 0
 
 
+def test_design_snapshot_includes_the_real_merge_and_dispatch_queues(sched, tmp_path):
+    """CG-318: queue state belongs to task records, never a nonexistent `_queue` entry."""
+    sched.state.get("DM-001").update(automerge_candidate=True, merge_head=True,
+                                       automerge_ready_at="2026-09-06T12:00:00+00:00")
+    output = tmp_path / "worktree"
+    task = sched.store.task("DM-001")
+    task.title = "Design the queue"
+    write_snapshot(sched, task, output)
+
+    queue = json.loads((output / "docs" / "design" / "snapshot.json").read_text())["queue"]
+    assert queue["merge"] == [{"task": "DM-001", "candidate": True, "head": True,
+                                "ready_at": "2026-09-06T12:00:00+00:00", "blocked": ""}]
+    assert queue["dispatch"] == [{"task": "DM-001", "mode": "work", "reason": "priority 1"}]
+
+
 def test_missing_result_preserves_dirty_new_file_without_discarding_committed_work(sched, fake_github):
     """CG-359: a crashed/missing result keeps both the committed salvage and the separate
     uncommitted recovery artifact."""
@@ -167,6 +185,47 @@ def test_missing_result_preserves_dirty_new_file_without_discarding_committed_wo
     assert artifact["reason"] == "reap"
     assert "interrupted.txt" in "\n".join(artifact["files"])
     assert not (worktree / "interrupted.txt").exists()
+
+
+def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
+    """A current brief cannot reach review without the checklist it required."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    assert run.env_snapshot["requires_preflight"] is True
+    frozen = list(run.env_snapshot["criteria"])
+    committed_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=run.worktree,
+                                    capture_output=True, text=True, check=True).stdout.strip()
+    (run.path / "stdout.json").unlink()
+
+    report = sched.tick()
+
+    assert "DM-001 -> changes_requested (checks)" in report.transitions
+    revise = sched.runs.latest("DM-001")
+    assert revise.mode == "revise"
+    brief = (revise.path / "brief.md").read_text()
+    assert "missing items: result block and review pre-flight checklist" in brief
+    assert "Criteria frozen for the interrupted dispatch" in brief
+    for criterion in frozen:
+        assert criterion in brief
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", committed_head, "HEAD"], cwd=revise.worktree,
+                          check=False).returncode == 0
+
+
+def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):
+    """Saved runs from before the rubric retain missing-result commit salvage."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
+    (run.path / "stdout.json").unlink()
+
+    report = sched.tick()
+
+    assert "DM-001 -> changes_requested (checks)" not in report.transitions
+    assert "DM-001 -> in_review" in report.transitions[0]
+    assert sched.runs.latest("DM-001").run_id == run.run_id
 
 
 def _run_fake_claude(cwd, task_id, run_id, when):
@@ -353,7 +412,7 @@ def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fa
     _seed_base_guard(sched, "still-bad")  # base moves, but stays red
 
     # the mechanical rebase onto the moved base never applies cleanly
-    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto: (False, ["sentinel.txt"], {}))
+    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto, **_kwargs: (False, ["sentinel.txt"], {}))
 
     for i in range(3):
         # each cycle reaps the running round, runs the pre-PR check and base probe as detached
@@ -397,6 +456,9 @@ def test_missing_result_with_commits_is_reaped_and_sent_to_review(sched, fake_gi
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     rep = sched.tick()
     task = sched.store.task("DM-001")
     run = sched.latest_worker_run("DM-001")
@@ -412,6 +474,9 @@ def test_missing_result_with_commits_is_reaped_and_sent_to_review(sched, fake_gi
 def test_statusless_result_with_commits_is_reaped(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "statusless")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     sched.tick()
     task = sched.store.task("DM-001")
     assert task.status == Status.IN_REVIEW
@@ -423,6 +488,9 @@ def test_statusless_result_with_commits_is_reaped(sched, fake_github, monkeypatc
 def test_missing_result_without_commits_retries(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult-nocommit")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
 
@@ -435,6 +503,8 @@ def test_missing_result_revise_pushes_with_lease_and_keeps_revision_count(sched,
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.dispatch(sched.store.task("DM-001"), mode="revise")
     run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     assert run.start_head
     real_push = gitops.push
     leases: list[str] = []
@@ -494,7 +564,10 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     task.pr = "https://example.test/acme/widget/pull/7"
     sched.store.save(task)
     wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), task.default_branch(), "main")
-    specs = [{"name": "unit", "command": "kill -TERM $$"}]
+    specs = [{"name": "unit", "command": (
+        "printf 'Traceback (most recent call last):\\n  File \\\"check.py\\\", line 7\\n"
+        "RuntimeError: contention\\n' >&2; kill -TERM $$"
+    )}]
     cont = sched._pre_pr_cont(None, wt, task.default_branch(), "main", "")
     sched._dispatch_check_run(task, worktree=wt, branch=task.default_branch(), base="main", specs=specs,
                               stage="merge_rebase", cont=cont, rep=TickReport())
@@ -511,6 +584,8 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert task.status == Status.IN_REVIEW
     assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
     assert "SIGTERM" in stop["reason"]
+    assert "Traceback (most recent call last):" in stop["reason"]
+    assert "RuntimeError: contention" in stop["reason"]
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 
@@ -585,7 +660,10 @@ def test_manual_take_and_finish(sched, fake_github):
         f.write("hi\n")
     subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"], cwd=wt, check=True)
     subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "manual work"], cwd=wt, check=True)
-    sched.finish_manual(sched.store.task("DM-001"), {"status": "done", "summary": "by hand", "pr_title": "manual PR"})
+    sched.finish_manual(sched.store.task("DM-001"), {
+        "status": "done", "summary": "by hand", "pr_title": "manual PR",
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked by hand"} for item in PREFLIGHT_ITEMS],
+    })
     assert statuses(sched)["DM-001"] == "in_review"
     assert fake_github.created[-1]["title"] == "manual PR"
 
@@ -614,7 +692,10 @@ def test_manual_finish_without_worktree_still_dispatches_review(sched, fake_gith
     # the human already opened the PR on GitHub themselves
     pr = fake_github.create_pr("test/demo", branch, "main", "manual PR", "body")
 
-    sched.finish_manual(sched.store.task("DM-001"), {"status": "done", "summary": "by hand", "pr": pr.url})
+    sched.finish_manual(sched.store.task("DM-001"), {
+        "status": "done", "summary": "by hand", "pr": pr.url,
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked by hand"} for item in PREFLIGHT_ITEMS],
+    })
     assert statuses(sched)["DM-001"] == "in_review"
     st = sched.state.get("DM-001")
     assert st.get("review_run"), "the automated reviewer must still be dispatched"
@@ -633,7 +714,10 @@ def test_tick_does_not_race_manual_finish(sched, fake_github):
     subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "manual work"], cwd=wt, check=True)
 
     # ManualRunner.finish() writes result.json + exit_code — this is the race window start
-    ManualRunner.finish(run, {"status": "done", "summary": "by hand", "pr_title": "manual PR"})
+    ManualRunner.finish(run, {
+        "status": "done", "summary": "by hand", "pr_title": "manual PR",
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked by hand"} for item in PREFLIGHT_ITEMS],
+    })
     assert (run.path / "exit_code").exists()
     assert sched.runs.latest("DM-001").status == "running"  # run.json still says running on disk
 

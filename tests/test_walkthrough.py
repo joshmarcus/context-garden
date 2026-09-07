@@ -354,6 +354,62 @@ def test_html_to_text_strips_tags_and_scripts():
     assert "bad()" not in txt and "<" not in txt
 
 
+def test_html_to_text_omits_hidden_panels_and_attributes():
+    txt = html_to_text(
+        '<main><h1 title="tasks&quot;-&gt;Plan phase">Visible</h1>'
+        '<div hidden>Hidden attribute</div>'
+        '<aside style="display: none">Display hidden</aside>'
+        '<aside style="display: none !important">Important hidden</aside>'
+        '<section aria-hidden="true">ARIA hidden</section></main>'
+    )
+    assert "Visible" in txt
+    assert "Hidden attribute" not in txt
+    assert "Display hidden" not in txt
+    assert "Important hidden" not in txt
+    assert "ARIA hidden" not in txt
+    assert "tasks\"-&gt;Plan phase" not in txt
+    assert "tasks\"->Plan phase" not in txt
+
+
+def test_html_to_text_omits_stylesheet_hidden_panels():
+    txt = html_to_text(
+        '<style>.panel { display: none; } #secret { display:none !important; }</style>'
+        '<div class="panel">Hidden by class</div><p id="secret">Hidden by id</p>'
+        '<p>Visible</p>'
+    )
+    assert "Hidden by class" not in txt
+    assert "Hidden by id" not in txt
+    assert "Visible" in txt
+
+
+def test_html_to_text_does_not_overmatch_unsupported_or_nested_selectors():
+    txt = html_to_text(
+        '<style>[hidden] { display:none } details:not([open]) > summary { display:none }</style>'
+        '<p>Visible sibling</p><div hidden>Hidden attribute</div>'
+        '<details open><summary>Visible summary</summary><p>Visible details</p></details>'
+    )
+    assert "Hidden attribute" not in txt
+    assert "Visible sibling" in txt
+    assert "Visible summary" in txt
+    assert "Visible details" in txt
+
+
+def test_html_to_text_respects_child_selector_combinators():
+    txt = html_to_text(
+        '<style>.outer > .target { display:none }</style>'
+        '<div class="outer"><div class="intermediate"><p class="target">Visible text</p></div></div>'
+    )
+    assert "Visible text" in txt
+
+
+def test_html_to_text_applies_later_display_rule():
+    txt = html_to_text(
+        '<style>.panel { display:none } .panel { display:block }</style>'
+        '<div class="panel">Restored text</div>'
+    )
+    assert "Restored text" in txt
+
+
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")

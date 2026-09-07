@@ -1,3 +1,27 @@
+# Latest operator validation
+
+The operator repaired synchronous replay startup under fast-forward. At b77f4b9,
+review admission publishes a detached check and returns; the normal check supervisor
+provides the scrubbed environment, heavy-work lease and resource controls. A later tick
+collects the manifest digest before starting the model reviewer. The check verifies its
+actual checkout SHA. The restart regression proves a new scheduler collects the saved check
+without a duplicate replay or prematurely spending a model-review round.
+
+94 focused review/preflight tests passed (146 MiB peak/no swap). The strengthened restart
+case passed separately (64.8 MiB peak/no swap). The real served disposable journey passed
+all 9 flows / 102 HTTP requests in 4.995 seconds, at 116 MiB peak/no swap under CPU200%,
+MemoryHigh512MiB/Max1GiB and a180-second runtime ceiling. It exercised b77f4b9; the subsequent
+commit only records these artifacts. `b77f4b9-manifest.json` and `b77f4b9-output.txt` retain
+this evidence. Original raw responses remain at the artifact directory in that manifest.
+
+Reproduce from the tested checkout with `PYTHONPATH=src python -m garden.interaction_replay
+--out <disposable-directory> --head $(git rev-parse HEAD) --nonce <unique-nonce>` inside a
+bounded unit. This is a controlled HTTP journey, not visual layout validation or real-model
+load. Broad applicability and generic flow selection remain narrowed by the dependent
+CG377 change before the deployment pass is complete.
+
+## Prior validation (preserved)
+
 # CG-339 running-application validation
 
 Commit `eb445f6c9e48225d3895040fcc94ae6319f45dbc` was exercised with:
