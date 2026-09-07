@@ -25,7 +25,7 @@ host runs `garden worker --garden https://garden.example --host build-1` and aut
 with the bearer token named by `workers.hosts[].token_env`.
 
 - `POST /api/runs/claim` leases one compatible work, review, persona, or check run and
-  returns its brief, mode, branch/base, repository URL, setup command, turn cap, and
+  returns its brief, mode, branch/base, repository URL, setup timeout, turn cap, and
   environment-variable allowlist.
 - `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
   returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from

@@ -936,7 +936,7 @@ class ReviewMixin:
             # A terminal task cannot own an active pid-less record.  This is distinct from a
             # live worker which happens to have no verdict yet: without a pid there is no
             # process to reap, so leaving the record active permanently consumes a slot.
-            ghost = bool(task and task.status.terminal and run.worktree and run.pid is None
+            ghost = bool(run.runner != "remote" and task and task.status.terminal and run.worktree and run.pid is None
                           and not run.process_finished())
             if run.runner == "manual":
                 continue

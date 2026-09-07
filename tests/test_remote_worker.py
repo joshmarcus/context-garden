@@ -168,7 +168,8 @@ def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
     client, store = remote_client(garden, monkeypatch)
     scheduler = Scheduler(store, github=fake_github)
-    scheduler.tick()  # dispatch work
+    report = scheduler.tick()  # dispatch work
+    assert report.dispatched, report
     auth = {"Authorization": "Bearer secret-token"}
     payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]}, headers=auth).json()
     assert payload["repo"].endswith("remote.git")
@@ -185,9 +186,11 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert (tmp_path / "independent-host" / "repos" / "DM-001" / ".git").exists()
     assert (saved.path / "remote_result.json").exists()
     assert saved.stdout_text(), "the completed harness transcript is uploaded"
-    scheduler.tick()  # reap work and dispatch the remote pre-PR check
+    report = scheduler.tick()  # reap work and dispatch the remote pre-PR check
+    assert not report.errors, report
+    assert any("check" in x for x in report.dispatched), (report, scheduler.state.get("DM-001"))
     check_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
-    assert check_claim["mode"] == "check"
+    assert check_claim.get("mode") == "check", check_claim
     assert check_claim["checks"]["ctx"]["branch"] == "garden/dm-001-first-task"
     assert "exec_root" not in check_claim["checks"]["ctx"]
     assert set(check_claim["checks"]["config"]) == {"worker_env"}
@@ -251,5 +254,108 @@ def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, t
     execute_while_asserting_not_reclaimed(work_claim, setup_command="sleep 2")
     scheduler.tick()
     check_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
-    assert check_claim["mode"] == "check"
+    assert check_claim.get("mode") == "check", check_claim
     execute_while_asserting_not_reclaimed(check_claim)
+
+
+def test_worker_cli_setup_option(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from garden.cli import app
+    calls = []
+    monkeypatch.setenv("GARDEN_WORKER_TOKEN", "test-only")
+    monkeypatch.setattr("garden.remote_worker.run_worker", lambda *a, **kw: calls.append(kw))
+    result = CliRunner().invoke(app, ["worker", "--garden", "http://localhost:1234",
+                                   "--host", "build-1", "--once", "--setup-command", "echo host-owned"])
+    assert result.exit_code == 0, result.output
+    assert calls == [{"setup_command": "echo host-owned"}]
+
+
+def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github):
+    """Real TCP HTTP and a separate CLI process; GitHub is the only external fake.
+
+    This proves process/transport separation, not VM or EC2 provisioning.
+    """
+    import json
+    import os
+    import socket
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import httpx
+    import uvicorn
+
+    _, store = remote_client(garden, monkeypatch)
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["demo"]["setup"] = {"command": "echo scheduler-secret-must-not-travel"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    from garden.model import Status
+    for other in store.tasks().values():
+        if other.id != "DM-001":
+            other.status = Status.CANCELLED
+            store.save(other)
+    scheduler = Scheduler(store, github=fake_github)
+    server = uvicorn.Server(uvicorn.Config(create_app(store, watch=False, host="127.0.0.1"),
+                                          log_level="error"))
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    events = []
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert server.started
+        with httpx.Client(base_url=url, timeout=15) as client:
+            assert client.post("/api/runs/claim", json={"host": "build-1"}).status_code == 401
+            assert client.post("/api/runs/claim", json={"host": "build-1"},
+                               headers={"Origin": "https://evil.test"}).status_code == 403
+            assert scheduler.tick().dispatched
+            auth = {"Authorization": "Bearer secret-token"}
+            claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+            assert "scheduler-secret" not in json.dumps(claim)
+            run = scheduler.runs.latest("DM-001")
+            run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+            run.save()
+            assert client.post(f"/api/runs/{run.run_id}/heartbeat",
+                               json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
+            # Reclaim through the actual CLI, without a controller object in that process.
+            env = {k: v for k, v in os.environ.items() if k in
+                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+            env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+                       GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
+            def worker(mode):
+                result = subprocess.run([sys.executable, "-m", "garden", "worker", "--garden", url,
+                                         "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
+                                         "--harness", "claude", "--once"], env=env, cwd=tmp_path,
+                                        capture_output=True, text=True, timeout=30)
+                assert result.returncode == 0, result.stderr
+                latest = scheduler.runs.latest("DM-001")
+                assert latest.mode == mode and latest.process_finished()
+                events.append({"mode": mode, "run": latest.run_id, "host": latest.host})
+            worker("work")
+            scheduler.tick()
+            worker("check")
+            scheduler.tick()
+            worker("review")
+            scheduler.tick()
+            assert scheduler.state.get("DM-001")["last_review"]["verdict"] == "approve"
+            task = scheduler.store.task("DM-001")
+            assert task.pr
+            persona = scheduler.dispatch_persona_pr(task, "user")
+            assert persona.runner == "remote"
+            worker("persona")
+            scheduler.tick()
+            assert scheduler.state.get("DM-001").get("persona_reviews")
+            assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
+            assert "@build-1" in client.get(f"/runs/DM-001/{run.run_id}").text
+            (tmp_path / "served-remote-events.json").write_text(json.dumps(events, indent=2))
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+        assert not thread.is_alive()

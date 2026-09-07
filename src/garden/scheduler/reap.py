@@ -1063,7 +1063,7 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual":
+            if run.runner in ("manual", "remote"):
                 continue
             no_exit_code = not (run.path / "exit_code").exists()
             process_missing = run.pid is None

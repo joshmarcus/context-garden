@@ -26,6 +26,7 @@ def worker(
     once: bool = typer.Option(False, "--once"),
     doctor: bool = typer.Option(False, "--doctor"),
     repo: str = typer.Option("", "--repo"),
+    setup_command: str = typer.Option("", "--setup-command", help="Host-owned product setup command."),
 ):
     """Claim and execute runs from a garden on this independent host."""
     from ..remote_worker import doctor_worker, run_worker
@@ -43,7 +44,8 @@ def worker(
     if not token:
         err.print(f"[red]{token_env} is not set[/red]")
         raise typer.Exit(2)
-    run_worker(garden, host, token, work_dir.resolve(), offered, tier, capacity, once)
+    run_worker(garden, host, token, work_dir.resolve(), offered, tier, capacity, once,
+               setup_command=setup_command)
 
 
 # --------------------------------------------------------------------------- runs / diagnostics

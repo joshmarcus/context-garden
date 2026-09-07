@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
@@ -132,9 +132,9 @@ def register(app: FastAPI, site: Site) -> None:
 
             runs = RunStore(hub.store.config.garden_dir).all_runs()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
-                     and r.host == body["host"] and leased(r)]
+                     and r.host == body["host"] and leased(r) and not r.process_finished()]
             if len(owned) >= capacity:
-                return JSONResponse({}, status_code=204)
+                return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
                 if run.runner != "remote" or run.status != "running" or run.process_finished():
@@ -149,9 +149,13 @@ def register(app: FastAPI, site: Site) -> None:
                 run.claimed_at = now.isoformat()
                 run.lease_expires_at = (now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
                 run.lease_token = secrets.token_urlsafe(32)
-                task = hub.fresh().task(run.task_id)
+                fresh = hub.fresh()
+                task = fresh.tasks().get(run.task_id)
+                product = task.product if task is not None else str(run.env_snapshot.get("product") or "")
+                if not product:
+                    raise HTTPException(409, "remote run has no product identity")
                 harness = hub.store.config.harness(run.harness) if run.harness else None
-                configured_repo = task.repo or hub.store.config.product_repo(task.product)
+                configured_repo = (task.repo if task is not None else "") or hub.store.config.product_repo(product)
                 repo_value = str(configured_repo)
                 repo_path = Path(repo_value)
                 if not repo_path.is_absolute() and not repo_value.startswith(("http://", "https://", "git@", "ssh://")):
@@ -169,7 +173,7 @@ def register(app: FastAPI, site: Site) -> None:
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
                 try:
-                    scheduler_repo = hub.fresh().repo_for(task)
+                    scheduler_repo = Path(configured_repo)
                     gitops.fetch(scheduler_repo)
                     run.start_head = gitops.remote_head(scheduler_repo, run.branch)
                 except (AttributeError, gitops.GitError):
@@ -183,8 +187,7 @@ def register(app: FastAPI, site: Site) -> None:
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
                     "repo": repo_value,
-                    "setup": {"command": str((hub.store.config.product_setup(task.product) or {}).get("command") or ""),
-                              "timeout_seconds": int((hub.store.config.product_setup(task.product) or {}).get("timeout_seconds") or 600)},
+                    "setup": {"timeout_seconds": int((hub.store.config.product_setup(product) or {}).get("timeout_seconds") or 600)},
                     "env_allowlist": pass_env_patterns(hub.store.config.data),
                     "harness": run.harness, "model": run.model, "difficulty": run.difficulty,
                     # Command arguments may contain inline API keys. Remote hosts use the
@@ -213,7 +216,7 @@ def register(app: FastAPI, site: Site) -> None:
                         **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
                     }
                 return JSONResponse(payload)
-        return JSONResponse({}, status_code=204)
+        return Response(status_code=204)
 
     @app.post("/api/runs/{run_id}/heartbeat")
     async def heartbeat(run_id: str, request: Request, authorization: str = Header(default="")):

@@ -19,10 +19,12 @@ class RemoteRunner(Runner):
             raise RunnerError("remote runner needs a harness")
         (run.path / "brief.md").write_text(brief_text)
         run.harness = self.harness.name if self.harness else run.harness
+        run.status = "running"
         run.save()
 
     def start_checks(self, run: Run, worktree: Path, payload: dict[str, Any]) -> None:
         (run.path / "checks_input.json").write_text(json.dumps(payload))
+        run.status = "running"
         run.save()
 
     def collect(self, run: Run) -> dict[str, Any]:
