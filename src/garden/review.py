@@ -5,6 +5,9 @@ the findings into the normal revise loop."""
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 from .brief import _parse_marked_json, build_brief
@@ -14,6 +17,63 @@ from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
+INTERACTION_PATHS = (
+    "src/garden/web/", "src/garden/tui/", "src/garden/cli/", "src/garden/scheduler/", "src/garden/qa/",
+    "src/garden/inbox.py", "src/garden/model.py",
+)
+
+
+def interaction_requirement(changed: list[str], task_body: str) -> tuple[bool, bool, str]:
+    """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
+    affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
+    required = bool(affected)
+    scalability = bool(re.search(
+        r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
+        task_body, re.I,
+    ))
+    reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6]) if affected else "non-UI change"
+    return required, scalability, reason
+
+
+def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
+                              expected_head: str) -> list[str]:
+    """Return mechanical blockers in a reviewer's claimed running-app evidence."""
+    if not required and not scalability:
+        return []
+    row = review.get("interaction")
+    if not isinstance(row, dict):
+        return ["running-application interaction evidence was not reported"]
+    gaps: list[str] = []
+    if row.get("head") != expected_head:
+        gaps.append("interaction evidence is stale or not tied to the reviewed head")
+    if row.get("environment") != "disposable":
+        gaps.append("interaction was not performed in a disposable garden")
+    if not str(row.get("command") or "").strip():
+        gaps.append("interaction command was not reported")
+    states = row.get("states") if isinstance(row.get("states"), dict) else {}
+    for state in ("affected", "empty", "failure_recovery"):
+        evidence = states.get(state) if isinstance(states.get(state), dict) else {}
+        if evidence.get("status") != "pass" or not evidence.get("actions") or not evidence.get("observed"):
+            gaps.append(f"{state.replace('_', '/')} interaction is missing or failed")
+    if not isinstance(row.get("artifacts"), list) or not row.get("artifacts"):
+        gaps.append("interaction artifact paths were not reported")
+    elif any(not Path(str(path)).exists() for path in row["artifacts"]):
+        gaps.append("one or more interaction artifacts do not exist")
+    if "automated_checks" not in row:
+        gaps.append("automated checks were not distinguished from real interaction")
+    if "unverified" not in row:
+        gaps.append("unverified requirements were not stated")
+    elif row.get("unverified"):
+        gaps.append("interaction requirements remain unverified")
+    if scalability:
+        load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
+        required_load = ("served_app", "history_sizes", "cache_expiry_intervals", "executing_processes",
+                         "latencies", "read_scan_counts", "load_kind")
+        absent = [name for name in required_load if not load.get(name)]
+        if absent:
+            gaps.append("scalability interaction is missing " + ", ".join(absent))
+    return gaps
+
 REVIEW_RULES = """\
 ## Your job
 
@@ -21,7 +81,8 @@ You are the automated first reviewer for the pull request described below. The h
 reviewer reads your comment before looking at the code, so be precise and terse. You are
 in a git worktree of the PR branch (`{branch}`, based on `{base}`); the diff is included
 below when it fits, otherwise run `git diff {base}...HEAD`. You may run the project's
-checks if they are fast. Do NOT modify any file and do NOT commit.
+checks if they are fast. Do NOT modify tracked worktree files and do NOT commit. Running-app
+evidence may write artifacts only into its disposable garden or a temporary directory.
 
 Check, in this order:
 
@@ -51,6 +112,20 @@ When a "Rendered UI captures" section is present, open every listed PNG with the
 reader and inspect layout, overlap, wrapping and empty states. Name every page inspected in
 `pages_seen`. Omitting a listed page makes the verdict mechanically `request_changes`.
 
+When "Running-application interaction required" is present, start the proposed head as a
+served application against a disposable garden and perform the affected journey through its
+HTTP/browser surface. Cover the user objective, an empty state, and a relevant failure followed
+by recovery. Record actions and their observed consequences; screenshots and test-client
+assertions are supporting artifacts, not performed interaction. Treat no_change reconciliation
+and attention prompts as user outcomes when they are affected. Never use the live operator
+garden. Report the exact command, artifact paths, separately named automated checks, and every
+unverified requirement. Use the reviewed full SHA supplied below as `interaction.head`.
+
+For a scalability claim, additionally use a served disposable app with representative and larger
+histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
+latency samples/distribution, and read/scan counts. State whether load is controlled or uses real
+model harnesses; controlled load must not be described as a real harness run.
+
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
 
@@ -69,7 +144,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or page that proves the assessment>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled or real model harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -95,7 +170,8 @@ def _verification_brief(task: Task, verified: Any) -> str:
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
-                 reask_missing_fixes: bool = False) -> str:
+                 reask_missing_fixes: bool = False, interaction_required: bool = False,
+                 scalability_required: bool = False, review_head: str = "", interaction_reason: str = "") -> str:
     task_brief = build_brief(store, task, include_rules=False)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
                   if isinstance(a, dict) and isinstance(a.get("index"), int)}
@@ -121,6 +197,10 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if interaction_required or scalability_required:
+        parts.append("## Running-application interaction required\n\n"
+                     f"Reviewed head: `{review_head}`\n\nReason: {interaction_reason}.\n\n"
+                     + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
     if checks:
         parts.append("## Pre-review checks\n\n" + "\n".join(
             f"- **{c.get('name', 'check')}**: {c.get('status', 'unknown')}"

@@ -1,0 +1,60 @@
+{
+ "flows": [
+  {
+   "name": "add a task",
+   "ok": true,
+   "page": "/phases/demo/p1",
+   "note": ""
+  },
+  {
+   "name": "approve",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": ""
+  },
+  {
+   "name": "dispatch",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": ""
+  },
+  {
+   "name": "answer a worker's question",
+   "ok": true,
+   "page": "/tasks/DM-001",
+   "note": ""
+  },
+  {
+   "name": "send back with a note",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": ""
+  },
+  {
+   "name": "triage",
+   "ok": true,
+   "page": "/inbox",
+   "note": ""
+  },
+  {
+   "name": "reconcile a nothing-to-change report",
+   "ok": true,
+   "page": "/tasks/DM-002",
+   "note": ""
+  },
+  {
+   "name": "merge",
+   "ok": true,
+   "page": "/qa/github",
+   "note": ""
+  },
+  {
+   "name": "close a phase",
+   "ok": true,
+   "page": "/phases/demo/p1",
+   "note": ""
+  }
+ ],
+ "findings": [],
+ "summary": "scripted agent: 9 of 9 flows completed"
+}

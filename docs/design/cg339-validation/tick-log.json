@@ -1,0 +1,170 @@
+[
+ {
+  "at": "2026-09-07T02:04:37+00:00",
+  "msg": "DM-003: draft -> ready (approved (web))"
+ },
+ {
+  "at": "2026-09-07T02:04:37+00:00",
+  "msg": "DM-004: draft -> ready (approved (web))"
+ },
+ {
+  "at": "2026-09-07T02:04:37+00:00",
+  "msg": "DM-003: ready -> running (dispatched work run 20260907T020437Z-work via local [claude model=qa-easy] (fresh session, base main, ~1579 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:37+00:00",
+  "msg": "manual tick: took 0.1s; slowest: reap 0.1s"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "DM-003: running -> awaiting_triage (opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05)"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "manual tick: DM-003 -> awaiting_triage (/qa/github/pull/1) | took 0.1s; slowest: reap 0.1s"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "DM-001: ready -> running (dispatched work run 20260907T020438Z-work via local [claude model=qa-easy] (fresh session, base main, ~1561 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "manual tick: took 0.2s; slowest: reap 0.1s"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "DM-001: running -> waiting_human (worker asks: Postgres or SQLite? cost=$0.01)"
+ },
+ {
+  "at": "2026-09-07T02:04:38+00:00",
+  "msg": "manual tick: DM-001 -> waiting_human | took 0.2s; slowest: reap 0.2s"
+ },
+ {
+  "at": "2026-09-07T02:04:39+00:00",
+  "msg": "DM-001: waiting_human -> running (dispatched resume run 20260907T020439Z-resume via local [claude model=qa-easy] (resumed session, base main, ~93 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:39+00:00",
+  "msg": "manual tick: took 0.3s; slowest: reap 0.2s"
+ },
+ {
+  "at": "2026-09-07T02:04:40+00:00",
+  "msg": "manual tick: took 0.3s; slowest: reap 0.3s"
+ },
+ {
+  "at": "2026-09-07T02:04:40+00:00",
+  "msg": "manual tick: took 0.4s; slowest: reap 0.4s"
+ },
+ {
+  "at": "2026-09-07T02:04:41+00:00",
+  "msg": "DM-001: running -> awaiting_triage (opened draft /qa/github/pull/2 (base main): resumed and finished cost=$0.05)"
+ },
+ {
+  "at": "2026-09-07T02:04:41+00:00",
+  "msg": "manual tick: took 0.2s; slowest: reap 0.2s"
+ },
+ {
+  "at": "2026-09-07T02:04:41+00:00",
+  "msg": "DM-003: awaiting_triage -> changes_requested (triage: changes requested by hand: tighten the tests)"
+ },
+ {
+  "at": "2026-09-07T02:04:42+00:00",
+  "msg": "DM-003: changes_requested -> running (dispatched revise run 20260907T020441Z-revise via local [claude model=qa-easy] (fresh session, base main, ~1886 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:42+00:00",
+  "msg": "manual tick: took 0.4s; slowest: reap 0.4s"
+ },
+ {
+  "at": "2026-09-07T02:04:42+00:00",
+  "msg": "DM-003: running -> awaiting_triage (pushed revision to /qa/github/pull/1: revised per feedback cost=$0.05)"
+ },
+ {
+  "at": "2026-09-07T02:04:42+00:00",
+  "msg": "DM-003: awaiting_triage -> in_review (triage: marked ready for review)"
+ },
+ {
+  "at": "2026-09-07T02:04:43+00:00",
+  "msg": "DM-001: awaiting_triage -> in_review (triage: marked ready for review)"
+ },
+ {
+  "at": "2026-09-07T02:04:43+00:00",
+  "msg": "DM-002: ready -> running (dispatched work run 20260907T020443Z-work via local [claude model=qa-easy] (fresh session, base main, ~1557 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:43+00:00",
+  "msg": "DM-002: running -> awaiting_triage (opened draft /qa/github/pull/3 (base main): implemented the thing cost=$0.05)"
+ },
+ {
+  "at": "2026-09-07T02:04:44+00:00",
+  "msg": "manual tick: DM-002 -> awaiting_triage (/qa/github/pull/3) | took 0.5s; slowest: reap 0.5s"
+ },
+ {
+  "at": "2026-09-07T02:04:44+00:00",
+  "msg": "DM-002: awaiting_triage -> changes_requested (triage: changes requested by hand: please look again)"
+ },
+ {
+  "at": "2026-09-07T02:04:44+00:00",
+  "msg": "DM-002: changes_requested -> running (dispatched revise run 20260907T020444Z-revise via local [claude model=qa-easy] (fresh session, base main, ~1867 tokens))"
+ },
+ {
+  "at": "2026-09-07T02:04:45+00:00",
+  "msg": "manual tick: took 0.5s; slowest: reap 0.5s"
+ },
+ {
+  "at": "2026-09-07T02:04:46+00:00",
+  "msg": "manual tick: took 0.4s; slowest: reap 0.4s"
+ },
+ {
+  "at": "2026-09-07T02:04:46+00:00",
+  "msg": "manual tick: took 0.5s; slowest: reap 0.5s"
+ },
+ {
+  "at": "2026-09-07T02:04:47+00:00",
+  "msg": "manual tick: took 0.6s; slowest: reap 0.6s"
+ },
+ {
+  "at": "2026-09-07T02:04:48+00:00",
+  "msg": "manual tick: took 0.5s; slowest: reap 0.5s"
+ },
+ {
+  "at": "2026-09-07T02:04:49+00:00",
+  "msg": "manual tick: took 0.6s; slowest: reap 0.6s"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "manual tick: took 0.4s; slowest: reap 0.4s"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "DM-002: running -> awaiting_triage (pushed revision to /qa/github/pull/3:  cost=$0.01)"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "DM-002: awaiting_triage -> in_review (triage: marked ready for review)"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "DM-001: in_review -> done (PR merged: /qa/github/pull/2)"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "DM-002: in_review -> done (PR merged: /qa/github/pull/3)"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "DM-003: in_review -> done (PR merged: /qa/github/pull/1)"
+ },
+ {
+  "at": "2026-09-07T02:04:50+00:00",
+  "msg": "manual tick: took 0.2s; slowest: reap 0.2s"
+ },
+ {
+  "at": "2026-09-07T02:04:51+00:00",
+  "msg": "DM-004: ready -> cancelled (cancelled (web))"
+ },
+ {
+  "at": "2026-09-07T02:04:51+00:00",
+  "msg": "demo/p1 closed (2026-09-06)"
+ }
+]

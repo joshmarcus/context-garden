@@ -5,6 +5,8 @@ from garden.now1 import strip_for_run
 from garden.review import (
     enforce_criteria_verdict,
     feedback_from_review,
+    interaction_evidence_gaps,
+    interaction_requirement,
     parse_review,
     review_brief,
     review_to_markdown,
@@ -180,6 +182,71 @@ def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
     assert "## Rendered UI captures" in text
     assert str(shot) in text
     assert "pages_seen" in text
+
+
+def test_interaction_review_brief_names_running_app_states_and_head(garden):
+    store = Store(garden)
+    required, scalability, reason = interaction_requirement(
+        ["src/garden/scheduler/review.py"], "Keep lifecycle review dependable",
+    )
+    assert required and not scalability and "scheduler/review.py" in reason
+    text = review_brief(
+        store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
+        diff="+x", max_diff_chars=1000, interaction_required=True, review_head="abc123",
+        interaction_reason=reason,
+    )
+    assert "Running-application interaction required" in text
+    assert "affected journey" in text and "empty state" in text and "failure followed" in text
+    assert "`abc123`" in text and '"environment": "disposable"' in text
+    assert "screenshots and test-client" in text
+    assert interaction_requirement(["src/garden/costs.py"], "Refactor aggregation") == (
+        False, False, "non-UI change",
+    )
+
+
+def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):
+    artifact = tmp_path / "journey.json"
+    artifact.write_text("{}")
+    states = {
+        name: {"status": "pass", "actions": [f"POST /{name}"], "observed": "state changed"}
+        for name in ("affected", "empty", "failure_recovery")
+    }
+    review = {"interaction": {
+        "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
+        "states": states, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
+        "unverified": [],
+    }}
+    assert interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a") == []
+
+    review["interaction"]["head"] = "old-head"
+    review["interaction"]["states"]["failure_recovery"]["status"] = "fail"
+    review["interaction"]["unverified"] = ["empty prompt copy"]
+    gaps = interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a")
+    assert any("stale" in gap for gap in gaps)
+    assert any("failure/recovery" in gap for gap in gaps)
+    assert any("remain unverified" in gap for gap in gaps)
+
+
+def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp_path):
+    artifact = tmp_path / "latencies.json"
+    artifact.write_text("[]")
+    required, scalability, _ = interaction_requirement([], "Keep p95 latency bounded after cache expiry")
+    assert not required and scalability
+    review = {"interaction": {
+        "head": "h", "environment": "disposable", "command": "serve fixture",
+        "states": {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
+                   for name in ("affected", "empty", "failure_recovery")},
+        "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
+        "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
+                        "cache_expiry_intervals": 3, "executing_processes": 2,
+                        "latencies": [0.1, 0.2], "read_scan_counts": {"reads": 3, "scans": 0},
+                        "load_kind": "controlled, not real model harnesses"},
+    }}
+    assert interaction_evidence_gaps(review, required=False, scalability=True, expected_head="h") == []
+    del review["interaction"]["scalability"]["read_scan_counts"]
+    assert "read_scan_counts" in interaction_evidence_gaps(
+        review, required=False, scalability=True, expected_head="h",
+    )[0]
 
 
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):

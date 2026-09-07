@@ -13,6 +13,8 @@ from ..notify import notify
 from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
+    interaction_evidence_gaps,
+    interaction_requirement,
     parse_review,
     review_brief,
     review_is_description_only,
@@ -254,6 +256,9 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
+        review_head = gitops.head_sha(wt)
+        changed = gitops.diff_names(wt, base)
+        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(changed, task.body)
         pr_title, pr_body, pr_comment, verified = task.title, "", "", None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
@@ -288,14 +293,17 @@ class ReviewMixin:
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
-                            checks=check_results, reask_missing_fixes=reask_missing_fixes)
+                            checks=check_results, reask_missing_fixes=reask_missing_fixes,
+                            interaction_required=needs_interaction, scalability_required=needs_scalability,
+                            review_head=review_head, interaction_reason=interaction_reason)
         run = self._new_local_run(task.id, "review", "review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
-                            "review_head": gitops.head_sha(wt),
+                            "review_head": review_head, "interaction_required": needs_interaction,
+                            "scalability_required": needs_scalability,
                             "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
@@ -406,6 +414,18 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "UI captures not read for: " + ", ".join(missing)})
+            gaps = interaction_evidence_gaps(
+                review, required=bool((run.env_snapshot or {}).get("interaction_required")),
+                scalability=bool((run.env_snapshot or {}).get("scalability_required")),
+                expected_head=str((run.env_snapshot or {}).get("review_head") or ""),
+            ) if review else []
+            if gaps:
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({
+                    "severity": "blocking", "file": "", "line": None,
+                    "summary": "Running-app evidence incomplete: " + "; ".join(gaps),
+                    "fix": "Replay the affected flow on the reviewed head in a disposable served app and report the required interaction fields.",
+                })
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
