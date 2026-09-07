@@ -236,6 +236,21 @@ def test_html_to_text_strips_tags_and_scripts():
     assert "bad()" not in txt and "<" not in txt
 
 
+def test_html_to_text_omits_hidden_panels_and_attributes():
+    txt = html_to_text(
+        '<main><h1 title="tasks&quot;-&gt;Plan phase">Visible</h1>'
+        '<div hidden>Hidden attribute</div>'
+        '<aside style="display: none">Display hidden</aside>'
+        '<section aria-hidden="true">ARIA hidden</section></main>'
+    )
+    assert "Visible" in txt
+    assert "Hidden attribute" not in txt
+    assert "Display hidden" not in txt
+    assert "ARIA hidden" not in txt
+    assert "tasks\"-&gt;Plan phase" not in txt
+    assert "tasks\"->Plan phase" not in txt
+
+
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")

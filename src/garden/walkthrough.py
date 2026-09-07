@@ -15,7 +15,6 @@ HTML and text.
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -25,6 +24,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 
 from .browser import browser_failure, classify_browser_failure
@@ -166,11 +166,73 @@ def _design_root(store: Store, phase: Phase) -> Path:
 
 
 # --------------------------------------------------------------------------- html -> text
-_BLOCK = re.compile(r"</(p|div|li|tr|h[1-6]|section|header|footer|article|table|ul|ol|nav|form)>", re.I)
-_BR = re.compile(r"<br\s*/?>", re.I)
-_DROP = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
-_TAG = re.compile(r"<[^>]+>")
 _BLANKS = re.compile(r"\n[ \t]*\n[ \t]*\n+")
+
+
+class _TextParser(HTMLParser):
+    """Collect visible text nodes without allowing markup attributes into the capture."""
+
+    _BLOCK_TAGS = frozenset({"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+                             "section", "header", "footer", "article", "table", "ul", "ol",
+                             "nav", "form"})
+    _IGNORED_TAGS = frozenset({"script", "style"})
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                             "meta", "param", "source", "track", "wbr"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden_depth = 0
+        self._ignored_depth = 0
+        self._hidden_starts: list[bool] = []
+        self._ignored_starts: list[bool] = []
+
+    @staticmethod
+    def _is_hidden(attrs: list[tuple[str, str | None]]) -> bool:
+        values = {name.lower(): value for name, value in attrs}
+        if "hidden" in values:
+            return True
+        if str(values.get("aria-hidden") or "").strip().lower() == "true":
+            return True
+        style = str(values.get("style") or "")
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none\s*(?:;|$)", style, re.I))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        hidden = self._is_hidden(attrs)
+        ignored = tag in self._IGNORED_TAGS
+        if tag in self._VOID_TAGS:
+            if tag == "br" and not self._hidden_depth and not self._ignored_depth:
+                self.parts.append("\n")
+            return
+        self._hidden_starts.append(hidden)
+        self._ignored_starts.append(ignored)
+        if hidden:
+            self._hidden_depth += 1
+        if ignored:
+            self._ignored_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        hidden = self._hidden_starts.pop() if self._hidden_starts else False
+        ignored = self._ignored_starts.pop() if self._ignored_starts else False
+        if hidden:
+            self._hidden_depth -= 1
+        if ignored:
+            self._ignored_depth -= 1
+        if tag in self._BLOCK_TAGS and not self._hidden_depth and not self._ignored_depth:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden_depth and not self._ignored_depth:
+            self.parts.append(data)
 
 # The run page's stderr tab: raw process stderr can carry secrets a test suite printed,
 # tracebacks or other things that should never land in a committed docs/ page.
@@ -194,15 +256,13 @@ def _redact_home(text: str, home: str) -> str:
 
 
 def html_to_text(page: str) -> str:
-    """A plain-text rendering that reads roughly as the page does, top to bottom: scripts
-    and styles dropped, block ends turned into newlines, remaining tags stripped."""
-    page = _DROP.sub("", page)
-    page = _BR.sub("\n", page)
-    page = _BLOCK.sub("\n", page)
-    page = _TAG.sub("", page)
-    page = html.unescape(page)
-    page = "\n".join(line.rstrip() for line in page.splitlines())
-    return _BLANKS.sub("\n\n", page).strip() + "\n"
+    """Render visible element text, excluding hidden subtrees and all attributes."""
+    parser = _TextParser()
+    parser.feed(page)
+    parser.close()
+    text = "".join(parser.parts)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _BLANKS.sub("\n\n", text).strip() + "\n"
 
 
 # --------------------------------------------------------------------------- capture
