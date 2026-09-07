@@ -41,6 +41,28 @@ def test_operator_spend_record_from_transcript_appends_and_prints(garden, tmp_pa
     assert records[0]["list_price_usd"] > 0
 
 
+def test_operator_spend_record_codex_transcript_marks_unknown_price_unavailable(garden, tmp_path):
+    transcript = tmp_path / "rollout-operator.jsonl"
+    transcript.write_text("\n".join(json.dumps(event) for event in [
+        {"type": "session_meta", "payload": {"id": "codex-operator"}},
+        {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
+            "input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 30}}}},
+    ]) + "\n")
+    r = run(garden, "operator-spend", "record", "--transcript", str(transcript))
+    assert r.exit_code == 0, r.output
+    assert "codex" in r.output and "unavailable" in r.output
+    record = json.loads((garden / "docs" / "operator-spend.jsonl").read_text())
+    assert record["harness"] == "codex"
+    assert record["tokens"] == {"input": 80, "cache_read": 20, "cache_write": 0, "output": 30}
+    assert record["list_price_usd"] is None
+
+    summary = run(garden, "operator-spend")
+    assert summary.exit_code == 0, summary.output
+    assert "0 priced session(s), 1 unavailable" in summary.output
+    assert "$0.00 total" not in summary.output
+
+
 def test_operator_spend_prints_sessions_and_totals_after_recording(garden, tmp_path):
     transcript = tmp_path / "sess-one.jsonl"
     _write_transcript(transcript)

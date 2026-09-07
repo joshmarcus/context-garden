@@ -255,6 +255,17 @@ Codex does not supply a dollar cost here: a missing cost is unknown, and dollar-
 limits cannot reliably cap Codex spending. Use account limits and task/concurrency
 limits as appropriate; do not interpret a displayed zero-dollar rollup as free usage.
 
+## Operator spend migration
+
+After moving an operator session from Claude Code to Codex, record its heartbeat with
+`garden operator-spend record`. The command now defaults to the dated session files below
+`~/.codex/sessions` and reads Codex's cumulative `token_count` record, so repeating the
+command for one thread does not double-count prior turns. Use
+`garden operator-spend record --harness claude` while finishing an older Claude Code session.
+Codex's local session transcript does not establish a dollar charge, so its tokens are added
+to the ledger with the price marked unavailable; the Costs page and retro must not treat that
+as $0 or substitute a Claude model price.
+
 Offline tests use `tests/fake_codex.py`, isolated git repositories and a fake GitHub
 service. Run `PYTHONPATH=src .venv/bin/python -m pytest -q` and
 `.venv/bin/ruff check src tests`. These verify the protocol without paid model calls.

@@ -1,188 +1,276 @@
 # context-garden
 
-context-garden is a repository of context files that drives detached agent workers through a token-free scheduler. You write principles, a product overview, phase goals and specs as markdown. A planner turns a phase into task files; the scheduler runs one worker per task in its own git worktree, pushes the branch, opens the pull request, has it reviewed, and unblocks the next task once the PR merges: by you on GitHub, or by its own merge queue when you turn that on. A local web UI, a terminal UI and the `garden` CLI show the same loop and offer the same actions. The garden that drives this tool's own development lives at [joshmarcus/garden](https://github.com/joshmarcus/garden).
+context-garden turns a repository of goals and context into reviewed changes to your
+software. It is for a developer or small team who wants to specify work, make product
+decisions and accept pull requests while agents handle implementation and revision.
+It works with existing projects: each product supplies its own setup, test and lint
+commands, whether it uses Python, JavaScript, shell or another toolchain.
 
-It is not a chat bot and it is not a CI runner. The scheduler never calls a model: waiting, polling, ordering, retrying, rebasing and bookkeeping are plain Python, and tokens are spent only on bounded planning, worker, review, persona, trial and retrospective runs.
+Your **garden** is a git repository of markdown: shared principles, a product overview,
+phase goals, specs and tasks. The product's code lives in its own repository. A Python
+scheduler advances the work; local web and terminal interfaces let you inspect and
+operate it. The garden driving this tool's development lives at
+[joshmarcus/garden](https://github.com/joshmarcus/garden).
 
-## How the loop works
+## From a goal to the next phase
 
-1. **Context files** describe a product and a phase: `principles/`, `<product>/product.md`, `<phase>/goals.md`, `specs/` and `docs/`.
-2. **The planner** turns a phase into task files, each with acceptance criteria, a reading list and a difficulty tier that picks the model.
-3. **Approve** moves a draft task to ready. Approve refuses placeholder acceptance criteria and reading-list paths that name no file.
-4. **Workers** run detached, one per task, in a worktree of the product repo, with the brief on stdin and a scrubbed environment. They commit and never push.
-5. **Checks** (tests, lint) run token-free in the worktree before any PR exists; a failure becomes a revise round.
-6. **The PR** opens as a draft. The **automated review** posts a verdict against the acceptance criteria; a change request becomes a bounded revise run, and the Inbox asks you to triage the draft.
-7. **The merge** is yours by default: once the review approves, the Inbox shows the PR with its verdict and CI, you merge it on GitHub, and the next poll marks the task done. A PR that falls into conflict with its base is rebased mechanically either way; an agent is used only on a real conflict, and an unchanged diff keeps its verdict. With `github.automerge: true` the **merge queue** does the merging: it rebases each approved easy or medium PR once, right before it merges, and a hard-tier PR needs two approving rounds and a scratch-merge check.
-8. **The retro** closes the phase: it reconciles the friction, runs the personas, records a verdict and drafts the next phase's goals and features.
+1. **Describe the outcome.** Write the product context, phase goals and relevant specs.
+2. **Plan and approve.** A model turns that context into tasks with acceptance criteria,
+   reading lists, dependencies and difficulty tiers. Inspect the drafts and approve the
+   work you want. Planning can also auto-approve through the same brief validation gate;
+   the quickstart below explicitly keeps drafts for your inspection.
+3. **Build and check.** The scheduler starts a worker in a dedicated git worktree. The
+   worker implements, tests and commits its task, then reports evidence or a question.
+   Configured pre-PR checks run without a model. Failed checks and actionable feedback
+   feed the bounded revision loop.
+4. **Review and triage.** The scheduler publishes a draft PR by default and arranges an
+   automated review against the task's criteria. You mark the draft ready or send it
+   back with feedback. Reviews can run while a PR is still a draft.
+5. **Merge.** By default you merge on GitHub after inspecting the verdict and CI. The
+   scheduler observes the merge and unblocks or restacks dependent work. Opt-in automerge
+   handles eligible PRs through the garden's merge queue.
+6. **Reflect.** A phase retrospective brings together persona reviews, friction, outcomes
+   and costs. It can close the phase, propose follow-ups, or identify blockers to reopen.
+   Publishing retro documents as a PR requires the garden itself to be registered as a
+   `self: true` product; see [the architecture guide](docs/architecture.md#git-and-the-pull-request).
 
-[docs/design.md](docs/design.md) is the idea and the vocabulary, [docs/architecture.md](docs/architecture.md) is how the pieces fit, [docs/worker-protocol.md](docs/worker-protocol.md) is the scheduler-to-worker contract and [docs/roadmap.md](docs/roadmap.md) is what is next.
+The **scheduler is token-free**: polling, ordering, bookkeeping and mechanical recovery
+are Python. Model calls do the planning, implementation, review, conflict resolution and
+retrospective work. An optional **delegated operator** is another model-powered session
+that watches the loop and uses its actions under your authority. It is separate from the
+scheduler, and its observations and repairs also cost tokens.
+
+You retain decisions about scope, priorities, acceptable tradeoffs and unresolved product
+questions. An operator can handle already-authorized routine recovery, triage and retries;
+it should bring you a meaningful decision when your authority or intent is missing.
+Repeated intervention is evidence of a product gap to record, not invisible free labor.
 
 ![Inbox](docs/screenshots/inbox-light.png)
 
-## Getting started
+## Install
 
-You need Python 3.11+, git, a GitHub login (`gh auth login`, or `GITHUB_TOKEN`) and at least one harness CLI: Claude Code (`claude`) or Codex (`codex`, see [docs/codex.md](docs/codex.md)). On Windows run everything in WSL: the local runner needs a POSIX shell.
+You need Python 3.11+, git, GitHub access (authenticated `gh`, or `GITHUB_TOKEN` for the
+REST fallback), and a logged-in harness CLI: Claude Code (`claude`) or Codex (`codex`).
+Use a POSIX environment; on Windows, run the tool inside WSL. Configure a git author
+identity and ensure the product repository has a committed base branch and a GitHub
+remote you can push to.
 
-Install from a checkout with `uv`, or with `pip`:
+From a checkout, install and activate the environment so `garden` remains on PATH when
+you move into your garden directory:
 
 ```bash
-git clone https://github.com/joshmarcus/context-garden && cd context-garden
-uv venv && uv pip install -e ".[dev]"       # or: python -m pip install -e ".[dev]"
-.venv/bin/garden --help
+git clone https://github.com/joshmarcus/context-garden
+cd context-garden
+uv venv
+uv pip install -e .
+source .venv/bin/activate
+garden --help
 ```
 
-Create a garden. `garden init` writes `garden.yaml`, `principles/00-index.md` (the digest every brief carries), `AGENTS.md`, a `.gitignore` and the four Claude Code skills under `.claude/skills/`. Every later command runs from inside the garden:
+Without uv, use `python3 -m venv .venv`, activate it, then `python -m pip install -e .`.
+The tool defaults to the Claude harness; set `harness: codex` in `garden.yaml` before
+planning if that is your harness. [Codex setup](docs/codex.md) explains its configuration.
+Workers have a private HOME and a scrubbed environment. Saved harness credentials are
+copied into private directories per dispatch; `worker_env.config_dirs` can specify their
+sources. Keep secrets out of tracked YAML.
+
+## First project and first PR
+
+For an existing project, onboarding drafts context, setup configuration and a first phase
+from repository metadata, documentation and backlog. It also attempts GitHub discovery
+and calls the configured planner, so this step uses a model. To select a harness first,
+initialize the destination before onboarding:
 
 ```bash
-garden init my-garden && cd my-garden
+garden init ../my-garden --name my-garden
+# Edit ../my-garden/garden.yaml if you need a different harness or credential sources.
+garden onboard /absolute/path/to/widget --into ../my-garden
+cd ../my-garden
 git init
-garden new-product widget --repo ../widget --base-branch main   # a local path or a git URL
-garden new-phase widget phase-01
-garden doctor
 ```
 
-`garden doctor` checks the config files it loaded, the GitHub login, each harness's login through the exact environment a worker gets, the product repos and the task graph. Fix what it reports before going on.
+Use your actual repository path. Onboarding infers the product name from its manifest or
+directory; the examples below assume `widget`. It creates `phase-01` with **draft** tasks
+and writes `widget/docs/onboarding.md`, recording what it read, inferred and could not
+determine. Read that report, `widget/product.md`, `principles/`, phase goals and tasks.
+Correct the inferred commands and scope, configure missing credentials, and resolve any
+overlap with existing work before approval. Onboarding does not install the product's
+dependencies or prove its generated commands work.
 
-Now write the context: `principles/00-index.md`, `widget/product.md` (what the product is, how to run and test it), `widget/phase-01/goals.md` and one or more specs under `widget/phase-01/specs/`. Then set the shared configuration in `garden.yaml`:
+For a project you want to describe yourself, use this alternative after `garden init`
+and entering the garden:
+
+```bash
+garden new-product widget --repo /absolute/path/to/widget --base-branch main
+garden new-phase widget phase-01
+```
+
+Fill in `principles/00-index.md`, `widget/product.md`,
+`widget/phase-01/goals.md` and specs under `widget/phase-01/specs/`. Set the product's
+`setup.command`, `setup.test` and `setup.lint` in `garden.yaml` to commands that work in a
+fresh checkout. Then plan with `garden plan widget/phase-01 --draft`; it attempts a kickoff
+review first when none exists. `--dry-run` prints the planning prompt without a model call.
+Onboarding already creates drafts, so another planning call is optional there.
+
+Before starting the scheduler, review configuration. This small example makes approval
+explicit and keeps the first experiment's concurrency low; these are chosen settings,
+not the package defaults:
 
 ```yaml
-name: my-garden
-runner: local                      # local | ssh | manual
-harness: claude                    # claude | codex | a name under harnesses:
-max_parallel: 5                    # detached runs at once (work, revise, review)
-resources:                         # one host-wide gate across workers, reviews and checks
-  max_parallel: 3
-  min_memory_available_mb: 1536
-  min_temp_free_mb: 1024
-max_attempts: 2
-max_revisions: 3
+max_parallel: 1
+review_parallel: 1
+plan:
+  auto_approve: false
+discovered:
+  auto_approve_blocking: false
 review:
   enabled: true
-  max_rounds: 2
-  personas: []                     # persona reviews on every new PR round, e.g. [security]
-budgets:
-  widget/phase-01: 50.0            # USD cap; dispatch pauses when it is reached
 github:
-  draft_pr: true                   # your triage marks a PR ready for review
-  automerge: false                 # false: you merge each approved PR on GitHub; true: the merge queue merges it
-harnesses:
-  claude: {models: {easy: haiku, medium: sonnet, hard: opus}}
-  codex:  {models: {easy: gpt-5.6-luna, medium: gpt-5.6-terra, hard: gpt-5.6-sol}}
-checks:
-  pre_pr: [{name: tests, command: "pytest -q -x"}]
-products:
-  widget:
-    repo: ../widget
-    base_branch: main
-    id_prefix: WID
-    setup: {command: "uv venv && uv pip install -e .", test: "pytest -q", lint: "ruff check ."}
+  draft_pr: true
+  automerge: false
 ```
 
-Difficulty tiers route each task to a model, so cost follows difficulty. `garden.<GARDEN_ENV>.yaml` and a gitignored `garden.local.yaml` layer on top for a work or per-machine setting; [examples/garden.work.yaml](examples/garden.work.yaml) shows ssh workers, a Jenkins log analyser and a product whose dependencies and tests are not Python.
-
-Plan the phase into drafts, read the plan, approve it, then start the loop:
+Merge these keys into the generated `garden.yaml`, retaining its `products` and harness
+settings. `plan.auto_approve` and `discovered.auto_approve_blocking` both default to true;
+`--draft` overrides automatic approval for that planning call. Difficulty routes work to
+the selected harness's model tier, unless a task explicitly names a model.
+Optionally set `garden budget widget/phase-01 50` before serving: the USD budget pauses
+new phase dispatch at the threshold; it does not cancel already-running work.
 
 ```bash
-garden plan widget/phase-01 --draft     # runs a kickoff first when the phase has none; --no-kickoff skips it
-garden trellis                          # dependencies and stacks
-garden validate                         # graph and reading lists
-garden approve --all widget/phase-01    # draft -> ready; nothing dispatches before this
-garden serve                            # web UI at http://127.0.0.1:8765 plus the scheduler loop
+garden doctor
+garden trellis
+garden validate
+garden approve --all widget/phase-01
+garden serve
 ```
 
-Within a tick the first ready task is running in `.garden/worktrees/WID-001`. When the worker finishes, the scheduler commits leftovers, runs the pre-PR checks, pushes, opens a draft PR and starts the automated review. The Inbox then shows your first card: triage the PR ready for review or send it back with a note. Once the review approves, the card shows the verdict and CI with a link to the PR; merge it on GitHub (`gh pr merge`), and the next poll marks the task done and dispatches whatever it unblocked. Set `github.automerge: true` to let the garden merge approved PRs itself. From another terminal, `garden status` is the overview, `garden inbox` the same cards as text, and `garden observe` the operator's feed. `garden tick` runs one pass and `garden watch` loops without the web server.
+`doctor` checks configuration, repositories, graph and logins in the worker environment.
+It sends a small harness prompt and executes a configured notification command, so it is
+not an offline check. Resolve its failures and validate the product's setup/test/lint
+commands in a disposable checkout before approving. `validate` checks the task graph and
+reading lists; approval rejects incomplete briefs. Approve individual task IDs instead
+of `--all` if you only want part of the plan.
 
-## Operating a garden
+Open **http://127.0.0.1:8765**. `serve` runs both the web app and scheduler loop; a ready,
+unblocked task can now dispatch. On its task page, follow the run and its evidence, then
+triage the resulting draft PR. After review and CI are satisfactory, merge on GitHub
+into the configured product base branch. A later poll marks it done and advances its
+dependents. From another terminal in the garden, `garden status`, `garden inbox` and
+`garden observe` show progress. `garden watch` runs the loop without the web app;
+`garden serve --no-watch` serves the UI without automatic ticks.
 
-The web app is the operator's desk. **Inbox** is the home page: every card that needs a person, with its action inline. **Board** shows tasks by state, **Trellis** the dependency and stacking structure, and the phase pages carry goals, burn-up, tracked PRs, reports and the retro. A task page shows the brief, the timeline, every run, the review verdict and every action; a run page keeps the brief, transcript, result and cost. **Timeline**, **Trials** and **Runs** are the event log, the model leaderboard and every run. **Costs** slices spend by activity, difficulty, model, harness, phase, task or operator session. **Config** shows the effective configuration, the live overrides (pause, `max_parallel`, the operating and observe profiles) and the few keys that need a restart. **Herbarium** holds the closed phases. `garden tui` is the same Inbox and task list in the terminal.
+## Checks, merging and capacity
 
-Every card has one action, and every action is also a CLI command. Act through them, never by editing a task file:
+Workers commit in their assigned worktrees. The scheduler publishes branches and owns
+PR creation and updates. Local workers may push **only when the product explicitly sets
+`setup.worker_push: true`**, for example to await CI on their exact commit. Without that
+permission, they leave pushing to the scheduler. The SSH runner's transport pushes its
+host-side branch so the scheduler can fetch it.
 
-- A discovered draft: approve or cancel it (`garden approve`, `garden cancel`).
-- A worker's question: answer it and the same session resumes (`garden answer`).
-- A worker's `wont_do` or `no_change` call: accept or reject it with a note (`garden accept`, `garden reject`).
-- A draft PR: triage it ready for review, or send it back with feedback (`garden triage --ready`, `--changes`).
-- A PR in review: merge it on GitHub once the verdict and CI are green; with `automerge` on, the same card says why the queue holds it, and the Inbox's merge-queue panel shows the head in flight.
-- A stopped task (review cap, revision cap, failed): retry it or start one more review (`garden retry`, `garden review`).
-- A decision card, from a worker's duplicate or cancel finding or from a kickoff question: accept, reject, answer or dismiss (`garden decide`).
+`checks.pre_pr` selects local token-free checks; when no explicit list is supplied,
+product `setup.test` and `setup.lint` supply the defaults. These are distinct from CI on
+the PR. For this repository, the [worker CI workflow](docs/worker-ci.md) offloads the full
+suite through `scripts/check_ci.py`, with focused local validation first. Other products
+can supply their own CI helper and analyser; GitHub Actions is not required by the package.
+A worker's assertion that CI passed does not replace the scheduler's merge gates.
 
-`garden pause` and `garden unpause` stop and restart automatic dispatch while reap, poll and reviews go on. `garden set max_parallel 3` and `garden profile economy` (stops: `economy`, `balanced`, `fast`, or your own under `profiles:`) change the operating point live, in effect on the next tick, as does any edit to `garden.yaml`.
+`github.automerge` defaults to false. When enabled, the queue waits for triage, review,
+CI and the product-base requirements. Easy and medium tasks are eligible under the plain
+policy; hard tasks require two approving rounds and a scratch-merge check by default.
+Self-products default to a second opinion from a current-head persona review or human
+approval; tool products default to two automated rounds. Changes to protected loop rules
+are held for a person. The queue mechanically rebases when needed; a real conflict uses
+an agent. See [review, stacking and merge policy](docs/architecture.md#git-and-the-pull-request)
+for the complete gates and overrides.
 
-A phase has a lifecycle. `garden kickoff widget/phase-01` runs one planner-tier pass that files design gaps and owner questions as cards before planning. `garden freeze widget/phase-01` stops approvals and dispatch until `garden unfreeze`, so a phase can land what it has. `garden retro widget/phase-01` runs the retrospective as one process: the missing persona reviews, the friction reconciliation, the verdict and the next phase's goals and feature drafts, opened as a PR to the garden's own repo (a product with `self: true`). A `close` verdict closes the phase into the Herbarium; a `reopen` verdict files the blocking items as tasks and waits for `garden retro-decide`. `garden close-phase` and `garden reopen-phase` do the same by hand.
+`max_parallel` defaults to 10 work slots; `review_parallel` defaults to the same number
+for review/persona/comparison runs. It is not one combined ten-process limit.
+`resources.max_parallel` adds a shared local admission bound including checks, and
+optional memory/free-space thresholds defer new launches. Supported heavy local
+setup/check/validation commands share `resources.heavy_test_parallel` leases (default 1).
+CPU/memory containment requires a configured delegated execution cgroup; queue limits
+alone do not enforce it. [Resource controls](docs/architecture.md#dispatch-filling-the-slots)
+explain the boundaries. Size capacity for your machine and model accounts.
 
-`garden trial WID-003 -c claude:sonnet -c codex:gpt-5.6-terra` runs one task once per contender, has a comparison run score the PRs, keeps the winner and records the scores; `garden trials` is the leaderboard. `garden budget widget/phase-01 50` caps a phase's spend live; dispatch pauses at the cap and resumes when it is raised. `garden observe` prints a status line, the cards, stuck runs, tracebacks and a digest; `--profile quiet` (the default) reports questions, stops and failures, `watch` adds the loop's own decisions, and `debug` streams every transition. `--follow` keeps it open and `--json` emits one object per pass for an agent.
+The supported runners are **local**, **ssh** to prepared hosts, and **manual** for an
+interactive worker. [Transport details](docs/worker-protocol.md#variants-of-the-transport)
+and [an SSH/non-Python configuration example](examples/garden.work.yaml) cover those
+options. HTTP claim/heartbeat workers, automatic AWS provisioning, model pools and an
+OpenRouter adapter are not implemented in this version. Their development plans are not
+configuration options; SSH remains available for a host you provision yourself.
 
-## Running it as a service
+## Operate and recover
 
-For a garden that runs overnight, run `garden serve` as a systemd user service. Workers get a private HOME, so the harnesses' saved logins must be named through their config directories; `KillMode=process` lets detached workers outlive a restart of the server:
+Start with `garden observe --profile quiet`, then open the relevant **Inbox** card or task
+page. The **Board** and **Trellis** show state and dependencies; **Runs** and **Timeline**
+show evidence and history; **Costs** and **Config** show spend and effective settings.
+The **Herbarium** holds closed phases. `garden tui` provides a
+terminal Inbox and task list. Use a task's current state and PR status before acting:
 
-```ini
-# ~/.config/systemd/user/garden-serve.service
-[Unit]
-Description=context-garden scheduler and web UI
+| Situation | Next action |
+| --- | --- |
+| A draft needs a scope decision | `garden approve ID` or `garden cancel ID` |
+| A worker asks a product question | `garden answer ID "answer"` |
+| A decision card requests acceptance | Use its accept/reject/answer action; CLI details: `garden decide --help` |
+| A draft PR is ready to triage | `garden triage ID --ready`, or `garden triage ID --changes "feedback"` |
+| A stopped task needs recovery | Read its cause and run evidence, fix the cause, then `garden retry ID`; `garden review ID` requests another review |
+| New dispatch should stop | `garden pause`; `garden unpause` resumes it |
 
-[Service]
-WorkingDirectory=%h/gardens/my-garden
-Environment=CLAUDE_CONFIG_DIR=%h/.claude
-Environment=CODEX_HOME=%h/.codex
-ExecStart=%h/gardens/my-garden/.venv/bin/garden serve
-Restart=on-failure
-KillMode=process
+Normal dispatch pause still permits collection, checks, reviews and merges. For
+installation or service maintenance, use `garden maintenance-pause`, wait for
+`garden maintenance-status` to report quiescence, and let its live-process blockers
+drain before replacing the installation. `garden maintenance-resume` explicitly
+re-enables collection and scheduling. Finished, unreaped results are durable; they need not be discarded to
+replace the service. See [maintenance and process roles](docs/architecture.md#the-shape-of-it).
 
-[Install]
-WantedBy=default.target
-```
+Most configuration reloads on the next tick. `work_dir`, `tick_interval` and certain
+GitHub-client/installer settings require restart. Executable changes can be held while
+fenced runs are in flight; inspect Config before deliberately confirming a held reload
+with `garden config accept`. Environment overlays and the exact restart rules are in
+[configuration and environments](docs/architecture.md#configuration-and-environments).
+Use one long-running controller per garden; CLI actions can run alongside it through the
+scheduler's locks. Do not edit task status or `.garden/state.json` to clear a stop.
 
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now garden-serve.service
-journalctl --user -u garden-serve.service -f        # the serve log and any traceback
-```
+For an overnight deployment, run `garden serve` under a service manager with the garden
+as its working directory and an absolute path to the installed executable. On systemd,
+`KillMode=process` preserves detached workers across a controller restart. Use the
+maintenance protocol for replacement, confirm the active build and `/healthz` afterward,
+and resume. Keep the UI on loopback or behind your own authenticated access layer;
+`web.trusted_origins` allows a proxy origin, not user authentication. This is a local,
+single-operator application, not a hosted multi-user service. After a machine reboot,
+inspect recovery diagnostics; uncommitted worker files are preserved in named recovery
+stashes, not automatically included in PRs. [Worker recovery](docs/worker-protocol.md#when-things-go-wrong)
+describes the failure paths.
 
-Restart only right after a tick has saved `.garden/state.json` (its mtime is the tick clock), so a verdict the old process just reaped is not lost. Never start a second `garden serve` beside it, and never stop it by killing its process tree: the workers are in that tree.
+## Hand off the operator, keep the evidence
 
-```bash
-systemctl --user restart garden-serve.service
-systemctl --user is-active garden-serve.service
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/
-```
+`garden init` scaffolds five Claude Code skills under `.claude/skills/`: `garden-onboard`,
+`garden-plan`, `garden-take`, `garden-review` and `garden-operate`. The generated
+`garden-operate/SKILL.md` is the detailed operator playbook; other interactive clients can
+use the same CLI and the generated `AGENTS.md`.
 
-On WSL, enable systemd in `/etc/wsl.conf` and turn on lingering (`loginctl enable-linger $USER`) so the user service comes back when the instance restarts. If WSL itself was stopped mid-run, the killed workers leave uncommitted edits in their worktrees and the next dispatch there fails on the fast-forward; run `git stash push -u` in that worktree, then `garden retry` the task.
+A new operator session should read that playbook and the current phase's goals and
+handoff notes, run `garden observe --profile quiet`, and inspect recent garden commits.
+Open full transcripts only to answer a specific question. Before ending a session,
+record outstanding decisions, authorized next actions and relevant run/PR references in
+phase docs. Commit scheduler-owned task changes with `garden commit`. The state lives in
+the garden and its run records; stopping an operator chat does not stop detached workers.
 
-## Restarting an operator agent session
+For Claude Code operator transcripts, record usage with `garden operator-spend record`; use
+`garden operator-spend record --compacted --session <id>` at compaction boundaries.
+See `garden operator-spend record --help` for transcript/session options. The default
+ledger is the garden's `docs/operator-spend.jsonl`; its `operator` activity appears beside
+worker spend in Costs. `garden metrics` reports cost per accepted task and first-pass
+approval by model, tier and harness; `garden costs --by model` and `garden usage` provide
+other views. Include operator spend when judging the total cost of running the loop.
 
-An operator session is an interactive Claude Code session that runs the `garden-operate` skill, installed by `garden init` at `.claude/skills/garden-operate/SKILL.md`. It watches the loop, clears cards through the product's own actions and files every reason the loop needed it as a task. The session ends often: a context compaction, a machine restart, a new day. Nothing about the garden lives in that session, so ending it loses nothing: task files are the state, `.garden/state.json` is the scheduler's side-store, `.garden/runs/` holds every brief and result, `.garden/events.jsonl` is the history, and the workers are detached processes that finish on their own.
+## Development and further reading
 
-When a session starts or resumes, in this order:
-
-1. Read `.claude/skills/garden-operate/SKILL.md`: where the truth is, what each stall looks like and which action clears it.
-2. `garden observe`, or `garden status` followed by `garden inbox`: the pulse, the cards and anything stuck.
-3. `git log` of the garden repo, for commits you did not make; then the open phase's `goals.md` and `docs/`.
-4. Open the raw event log or a run directory only to answer a specific question.
-
-Never edit a task's `status:` by hand, edit `state.json` while a tick may be writing it, answer a worker with an instruction that sends it outside its worktree, or stop the service with a process-tree kill. Before pressing an action on a task, confirm its PR is still open.
-
-The operator is the most expensive seat when it is an agent, because every turn re-reads its whole context. Observe on the `quiet` profile unless you are chasing something. Compact at boundaries (a phase closing, a retro merging, the start of a long wait), after writing what the next session needs into the phase's docs. Record the session's spend with `garden operator-spend record` (a heartbeat read from the session transcript) and `garden operator-spend record --compacted --session <id>` at each compaction, so the operator's share appears beside the workers'.
-
-## Costs
-
-Every run records its harness, model, tokens and cost in its run directory, and the tier map in `harnesses.<name>.models` decides which model each difficulty gets (an explicit `model:` on a task wins). `garden usage` rolls cost up per task or phase, `garden metrics` gives revise rounds, first-pass approval and cost per tier, and `garden costs --by model` slices spend over time the way the Costs page does. Operator sessions are recorded in the garden's `docs/operator-spend.jsonl` and appear as the `operator` activity in `garden costs` and on the Costs page, so the retro can report the operator's share of a phase rather than guess it.
-
-## Skills and contributing
-
-`garden init` installs four Claude Code skills under `.claude/skills/`, so an interactive session can take any seat in the loop:
-
-- `garden-take`: claim a task through the manual runner, do the work, hand the result back so the garden opens the PR.
-- `garden-plan`: plan a phase from the session instead of a headless planner call.
-- `garden-review`: review a task's PR against its brief and post the verdict.
-- `garden-operate`: watch and troubleshoot a running loop.
-
-`garden validate` checks the graph and the reading lists before anything is dispatched. To work on context-garden itself:
-
-```bash
-uv venv && uv pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/pytest -q
-.venv/bin/ruff check src tests
-```
-
-The tests stand in fake harnesses for `claude` and `codex`, so they spend no tokens. MIT licensed; see [LICENSE](LICENSE).
+[Design](docs/design.md) explains the vocabulary, [architecture](docs/architecture.md)
+maps the implementation, and [worker protocol](docs/worker-protocol.md) defines the
+brief/result contract. For development, install the `dev` extra and run the
+[focused serial test selections](docs/test-suites.md). Before completing an authorized
+worker branch, commit and run `python3 scripts/check_ci.py` in the foreground to push
+that branch and await its exact-commit CI; lint with `.venv/bin/ruff check src tests scripts`.
+The tests use fake harnesses and spend no model tokens. MIT licensed; see [LICENSE](LICENSE).

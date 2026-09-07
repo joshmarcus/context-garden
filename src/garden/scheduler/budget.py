@@ -111,6 +111,65 @@ class BudgetMixin:
         self.events.emit("dispatch_resumed", "", by=by)
         self.log(f"dispatch resumed by {by}")
 
+    # ---- maintenance pause -------------------------------------------------
+    def maintenance(self) -> dict[str, Any]:
+        """The durable whole-scheduler stop used around an installation."""
+        return self.control().setdefault("maintenance", {})
+
+    def maintenance_requested(self) -> bool:
+        return self.maintenance().get("status") in {"requested", "quiesced"}
+
+    def maintenance_quiesced(self) -> bool:
+        return self.maintenance().get("status") == "quiesced"
+
+    def request_maintenance_pause(self, by: str = "cli", reason: str = "") -> None:
+        """Acknowledge a request; a following locked tick records quiescence."""
+        entry = self.maintenance()
+        if entry.get("status") == "quiesced":
+            return
+        entry.update(status="requested", by=by, at=now_iso(), reason=reason)
+        entry.pop("quiesced_at", None)
+        self.state.save()
+        self.events.emit("maintenance_requested", "", by=by, reason=reason)
+        self.log("maintenance pause requested by " + by + (f": {reason}" if reason else ""))
+
+    def _quiesce_for_maintenance(self) -> None:
+        entry = self.maintenance()
+        if entry.get("status") != "requested":
+            return
+        entry["status"] = "quiesced"
+        entry["quiesced_at"] = now_iso()
+        self.events.emit("maintenance_quiesced", "", by=entry.get("by", ""))
+        self.log("maintenance pause quiesced")
+
+    def resume_maintenance(self, by: str = "cli") -> None:
+        if not self.maintenance_requested():
+            return
+        self.control().pop("maintenance", None)
+        self.state.save()
+        self.events.emit("maintenance_resumed", "", by=by)
+        self.log(f"maintenance resumed by {by}")
+
+    def require_maintenance_running(self) -> None:
+        if self.maintenance_requested():
+            raise RuntimeError("maintenance pause is active; resume maintenance before starting scheduler work")
+
+    def maintenance_readiness(self) -> dict[str, Any]:
+        """Report installation blockers without treating durable results as live work."""
+        live: list[dict[str, str]] = []
+        for run in self.runs.active():
+            if run.runner == "local":
+                blocker = "local process may still depend on the installed runtime"
+            elif run.status in {"requested", "preparing"}:
+                blocker = "preparation is incomplete; runtime dependency is not yet knowable"
+            else:
+                blocker = "remote/manual process dependency is unknown; verify its host before reinstalling"
+            live.append({"task": run.task_id, "run": run.run_id, "mode": run.mode,
+                         "state": run.status, "blocker": blocker})
+        return {"requested": self.maintenance_requested(), "quiesced": self.maintenance_quiesced(),
+                "live": live, "finished_uncollected": sorted(self.unreaped_run_ids()),
+                "ready": self.maintenance_quiesced() and not live}
+
     # ---- live config overrides ----------------------------------------------
     def overrides(self) -> dict[str, Any]:
         """Config values overridden live (via `garden set` or the Configuration page),

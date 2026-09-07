@@ -15,7 +15,6 @@ HTML and text.
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -25,6 +24,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 
 from .browser import browser_failure, classify_browser_failure
@@ -123,7 +123,7 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
         first = next((p for p in sorted(design_root.rglob("*")) if p.is_file()), None)
         if first:
             rel = first.relative_to(design_root).as_posix()
-            specs.append(PageSpec("design", f"/design/{rel}", "Design",
+            specs.append(PageSpec("design", f"/design/{rel}?product={phase.product}", "Design",
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
@@ -166,11 +166,219 @@ def _design_root(store: Store, phase: Phase) -> Path:
 
 
 # --------------------------------------------------------------------------- html -> text
-_BLOCK = re.compile(r"</(p|div|li|tr|h[1-6]|section|header|footer|article|table|ul|ol|nav|form)>", re.I)
-_BR = re.compile(r"<br\s*/?>", re.I)
-_DROP = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
-_TAG = re.compile(r"<[^>]+>")
 _BLANKS = re.compile(r"\n[ \t]*\n[ \t]*\n+")
+
+
+class _TextParser(HTMLParser):
+    """Collect visible text nodes without allowing markup attributes into the capture."""
+
+    _BLOCK_TAGS = frozenset({"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+                             "section", "header", "footer", "article", "table", "ul", "ol",
+                             "nav", "form"})
+    _IGNORED_TAGS = frozenset({"script", "style"})
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                             "meta", "param", "source", "track", "wbr"})
+
+    def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden_selectors = hidden_selectors or []
+        self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
+        self._hidden_depth = 0
+        self._ignored_depth = 0
+        self._hidden_starts: list[bool] = []
+        self._ignored_starts: list[bool] = []
+
+    @staticmethod
+    def _matches_simple_selector(tag: str, attrs: list[tuple[str, str | None]], selector: str) -> bool:
+        """Match the small, explicit selector subset used by the app's stylesheets.
+
+        Returning false for syntax we do not understand is important here: this is a
+        conservative visibility filter, not a CSS engine.  A false negative leaves text
+        in a capture for review; a false positive can erase unrelated visible content.
+        """
+        values = {name.lower(): value or "" for name, value in attrs}
+        classes = set(values.get("class", "").split())
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
+        if tag_name:
+            if tag_name.group(0).lower() not in ("*", tag.lower()):
+                return False
+            index += len(tag_name.group(0))
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match or values.get("id") != match.group(0)[1:]:
+                    return False
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match or match.group(0)[1:] not in classes:
+                    return False
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return False
+                name = match.group(1).lower()
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                if name not in values or (expected is not None and values[name] != expected):
+                    return False
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return False
+                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
+                    return False
+                index = end + 1
+            else:
+                return False
+        return True
+
+    @staticmethod
+    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+        """Split selectors, retaining whether each component requires a direct parent."""
+        components: list[tuple[str, str | None]] = []
+        buffer: list[str] = []
+        brackets = parentheses = 0
+        pending: str | None = None
+        whitespace = False
+
+        def add_component() -> bool:
+            nonlocal pending, whitespace
+            component = "".join(buffer).strip()
+            if not component:
+                return True
+            relation = pending
+            if relation is None and components and whitespace:
+                relation = " "
+            components.append((component, relation))
+            buffer.clear()
+            pending = None
+            whitespace = False
+            return True
+
+        for char in selector:
+            if char == "[":
+                brackets += 1
+            elif char == "]":
+                brackets -= 1
+                if brackets < 0:
+                    return None
+            elif char == "(":
+                parentheses += 1
+            elif char == ")":
+                parentheses -= 1
+                if parentheses < 0:
+                    return None
+            if brackets or parentheses:
+                buffer.append(char)
+            elif char.isspace():
+                add_component()
+                whitespace = True
+            elif char == ">":
+                add_component()
+                if not components or pending == ">":
+                    return None
+                pending = ">"
+            else:
+                if not buffer and whitespace and components and pending is None:
+                    pending = " "
+                buffer.append(char)
+                whitespace = False
+        if brackets or parentheses or not add_component() or pending:
+            return None
+        return components
+
+    def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if not self._hidden_selectors:
+            return False
+        # A selector's final component identifies the element; checking its ancestors
+        # as well handles the descendant selectors used by the web templates without
+        # needing a CSS dependency in the walkthrough tool.
+        hidden: bool | None = None
+        winning_rule: tuple[bool, int] | None = None
+        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
+            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
+                continue
+            ancestors = self._elements
+            index = len(ancestors) - 1
+            matched = True
+            for component_index in range(len(components) - 1, 0, -1):
+                relation = components[component_index][1]
+                component = components[component_index - 1][0]
+                if relation == ">":
+                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                        matched = False
+                        break
+                else:
+                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                        index -= 1
+                    if index < 0:
+                        matched = False
+                        break
+                index -= 1
+            if matched:
+                rule_order = (important, rule_index)
+                if winning_rule is None or rule_order >= winning_rule:
+                    winning_rule = rule_order
+                    hidden = is_none
+        return bool(hidden)
+
+    def _is_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        values = {name.lower(): value for name, value in attrs}
+        if "hidden" in values:
+            return True
+        if str(values.get("aria-hidden") or "").strip().lower() == "true":
+            return True
+        style = str(values.get("style") or "")
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I)) \
+            or self._stylesheet_hidden(tag, attrs)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        hidden = self._is_hidden(tag, attrs)
+        ignored = tag in self._IGNORED_TAGS
+        if tag in self._VOID_TAGS:
+            if tag == "br" and not self._hidden_depth and not self._ignored_depth:
+                self.parts.append("\n")
+            return
+        self._hidden_starts.append(hidden)
+        self._ignored_starts.append(ignored)
+        self._elements.append((tag, attrs))
+        if hidden:
+            self._hidden_depth += 1
+        if ignored:
+            self._ignored_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        hidden = self._hidden_starts.pop() if self._hidden_starts else False
+        ignored = self._ignored_starts.pop() if self._ignored_starts else False
+        if hidden:
+            self._hidden_depth -= 1
+        if ignored:
+            self._ignored_depth -= 1
+        if self._elements:
+            self._elements.pop()
+        if tag in self._BLOCK_TAGS and not self._hidden_depth and not self._ignored_depth:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden_depth and not self._ignored_depth:
+            self.parts.append(data)
 
 # The run page's stderr tab: raw process stderr can carry secrets a test suite printed,
 # tracebacks or other things that should never land in a committed docs/ page.
@@ -194,15 +402,26 @@ def _redact_home(text: str, home: str) -> str:
 
 
 def html_to_text(page: str) -> str:
-    """A plain-text rendering that reads roughly as the page does, top to bottom: scripts
-    and styles dropped, block ends turned into newlines, remaining tags stripped."""
-    page = _DROP.sub("", page)
-    page = _BR.sub("\n", page)
-    page = _BLOCK.sub("\n", page)
-    page = _TAG.sub("", page)
-    page = html.unescape(page)
-    page = "\n".join(line.rstrip() for line in page.splitlines())
-    return _BLANKS.sub("\n\n", page).strip() + "\n"
+    """Render visible element text, excluding hidden subtrees and all attributes."""
+    hidden_selectors: list[tuple[str, bool, bool]] = []
+    for css in re.findall(r"<style\b[^>]*>(.*?)</style\s*>", page, re.I | re.S):
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            display = re.search(r"display\s*:\s*([\w-]+)(\s*!important)?", declarations, re.I)
+            if display:
+                is_none = display.group(1).lower() == "none"
+                important = bool(display.group(2))
+                hidden_selectors.extend(
+                    (part.strip(), is_none, important)
+                    for part in selectors.split(",")
+                    if part.strip()
+                )
+    parser = _TextParser(hidden_selectors)
+    parser.feed(page)
+    parser.close()
+    text = "".join(parser.parts)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _BLANKS.sub("\n\n", text).strip() + "\n"
 
 
 # --------------------------------------------------------------------------- capture
@@ -411,9 +630,11 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
 
 
 def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
-            base_url: str = "", log: Log | None = None, include_stderr: bool = False) -> WalkthroughResult:
+            base_url: str = "", log: Log | None = None, include_stderr: bool = False,
+            pages: list[str] | None = None) -> WalkthroughResult:
     """Write `<slug>.html`, `<slug>.txt` (and `<slug>.png` when a browser is available) for
-    every page, plus `index.md`, under out_dir. Returns what was captured.
+    each selected page (or every page when ``pages`` is omitted), plus `index.md`, under out_dir.
+    Returns what was captured.
 
     Absolute home-directory paths are redacted to `~` in every page, and the run page's
     stderr tab is omitted unless `include_stderr` is set — this capture is committed to the
@@ -422,6 +643,10 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     log = log or (lambda _m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     specs = pages_for(store, phase)
+    # ``None`` is the milestone-walkthrough default.  An explicit empty selection is
+    # a scoped PR check with no rendered pages, not an accidental request for all of them.
+    if pages is not None and "*" not in pages:
+        specs = [spec for spec in specs if spec.slug in pages]
     fetched = _fetch(store, specs, base_url)
 
     shot: set[str] = set()
@@ -505,7 +730,7 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
+def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
     from .qa.sandbox import make_garden
 
@@ -514,7 +739,7 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
         store = Store(garden_root)
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
-                         log=logs.append)
+                         log=logs.append, pages=pages)
     expected = {
         f"{page.spec.slug}-{width}-{scheme}.png"
         for page in result.pages
@@ -561,7 +786,8 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     env = dict(os.environ)
     env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
-        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)],
+        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
+         json.dumps(spec.get("pages") or [])],
         cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
     )
     try:
@@ -576,8 +802,11 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
 
 
 def _main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--ui-check":
-        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]))))
+    # Newer controllers supply optional page selection. This capture engine safely renders
+    # all pages when no selection is supplied, preserving compatibility across pinned releases.
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--ui-check":
+        pages = json.loads(sys.argv[3]) if len(sys.argv) == 4 else []
+        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]), pages)))
         return 0
     return 2
 

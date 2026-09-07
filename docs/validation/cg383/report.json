@@ -1,0 +1,162 @@
+{
+  "deltas": {
+    "cache_population": {
+      "memory_current": 76685312,
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 970752,
+        "file": 75497472,
+        "inactive_file": 0,
+        "slab_reclaimable": 175080
+      }
+    },
+    "one_slot": {
+      "memory_current": 229376,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_peak": 98336768,
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      }
+    },
+    "reclaim": {
+      "memory_current": -241664,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      },
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 0,
+        "file": 0,
+        "inactive_file": 0,
+        "slab_reclaimable": 0
+      }
+    }
+  },
+  "fixture": {
+    "cache_bytes": 75497472,
+    "cgroup": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-rb373be875ae54f3e8b18a5ff53ce47e5.service",
+    "limits": {
+      "memory.high": "100663296",
+      "memory.max": "134217728"
+    },
+    "reclaim_request_bytes": 67108864,
+    "slot_bytes": 8388608
+  },
+  "invocation": {
+    "cache_mib": 72,
+    "reclaim_mib": 64,
+    "slot_mib": 8
+  },
+  "python": "3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]",
+  "reclaim_error": {
+    "errno": 11,
+    "message": "[Errno 11] write could not complete without blocking"
+  },
+  "recorded_at": "2026-09-07T13:53:52.622620+00:00",
+  "reproducer_sha256": "193892867b4d12b2799b0dab1f0f9f5a88ef7c6ffaafb04b294e4c1fa8187738",
+  "samples": {
+    "before": {
+      "memory_current": 10485760,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_peak": 10485760,
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      },
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 9850880,
+        "file": 0,
+        "inactive_file": 0,
+        "slab_reclaimable": 18136
+      }
+    },
+    "one_slot": {
+      "memory_current": 87158784,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_peak": 98336768,
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      },
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 10821632,
+        "file": 75497472,
+        "inactive_file": 0,
+        "slab_reclaimable": 179656
+      }
+    },
+    "populated": {
+      "memory_current": 87171072,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_peak": 89808896,
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      },
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 10821632,
+        "file": 75497472,
+        "inactive_file": 0,
+        "slab_reclaimable": 193216
+      }
+    },
+    "reclaimed": {
+      "memory_current": 86929408,
+      "memory_events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "memory_peak": 89808896,
+      "memory_pressure_totals_usec": {
+        "full": 0,
+        "some": 0
+      },
+      "memory_stat": {
+        "active_file": 0,
+        "anon": 10821632,
+        "file": 75497472,
+        "inactive_file": 0,
+        "slab_reclaimable": 193216
+      }
+    }
+  }
+}

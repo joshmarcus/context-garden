@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from garden.checks import run_check, run_checks, to_feedback
+from garden.inbox import attention_view
 from garden.model import Status
 from garden.personas import DEFAULT_PERSONAS, parse_persona, write_default_personas
+from garden.runs import RunStore
+from garden.store import Store
 from garden.trials import TrialLog, parse_compare, parse_contender
 
 
@@ -88,6 +91,35 @@ def test_run_check_signalled_json_output_is_not_a_pass(tmp_path):
     killed = run_check({"name": "tests", "command": "printf '{\"status\":\"pass\",\"summary\":\"done\"}'; kill -TERM $$"}, {}, cwd=tmp_path)
     assert killed["status"] == "error" and "check did not finish" in killed["summary"]
     assert "SIGTERM" in killed["summary"]
+
+
+def test_signalled_check_keeps_the_complete_diagnostic(tmp_path):
+    command = "printf 'Traceback (most recent call last):\\n'; " \
+              "i=0; while [ $i -lt 60 ]; do printf '  File \"frame.py\", line %s\\n' $i; i=$((i+1)); done; " \
+              "printf 'RuntimeError: first-frame\\nRuntimeError: last-frame\\n'; kill -TERM $$"
+    result = run_check({"name": "tests", "command": command}, {}, cwd=tmp_path)
+    assert result["status"] == "error"
+    assert 'File "frame.py", line 0' in result["details"]
+    assert "RuntimeError: last-frame" in result["details"]
+
+
+def test_check_failure_card_keeps_full_diagnostic(garden):
+    """A retry that also cannot finish leaves its traceback in the human-facing evidence."""
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/pr/1"
+    runs = RunStore(store.config.garden_dir)
+    run = runs.new_run(task.id, "local", run_id="check-with-traceback")
+    run.mode = "check"
+    run.status = "done"
+    run.result = {"checks": [{"name": "tests", "status": "error", "summary": "check did not finish (killed by SIGTERM)",
+                               "details": "Traceback (most recent call last):\n  File \"check.py\", line 7\nRuntimeError: contention"}]}
+    run.save()
+    view = attention_view(task, {"needs_human": {"kind": "check_did_not_run", "reason": "retry also failed"}}, runs)
+    assert view is not None
+    assert "Traceback (most recent call last):" in "\n".join(view["evidence"])
+    assert "RuntimeError: contention" in "\n".join(view["evidence"])
 
 
 def test_command_check_retry_command_comes_only_from_config(tmp_path):

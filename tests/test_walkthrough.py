@@ -302,7 +302,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monkeypatch):
+def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     task = sched.store.task("DM-001")
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
@@ -318,6 +318,7 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
     assert ui["worktree"] == str(worktree)
     assert "garden_root" not in ui
+    assert ui["pages"] == ["inbox", "now"]
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
@@ -325,16 +326,88 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
 
+    # A generic criterion can preserve milestone validation, but does not make this
+    # backend-only PR capture the walkthrough inventory.
     task.extra["requires"] = ["captures"]
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
+                        lambda _worktree, _base: ["src/garden/web/static/site.css"])
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
+    assert ui["pages"] == ["*"]
+
+
+def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):
+    store = Store(garden)
+    result = capture(store, store.phase("demo", "p1"), tmp_path, screenshots=False, pages=[])
+
+    assert result.pages == []
 
 
 def test_html_to_text_strips_tags_and_scripts():
     txt = html_to_text("<style>x{}</style><h1>Title</h1><p>One</p><script>bad()</script><p>Two &amp; more</p>")
     assert "Title" in txt and "One" in txt and "Two & more" in txt
     assert "bad()" not in txt and "<" not in txt
+
+
+def test_html_to_text_omits_hidden_panels_and_attributes():
+    txt = html_to_text(
+        '<main><h1 title="tasks&quot;-&gt;Plan phase">Visible</h1>'
+        '<div hidden>Hidden attribute</div>'
+        '<aside style="display: none">Display hidden</aside>'
+        '<aside style="display: none !important">Important hidden</aside>'
+        '<section aria-hidden="true">ARIA hidden</section></main>'
+    )
+    assert "Visible" in txt
+    assert "Hidden attribute" not in txt
+    assert "Display hidden" not in txt
+    assert "Important hidden" not in txt
+    assert "ARIA hidden" not in txt
+    assert "tasks\"-&gt;Plan phase" not in txt
+    assert "tasks\"->Plan phase" not in txt
+
+
+def test_html_to_text_omits_stylesheet_hidden_panels():
+    txt = html_to_text(
+        '<style>.panel { display: none; } #secret { display:none !important; }</style>'
+        '<div class="panel">Hidden by class</div><p id="secret">Hidden by id</p>'
+        '<p>Visible</p>'
+    )
+    assert "Hidden by class" not in txt
+    assert "Hidden by id" not in txt
+    assert "Visible" in txt
+
+
+def test_html_to_text_does_not_overmatch_unsupported_or_nested_selectors():
+    txt = html_to_text(
+        '<style>[hidden] { display:none } details:not([open]) > summary { display:none }</style>'
+        '<p>Visible sibling</p><div hidden>Hidden attribute</div>'
+        '<details open><summary>Visible summary</summary><p>Visible details</p></details>'
+    )
+    assert "Hidden attribute" not in txt
+    assert "Visible sibling" in txt
+    assert "Visible summary" in txt
+    assert "Visible details" in txt
+
+
+def test_html_to_text_respects_child_selector_combinators():
+    txt = html_to_text(
+        '<style>.outer > .target { display:none }</style>'
+        '<div class="outer"><div class="intermediate"><p class="target">Visible text</p></div></div>'
+    )
+    assert "Visible text" in txt
+
+
+def test_html_to_text_applies_later_display_rule():
+    txt = html_to_text(
+        '<style>.panel { display:none } .panel { display:block }</style>'
+        '<div class="panel">Restored text</div>'
+    )
+    assert "Restored text" in txt
 
 
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
@@ -454,3 +527,22 @@ def test_capture_redacts_the_home_directory(garden, monkeypatch):
     assert fake_home not in run_html
     assert "~/work/checkout/src/thing.py" in run_html
     assert "paths are redacted" in (out / "index.md").read_text()
+
+
+def test_ui_check_entrypoint_accepts_new_controller_page_argument(monkeypatch, capsys, tmp_path):
+    import json
+
+    import garden.walkthrough as walkthrough
+
+    calls = []
+
+    def capture(path, pages):
+        calls.append((path, pages))
+        return {"status": "pass", "out_dir": str(path)}
+
+    monkeypatch.setattr(walkthrough, "_seeded_ui_capture", capture)
+    for selection, expected in [([], []), (['["*"]'], ["*"])]:
+        monkeypatch.setattr(walkthrough.sys, "argv", ["garden.walkthrough", "--ui-check", str(tmp_path), *selection])
+        assert walkthrough._main() == 0
+        assert json.loads(capsys.readouterr().out) == {"status": "pass", "out_dir": str(tmp_path)}
+        assert calls[-1] == (tmp_path, expected)

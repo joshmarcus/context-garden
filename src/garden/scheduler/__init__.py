@@ -165,8 +165,8 @@ class Scheduler(
         if self._runner_factory:
             return self._runner_factory(name, task)
         harness = self.cfg.harness(harness_name or task.harness or self.cfg.product_harness(task.product))
-        if name == "ssh":
-            cfg = dict(self.cfg.get("ssh", {}) or {})
+        if name in {"ssh", "remote"}:
+            cfg = dict(self.cfg.get("ssh" if name == "ssh" else "workers", {}) or {})
             cfg["_product"] = task.product
         else:
             cfg = {}
@@ -480,6 +480,8 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        if self.maintenance_requested():
+            return TickReport()
         rep = TickReport()
         started = time.monotonic()
         self.store.invalidate_tasks()
@@ -510,6 +512,12 @@ class Scheduler(
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
+        if self.maintenance_requested():
+            # A prior transaction has completed before this locked pass observes the
+            # request.  Do no collection or mutation in the acknowledgement pass.
+            self._quiesce_for_maintenance()
+            self.state.save()
+            return rep
         try:
             # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
             # change against an in-flight run's fence manifest until it's safe or an operator
