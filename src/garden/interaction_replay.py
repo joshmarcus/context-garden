@@ -19,7 +19,8 @@ def main() -> int:
     started = datetime.now(UTC).isoformat()
     report = run_qa(args.out, scripted=True, keep=False)
     finished = datetime.now(UTC).isoformat()
-    by_name = {flow["name"]: flow for flow in report.flows}
+    recorded_flows = report.result.get("flows", [])
+    by_name = {flow["name"]: flow for flow in recorded_flows}
     state_sources = {
         "affected": ("approve", "approved a draft and observed it become ready"),
         "failure": ("send back with a note", "observed changes requested and a revise action"),
@@ -44,7 +45,7 @@ def main() -> int:
         "finished_at": finished,
         "status": "pass" if report.ok else "fail",
         "environment": "disposable",
-        "flows": report.flows,
+        "flows": recorded_flows,
         "states": states,
         "events": events,
         "artifacts": [str(args.out / "result.json"), str(args.out / "tick-log.json"),
