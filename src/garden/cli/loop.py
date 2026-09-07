@@ -945,7 +945,7 @@ def inbox():
             if it["group"] != current:
                 current = it["group"]
                 console.print(f"\n[bold]{it['group_title']}[/bold]")
-            console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
+            console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why']}[/dim]")
             for a in it["actions"]:
                 if a.get("command"):
                     detail = f"  [dim]{a['detail']}[/dim]" if a.get("detail") else ""
@@ -960,4 +960,4 @@ def inbox():
                 current = it["group"]
                 count = sum(1 for x in notice_items if x["group"] == current)
                 console.print(f"\n[dim]{it['group_title']} · {count}, no action needed[/dim]")
-            console.print(f"  [dim]{it['task']:<8} {it['title'][:44]:<44} {it['why'][:60]}[/dim]")
+            console.print(f"  [dim]{it['task']:<8} {it['title'][:44]:<44} {it['why']}[/dim]")
