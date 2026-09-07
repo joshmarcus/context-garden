@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import os
+import signal
+import socket
 import subprocess
 import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
 
 import yaml
 
@@ -324,3 +332,122 @@ def test_pin_defers_install_until_active_runs_drain(garden, fake_github):
     active.save()
     sched.maybe_auto_upgrade(TickReport())
     assert restart.called == 1
+
+
+def _http(url: str) -> tuple[int, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+
+
+def _wait_for(predicate, *, timeout: float = 45) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.1)
+    raise AssertionError("condition was not reached before timeout")
+
+
+def _commit(repo: Path, message: str) -> str:
+    git("add", "-A", cwd=repo)
+    git("commit", "-q", "-m", message, cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
+    """A real pinned controller replaces itself; its pid and listening socket survive exec."""
+    source = tmp_path / "tool-source"
+    remote = tmp_path / "tool-remote.git"
+    checkout = Path(__file__).resolve().parents[1]
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(checkout), str(source)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "remote", "set-url", "origin", str(remote)], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+
+    # The doctor gate itself has focused failure coverage above. This disposable package
+    # keeps it deterministic so this test isolates pip installation plus the production
+    # default_restart/os.execv service boundary.
+    upgrade_py = source / "src/garden/upgrade.py"
+    text = upgrade_py.read_text()
+    start = text.index("    def doctor_ok(self) -> bool:")
+    end = text.index("\n\n\ndef default_restart", start)
+    text = text[:start] + "    def doctor_ok(self) -> bool:\n        return True\n" + text[end:]
+    upgrade_py.write_text(text)
+    commit_a = _commit(source, "fixture build A")
+
+    venv = tmp_path / "controller-venv"
+    subprocess.run([os.fspath(Path(os.sys.executable)), "-m", "venv", "--system-site-packages", str(venv)], check=True)
+    python = venv / "bin/python"
+    spec_a = f"context-garden @ {git_ref(str(source))}@{commit_a}"
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "-q", "--no-deps", spec_a], check=True, timeout=120
+    )
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config.update({"upgrade": "auto", "auto_dispatch": False, "tick_interval": 1})
+    config["products"]["demo"].update({"repo": str(source), "provides_tool": True})
+    config_path.write_text(yaml.safe_dump(config))
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    log_path = tmp_path / "serve.log"
+    env = {**os.environ, "GARDEN_ROOT": str(garden), "PYTHONUNBUFFERED": "1"}
+    with log_path.open("w") as log:
+        process = subprocess.Popen(
+            [str(python), "-m", "garden", "serve", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=garden, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        _wait_for(lambda: _http(base_url + "/inbox")[0] == 200)
+        status, body = _http(base_url + "/inbox")
+        assert status == 200 and commit_a[:12] in body
+        assert _http(base_url + "/upgrade-proof")[0] == 404
+        original_pid = process.pid
+
+        app_py = source / "src/garden/web/app.py"
+        app_text = app_py.read_text()
+        marker = "    @app.get(\"/favicon.svg\", include_in_schema=False)"
+        route = (
+            "    @app.get(\"/upgrade-proof\")\n"
+            "    def upgrade_proof() -> dict[str, str]:\n"
+            "        from ..upgrade import installed_commit\n"
+            "        return {\"active\": installed_commit() or \"\"}\n\n"
+        )
+        app_py.write_text(app_text.replace(marker, route + marker))
+        commit_b = _commit(source, "fixture build B adds proof route")
+
+        def upgraded() -> bool:
+            status_, body_ = _http(base_url + "/upgrade-proof")
+            return status_ == 200 and json.loads(body_)["active"] == commit_b
+
+        _wait_for(upgraded, timeout=90)
+        assert process.poll() is None and process.pid == original_pid
+        assert commit_b[:12] in _http(base_url + "/inbox")[1]
+
+        events = [json.loads(line) for line in (garden / ".garden/events.jsonl").read_text().splitlines()]
+        lifecycle = [event["kind"] for event in events if event["kind"].startswith("upgrade_")]
+        assert "upgrade_available" in lifecycle
+        assert "upgrade_installing" in lifecycle
+        assert "upgrade_restart_pending" in lifecycle
+        assert "upgrade_active" in lifecycle
+        log_text = log_path.read_text()
+        assert f"tool update available at {commit_b[:12]} from main" in log_text
+        assert f"tool upgrade installing configured-base commit {commit_b[:12]}" in log_text
+        assert f"tool upgrade active at {commit_b[:12]}; restarted controller confirmed" in log_text
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=10)

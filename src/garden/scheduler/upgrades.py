@@ -130,6 +130,8 @@ class UpgradeMixin:
         info.update(status="installing", reason="installing verified configured-base update")
         self.control()["upgrade"] = info
         self.state.save()
+        self.events.emit("upgrade_installing", product, sha=sha[:12], url=url)
+        self.log(f"tool upgrade installing configured-base commit {sha[:12]}")
         ok, output = self.upgrader.install(url, sha)
         if not ok:
             self.events.emit("upgrade_failed", product, sha=sha[:12], reason="install")
