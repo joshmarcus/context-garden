@@ -59,6 +59,12 @@ class CheckRunMixin:
         `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
         self.require_maintenance_running()
+        # Reaping a worker or polling a PR can start checks before dispatch_ready.
+        # Let an eligible earlier review use this just-freed shared slot first too.
+        # If it fills capacity, the normal resource gate preserves this continuation
+        # for the next reap/poll rather than publishing a duplicate check record.
+        if self.review_slots_free() > 0 and self._queued_review_precedes(task):
+            self._drain_pending_reviews(self.store.tasks(), rep)
         runner = self.runner_for(task, "local")
         run = self._new_local_run(task.id, "check", f"{stage} check")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
