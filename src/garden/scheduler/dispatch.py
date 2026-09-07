@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import gitops
 from ..brief import build_brief
+from ..criteria import parse_criteria
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -421,6 +422,9 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
+        # Capture this before rendering the brief.  A task edit made after this
+        # point belongs to the next revise note, not this worker's contract.
+        criteria_snapshot = parse_criteria(task.body)
         if mode == "rebase":
             from ..brief import rebase_brief
 
@@ -429,7 +433,9 @@ class DispatchMixin:
                 hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []),
                 artifacts=dict(st.get("rebase_artifacts") or {}))
         else:
-            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
+                                stack=stack, qa=qa, commits_ahead=commits_ahead,
+                                criteria_snapshot=criteria_snapshot)
             text = prompt_override or brief.text
         prompt_bytes = len(text.encode("utf-8", "replace"))
         if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
@@ -440,6 +446,13 @@ class DispatchMixin:
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
+        # The task can be edited while this run is in flight. Preserve exactly what this
+        # worker was asked to meet, so review never silently moves its goalposts.
+        run.env_snapshot["criteria"] = criteria_snapshot
+        # This marker is a versioned part of the dispatched contract.  Reap uses it to
+        # distinguish a new worker that failed to return its required pre-flight from an
+        # older saved run, whose missing-result recovery must remain compatible.
+        run.env_snapshot["requires_preflight"] = mode in ("work", "revise", "resume")
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())
