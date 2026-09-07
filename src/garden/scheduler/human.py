@@ -514,20 +514,45 @@ class HumanMixin:
         """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
         from ..runner.manual import ManualRunner
 
-        def refuse(reason: str) -> None:
-            run.completion_attempts.append({"at": now_iso(), "status": "refused", "reason": reason,
-                                            "cost_usd": None})
-            run.save()
-            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
-                             cost_usd=None, supervised=True)
-            raise RuntimeError(reason)
-
         url = str(result.get("pr") or run.external_pr or task.pr or "")
         match = re.search(r"/pull/(\d+)", url)
+        pr_number = int(match.group(1)) if match else None
+
+        def record_refusal(reason: str) -> None:
+            attempt = {"at": now_iso(), "status": "refused", "reason": reason,
+                       "cost_usd": None, "pr_url": url, "pr_number": pr_number}
+            run.completion_attempts.append(attempt)
+            run.save()
+            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
+                             cost_usd=None, supervised=True, pr_url=url, pr_number=pr_number)
+
+        def refuse(reason: str) -> None:
+            record_refusal(reason)
+            raise RuntimeError(reason)
+
+        # An external claim still shares the dispatch's live-garden and Git-internals
+        # protection.  Check Git first: the ordinary fence invokes git against the clone,
+        # which must never happen after its metadata has changed.
+        rep = TickReport()
+        git_guard_violations = self._git_guard_check(task, run)
+        if git_guard_violations:
+            record_refusal("external completion refused: clone git internals changed since dispatch")
+            self._release_fence_bookkeeping(task)
+            self._git_guard_fail(task, run, git_guard_violations, rep)
+            self.state.save()
+            return rep
+        violations = self._fence_check(task, run)
+        self._release_fence_bookkeeping(task)
+        if violations:
+            record_refusal("external completion refused: worktree fence violation")
+            self._fence_fail(task, run, violations, rep)
+            self.state.save()
+            return rep
+
         slug = self.slug_for(task)
         if not match or not slug or not self.github.available:
             refuse("external completion needs an accessible PR URL")
-        pr = self.github.get_pr(slug, int(match.group(1)))
+        pr = self.github.get_pr(slug, pr_number)
         if not run.branch or pr.head != run.branch:
             refuse(
                 f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
@@ -559,7 +584,6 @@ class HumanMixin:
         self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
                          harness="human", status="done", cost_usd=run.cost_usd,
                          external=True, supervised=True)
-        rep = TickReport()
         if pr.state == "MERGED":
             self._transition(task, Status.DONE, f"external PR merged and verified on {self.final_base_for(task)}")
             rep.transitions.append(f"{task.id} -> done (external merged PR)")

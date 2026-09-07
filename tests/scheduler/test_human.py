@@ -159,6 +159,10 @@ def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_gi
     assert failed.status == "running"
     assert failed.completion_attempts[-1]["status"] == "refused"
     assert failed.completion_attempts[-1]["cost_usd"] is None
+    assert failed.completion_attempts[-1]["pr_url"] == pr.url
+    assert failed.completion_attempts[-1]["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
 
 
 def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):
@@ -195,6 +199,35 @@ def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base
     failed = sched.runs.latest(task.id)
     assert failed.run_id == run.run_id and failed.status == "running"
     assert "not included in final base" in failed.completion_attempts[-1]["reason"]
+    assert failed.completion_attempts[-1]["pr_url"] == pr.url
+    assert failed.completion_attempts[-1]["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+def test_external_completion_git_guard_violation_is_refused_and_failed(sched, fake_github):
+    """External completion must not skip the metadata guard captured at dispatch."""
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    created_before = len(fake_github.created)
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    clone = sched.repo_for(task)
+    config = clone / ".git" / "config"
+    config.write_text(config.read_text() + "\n[core]\n\thooksPath = /tmp/garden-test-evil-hooks\n")
+
+    rep = sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.FAILED
+    assert "git guard" in rep.transitions[0]
+    refused = sched.runs.latest(task.id).completion_attempts[-1]
+    assert refused["status"] == "refused"
+    assert refused["pr_url"] == pr.url and refused["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+    assert len(fake_github.created) == created_before
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=clone)
 
 
 def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):
