@@ -534,6 +534,46 @@ def test_fence_reports_foreign_changes_alongside_the_reverted_ones(sched, tmp_pa
     assert (clone / "person.txt").read_text() == "a person's edit\n"  # left alone
 
 
+def test_live_garden_escape_reports_transcript_evidence_and_keeps_worktree_writes(sched, garden, monkeypatch):
+    _init_repo(garden)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+
+    sched.tick()
+    worktree = sched.worktree_for(sched.store.task("DM-001"))
+    worker_output = worktree / "worker-output.txt"
+    assert worker_output.exists()
+    sched.tick()
+
+    card = sched.state.get("DM-001")["needs_human"]
+    assert "transcript evidence: Claude Bash command destination names garden.yaml" in card
+    assert "worktree writes kept:" in card and "worker-output.txt" in card
+    assert worker_output.exists()
+
+
+def test_fence_records_codex_destination_evidence(sched, tmp_path):
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+    escaped = clone / "rogue.py"
+
+    sched._fence_snapshot(task)
+    escaped.write_text("escaped\n")
+    run = sched.runs.new_run("DM-001", "local")
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "item.completed",
+        "item": {"type": "command_execution", "command": f"printf escaped > {escaped}"},
+    }))
+
+    violations = sched._fence_check(task, run)
+
+    assert violations and violations[0]["files"] == ["rogue.py"]
+    assert violations[0]["evidence"] == {
+        "rogue.py": ["Codex command_execution destination names rogue.py"]
+    }
+    assert not escaped.exists()
+
+
 def test_fence_attributes_paths_named_relative_to_the_worktree(sched, tmp_path):
     """A worker that names a fenced path relative to its worktree (its cwd) rather than by an
     absolute path is still attributed and reverted; matching is not limited to absolute forms."""
