@@ -20,12 +20,13 @@ def register(app: FastAPI, site: Site) -> None:
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
 
     @app.post("/pause")
-    def web_pause(request: Request, reason: str = Form("")):
+    async def web_pause(request: Request, reason: str = Form("")):
         back = request.headers.get("referer", "/")
         try:
             with hub.action_lock:
-                sched = hub.scheduler()
-                sched.pause(by="web", reason=reason.strip())
+                # The read-only facade skips startup reconciliation and task discovery;
+                # pause itself touches only the side-store and event append.
+                hub.reader().pause(by="web", reason=reason.strip())
             hub._log("dispatch paused via web" + (f": {reason.strip()}" if reason.strip() else ""))
         except (RuntimeError, GitError, GitHubError) as e:
             message = str(e)
