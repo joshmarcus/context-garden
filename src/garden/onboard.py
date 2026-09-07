@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -454,43 +455,71 @@ def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]])
 def _restore_onboarding_drafts(
     garden: Path,
     product: str,
-    created: list[Path],
     config_before: bytes | None,
     gitignore_before: bytes | None,
     generated_bytes: dict[Path, bytes],
-) -> tuple[list[str], list[str]]:
-    """Remove the scaffold made before a planner rejection, preserving prior garden files."""
+) -> list[str]:
+    """Restore the garden and move owner-edited draft files out of a retry's way."""
     cfg_path = garden / CONFIG_NAME
     gitignore = garden / ".gitignore"
-    retained: list[str] = []
-    if cfg_path.read_bytes() == generated_bytes[cfg_path]:
-        if config_before is None:
-            cfg_path.unlink()
-        else:
-            cfg_path.write_bytes(config_before)
-    else:
-        retained.append(str(cfg_path.relative_to(garden)))
-    if generated_bytes.get(gitignore) is not None and gitignore.read_bytes() == generated_bytes[gitignore]:
-        if gitignore_before is None:
-            gitignore.unlink()
-        else:
-            gitignore.write_bytes(gitignore_before)
-
-    # The product and conventions paths were checked for collisions before they were
-    # created. Planner validation happens before task import, so this known scaffold
-    # list is enough and does not risk removing a file an owner added meanwhile.
-    removable = [path for path in created if path not in {cfg_path, gitignore}]
     product_dir = garden / product
-    removable.append(product_dir / "phase-01" / "goals.md")
-    removed: list[str] = []
-    for path in sorted(set(removable), key=lambda item: len(item.parts), reverse=True):
-        if path.exists() and path.is_file() and generated_bytes.get(path) == path.read_bytes():
-            path.unlink()
-            removed.append(str(path.relative_to(garden)))
-        elif path.exists() and path.is_file():
-            retained.append(str(path.relative_to(garden)))
+
+    changed = [
+        path for path, contents in generated_bytes.items()
+        if path.is_file() and path.read_bytes() != contents
+    ]
+    generated = set(generated_bytes)
+    owner_files = [path for path in product_dir.rglob("*") if path.is_file() and path not in generated]
+    recovery_dir: Path | None = None
+    if changed or owner_files:
+        base = garden / "onboarding-recovery" / product
+        recovery_dir = base
+        suffix = 2
+        while recovery_dir.exists():
+            recovery_dir = base.with_name(f"{product}-{suffix}")
+            suffix += 1
+
+    def retain(path: Path) -> str:
+        assert recovery_dir is not None
+        destination = recovery_dir / path.relative_to(garden)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(destination))
+        return str(destination.relative_to(garden))
+
+    dispositions: list[str] = []
+    for path in sorted(generated_bytes, key=lambda item: str(item.relative_to(garden))):
+        relative = str(path.relative_to(garden))
+        before = config_before if path == cfg_path else gitignore_before if path == gitignore else None
+        if not path.is_file():
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: restored after planner removed it")
+            else:
+                dispositions.append(f"{relative}: already absent")
+        elif path.read_bytes() == generated_bytes[path]:
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: restored")
+            else:
+                path.unlink()
+                dispositions.append(f"{relative}: removed")
+        else:
+            retained_at = retain(path)
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: owner edit retained at {retained_at}; original restored")
+            else:
+                dispositions.append(f"{relative}: owner edit retained at {retained_at}")
+
+    # A person may add a new file beside an edited generated draft while the planner runs.
+    # Preserve it too, so the product directory cannot make the documented retry collide.
+    for path in sorted(product_dir.rglob("*")) if product_dir.exists() else []:
+        if path.is_file():
+            dispositions.append(
+                f"{path.relative_to(garden)}: owner file retained at {retain(path)}"
+            )
     for directory in sorted(
-        [path for path in product_dir.rglob("*") if path.is_dir()] + [product_dir],
+        [path for path in product_dir.rglob("*") if path.is_dir()] + [product_dir] if product_dir.exists() else [],
         key=lambda item: len(item.parts),
         reverse=True,
     ):
@@ -498,12 +527,7 @@ def _restore_onboarding_drafts(
             directory.rmdir()
         except OSError:
             pass
-    for path in sorted({path.parent for path in removable}, key=lambda item: len(item.parts), reverse=True):
-        try:
-            path.rmdir()
-        except OSError:
-            pass
-    return sorted(removed), sorted(retained)
+    return dispositions
 
 
 def onboard_project(
@@ -595,18 +619,14 @@ def onboard_project(
         items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
         provenances = [_backlog_provenance(item, backlog) for item in items]
     except (RuntimeError, ValueError) as error:
-        removed, retained = _restore_onboarding_drafts(
-            garden, product, created, config_before, gitignore_before, generated_bytes
+        dispositions = _restore_onboarding_drafts(
+            garden, product, config_before, gitignore_before, generated_bytes
         )
         retry_source = repo_value or str(repo)
         retry = f"garden onboard {retry_source} --into {garden}"
-        recovery = (
-            f"Owner-edited draft files were retained ({', '.join(retained)}); review or remove them before retrying."
-            if retained else f"Retry with: {retry}"
-        )
         raise ValueError(
-            f"{error}\nPlanner output was rejected; onboarding rolled back its draft files "
-            f"({', '.join(removed) or 'none'}). No tasks were imported or approved. {recovery}"
+            f"{error}\nPlanner output was rejected. Draft scaffold recovery: "
+            f"{' ; '.join(dispositions)}. No tasks were imported or approved. Retry with: {retry}"
         ) from error
     tasks = import_plan(store, product, "phase-01", items, status="draft")
     for task, provenance in zip(tasks, provenances, strict=False):

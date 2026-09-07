@@ -392,10 +392,42 @@ def test_onboard_rejection_keeps_an_owner_edit_to_the_new_draft(tmp_path):
         (garden / "sample-web" / "product.md").write_text("Owner's draft edit.\n")
         return "not a JSON plan"
 
-    with pytest.raises(ValueError, match="no JSON array found"):
+    with pytest.raises(ValueError, match="no JSON array found") as error:
         onboard_project(repo, garden, planner=owner_edited_rejected_plan)
 
-    assert (garden / "sample-web" / "product.md").read_text() == "Owner's draft edit.\n"
+    message = str(error.value)
+    recovery_draft = garden / "onboarding-recovery" / "sample-web" / "sample-web" / "product.md"
+    assert "garden.yaml: removed" in message
+    assert ".gitignore: removed" in message
+    assert "sample-web/product.md: owner edit retained at onboarding-recovery/sample-web/sample-web/product.md" in message
+    assert f"Retry with: garden onboard {repo} --into {garden}" in message
+    assert recovery_draft.read_text() == "Owner's draft edit.\n"
+    assert not (garden / "sample-web").exists()
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    assert recovery_draft.read_text() == "Owner's draft edit.\n"
+    assert Store(garden).product("sample-web").phases[0].tasks[0].status.value == "draft"
+
+
+def test_onboard_recovery_restores_a_generated_file_deleted_by_the_planner(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    config_path = garden / "garden.yaml"
+    before = config_path.read_bytes()
+
+    def deleting_rejected_plan(_store: Store, _prompt: str) -> str:
+        config_path.unlink()
+        return "not a JSON plan"
+
+    with pytest.raises(ValueError, match="no JSON array found") as error:
+        onboard_project(repo, garden, planner=deleting_rejected_plan)
+
+    assert "garden.yaml: restored after planner removed it" in str(error.value)
+    assert config_path.read_bytes() == before
 
 
 def test_init_scaffolds_onboard_skill(tmp_path):
