@@ -176,7 +176,7 @@ def test_onboard_this_repository_uses_documented_development_commands(tmp_path, 
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     assert config["products"]["context-garden"]["setup"] == {
         "command": 'uv venv && uv pip install -e ".[dev]"',
-        "test": "PYTHONPATH=src .venv/bin/python -m pytest -q",
+        "test": "PYTHONPATH=src .venv/bin/pytest -q",
         "lint": ".venv/bin/ruff check src tests",
         "env": {},
     }
