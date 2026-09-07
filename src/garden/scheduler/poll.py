@@ -259,6 +259,11 @@ class PollMixin:
             min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
+        if (self.cfg.product_self(task.product) and int(st.get("review_rounds", 0)) >= 2
+                and pr.review_decision != "APPROVED"
+                and not any(str(item.get("head") or "") == str(pr.head_sha or "")
+                            for item in st.get("persona_reviews", []) if isinstance(item, dict))):
+            return False, "the second review must be a persona review or human approval"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
         review_run = st.get("review_run")

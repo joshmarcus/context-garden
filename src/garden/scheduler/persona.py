@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .. import gitops
@@ -165,6 +166,14 @@ class PersonaMixin:
                 self.store.invalidate_tasks()
             return
         task = self.store.task(entry["task"])
+        try:
+            reviewed_head = gitops.head_sha(Path(run.worktree))
+        except gitops.GitError:
+            reviewed_head = ""
+        self.state.get(task.id).setdefault("persona_reviews", []).append({
+            "persona": name, "run": run.run_id, "head": reviewed_head,
+        })
+        self.state.save()
         md = report_markdown(rev, f"{name} review of {task.id}", run.run_id)
         slug = self.slug_for(task)
         number = self._pr_number(task)

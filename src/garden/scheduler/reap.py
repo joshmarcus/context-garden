@@ -266,6 +266,11 @@ class ReapMixin:
             self._handle_quota_env_error(task, run, rep, collected)
             return
 
+        # A successful harness-owned completion breaks the consecutive environment-error
+        # streak; ordinary worker failures are handled by the normal attempt cap below.
+        self.state.get(task.id).pop("consecutive_env_errors", None)
+        self.state.save()
+
         status = str(result.get("status", "")).lower()
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
@@ -828,6 +833,18 @@ class ReapMixin:
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
 
         st = self.state.get(task.id)
+        env_errors = int(st.get("consecutive_env_errors", 0)) + 1
+        cap = max(1, int(self.cfg.get("max_consecutive_env_errors", 3) or 3))
+        st["consecutive_env_errors"] = env_errors
+        if env_errors >= cap:
+            reason = f"{env_errors} consecutive environment errors; retry cap reached"
+            self._set_needs_human(task, "env_error", reason)
+            self.state.save()
+            self.events.emit("needs_human", task.id, stop_kind="env_error", reason=reason)
+            self._transition(task, Status.WAITING_HUMAN, reason)
+            notify(self.cfg.data, task.id, "waiting_human", reason, task.pr or "")
+            rep.transitions.append(f"{task.id} -> waiting_human (env_error cap)")
+            return
         snap = run.env_snapshot or {}
         if run.mode == "revise" and task.pr:
             st["pending_feedback"] = snap.get("pending_feedback", "")
