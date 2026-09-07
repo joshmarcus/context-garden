@@ -58,7 +58,8 @@ max_attempts: 2
 max_revisions: 3
 review:
   enabled: true
-  max_rounds: 2
+  max_rounds: null                 # null = unlimited; positive integers retain a hard cap
+  friction_after: 4                # non-blocking loop signal; null disables it
   personas: []                     # persona reviews on every new PR round, e.g. [security]
 budgets:
   widget/phase-01: 50.0            # USD cap; dispatch pauses when it is reached
