@@ -52,8 +52,10 @@ def missing_preflight(value: Any) -> list[str]:
 
 
 def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_description: bool,
-                       ui_changed: bool, captures: list[str]) -> list[dict[str, Any]]:
+                       ui_changed: bool, captures: list[str], inspection_error: str = "") -> list[dict[str, Any]]:
     """Checks that never need a reviewer or model, one concise failure each."""
+    if inspection_error:
+        return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {inspection_error}")]
     try:
         from . import gitops
 

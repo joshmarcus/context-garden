@@ -208,3 +208,22 @@ def test_missing_preflight_is_sent_back_before_a_pr(sched, monkeypatch):
     first = sched.runs.runs_for(task.id)[0]
     assert "missing review pre-flight" in first.error
     assert "DM-001 -> changes_requested (checks)" in report.transitions
+
+
+def test_scheduler_turns_changed_path_inspection_failure_into_revise_feedback(sched, monkeypatch):
+    """A Git error while scheduling a pre-PR check must not abort the scheduler tick."""
+    from garden import gitops
+
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "noop", "command": "true"}]}
+    monkeypatch.setattr(gitops, "diff_names", lambda *_args: (_ for _ in ()).throw(gitops.GitError("cannot inspect paths")))
+
+    sched.tick()  # dispatch worker
+    sched.tick()  # reap worker and start pre-PR check despite the inspection error
+    report = sched.tick()  # reap check and start the automatic revise
+
+    task = sched.store.task("DM-001")
+    assert task.status.value == "running"
+    assert "DM-001 -> changes_requested (checks)" in report.transitions
+    revise = sched.runs.latest(task.id)
+    assert revise.mode == "revise"
+    assert "could not inspect candidate diff: cannot inspect paths" in (revise.path / "brief.md").read_text()
