@@ -240,9 +240,8 @@ def page_case(
                 time.sleep(0.1)
         rows = []
         tick_rows = []
-        for period in ("expiry_1_cold", "expiry_2", "expiry_3"):
-            if period != "expiry_1_cold":
-                time.sleep(1.1)
+        for period in ("expiry_1", "expiry_2", "expiry_3"):
+            time.sleep(1.1)
             for path in ("/now1", "/inbox", "/config"):
                 for _ in range(samples):
                     start = time.perf_counter()
@@ -271,7 +270,7 @@ def page_case(
             else []
         )
         summary = {}
-        for period in ("expiry_1_cold", "expiry_2", "expiry_3"):
+        for period in ("expiry_1", "expiry_2", "expiry_3"):
             for path in ("/now1", "/inbox", "/config"):
                 vals = [r["elapsed_s"] for r in rows if r["period"] == period and r["path"] == path]
                 summary[f"{period}:{path}"] = {
