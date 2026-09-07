@@ -221,7 +221,9 @@ def doctor():
     mp_live = (ctrl.get("overrides") or {}).get("max_parallel")
     mp = mp_live if mp_live is not None else store.config.get("max_parallel")
     review_parallel = store.config.get("review_parallel") or store.config.get("max_parallel")
-    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={mp}"
+    review_cap = store.config.review_max_rounds()
+    cap_label = str(review_cap) if review_cap is not None else "unlimited"
+    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {cap_label} rounds)  max_parallel={mp}"
                  + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else "")
                  + f"  review_parallel={review_parallel}")
     notify_cmd = store.config.get("notify.command")

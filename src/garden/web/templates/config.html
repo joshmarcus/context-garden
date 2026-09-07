@@ -157,6 +157,13 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Automated review</div>
+  <h3>Rounds and loop friction</h3>
+  <p class="muted" style="margin:0">Set <code>review.max_rounds</code> in garden.yaml to a positive integer for a hard total-round cap, or <code>null</code> for unlimited automated rounds. Unlimited still requires current-head review evidence, checks, security/persona evidence, merge gates and all ordinary resource admission.</p>
+  <p class="muted" style="margin:8px 0 0"><code>review.friction_after</code> is a separate positive round threshold (or <code>null</code> to disable it): it records one retrospective-visible loop-friction entry without creating an owner stop. <code>review_parallel</code> remains the concurrent-review slot limit, not a round limit.</p>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Live values</div>
   <h3>Scheduler &amp; dispatch</h3>
   <p class="muted" style="margin:0 0 10px">Edit these in garden.yaml; the change is picked up on the next tick, no restart.</p>
