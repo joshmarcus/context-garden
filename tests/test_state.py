@@ -56,6 +56,42 @@ def test_task_state_setdefault_new_key_dirty():
     assert "runs" in ts.dirty
 
 
+def test_update_persists_through_save(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+
+    state.get("CG-001").update({"pr_number": 42, "pending_feedback": "fix this"})
+    state.save()
+
+    final = State(path)
+    assert final.get("CG-001") == {"pr_number": 42, "pending_feedback": "fix this"}
+
+
+def test_ior_persists_through_save(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+
+    task_state = state.get("CG-001")
+    task_state |= {"pr_number": 42, "pending_feedback": "fix this"}
+    state.save()
+
+    final = State(path)
+    assert final.get("CG-001") == {"pr_number": 42, "pending_feedback": "fix this"}
+
+
+def test_clear_deletions_persist_through_save(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.get("CG-001").update({"pr_number": 42, "pending_feedback": "fix this"})
+    state.save()
+
+    state.get("CG-001").clear()
+    state.save()
+
+    final = State(path)
+    assert final.get("CG-001") == {}
+
+
 def test_task_state_setdefault_existing_key_not_dirty_until_mutated():
     # setdefault on a present key hands back the live value and snapshots it, but does
     # not mark it dirty on its own: only an actual in-place mutation makes it dirty.
@@ -123,16 +159,19 @@ def test_dict_mutators_persist_and_retain_concurrent_disjoint_updates(tmp_path):
     state_a = State(path)
     state_b = State(path)
     task_a = state_a.get("CG-001")
-    task_a.update({"new": 2})
-    task_a.clear()
-    task_a |= {"from_a": 3}
+    task_a.update({"from_a": 3})
     state_b.get("CG-001")["from_b"] = 4
 
     state_a.save()
     state_b.save()
 
     final = State(path)
-    assert final.get("CG-001") == {"from_a": 3, "from_b": 4}
+    assert final.get("CG-001") == {
+        "old": 1,
+        "remove": True,
+        "from_a": 3,
+        "from_b": 4,
+    }
 
 
 def test_concurrent_writes_different_tasks(tmp_path):
