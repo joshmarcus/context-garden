@@ -218,6 +218,8 @@ class DispatchMixin:
             st = self.state.get(t.id)
             cleared = [k for k in ("needs_human", "pending_feedback", "pending_feedback_easy", "pending_feedback_rebase")
                        if st.pop(k, None) is not None]
+            if self._retire_terminal_check(t):
+                cleared.append("check continuation")
             if self._queue_leave(t):
                 cleared.append("queue state")
             if cleared:
