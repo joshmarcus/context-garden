@@ -67,6 +67,11 @@ class QuotaMixin:
         pause the harness so nothing else dispatches to it either, without touching the task
         the way an ordinary failure would."""
         kind = str(collected.get("env_kind") or "quota")
+        if kind == "resource":
+            # Resource exhaustion belongs to the host, not one model account. Admission
+            # sampling controls the retry; pausing the harness would require an unrelated
+            # network probe and could strand work after the machine has recovered.
+            return
         if run.harness:
             self.pause_harness(run.harness, f"{kind} limit hit on {run.harness}", run_id=run.run_id)
 

@@ -140,6 +140,13 @@ DEFAULTS: dict[str, Any] = {
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
+    "resources": {               # host-wide local admission; thresholds of 0 disable sensing
+        "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
+        "min_memory_available_mb": 0,
+        "min_temp_free_mb": 0,
+        "execution_cgroup": "",   # delegated cgroup directory for local run descendants
+    },
     "max_attempts": 2,
     "max_revisions": 3,
     "timeout_minutes": 90,
@@ -162,6 +169,7 @@ DEFAULTS: dict[str, Any] = {
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
+        "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
     },
     "retro": {
@@ -315,6 +323,8 @@ class Config:
         - `env`: extra environment for the worker, the setup command and the pre-PR checks.
         - `test` / `lint`: the commands the brief tells the worker to run and the commands the
           default `checks.pre_pr` uses in the worktree.
+        - `worker_push`: explicitly allow the worker to push its assigned branch for CI
+          (default false); does not grant credentials or permission to manage PRs.
         - `timeout_seconds`: cap for the setup command (default 600).
 
         Nothing here assumes Python, pip, uv or a venv; a product that manages dependencies

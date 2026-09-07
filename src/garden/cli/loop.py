@@ -83,8 +83,8 @@ def profile(
     name: str = typer.Argument("", help="economy | balanced | fast, or a name from garden.yaml profiles:; omit to show the active one"),
     clear_: bool = typer.Option(False, "--clear", help="Drop the live override, back to plain garden.yaml values"),
 ):
-    """Switch the operating profile live (CG-221): one named stop sets workers, reviews, the
-    model tier map, the review and retro tiers and the observe profile together, in effect
+    """Switch the operating profile live: one named stop sets workers, reviews, the
+    model tier map, the review and retro tiers and the observation feed together, in effect
     within one tick, no restart."""
     store = _store()
     sched = _scheduler(store)
@@ -163,7 +163,7 @@ def clear(key: str):
     console.print(f"[green]{key} override cleared[/green] (back to the garden.yaml value)")
 
 
-config_app = typer.Typer(help="A live garden.yaml reload held against an in-flight run's fence manifest (CG-242).",
+config_app = typer.Typer(help="A live garden.yaml reload held against an in-flight run's fence manifest.",
                          invoke_without_command=True, no_args_is_help=False)
 app.add_typer(config_app, name="config", rich_help_panel=PANEL_LOOP)
 
@@ -260,6 +260,20 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
             raise typer.Exit(1) from None
     try:
         run = sched.dispatch(t, mode=mode)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{t.id}: run {run.run_id} started (worktree {run.worktree})")
+
+
+@app.command(rich_help_panel=PANEL_LOOP)
+def redispatch(task_id: str = typer.Argument(..., help="The task whose current worker to replace")):
+    """Stop a task's active worker and start a fresh run in its existing worktree."""
+    store = _store()
+    t = _task(store, task_id)
+    sched = _scheduler(store)
+    try:
+        run = sched.redispatch(t)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -368,12 +382,12 @@ def answer(task_id: str, text: str = typer.Argument(..., help="Your answer to th
 @app.command(rich_help_panel=PANEL_LOOP)
 def observe(
     follow: bool = typer.Option(False, "--follow", help="Print a pass every observe.interval, streaming the configured events between passes"),
-    profile: str = typer.Option("", "--profile", help="quiet | watch | debug, or a name from observe.profiles (default: observe.profile in garden.yaml)"),
+    profile: str = typer.Option("", "--feed", "--profile", help="Observation feed: quiet | watch | debug, or a configured feed (observe.profile in garden.yaml)"),
     json_out: bool = typer.Option(False, "--json", help="One JSON object per pass instead of text"),
 ):
     """The operator's feed: a status line, cards that need a hand, stuck runs, tracebacks and
     a digest of the window — for a person or an agent's heartbeat. Cadence, event kinds and
-    the digest window are `observe:` in garden.yaml (see docs/architecture.md); `--profile`
+    the digest window are `observe:` in garden.yaml (see docs/architecture.md); `--feed`
     picks a built-in (quiet, watch, debug) or a custom one for this run only."""
     from .. import observe as observe_mod
 
@@ -467,21 +481,21 @@ def digest(since: str = typer.Option("24h", help="Window: 90m, 24h, 3d, or an IS
 
 
 def _tier_cell(cell: dict | None, unit: str) -> str:
-    """One difficulty-by-model cell as text: the value in its unit, its n, and the marks the
-    page uses (▲ best, ▽ worst, ~ thin) so the terminal reads like the Now page."""
-    if not cell:
-        return "—"
-    v = cell["value"]
-    text = f"${v:.2f}" if unit == "usd" else f"{v:.0%}" if unit == "pct" else f"{v:.1f} h" if unit == "hours" else f"{v:.1f}"
-    mark = "▲ " if cell["best"] else "▽ " if cell["worst"] else ""
-    return f"{mark}{text} ({'~' if cell['thin'] else ''}n {cell['n']})"
+    """One difficulty-by-model cell as text, the way the Now page and `garden now` write it
+    (▲ best, ▽ worst, ~ thin), so the terminal reads like the page."""
+    from ..now1 import cell_text
+
+    return cell_text(cell, unit)
 
 
 @app.command(rich_help_panel=PANEL_INSIGHT)
-def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)")):
+def metrics(target: str | None = typer.Argument(None, help="product/phase (default: all)"),
+            since: str = typer.Option("", help="Window for difficulty/model matrices, e.g. 1h"),
+            until: str = typer.Option("", help="Exclusive ISO end for the matrices")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
-    from ..events import EventLog
+    from ..events import EventLog, parse_since, with_run_records
     from ..events import metrics as _metrics
+    from ..runs import RunStore
 
     store = _store()
     tasks = store.tasks()
@@ -489,7 +503,19 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         product, phase = _split_target(target)
         tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
-    m = _metrics(events, tasks)
+    events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
+    m = _metrics(events, tasks, parse_since(since) if since else "", until)
+    from ..outcomes import format_cell
+
+    for matrix in m["difficulty_by_model"]["metrics"].values():
+        comparison = Table(title=matrix["label"] + " · " + matrix["direction"] + " is better")
+        comparison.add_column("Difficulty")
+        for model in m["difficulty_by_model"]["models"]:
+            comparison.add_column(model)
+        for tier, row in matrix["rows"].items():
+            comparison.add_row(tier, *(f"{format_cell(c)} (n={c['n']}; missing={c['missing']})" for c in row.values()))
+        console.print(comparison)
+    console.print("A task using several models appears in each. Columns do not add up.")
     table = Table(title="per task")
     for c in ("id", "difficulty", "status", "runs", "revisions", "first review", "cost", "lead h"):
         table.add_column(c)
@@ -715,7 +741,7 @@ def personas():
 @app.command(rich_help_panel=PANEL_REVIEW)
 def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci")):
     """Run the token-free checks for a task by hand (pre_pr in its worktree, or ci analysers)."""
-    from ..checks import run_checks
+    from ..scheduler.resources import ResourcePressureError
 
     store = _store()
     t = _task(store, task_id)
@@ -728,9 +754,24 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
         err.print(f"no checks configured under checks.{stage}")
         raise typer.Exit(1)
     wt = sched.worktree_for(t)
-    results = run_checks(specs, sched.check_ctx(t, t.branch or t.default_branch(), sched.base_for(t), wt),
-                         cwd=wt if wt.exists() else None, timeout=int(store.config.get("checks.timeout_seconds", 600)),
-                         config=store.config.data)
+    try:
+        run = sched._new_local_run(t.id, "check", f"operator {stage} check")
+    except ResourcePressureError as e:
+        err.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(2) from None
+    run.branch, run.base, run.worktree = t.branch or t.default_branch(), sched.base_for(t), str(wt)
+    run.save()
+    payload = {"specs": specs, "ctx": sched.check_ctx(t, run.branch, run.base, wt),
+               "cwd": str(wt) if wt.exists() else "", "setup": store.config.product_setup(t.product),
+               "timeout": int(store.config.get("checks.timeout_seconds", 600)), "config": store.config.data}
+    runner = sched.runner_for(t, "local")
+    runner.start_checks(run, wt if wt.exists() else run.path, payload)
+    while not run.process_finished():
+        time.sleep(0.05)
+    results = json.loads((run.path / "checks.json").read_text())
+    run.exit_code, run.finished_at, run.cost_usd = run.read_exit_code(), now_iso(), 0.0
+    run.result, run.status = {"checks": results}, "done"
+    run.save()
     bad = 0
     for r in results:
         color = "green" if r.get("status") == "pass" else ("yellow" if r.get("status") == "flaky" else "red")

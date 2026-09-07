@@ -19,11 +19,54 @@ from .report import TickReport
 
 
 class ReapMixin:
+    def _preserve_dirty_worktree(self, task: Task, run: Run, worktree: Path) -> None:
+        """Set aside uncommitted work without turning it into a task-branch commit."""
+        if not gitops.has_uncommitted_changes(worktree):
+            return
+        files = gitops.status_lines(worktree)
+        name = f"garden:{task.id}:{run.run_id}:reap"
+        sha = gitops.stash_all(worktree, name)
+        if not sha:
+            return
+        artifact = {"name": name, "sha": sha, "at": now_iso(), "run": run.run_id,
+                    "reason": "reap", "files": files,
+                    "restore": f"git stash apply {sha}"}
+        if not any(item.get("sha") == sha for item in run.recovery_artifacts):
+            run.recovery_artifacts.append(artifact)
+        st = self.state.get(task.id)
+        stashes = list(st.get("stashes") or [])
+        if not any(item.get("sha") == sha for item in stashes):
+            stashes.append(artifact)
+            st["stashes"] = stashes
+        run.save()
+        self.events.emit("recovery_preserved", task.id, run=run.run_id, sha=sha,
+                         name=name, files=files)
+        task.log(f"preserved uncommitted worktree changes from run {run.run_id} outside the PR: "
+                 f"`git stash apply {sha}` in {worktree} ({name})")
+        self.store.save(task)
+        self.log(f"{task.id}: preserved dirty worktree changes from {run.run_id} ({sha[:12]})")
+
+    @staticmethod
+    def _no_change_changes_outcome(result: dict[str, Any]) -> bool:
+        """Whether a no-change report is really asking to narrow or change the task.
+
+        Ordinary no-change reports are evidence claims: checks and a fresh review can decide
+        whether the current head already satisfies the task.  A worker that explicitly leaves
+        a criterion undone or declines a requested improvement is instead disputing the
+        product outcome; only that disagreement needs a person.
+        """
+        verified = result.get("verified") or []
+        return bool(result.get("improvements_declined")) or any(
+            isinstance(row, dict) and row.get("not_done") for row in verified
+        )
+
     def _cleanup_reaped_temp_dirs(self) -> None:
         """Remove disk-backed temp directories once their local run is no longer active."""
         work_dir = self.cfg.work_dir
         for run in self.runs.all_runs():
-            if run.runner == "local" and run.status != "running":
+            # A terminal metadata value alone is not enough: prove the wrapper exited (or
+            # wrote its exit_code) before deleting files a still-live descendant may use.
+            if run.runner == "local" and run.status != "running" and run.process_finished():
                 shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
 
     # ---- reap --------------------------------------------------------------
@@ -47,6 +90,7 @@ class ReapMixin:
             # there instead of declaring "no active run" and redispatching a
             # second run on top of the first one's finished work.
             if run.status == "timeout":
+                self._preserve_timeout_worktree(task, run)
                 self._retry_or_fail(task, run, rep, "worker timed out")
             else:
                 runner = self.runner_for(task, run.runner, run.harness)
@@ -80,11 +124,24 @@ class ReapMixin:
         if not self._finished_or_timed_out(run, runner):
             return False
         if run.status == "timeout":
+            self._preserve_timeout_worktree(task, run)
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="timeout", cost_usd=None)
             self._retry_or_fail(task, run, rep, f"worker {run.error}" if run.error else "worker timed out")
             return True
         self.finalize(task, run, runner, rep)
         return True
+
+    def _preserve_timeout_worktree(self, task: Task, run: Run) -> None:
+        """Keep interrupted local edits even when no final result is available."""
+        if run.runner != "local":
+            return
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not worktree.exists():
+            return
+        try:
+            self._preserve_dirty_worktree(task, run, worktree)
+        except gitops.GitError as exc:
+            self.log(f"{task.id}: could not preserve timed-out worktree changes: {exc}")
 
     def _finished_or_timed_out(self, run: Run, runner: Runner) -> bool:
         if run.process_finished():
@@ -146,6 +203,7 @@ class ReapMixin:
         # longer be trustworthy (CG-239).
         git_guard_violations = self._git_guard_check(task, run)
         if git_guard_violations:
+            self._release_fence_bookkeeping(task)
             self._git_guard_fail(task, run, git_guard_violations, rep)
             return
 
@@ -153,9 +211,24 @@ class ReapMixin:
         # live garden or the product clone is reverted here and the run fails (see the
         # permission deny rules in Harness.fence_settings for the first line of defence).
         violations = self._fence_check(task, run)
+        self._release_fence_bookkeeping(task)
         if violations:
             self._fence_fail(task, run, violations, rep)
             return
+
+        # A result only vouches for commits.  Preserve every uncommitted path before any
+        # result branch (including missing-result retry) can recover the task, so it cannot
+        # later be swept into a PR by a repeat reap or revise round.
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not runner.remote and worktree.exists():
+            try:
+                self._preserve_dirty_worktree(task, run, worktree)
+            except gitops.GitError as exc:
+                run.status = "failed"
+                run.error = f"could not preserve dirty worktree: {exc}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
 
         if collected.get("env_error"):
             # A quota/spend-limit message from the harness's own account, not the worker's
@@ -195,6 +268,32 @@ class ReapMixin:
             self.events.emit("waiting_human", task.id, question=question, run=run.run_id)
             self._transition(task, Status.WAITING_HUMAN, f"worker asks: {question}{cost}")
             rep.transitions.append(f"{task.id} -> waiting_human")
+            return
+
+        if status == "no_change" and not self._no_change_changes_outcome(result):
+            run.status = status
+            run.save()
+            self._file_discovered(task, run, result)
+            reason = str(result.get("reason") or result.get("summary") or "(no reason given)")
+            st = self.state.get(task.id)
+            st.pop("decision", None)
+            st.pop("needs_human", None)
+            # Preserve the finding identities from the review that prompted this round. The
+            # fresh review must be able to recognise a rediscovered actionable finding as the
+            # same one, so the ordinary bounded repeat/stall policy still applies.
+            st["no_change_reconciliation"] = {
+                "head": str(st.get("head_sha") or ""),
+                "run": run.run_id,
+            }
+            task.log(f"worker found no change to make: {reason}; reconciling with checks and a fresh review")
+            self.store.save(task)
+            self.events.emit("no_change_reconciled", task.id, reason=reason, run=run.run_id)
+            base = run.base or self.base_for(task)
+            branch = run.branch or task.branch or task.default_branch()
+            worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+            task.branch = branch
+            self._after_push(task, run, worktree, branch, base, result, rep, cost, check_stall=False)
+            rep.transitions.append(f"{task.id} no-change -> verification")
             return
 
         if status in ("wont_do", "no_change"):
@@ -264,8 +363,6 @@ class ReapMixin:
             self._maybe_review(task, run, rep)
             return
         try:
-            if gitops.has_uncommitted_changes(worktree):
-                gitops.commit_all(worktree, f"{task.id}: leftover changes from worker run {run.run_id}")
             ahead = gitops.commits_ahead(worktree, base)
         except gitops.GitError as e:
             run.status = "failed"
@@ -328,6 +425,20 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        # A task can require a configured check by name.  It is deliberately a name, rather
+        # than a command from task text: check commands run branch code and stay garden config.
+        from ..criteria import required_evidence
+        required = {r["name"] for r in required_evidence(task.body, task.extra.get("requires")) if r["kind"] == "check"}
+        if required:
+            configured = list(self.cfg.get("checks.pre_pr", []) or [])
+            known = {str(spec.get("name")) for spec in specs}
+            for spec in configured:
+                if str(spec.get("name")) in required and str(spec.get("name")) not in known:
+                    specs.append(spec)
+                    known.add(str(spec.get("name")))
+            # Keep a misspelled requirement visible: an error result follows the ordinary
+            # mechanical changes-requested route instead of silently reviewing without it.
+            specs.extend({"name": name} for name in sorted(required - known))
         env = dict(setup.get("env") or {})
         if env:
             specs = [{**s, "env": {**env, **(s.get("env") or {})}} for s in specs]
@@ -658,8 +769,11 @@ class ReapMixin:
             task.attempts = max(0, task.attempts - 1)
         harness_name = run.harness or ""
         self._pause_for_env_error(run, collected)
-        note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
-        if harness_name:
+        if kind == "resource":
+            note = "environment stop (resource): the host exhausted memory or temporary storage; branch not blamed and attempt not counted"
+        else:
+            note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
+        if harness_name and kind != "resource":
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
 
         st = self.state.get(task.id)
@@ -698,15 +812,53 @@ class ReapMixin:
 
     def _retry_or_fail(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
         max_attempts = int(self.cfg.get("max_attempts", 2))
-        if run.mode == "revise":
+        if run.mode == "rebase":
+            self._retry_or_park_rebase(task, run, rep, reason)
+        elif run.mode == "revise":
             self._transition(task, Status.FAILED, f"revision failed: {reason}")
             rep.transitions.append(f"{task.id} -> failed")
-        elif task.attempts < max_attempts:
+        elif run.mode == "work" and task.attempts < max_attempts:
             self._transition(task, Status.READY, f"attempt {task.attempts} failed: {reason}; will retry")
             rep.transitions.append(f"{task.id} -> ready (retry)")
-        else:
+        elif run.mode == "work":
             self._transition(task, Status.FAILED, f"attempt {task.attempts} failed: {reason}; giving up")
             rep.transitions.append(f"{task.id} -> failed")
+        else:
+            self._transition(task, Status.FAILED, f"{run.mode} run failed: {reason}")
+            rep.transitions.append(f"{task.id} -> failed ({run.mode})")
+
+    def _retry_or_park_rebase(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
+        """Retry a conflict-resolution run once without reopening the work round.
+
+        A rebase agent works on an already-open PR.  Treating its missing result as a failed
+        work attempt loses that context and lets the ready queue dispatch a new work brief from
+        the base branch.  Keep the branch and PR, and put the same rebase continuation back on
+        the rebase queue instead.  The second loss is a human decision, not an attempt failure.
+        """
+        st = self.state.get(task.id)
+        retries = int(st.get("rebase_run_retries", 0))
+        if retries < 1:
+            st["rebase_run_retries"] = retries + 1
+            st["rebase_pending"] = True
+            st["rebase_retry_files"] = list(st.get("rebase_files", []))
+            note = f"rebase run {run.run_id} did not finish: {reason}; will retry"
+            task.log(note)
+            self.store.save(task)
+            self.events.emit("rebase_retry", task.id, run=run.run_id, cause=reason, retry=retries + 1)
+            self.state.save()
+            self._transition(task, Status.CHANGES_REQUESTED, note)
+            rep.transitions.append(f"{task.id} -> changes_requested (rebase retry)")
+            return
+        files = list(st.get("rebase_files", [])) or list(st.get("rebase_retry_files", []))
+        conflict = ", ".join(str(p) for p in files if p) or "the rebase conflict"
+        note = f"rebase run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
+        self._set_needs_human(task, "rebase_failed", note, run=run.run_id, cause=reason,
+                              files=files)
+        st.pop("rebase_pending", None)
+        self.events.emit("needs_human", task.id, stop_kind="rebase_failed", reason=note, run=run.run_id)
+        self.state.save()
+        self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
+        rep.transitions.append(f"{task.id} -> {'in_review' if task.pr else 'changes_requested'} (rebase needs human)")
 
     # ---- dead-run sweep -----------------------------------------------------
     def _owned_run_ids(self) -> set[str]:
@@ -749,7 +901,37 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual" or run.run_id in owned or not run.process_finished():
+            if run.runner == "manual":
+                continue
+            no_exit_code = not (run.path / "exit_code").exists()
+            process_missing = run.pid is None
+            process_dead = not process_missing and run.process_finished()
+            if no_exit_code and (process_missing or process_dead):
+                task = tasks.get(run.task_id)
+                # A terminal task can still have a worktree that the terminal sweep
+                # protects with this record (for example while a human finishes a
+                # hand-created run record).  Leave that ownership marker in place so
+                # cleanup does not remove caches from beneath the worktree on this tick.
+                # Non-terminal tasks take the immediate failure path below.
+                if task is not None and task.status.terminal and process_missing:
+                    continue
+                reason = "process never started" if process_missing else "process vanished"
+                run.status = "failed"
+                run.finished_at = now_iso()
+                run.error = reason
+                run.save()
+                self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                                 harness=run.harness, model=run.model, status="failed",
+                                 cost_usd=None, usage={}, error=reason, orphaned=True)
+                rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} failed ({reason})")
+                if (task is not None and task.status == Status.RUNNING
+                        and run.mode in ("work", "revise", "resume", "trial", "rebase")
+                        and self.latest_worker_run(task.id).run_id == run.run_id):
+                    self._retry_or_fail(task, run, rep, reason)
+                continue
+            if run.run_id in owned:
+                continue
+            if not run.process_finished():
                 continue
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()

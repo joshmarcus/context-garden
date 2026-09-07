@@ -40,20 +40,41 @@ def test_dead_run_never_closed_while_its_task_is_running(sched):
     assert sched.runs.latest("DM-001").status == "running"
 
 
-def test_dead_run_sweep_leaves_a_running_process_alone(sched):
-    """A `running` record whose process has not actually finished yet must never be
-    closed, no matter how orphaned its task looks."""
+def test_dead_run_sweep_closes_a_run_that_never_started(sched):
+    """A pid-less running record has no worker process and is failed immediately."""
     task = sched.store.task("DM-001")
-    task.status = Status.FAILED
+    task.status = Status.RUNNING
+    task.attempts = 1
     sched.store.save(task)
     run = sched.runs.new_run("DM-001", "local", mode="revise")  # no exit_code written
+    (run.path / "stdout.json").write_text("worker output before disappearing\n")
 
     rep = TickReport()
     sched.reap_dead_runs(rep)
 
-    assert not any("dangling" in t for t in rep.transitions)
+    assert any("process never started" in t for t in rep.transitions)
     still = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run.run_id)
-    assert still.status == "running"
+    assert still.status == "failed" and still.error == "process never started"
+    assert still.finished_at
+    assert sched.store.task("DM-001").status == Status.FAILED
+
+
+def test_dead_run_sweep_closes_a_vanished_process(sched):
+    """A run whose pid died before writing an exit code follows worker-crash handling."""
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    task.attempts = 1
+    sched.store.save(task)
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.pid = 999999
+    run.save()
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    assert any("process vanished" in t for t in rep.transitions)
+    assert sched.runs.latest("DM-001").status == "failed"
+    assert sched.store.task("DM-001").status == Status.READY
 
 
 def test_dead_run_sweep_never_touches_manual_runs(sched):

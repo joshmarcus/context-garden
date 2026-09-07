@@ -38,6 +38,24 @@ def init(
     console.print("Next: `garden new-product <name>` then `garden new-phase <product> <phase>`.")
 
 
+@app.command(rich_help_panel=PANEL_SETUP)
+def onboard(
+    repo: str = typer.Argument(..., help="Existing repository path or git URL"),
+    into: Path = typer.Option(Path("."), "--into", help="Garden directory to create or extend"),
+):
+    """Analyse an existing project and draft a working garden for it."""
+    from ..onboard import onboard_source
+
+    try:
+        created = onboard_source(repo, into)
+    except (OSError, ValueError, RuntimeError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    for path in created:
+        console.print(f"created {path}")
+    console.print("Draft onboarding complete. Review the report, product, principles, setup, and tasks before approval.")
+
+
 @app.command("new-product", rich_help_panel=PANEL_SETUP)
 def new_product(name: str, repo: str = typer.Option(".", help="Path (relative to garden) or URL of the code repo"),
                 base_branch: str = typer.Option("main")):
@@ -231,5 +249,15 @@ def unfreeze(target: str = typer.Argument(..., help="product/phase")):
     if not ph.frozen:
         err.print(f"[yellow]{ph.key} is not frozen[/yellow]")
         raise typer.Exit(1) from None
+    product_row = next(p for p in store.products() if p.name == product)
+    index = next(i for i, item in enumerate(product_row.phases) if item.name == phase)
+    if index:
+        from ..stabilization import gate
+
+        prior = product_row.phases[index - 1]
+        proven, missing = gate(prior)
+        if not proven:
+            err.print(f"[red]{prior.key} stabilization is UNPROVEN; cannot release {ph.key}: {'; '.join(missing)}[/red]")
+            raise typer.Exit(1) from None
     _set_phase_frozen(store, ph, "")
     console.print(f"{ph.key} unfrozen")

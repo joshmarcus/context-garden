@@ -167,6 +167,10 @@ class RebaseMixin:
         after the agent resolves the conflict."""
         st = self.state.get(task.id)
         st["rebase_pending"] = True
+        # A new textual conflict starts a new auxiliary retry budget.  Do not let a retry used
+        # by an earlier conflict make this independent rebase park immediately (CG-330).
+        st.pop("rebase_run_retries", None)
+        st.pop("rebase_retry_files", None)
         st["rebase_base"] = base
         st["rebase_files"] = list(files)
         st["rebase_hunks"] = hunks

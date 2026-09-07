@@ -26,22 +26,36 @@
 </div>
 {% endif %}
 
+{% if brief_gaps %}
+<div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--bad)">Fix the brief before approving</div>
+  <p id="brief-card-status" style="margin:6px 0 10px">{% for gap in brief_gaps %}{{ gap }}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+  <form id="brief-editor" method="post" action="/tasks/{{ task.id }}/brief" data-brief-editor>
+    <label for="acceptance">Acceptance criteria</label>
+    <textarea id="acceptance" name="acceptance" rows="5" placeholder="- [ ] A verifiable outcome." required>{{ acceptance_text }}</textarea>
+    <label for="reading" style="display:block;margin-top:8px">Reading list <span class="muted">(one path per line)</span></label>
+    <textarea id="reading" name="reading" rows="3" placeholder="demo/p1/specs/brief.md">{{ task.reading|join('\n') }}</textarea>
+    <div class="actions" style="margin-top:8px"><button class="primary">Save brief</button><span id="brief-editor-message" class="muted" aria-live="polite"></span></div>
+  </form>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
-  {% if task.status.value == 'draft' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
-    <button class="primary">Approve into <span data-approve-label>{{ task.phase }}</span></button>
+  {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
+    <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
       {% for ph in approve_phases %}<option value="{{ ph.value }}" data-name="{{ ph.name }}"{% if ph.name == task.phase %} selected{% endif %}>{{ ph.name }}{% if ph.frozen %} (frozen){% endif %}</option>{% endfor %}
     </select>
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if task.status.value in ('ready','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
-  {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>Continue the loop</button></form>{% endif %}
+  {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
   <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select><span class="autosave-mark" aria-live="polite"></span></form>
-  {% if move_phases|length > 1 %}<form class="inline" method="post" action="/tasks/{{ task.id }}/move" style="display:inline-flex;gap:6px;align-items:center" title="Move to another phase (keeps the id, history and state)"><label class="muted" for="phase">phase</label><select id="phase" name="note" onchange="this.form.submit()">{% for ph in move_phases %}<option value="{{ task.product }}/{{ ph }}"{% if task.phase == ph %} selected{% endif %}>{{ ph }}</option>{% endfor %}</select></form>{% endif %}
+  {% if task.status.value != 'draft' and move_phases|length > 1 %}<form class="inline" method="post" action="/tasks/{{ task.id }}/move" style="display:inline-flex;gap:6px;align-items:center" title="Move to another phase (keeps the id, history and state)"><label class="muted" for="phase">phase</label><select id="phase" name="note" onchange="this.form.submit()">{% for ph in move_phases %}<option value="{{ task.product }}/{{ ph }}"{% if task.phase == ph %} selected{% endif %}>{{ ph }}</option>{% endfor %}</select></form>{% endif %}
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
   {% if has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
@@ -106,6 +120,9 @@
         {% endfor %}
       </table>
     </div>{% endif %}
+    {% if evidence_rows %}<div class="panel"><div class="eyebrow">Required evidence</div>
+      <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for item in evidence_rows %}<li><span class="pill s-{{ 'done' if item.state == 'posted' else 'failed' if item.state == 'failed' else 'running' if item.state == 'running' else 'ready' }}">{{ item.state }}</span> {{ item.label }}</li>{% endfor %}</ul>
+    </div>{% endif %}
     {% if suggestions %}<div class="panel"><div class="eyebrow">Suggestions{% if edit_running %} · integrating…{% endif %}</div>
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for sg in suggestions %}<li style="margin-bottom:4px"><span class="pill s-{{ 'done' if sg.integrated else 'ready' }}">{{ 'integrated' if sg.integrated else 'pending' }}</span> {% if sg.applies_to %}<span class="muted">{{ sg.applies_to }}</span> {% endif %}{{ sg.text }} <span class="faint mono">— {{ sg.author }}{% if sg.date %}, {{ sg.date }}{% endif %}</span></li>{% endfor %}</ul>
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}
@@ -118,6 +135,7 @@
     {% if state.pending_feedback and not task.status.terminal %}<div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
     {% if state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
+    {% if design_files %}<div class="panel"><div class="eyebrow">Design files in this PR</div><ul>{% for f in design_files %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}
     {% if prior_trials %}<div class="panel"><div class="eyebrow">Trial history</div>{% for tr, md in prior_trials %}<div class="prose" style="margin-top:10px">{{ md|md|safe }}</div>{% endfor %}</div>{% endif %}
     {% if discovered %}<div class="panel"><div class="eyebrow">Discovered work</div><ul style="margin:6px 0 0;padding-left:18px">{% for d in discovered %}<li><a href="/tasks/{{ d.id }}" class="id">{{ d.id }}</a> {{ d.title }} <span class="pill s-{{ d.status.value }}">{{ d.status.value }}</span></li>{% endfor %}</ul></div>{% endif %}
     {% if usage.by_mode %}<div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr>{% for mode, m in usage.by_mode.items()|sort %}<tr><td>{{ mode }}</td><td>{{ m.runs }}</td><td>{{ '{:,}'.format(m.input_tokens) }}</td><td>{{ '{:,}'.format(m.cache_read_input_tokens) }}</td><td>{{ '{:,}'.format(m.output_tokens) }}</td><td>${{ '%.2f' % m.cost_usd }}</td></tr>{% endfor %}</table></div>{% endif %}

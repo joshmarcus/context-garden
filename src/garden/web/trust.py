@@ -31,6 +31,17 @@ from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+
+def safe_relative_path(value: str) -> str:
+    """Return a normalized relative POSIX path, rejecting traversal and absolute paths."""
+    raw = (value or "").replace("\\", "/")
+    if raw.startswith("/") or (len(raw) > 1 and raw[1] == ":"):
+        return ""
+    parts = [part for part in raw.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." or "\x00" in part for part in parts):
+        return ""
+    return "/".join(parts)
+
 # ---- rendered markdown -------------------------------------------------------
 
 ALLOWED_TAGS: frozenset[str] = frozenset({

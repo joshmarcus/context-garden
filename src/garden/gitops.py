@@ -572,9 +572,9 @@ def head_sha(repo: Path) -> str:
 
 
 def status_lines(repo: Path) -> list[str]:
-    """`git status --porcelain` as a list of non-empty lines (worktree + untracked)."""
+    """`git status --porcelain` as a list of non-empty lines (worktree + every untracked path)."""
     try:
-        out = git("status", "--porcelain", cwd=repo)
+        out = git("status", "--porcelain", "--untracked-files=all", cwd=repo)
     except GitError:
         return []
     return [ln for ln in out.splitlines() if ln.strip()]

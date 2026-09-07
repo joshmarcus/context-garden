@@ -20,7 +20,7 @@ class AuxMixin:
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner = self.runner_for(probe, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
-        run = self.runs.new_run(probe.id if task else f"_{kind}", runner.name, mode=kind)
+        run = self._new_local_run(probe.id if task else f"_{kind}", kind, kind)
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
         if kind in ("persona", "compare"):
@@ -98,7 +98,10 @@ class AuxMixin:
         task = self.store.tasks().get(entry.get("task", ""))
         if kind == "persona" and entry.get("target") == "pr" and task is not None:
             st = self.state.get(task.id)
-            self._queue_pending_reviews(st, [{"kind": "persona", "name": entry.get("persona", "")}])
+            required = bool(entry.get("required_evidence"))
+            if required:
+                st.setdefault("required_evidence", {})[f"persona:{entry.get('persona', '')}"] = "queued"
+            self._queue_pending_reviews(st, [{"kind": "persona", "name": entry.get("persona", ""), "required": required}])
             task.log(note)
             self.store.save(task)
             rep.transitions.append(f"{task.id} persona paused (env_error)")

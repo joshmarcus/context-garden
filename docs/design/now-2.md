@@ -220,6 +220,8 @@ The plant is a mnemonic; the adjacent exact counts carry the evidence.
 
 Goals list the actual goal headings with ✓ merged, → in flight, ○ not started.
 These need explicit goal-to-task membership, not keyword matching or LLM inference.
+The live page uses task IDs cited in each goal and its continuation lines as
+that membership, with linked done/total counts beside the mark.
 If no mapping exists show “Progress not mapped” (the mock includes this state).
 For a mapped goal, all mapped tasks done → merged; any dispatched/nonterminal
 work → in flight; otherwise not started. Empty mapping is unknown, not complete.

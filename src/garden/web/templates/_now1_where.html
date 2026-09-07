@@ -1,0 +1,16 @@
+{#- Where we are: the current phase as a sheet inked to its merged fraction, its goals, the
+    other open phases and the pressed ones. -#}
+{% from "_now1_macros.html" import sheet with context %}
+{%- set p = snap.where.primary -%}
+<div id="where-body"{% if p %} data-fraction="{{ p.fraction }}"{% endif %}>
+  <div class="region-head"><span class="eyebrow">Where we are</span><span class="lead">{% if p %}{{ p.name }}, {{ p.stage_word }}{% else %}no open phase{% endif %}</span></div>
+  {% if p %}
+  {{ sheet(p) }}
+  {% if p.retro %}<p class="muted" style="margin:8px 0 0;font:12px/1.4 var(--mono)">retro verdict {{ p.retro.get('verdict', '') }} · {{ p.retro.get('status', '') }}{% if p.retro.get('accepted_by') %} · accepted by {{ p.retro.get('accepted_by') }}{% endif %}{% if p.retro.get('accepted_at') %} at {{ p.retro.get('accepted_at')[:16] }}Z{% endif %}</p>{% endif %}
+  <ol class="goals">
+    {% for goal in p.goals %}<li><span class="n">{{ goal.n }}</span><span>{{ goal.label }}</span>{% if goal.mark %}<span class="fr">{{ stage(goal.mark, 16) }} {{ goal.done }} of {{ goal.total }} · {{ goal.word }}</span>{% else %}<span class="fr unlinked">unlinked</span>{% endif %}</li>{% endfor %}
+  </ol>
+  {% else %}<div class="empty">no open phase: <code>garden new-phase</code> starts the next</div>{% endif %}
+  {% if snap.where.others %}<div class="others">{% for ph in snap.where.others %}{{ sheet(ph, false) }}{% endfor %}</div>{% endif %}
+  {% if snap.where.closed %}<div class="closed-row">{% for ph in snap.where.closed %}<a href="/phases/{{ ph.key }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="">{% else %}{{ plant(ph.plant, 40, 60) }}{% endif %}</span><span>{{ ph.name }} · {{ ph.plate }}</span><span class="stamp ink">pressed</span></a>{% endfor %}</div>{% endif %}
+</div>

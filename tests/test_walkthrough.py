@@ -156,7 +156,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_only_for_ui_changes(sched, monkeypatch):
+def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monkeypatch):
     task = sched.store.task("DM-001")
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
@@ -178,6 +178,11 @@ def test_scheduler_adds_ui_check_only_for_ui_changes(sched, monkeypatch):
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+
+    task.extra["requires"] = ["captures"]
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    assert any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
 
 
 def test_html_to_text_strips_tags_and_scripts():

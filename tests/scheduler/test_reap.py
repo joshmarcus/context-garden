@@ -3,7 +3,9 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
+from garden import gitops
 from garden.model import Status
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
@@ -75,6 +77,54 @@ def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched,
     assert len(finished) == 1
 
 
+def test_reap_preserves_dirty_snapshot_without_adding_it_to_the_pr_or_next_round(sched, fake_github):
+    """CG-359: committed work reaches the PR while an unrelated dirty artifact remains
+    recoverable by run, and a revise/reap cycle cannot sweep it back into the branch."""
+    sched.cfg.data["stack"] = False
+    sched.tick()  # fake worker commits worker-output.txt
+    task = sched.store.task("DM-001")
+    worktree = sched.worktree_for(task)
+    snapshot = worktree / "docs" / "design" / "snapshot.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text('{"large": "unrelated runtime state"}\n')
+
+    sched.tick()  # reap and open the PR
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert not snapshot.exists()
+    artifacts = sched.runs.latest("DM-001").recovery_artifacts
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact["reason"] == "reap" and artifact["run"] == sched.runs.latest("DM-001").run_id
+    assert "docs/design/snapshot.json" in "\n".join(artifact["files"])
+    assert "git stash apply" in artifact["restore"]
+    assert "docs/design/snapshot.json" not in gitops.git("diff", "--name-only", "main...HEAD", cwd=worktree)
+
+    sched.triage(sched.store.task("DM-001"), changes="please revise")
+    sched.dispatch(sched.store.task("DM-001"), mode="revise")
+    sched.tick()  # reap the revise run
+    assert "docs/design/snapshot.json" not in gitops.git("diff", "--name-only", "main...HEAD", cwd=worktree)
+    assert len(sched.runs.latest("DM-001").recovery_artifacts) == 0
+
+
+def test_missing_result_preserves_dirty_new_file_without_discarding_committed_work(sched, fake_github):
+    """CG-359: a crashed/missing result keeps both the committed salvage and the separate
+    uncommitted recovery artifact."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    worktree = Path(run.worktree)
+    (worktree / "interrupted.txt").write_text("keep me\n")
+    (run.path / "stdout.json").unlink()
+
+    sched.tick()
+    assert int(gitops.git("rev-list", "--count", "main..HEAD", cwd=worktree).strip()) >= 1
+    completed = next(item for item in sched.runs.runs_for("DM-001") if item.run_id == run.run_id)
+    artifact = completed.recovery_artifacts[0]
+    assert artifact["reason"] == "reap"
+    assert "interrupted.txt" in "\n".join(artifact["files"])
+    assert not (worktree / "interrupted.txt").exists()
+
+
 def _run_fake_claude(cwd, task_id, run_id, when):
     env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
     env.pop("FAKE_CLAUDE_MODE", None)
@@ -116,7 +166,7 @@ def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
     exactly like the review path — it does not leave the task queued-but-skipped."""
     # A branch-owned failure (passes at the base, where worker-output.txt does not exist, so the
     # CG-131 base probe does not divert it) that still fails once the revision cap is reached.
-    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt"}], "ci": []}
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "test ! -f worker-output.txt || { echo check-failed; exit 1; }"}], "ci": []}
     sched.cfg.data["max_revisions"] = 2
     sched.tick()
     sched.state.get("DM-001")["revisions"] = 2  # pretend two revise rounds were already used
@@ -306,6 +356,78 @@ def test_noresult_retries(sched, monkeypatch):
     assert "DM-001 -> ready (retry)" in rep.transitions
 
 
+def test_failed_rebase_retries_then_parks_without_restarting_work(sched, monkeypatch):
+    """CG-330: a lost conflict-resolution run belongs to its open PR, not a new work round."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.test/acme/widget/pull/7"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"rebase_pending": True, "rebase_base": "main", "rebase_files": ["widget.py"]})
+    sched.state.save()
+    sched.dispatch(task, mode="rebase")
+    branch = task.branch
+
+    rep = sched.tick()
+    assert "DM-001(rebase)" in rep.dispatched
+    assert "DM-001(work)" not in rep.dispatched
+    assert task.attempts == 0
+    assert task.pr.endswith("/7")
+
+    rep = sched.tick()
+    task = sched.store.task("DM-001")
+    stop = sched.state.get(task.id)["needs_human"]
+    assert task.status == Status.IN_REVIEW and task.pr.endswith("/7")
+    assert task.attempts == 0
+    assert task.branch == branch
+    assert stop["kind"] == "rebase_failed" and "rebase conflict" in stop["reason"]
+    assert not any(item.startswith("DM-001(work)") for item in rep.dispatched)
+    assert "rebase run" in task.body and "will retry" in task.body
+
+
+def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
+    """CG-330: no-output checks retry their detached continuation, never a revise run."""
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/acme/widget/pull/7"
+    sched.store.save(task)
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), task.default_branch(), "main")
+    specs = [{"name": "unit", "command": "kill -TERM $$"}]
+    cont = sched._pre_pr_cont(None, wt, task.default_branch(), "main", "")
+    sched._dispatch_check_run(task, worktree=wt, branch=task.default_branch(), base="main", specs=specs,
+                              stage="merge_rebase", cont=cont, rep=TickReport())
+
+    rep = sched.tick(dispatch=False)
+    assert "DM-001(check:merge_rebase)" in rep.dispatched
+    assert sched.state.get(task.id).get("revisions", 0) == 0
+    assert not sched.state.get(task.id).get("pending_feedback")
+    assert "SIGTERM" in sched.store.task("DM-001").body
+
+    sched.tick(dispatch=False)
+    task = sched.store.task("DM-001")
+    stop = sched.state.get(task.id)["needs_human"]
+    assert task.status == Status.IN_REVIEW
+    assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
+    assert "SIGTERM" in stop["reason"]
+    assert sched.state.get(task.id).get("revisions", 0) == 0
+
+
+def test_auxiliary_reapers_do_not_dispatch_work_directly():
+    """CG-330: only the work/revise reap path may put a task back on the work queue."""
+    import inspect
+
+    from garden.scheduler.checkruns import CheckRunMixin
+    from garden.scheduler.edits import EditsMixin
+    from garden.scheduler.reap import ReapMixin
+
+    assert "Status.READY" not in inspect.getsource(ReapMixin._retry_or_park_rebase)
+    assert "dispatch(task, mode=\"work\")" not in inspect.getsource(CheckRunMixin._retry_or_park_check)
+    assert "dispatch(task, mode=\"work\")" not in inspect.getsource(EditsMixin.reap_edit)
+
+
 def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
     sched.cfg.data["idle_kill_minutes"] = 5
@@ -333,6 +455,15 @@ def test_running_card_shows_idle_time(sched, monkeypatch):
     make_idle(run, 8)
     row = next(r for r in running_now(sched.store) if r["task"] == "DM-001")
     assert row["idle"] is not None and row["idle"] >= 5
+
+
+def test_running_card_omits_a_dead_run(sched):
+    from garden.inbox import running_now
+
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.pid = 999999
+    run.save()
+    assert all(r["task"] != "DM-001" for r in running_now(sched.store))
 
 
 def test_no_github_still_pushes(sched, fake_github):
@@ -537,6 +668,7 @@ def test_a_review_run_never_sends_a_running_task_back_to_ready(sched, fake_githu
 
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "running"  # the revise is still in flight, not reaped
+    assert sched.state.get("DM-001").get("last_review_run") == review_run.run_id
     assert not any("ready" in tr for tr in rep.transitions)
     assert "no active run found" not in sched.store.task("DM-001").body
 

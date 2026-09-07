@@ -58,6 +58,13 @@ def test_group_by_activity_orders_by_cost_and_folds_unknown_modes():
     assert series["totals"]["revise"]["share"] == round(2.0 / 4.15, 4)
 
 
+def test_group_by_activity_names_resume():
+    events = [{"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "task": "DM-001",
+               "mode": "resume", "cost_usd": 0.2, "usage": {}}]
+    series = cost_series(events, _tasks(), group_by="activity")
+    assert series["groups"] == ["resume"]
+
+
 def test_group_by_buckets_by_day():
     series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
     by_bucket = {b["bucket"]: b["groups"] for b in series["buckets"]}

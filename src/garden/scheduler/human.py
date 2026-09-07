@@ -167,8 +167,7 @@ class HumanMixin:
         self.store.save(task)
         if worktree.exists():
             try:
-                if gitops.has_uncommitted_changes(worktree):
-                    gitops.commit_all(worktree, f"{task.id}: leftover changes from worker run {run.run_id}")
+                self._preserve_dirty_worktree(task, run, worktree)
                 if gitops.commits_ahead(worktree, base) > 0:
                     gitops.push(worktree, branch, base=base)
             except gitops.GitError as e:
@@ -469,6 +468,11 @@ class HumanMixin:
 
         if phase.closed:
             return ""
+        from ..stabilization import gate
+
+        proven, missing = gate(phase)
+        if not proven:
+            raise RuntimeError(f"{phase.key} stabilization is UNPROVEN: " + "; ".join(missing))
         blocking = [t for t in phase.tasks if t.retro_blocking and not t.status.terminal]
         if blocking and not force:
             ids = ", ".join(f"{t.id} ({t.status.value})" for t in blocking)

@@ -1,0 +1,51 @@
+{
+  "automated_checks": {
+    "final make test on merged main": 0,
+    "git diff --cached --check": 0,
+    "make lint": 0,
+    "make setup": 0,
+    "make test": 0
+  },
+  "classification": {
+    "real_user_adoption": "UNPROVEN",
+    "repeatable_compatibility": "PASS"
+  },
+  "fixture": {
+    "kind": "disposable POSIX shell project",
+    "path": "<temporary>/hello-shell"
+  },
+  "implementation": {
+    "change_sha": "b4b9c14e9d319928a9b014d70d489f703d55a7d5",
+    "changed_files": [
+      "greet.sh",
+      "test.sh"
+    ]
+  },
+  "onboarding": {
+    "approval_status": "ready",
+    "approval_warning": "hello-shell/phase-01 has no kickoff report; run `garden kickoff hello-shell/phase-01` before starting work",
+    "config_unchanged_after_journey": true,
+    "generated_config_sha256": "274bc7faa7d20937c6384ef38e241be1f7f224fe57d249f2f2e9a99b8a1c2cca",
+    "graph_validation": [],
+    "setup": {
+      "command": "make setup",
+      "env": {},
+      "lint": "make lint",
+      "test": "make test"
+    },
+    "task": {
+      "id": "HS-001",
+      "provenance": "onboard:TODO.md",
+      "title": "Reject blank names"
+    }
+  },
+  "scripted_fixture_review": {
+    "findings": [],
+    "result": "accepted"
+  },
+  "unverified": [
+    "No named existing project or authorized maintainer was supplied.",
+    "No external maintainer reviewed or accepted this fixture change.",
+    "This replay does not demonstrate a hosted pull request or real model execution."
+  ]
+}

@@ -47,7 +47,7 @@
       <option value=""{% if not session %} selected{% endif %}>any</option>
       {% for v in session_ids %}<option value="{{ v }}"{% if session == v %} selected{% endif %}>{{ v[:12] }}</option>{% endfor %}
     </select>
-    <button class="quiet">Filter</button>
+    <noscript><button class="quiet">Filter</button></noscript>
     {% if since or bucket != 'day' or by != 'activity' or difficulty or model or harness or phase or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
   </form>
 </div>

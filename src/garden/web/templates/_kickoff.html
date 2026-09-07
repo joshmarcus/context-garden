@@ -1,0 +1,16 @@
+<div class="panel" id="kickoff" style="margin-bottom:16px">
+  <div class="eyebrow">Kickoff</div>
+  {% if kickoff.running %}
+    <p>A kickoff review is running; <code>garden tick</code> (or <code>garden watch</code>) writes the report when it finishes.</p>
+  {% elif not kickoff.has_report %}
+    <p>No kickoff report yet. Before this phase's tasks start taking runs, a planner-tier review can flag design gaps, goals with no measurable outcome, questions for you, and docs that need attention.</p>
+    <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/kickoff"><button class="primary">Kick off</button></form>
+  {% else %}
+    <p><a href="/phases/{{ phase.product }}/{{ phase.name }}/doc/docs/kickoff.md">Kickoff report</a></p>
+    {% if kickoff.design_tasks %}<div class="why">Design needed:</div><ul class="tl">{% for t in kickoff.design_tasks %}<li><span class="k"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></span><span>{{ t.title }} — <span class="state s-{{ t.status.value }}">{{ t.status.value.replace('_',' ') }}</span></span></li>{% endfor %}</ul>{% endif %}
+    {% if kickoff.doc_tasks %}<div class="why">Docs that need attention:</div><ul class="tl">{% for t in kickoff.doc_tasks %}<li><span class="k"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></span><span>{{ t.title }} — <span class="state s-{{ t.status.value }}">{{ t.status.value.replace('_',' ') }}</span></span></li>{% endfor %}</ul>{% endif %}
+    {% if kickoff.questions %}<div class="why">Questions still open:</div><ul class="tl">{% for d in kickoff.questions %}<li><span>{{ d.question }}</span></li>{% endfor %}</ul><p class="muted">Answer them from the <a href="/inbox">Inbox</a>.</p>{% endif %}
+    {% if not kickoff.design_tasks and not kickoff.doc_tasks and not kickoff.questions %}<p class="muted">Nothing this kickoff raised is still open.</p>{% endif %}
+    <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/kickoff"><button class="quiet">Kick off again</button></form>
+  {% endif %}
+</div>

@@ -14,11 +14,7 @@
 </div>
 
 {% if run.error %}<div class="warn"><b>Error:</b> {{ run.error }}</div>{% endif %}
-
-{% if captures %}<div class="panel"><div class="eyebrow">Rendered UI</div>
-  <p>Pages captured by the UI check at desktop and mobile widths in light and dark.</p>
-  <div class="tools">{% for name in captures %}<a href="/runs/{{ task_id }}/{{ run.run_id }}/ui/{{ name }}">{{ name }}</a>{% endfor %}</div>
-</div>{% endif %}
+{% if captures %}<div class="panel"><div class="eyebrow">Captures</div><ul>{% for f in captures %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}
 
 {% if mechanical %}
 <div class="panel">

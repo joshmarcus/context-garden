@@ -11,9 +11,14 @@ A run directory holds:
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import signal
+import threading
+import time
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +26,41 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import Config
     from .events import EventLog
+
+
+_INDEXES: dict[Path, _RunIndex] = {}
+_INDEXES_LOCK = threading.Lock()
+_MAX_SHARED_INDEXES = 32
+
+
+@dataclass
+class _RunIndex:
+    """One process-wide, short-lived view of run metadata for a garden.
+
+    Web requests create many RunStore instances.  Sharing this view means concurrent
+    requests coalesce onto one scan rather than each parsing every run.  Writers bump
+    ``generation`` immediately; otherwise the one-second maximum age bounds visibility of
+    changes made by another process.
+    """
+
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    generation: int = 0
+    built_generation: int = -1
+    built_at: float = 0.0
+    runs: tuple[Run, ...] = ()
+    by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    active: tuple[Run, ...] = ()
+    totals: dict[str, Any] = field(default_factory=dict)
+    task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
+    archive_fingerprint: tuple[int, int, int] | None = None
+    archive_dirty: bool = False
+    dirty_tasks: set[str] = field(default_factory=set)
+    scans: int = 0
+    reads: int = 0
+
+
+class HistoryUnavailable(RuntimeError):
+    """Durable history exists but its compact index cannot be trusted."""
 
 
 @dataclass
@@ -57,6 +97,9 @@ class Run:
     # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
     # these instead of losing the round's context (see reap._handle_quota_env_error).
     env_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Dirty worktree material is never folded into a worker's branch by recovery. Dispatch
+    # and reap record named stash artifacts here so provenance stays with the run.
+    recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def path(self) -> Path:
@@ -65,18 +108,39 @@ class Run:
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
+        # A metadata rewrite does not change the parent directory mtime by itself.  Touch
+        # the task bucket so other processes can detect this one changed without statting
+        # every run.json in it.
+        self.path.parent.touch()
+        _invalidate_index(self.path.parents[1], self.task_id)
 
     @classmethod
     def load(cls, d: Path) -> Run:
         data = json.loads((d / "run.json").read_text())
+        data["dir"] = str(d)
         return cls(**data)
 
     # ---- process state -----------------------------------------------------
+    @property
+    def no_process(self) -> bool:
+        """A record written at dispatch and never launched: still running, no pid and no
+        output. The scheduler counts it against a slot until a tick reaps it, so the Now page
+        shows it as what it is and a review behind it says what it waits for."""
+        return self.status == "running" and self.pid is None and not (self.path / "stdout.json").exists()
+
     def process_finished(self) -> bool:
+        if self.pid == os.getpid():
+            return (self.path / "exit_code").exists()
+        if self.pid is None:
+            return (self.path / "exit_code").exists()
+        # Local wrappers are session leaders, so their pid is also the process-group id.
+        # The wrapper may exit after a harness leaves children behind. Keep the run active
+        # until that entire owned group is gone; otherwise cleanup and slot accounting can
+        # race a detached test suite that is still consuming the host.
+        if self.runner == "local":
+            return not _process_group_alive(self.pid)
         if (self.path / "exit_code").exists():
             return True
-        if self.pid is None:
-            return False  # human-driven run: only `garden finish` completes it
         return not _pid_alive(self.pid)
 
     def read_exit_code(self) -> int | None:
@@ -123,7 +187,11 @@ class Run:
         return max(0.0, (dt.datetime.now(dt.UTC) - last).total_seconds() / 60)
 
     def kill(self) -> None:
-        if self.pid and _pid_alive(self.pid):
+        # The in-process test runner uses the scheduler process as the liveness sentinel.
+        # Never let a corrupt or synthetic run record terminate the process doing the reap.
+        if self.pid == os.getpid():
+            return
+        if self.pid and (self.runner == "local" and _process_group_alive(self.pid) or _pid_alive(self.pid)):
             try:
                 os.killpg(self.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
@@ -131,6 +199,37 @@ class Run:
                     os.kill(self.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Stop this worker and confirm it has exited before its worktree is reused.
+
+        SIGTERM gives a harness a brief chance to leave its transcript intact.  A worker that
+        ignores it is force-killed; failure to observe its death is deliberately reported to the
+        caller rather than allowing two processes to edit one worktree.
+        """
+        if self.pid is None or self.pid == os.getpid():
+            return False  # No safely identifiable process to terminate.
+        self.kill()
+        deadline = time.monotonic() + timeout
+        alive = _process_group_alive if self.runner == "local" else _pid_alive
+        while time.monotonic() < deadline:
+            if not alive(self.pid):
+                return True
+            time.sleep(0.05)
+        if self.pid and alive(self.pid):
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not alive(self.pid):
+                return True
+            time.sleep(0.05)
+        return not alive(self.pid)
 
     def stdout_text(self) -> str:
         p = self.path / "stdout.json"
@@ -190,9 +289,226 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _process_group_alive(pgid: int) -> bool:
+    """Whether any process remains in a local run's session/process group."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                fields = (entry / "stat").read_text().split(")", 1)[1].split()
+                if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
+                    return True
+            return False
+        except (OSError, ValueError):
+            pass
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:
+    key = runs_dir.resolve()
+    with _INDEXES_LOCK:
+        idx = _INDEXES.get(key)
+    if idx is not None:
+        with idx.lock:
+            idx.generation += 1
+            if task_id:
+                idx.dirty_tasks.add(task_id)
+
+
+@contextmanager
+def _history_lock(garden_dir: Path, *, exclusive: bool):
+    """Coordinate archive moves and refreshes without writing files on read paths.
+
+    The garden directory's inode is stable across archive ledger replacements. Locking
+    it also avoids a shared temporary index file race between independent CLI writers.
+    """
+    if exclusive:
+        garden_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(garden_dir, os.O_RDONLY)
+    except FileNotFoundError:
+        # A read of a garden with no history has nothing to coordinate yet.
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 class RunStore:
+    MAX_INDEX_AGE_SECONDS = 1.0
+
     def __init__(self, garden_dir: Path):
         self.dir = garden_dir / "runs"
+        self.archive_dir = garden_dir / "run-archive"
+        key = self.dir.resolve()
+        with _INDEXES_LOCK:
+            if key not in _INDEXES and len(_INDEXES) >= _MAX_SHARED_INDEXES:
+                _INDEXES.pop(next(iter(_INDEXES)))
+            self._index = _INDEXES.setdefault(key, _RunIndex())
+
+    def invalidate(self) -> None:
+        _invalidate_index(self.dir)
+
+    def _snapshot(self) -> list[Run]:
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.runs))
+
+    def _ensure_index(self) -> _RunIndex:
+        idx = self._index
+        now = time.monotonic()
+        with idx.lock:
+            if idx.built_generation != idx.generation or now - idx.built_at > self.MAX_INDEX_AGE_SECONDS:
+                # A move and its archive ledger replacement form one history mutation.
+                # Cached readers can retain the prior snapshot; refreshes must see the
+                # complete result, including when a separate CLI process is the writer.
+                with _history_lock(self.dir.parent, exclusive=False):
+                    self._refresh_index()
+        return idx
+
+    def _refresh_index(self) -> None:
+        idx = self._index
+        task_fingerprints = self._task_fingerprints()
+        archive_fingerprint = self._archive_fingerprint()
+        initial = idx.built_generation < 0
+        changed = (set(task_fingerprints) if initial else {
+            task for task in set(task_fingerprints) | set(idx.task_fingerprints)
+            if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
+        }) | idx.dirty_tasks
+        previous_archived = [r for r in idx.runs if r.path.is_relative_to(self.archive_dir)]
+        if initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint:
+            archived = self._archived_runs()
+            # A changed ledger also tells an existing reader in another process which
+            # live buckets moved, even if their directory timestamps/size did not change.
+            before = {(r.task_id, r.run_id) for r in previous_archived}
+            after = {(r.task_id, r.run_id) for r in archived}
+            changed |= {task for task, _run_id in before ^ after}
+        else:
+            archived = previous_archived
+        active_by_task: dict[str, list[Run]] = {}
+        for run in idx.runs:
+            if not run.path.is_relative_to(self.archive_dir):
+                active_by_task.setdefault(run.task_id, []).append(run)
+        for task in changed:
+            active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
+        found = [run for runs in active_by_task.values() for run in runs]
+        found.extend(archived)
+        found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
+        idx.runs = tuple(found)
+        grouped: dict[str, list[Run]] = {}
+        for run in found:
+            grouped.setdefault(run.task_id, []).append(run)
+        idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
+        idx.active = tuple(run for run in found if run.status == "running")
+        idx.totals = _totals(found)
+        idx.task_fingerprints = task_fingerprints
+        idx.archive_fingerprint = archive_fingerprint
+        idx.dirty_tasks.clear()
+        idx.archive_dirty = False
+        idx.built_generation = idx.generation
+        idx.built_at = time.monotonic()
+        idx.scans += 1
+
+    @contextmanager
+    def _archive_mutation(self):
+        # Always take the process lock before the filesystem lock, matching refreshes.
+        with self._index.lock, _history_lock(self.dir.parent, exclusive=True):
+            try:
+                yield
+            finally:
+                self._index.archive_dirty = True
+                self._index.generation += 1
+
+    def _task_fingerprints(self) -> dict[str, tuple[int, int]]:
+        """Cheap freshness signal: writers touch a task directory when run metadata changes."""
+        out: dict[str, tuple[int, int]] = {}
+        if not self.dir.exists():
+            return out
+        for task_dir in self.dir.iterdir():
+            if not task_dir.is_dir():
+                continue
+            try:
+                stat = task_dir.stat()
+                out[task_dir.name] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                continue
+        return out
+
+    def _read_task_runs(self, task: str) -> list[Run]:
+        found: list[Run] = []
+        for run_json in (self.dir / task).glob("*/run.json"):
+            try:
+                found.append(Run.load(run_json.parent))
+                self._index.reads += 1
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        return found
+
+    def _archive_fingerprint(self) -> tuple[int, int, int] | None:
+        manifest = self.archive_dir / "index.json"
+        try:
+            stat = manifest.stat()
+            return stat.st_mtime_ns, stat.st_size, stat.st_ino
+        except FileNotFoundError:
+            return None
+
+    def _archived_runs(self) -> list[Run]:
+        """Read the compact archive index, never the archived directory tree."""
+        manifest = self.archive_dir / "index.json"
+        if not manifest.exists():
+            if self.archive_dir.exists() and any(self.archive_dir.iterdir()):
+                raise HistoryUnavailable("archive index is missing; historical totals are unavailable")
+            return []
+        try:
+            rows = json.loads(manifest.read_text()).get("runs", [])
+            for row in rows:
+                row["dir"] = str(self.archive_dir / row["task_id"] / row["run_id"])
+            return [Run(**row) for row in rows]
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+            raise HistoryUnavailable("archive index is unreadable; historical totals are unavailable") from exc
+
+    def archive_health(self) -> str:
+        """Return an honest, cheap archive problem description, or an empty string."""
+        manifest = self.archive_dir / "index.json"
+        if not self.archive_dir.exists():
+            return ""
+        if not manifest.exists():
+            return "archive index is missing; run garden archive-runs to verify and rebuild it"
+        try:
+            rows = json.loads(manifest.read_text()).get("runs")
+            if not isinstance(rows, list):
+                raise TypeError
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            return "archive index is unreadable; run garden archive-runs to verify and rebuild it"
+        return ""
+
+    @property
+    def scan_count(self) -> int:
+        """Diagnostic count used by bounded-work regression tests and measurements."""
+        return self._index.scans
+
+    @property
+    def read_count(self) -> int:
+        return self._index.reads
+
+    @property
+    def generation(self) -> int:
+        """Changes immediately after an in-process run metadata write."""
+        return self._index.generation
 
     def next_run_id(self, task_id: str, mode: str) -> str:
         """Reserve the id `new_run` would generate for `task_id`/`mode` right now, without
@@ -231,18 +547,9 @@ class RunStore:
         return run
 
     def runs_for(self, task_id: str) -> list[Run]:
-        d = self.dir / task_id
-        if not d.exists():
-            return []
-        out = []
-        for rd in sorted(d.iterdir()):
-            if (rd / "run.json").exists():
-                try:
-                    out.append(Run.load(rd))
-                except (json.JSONDecodeError, TypeError):
-                    continue
-        out.sort(key=lambda r: (r.started_at, r.run_id))
-        return out
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.by_task.get(task_id, ())))
 
     def latest(self, task_id: str) -> Run | None:
         runs = self.runs_for(task_id)
@@ -252,16 +559,12 @@ class RunStore:
         return runs[-1] if runs else None
 
     def all_runs(self) -> list[Run]:
-        if not self.dir.exists():
-            return []
-        out: list[Run] = []
-        for td in sorted(self.dir.iterdir()):
-            if td.is_dir():
-                out.extend(self.runs_for(td.name))
-        return out
+        return self._snapshot()
 
     def active(self) -> list[Run]:
-        return [r for r in self.all_runs() if r.status == "running"]
+        idx = self._ensure_index()
+        with idx.lock:
+            return deepcopy(list(idx.active))
 
     def usage_for(self, task_id: str) -> dict[str, Any]:
         """Tokens and cost across every run of one task, split by run mode."""
@@ -280,23 +583,116 @@ class RunStore:
         return {tid: _rollup(rs) for tid, rs in out.items()}
 
     def totals(self) -> dict[str, Any]:
-        runs = self.all_runs()
-        cost = sum(r.cost_usd or 0.0 for r in runs)
-        inp = sum(int(r.usage.get("input_tokens", 0) or 0) for r in runs)
-        out = sum(int(r.usage.get("output_tokens", 0) or 0) for r in runs)
-        cache_read = sum(int(r.usage.get("cache_read_input_tokens", 0) or 0) for r in runs)
-        return {
-            "runs": len(runs),
-            "cost_usd": round(cost, 4),
-            "input_tokens": inp,
-            "output_tokens": out,
-            "cache_read_input_tokens": cache_read,
-        }
+        idx = self._ensure_index()
+        with idx.lock:
+            return dict(idx.totals)
+
+    def costs_by_task(self) -> dict[str, float]:
+        """Compact cost rollup for status/budget reads without materialising Run objects."""
+        idx = self._ensure_index()
+        with idx.lock:
+            return {
+                task: round(sum(run.cost_usd or 0.0 for run in runs), 4)
+                for task, runs in idx.by_task.items()
+            }
 
     def spend_since(self, since_iso: str) -> float:
         """Total cost_usd of runs that finished at or after `since_iso` (an events.parse_since
         cutoff), for a spend-rate reading beside the operating profile (CG-221)."""
         return round(sum(r.cost_usd or 0.0 for r in self.all_runs() if (r.finished_at or "") >= since_iso), 4)
+
+    def archive_terminal(self, before: dt.datetime, protected_run_ids: set[str] | None = None) -> int:
+        """Move old terminal run directories out of the active working set.
+
+        Selection is deliberately conservative: a record must have a terminal status,
+        a recorded finish before ``before``, and must not be named by recovery state.
+        Each directory move is atomic.  The archive index is then rebuilt from the
+        archive itself, so retrying after interruption repairs a move that happened
+        before its index write without losing or double-counting the run.
+        """
+        with self._archive_mutation():
+            protected = protected_run_ids or set()
+            terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
+            moved = 0
+            for run in self._active_disk_runs():
+                if run.status not in terminal or not run.finished_at or run.run_id in protected:
+                    continue
+                try:
+                    finished = dt.datetime.fromisoformat(run.finished_at)
+                except ValueError:
+                    continue
+                if finished >= before:
+                    continue
+                target = self.archive_dir / run.task_id / run.run_id
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    continue
+                os.replace(run.path, target)
+                self._index.dirty_tasks.add(run.task_id)
+                moved += 1
+            self._write_archive_index()
+            return moved
+
+    def restore_archived(self, task_id: str, run_id: str) -> bool:
+        """Restore one archived run atomically for recovery or inspection tooling."""
+        with self._archive_mutation():
+            source = self.archive_dir / task_id / run_id
+            if not source.exists():
+                return False
+            target = self.dir / task_id / run_id
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                return False
+            os.replace(source, target)
+            self._index.dirty_tasks.add(task_id)
+            self._write_archive_index()
+            return True
+
+    def rebuild_archive_index(self) -> int:
+        """Verify archived metadata and atomically replace its compact index."""
+        with self._archive_mutation():
+            return self._write_archive_index()
+
+    def _write_archive_index(self) -> int:
+        """Rebuild while the caller holds the archive mutation locks."""
+        rows: list[dict[str, Any]] = []
+        invalid: list[str] = []
+        if self.archive_dir.exists():
+            for run_json in self.archive_dir.glob("*/*/run.json"):
+                try:
+                    run = Run.load(run_json.parent)
+                except (OSError, json.JSONDecodeError, TypeError):
+                    invalid.append(str(run_json))
+                    continue
+                rows.append(asdict(run))
+        if invalid:
+            raise ValueError(f"archive contains {len(invalid)} unreadable run record(s): {invalid[0]}")
+        rows.sort(key=lambda row: (row.get("started_at", ""), row.get("task_id", ""), row.get("run_id", "")))
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.archive_dir / "index.json.tmp"
+        tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
+        os.replace(tmp, self.archive_dir / "index.json")
+        return len(rows)
+
+    def update_archived(self, run: Run) -> None:
+        """Persist an archived metadata correction and atomically refresh its ledger."""
+        if not run.path.is_relative_to(self.archive_dir):
+            raise ValueError("run is not archived")
+        with self._archive_mutation():
+            if not (run.path / "run.json").exists():
+                raise FileNotFoundError("archived run moved; reload it before updating metadata")
+            run.save()
+            self._write_archive_index()
+
+    def _active_disk_runs(self) -> list[Run]:
+        out: list[Run] = []
+        if self.dir.exists():
+            for run_json in self.dir.glob("*/*/run.json"):
+                try:
+                    out.append(Run.load(run_json.parent))
+                except (OSError, json.JSONDecodeError, TypeError):
+                    continue
+        return out
 
     def backfill_codex_costs(self, config: Config, events: EventLog | None = None) -> int:
         """Recompute usage/cost_usd/model for every codex run from its stored transcript
@@ -320,7 +716,10 @@ class RunStore:
             if usage == run.usage and cost == run.cost_usd and model == run.model:
                 continue
             run.usage, run.cost_usd, run.model = usage, cost, model
-            run.save()
+            if str(run.path).startswith(str(self.archive_dir)):
+                self.update_archived(run)
+            else:
+                run.save()
             updated += 1
             patches[run.run_id] = {"cost_usd": cost, "usage": usage, "model": model}
         if events is not None:
@@ -356,3 +755,10 @@ def _rollup(runs: list[Run]) -> dict[str, Any]:
     for m in tot["by_mode"].values():
         m["cost_usd"] = round(m["cost_usd"], 4)
     return tot
+
+
+def _totals(runs: list[Run]) -> dict[str, Any]:
+    rollup = _rollup(runs)
+    return {key: rollup[key] for key in (
+        "runs", "cost_usd", "input_tokens", "output_tokens", "cache_read_input_tokens"
+    )}

@@ -44,6 +44,18 @@ harnesses:
     retro_model: fable         # retros, persona reviews and trial judging still get the best
                                 # model, independent of the cheap tier map above
 
+# PR reviews use the model immediately above the writer in this weakest-to-strongest list.
+# A writer absent from the list uses review.difficulty and any harness review_model as usual.
+review:
+  ladder:
+    - codex:gpt-5.6-luna
+    - claude:claude-sonnet-5
+    - codex:gpt-5.6-terra
+    - codex:gpt-5.6-sol
+    - claude:claude-opus-4-8
+    - claude:claude-fable-5-1
+    - codex:gpt-6-astra
+
 # Runs whenever a task needs you: awaiting_triage (after its review verdict is in),
 # waiting_human, failed, a changes_requested past max_revisions, or a stall/budget event.
 # Gets GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR as environment variables.

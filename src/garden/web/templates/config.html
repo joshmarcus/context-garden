@@ -7,7 +7,7 @@
 
 {% if config_hold %}
 <div class="panel" style="margin-bottom:14px">
-  <div class="eyebrow">CG-242</div>
+  <div class="eyebrow">Configuration</div>
   <h3>Held config reload</h3>
   <p style="color:var(--warn);margin:0 0 10px">
     garden.yaml changed while a run was in flight. Held since {{ config_hold.since }}:
@@ -43,6 +43,21 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Capacity</div>
+  <h3>Local execution boundary</h3>
+  <p class="muted" style="margin:0">
+    Host admission: <strong>{{ resource_status.active }}/{{ resource_status.limit }}</strong> ·
+    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong>
+    {% if resource_status.heavy_waiting %}({{ resource_status.heavy_waiting }} waiting: heavy-test budget full){% endif %} ·
+    cgroup isolation: <strong>{{ resource_status.isolation }}</strong>.
+    Available memory: <strong>{{ resource_status.memory_available_mb if resource_status.memory_available_mb is not none else "unknown" }} MiB</strong>
+    {% if resource_status.cgroup_available_mb is not none %}(effective cgroup headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
+    temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
+  </p>
+  {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget ({{ resource_status.isolation }}). Configure a delegated, finite <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
+</div>
+
+<div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Dispatch</div>
   <h3>Parallelism</h3>
   <p style="color:var(--muted);margin:0 0 10px">
@@ -62,7 +77,7 @@
 
 {% set profile_source = "live override" if operating_profile_override else ("garden.yaml" if operating_profile_file else "") %}
 <div class="panel" style="margin-bottom:14px">
-  <div class="eyebrow">CG-221</div>
+  <div class="eyebrow">Dispatch</div>
   <h3>Operating profile</h3>
   <p style="color:var(--muted);margin:0 0 10px">
     garden.yaml: <strong>{{ operating_profile_file or "(none)" }}</strong>
@@ -81,12 +96,12 @@
     <span class="autosave-mark" aria-live="polite"></span>
   </form>
   <p class="muted" style="margin:8px 0 0">
-    Sets workers, reviews, the model tier map, the review and retro tiers and the observe
-    profile together, within one tick, no restart. A more specific live override (e.g.
+    Sets workers, reviews, the model tier map, the review and retro tiers and the observation
+    feed together, within one tick, no restart. A more specific live override (e.g.
     max_parallel above) still wins for that one knob.
   </p>
   <table style="margin-top:10px; font-size:12.5px">
-    <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>observe</th></tr>
+    <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>feed</th></tr>
     {% for row in operating_profile_rows %}
     <tr{% if row.active %} style="font-weight:700"{% endif %}>
       <td class="mono">{{ row.name }}{% if row.active %} (active){% endif %}</td>
@@ -105,16 +120,16 @@
 
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">garden observe</div>
-  <h3>Profile</h3>
+  <h3>Feed</h3>
   <p style="color:var(--muted);margin:0 0 10px">
-    garden.yaml: <strong>{{ observe_profile_file or "(none — base observe: fields)" }}</strong>
+    garden.yaml: <strong>{{ observe_profile_file or "(none — base observe fields)" }}</strong>
     {% if observe_profile_override %} · live override: <strong>{{ observe_profile_override }}</strong> (in effect){% else %} · no live override{% endif %}
     {% if observe_profile_source == "profile" %} · effective now: <strong>{{ observe_profile_effective }}</strong> (from the operating profile <span class="mono">{{ operating_profile_active }}</span>, above){% endif %}
   </p>
   <form method="post" action="/config/observe-profile" class="actions" data-autosave>
     <label class="muted" for="observe-profile-override">live override</label>
     <select id="observe-profile-override" name="value" onchange="this.form.requestSubmit()">
-      <option value="" {% if not observe_profile_override %}selected{% endif %}>none — uses {{ observe_profile_file or "the base observe: fields" }}</option>
+      <option value="" {% if not observe_profile_override %}selected{% endif %}>none — uses {{ observe_profile_file or "the base observe fields" }}</option>
       {% for name in observe_profile_names %}
       <option value="{{ name }}" {% if observe_profile_override == name %}selected{% endif %}>{{ name }}</option>
       {% endfor %}
@@ -137,7 +152,7 @@
 </div>
 
 <div class="panel" style="margin-bottom:14px">
-  <div class="eyebrow">Effective values · live (re-read each tick)</div>
+  <div class="eyebrow">Live values</div>
   <h3>Scheduler &amp; dispatch</h3>
   <p class="muted" style="margin:0 0 10px">Edit these in garden.yaml; the change is picked up on the next tick, no restart.</p>
   <dl class="kv" style="margin:0">

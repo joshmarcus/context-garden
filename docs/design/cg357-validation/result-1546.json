@@ -1,0 +1,44 @@
+{
+  "history": 1546,
+  "workers": [
+    2315181,
+    2315182,
+    2315183
+  ],
+  "workers_alive": true,
+  "samples": 60,
+  "p95": 0.2133540640006686,
+  "max": 0.3204173089998221,
+  "before": {
+    "scans": 0,
+    "reads": 0
+  },
+  "after": {
+    "scans": 10,
+    "reads": 1576
+  },
+  "routes": {
+    "/": {
+      "max": 0.3204173089998221,
+      "samples": 12
+    },
+    "/board": {
+      "max": 0.19525393799995072,
+      "samples": 12
+    },
+    "/partials/board": {
+      "max": 0.19215850900036457,
+      "samples": 12
+    },
+    "/now2": {
+      "max": 0.2906041370006278,
+      "samples": 12
+    },
+    "/now2/period": {
+      "max": 0.16178776699962327,
+      "samples": 12
+    }
+  },
+  "fixture": "/home/joshua/work/operator-test-tmp/cg357-served-1546-2315178",
+  "limitation": "Three executing local CPU/metadata workload processes, not model harness sessions; HTTP over TCP, no TestClient."
+}

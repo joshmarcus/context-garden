@@ -157,6 +157,9 @@ def test_dirty_worktree_is_stashed_on_dispatch(sched, fake_github):
     stashes = sched.state.get("DM-001").get("stashes")
     assert stashes and stashes[0]["sha"]
     assert stashes[0]["name"].startswith("garden:DM-001:")
+    assert stashes[0]["run"] == sched.runs.latest("DM-001").run_id
+    assert stashes[0]["reason"] == "pre-dispatch"
+    assert "leftover.txt" in "\n".join(stashes[0]["files"])
     assert not (wt / "leftover.txt").exists()  # set aside, not left in the tree
     # the stash sha resolves to a real commit, and its untracked-files parent still holds the edit
     assert gitops.git("cat-file", "-t", stashes[0]["sha"], cwd=wt).strip() == "commit"

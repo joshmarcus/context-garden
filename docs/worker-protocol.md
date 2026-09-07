@@ -15,13 +15,34 @@ exactly these channels:
 | scheduler to worker | the **working directory** | a git worktree on the task's branch, based on the right base |
 | scheduler to worker | two **environment variables** | `GARDEN_TASK_ID`, `GARDEN_RUN_ID` (informational) |
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
-| worker to scheduler | the **worktree** | commits on the task branch (never pushed by the worker) |
+| worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
-the whole result contract. Everything else the world sees (the pushed branch, the pull
-request, the review comments) is done by the scheduler after the fact, from what it finds
+the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
+(the branch, pull request and review comments) is done by the scheduler from what it finds
 in the run directory and the worktree.
+
+## Required review evidence
+
+A task can ask the scheduler to produce review evidence with `requires:` frontmatter, or
+with the same concise phrases in an acceptance criterion. For example:
+
+```yaml
+requires:
+  - persona-review -p designer
+  - persona-review -p usability-expert
+  - captures
+  - check: unit
+```
+
+`persona-review -p <name>` starts that PR persona review when the PR opens. `captures`
+adds the UI check even when the diff did not itself select it. `check: <name>` selects a
+named `checks.pre_pr` entry; task files name configured checks and never inject commands.
+Checks finish before the PR opens. Required personas post their comments before the
+automated review is dispatched, and their state is shown on the task page. Failed required
+checks enter the normal mechanical changes-requested path with their diagnostic in the
+revise brief.
 
 ## The sequence
 
@@ -38,12 +59,12 @@ sequenceDiagram
   S->>W: start, detached: cd into the worktree, run claude -p with brief.md on stdin, capture stdout.json and stderr.log, then write exit_code
   Note over S: the tick ends here and nothing stays open
   W->>D: read brief.md (stdin)
-  W->>T: edit, run checks, commit (never push)
+  W->>T: edit, run checks, commit (optional CI push)
   W->>D: final message ending in the GARDEN_RESULT line, plus usage and cost, into stdout.json
   W->>D: exit_code
   Note over S: a later tick
   S->>D: exit_code present, so parse stdout.json and keep final.md
-  S->>T: commit leftovers, count commits ahead of the base
+  S->>T: preserve uncommitted leftovers as a named recovery stash, count committed work ahead of the base
   S->>G: push the branch, open a draft PR from pr_title and pr_body
   S->>W: start a review run the same way, with a review brief
   S->>D: run.json updated: status, usage, cost
@@ -81,9 +102,12 @@ have had to make:
 
 ### 2. Starting the process (the runner, in `start`)
 
-The local runner writes the brief to `brief.md` in the run directory and starts one shell
-command, detached in its own session (`start_new_session=True`, stdin closed), so it
-survives the scheduler exiting:
+The local runner writes the brief to `brief.md` in the run directory and starts a small
+supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
+survives the scheduler exiting. On Linux the supervisor is a child subreaper: even a test
+process that creates another session remains owned by the run. It writes `exit_code` only
+after the harness and all adopted descendants exit, and forwards a stop to the entire tree.
+The supervised command is equivalent to:
 
 ```sh
 cd /garden/.garden/worktrees/WID-003 && timeout 5400 \
@@ -228,6 +252,10 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
+- The scheduler pushes only committed work. Uncommitted files at dispatch or reap are
+  preserved as a named recovery stash in the task worktree, with the task and run recorded
+  in the run record and task state. Restore one with its recorded `git stash apply <sha>`;
+  a later reap or revise starts clean and cannot add that artifact to the PR.
 - `pr_body` is the permanent description of the change for a reader without the task file:
   what it does, why, how it was verified, follow-ups. It never narrates the process — rounds,
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
@@ -252,9 +280,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   status and any open PR is closed with the reason) or rejects (the reasoning goes back into a
   revise round with the person's note).
 - `no_change`: a revise round found nothing to change (e.g. the failing check was the
-  environment, not the diff); `reason` says why. The task moves to `waiting_human`; the person
-  accepts (the round proceeds to the PR or the review as if it had pushed, with no new work
-  run) or rejects (as above).
+  environment, not the diff); `reason` says why. The scheduler reconciles that claim against
+  the unchanged head by running required checks and a fresh review. A finding that remains
+  returns through the bounded revise loop. A person is asked only when the result explicitly
+  leaves a criterion undone or declines an improvement, because that changes the promised
+  product outcome rather than merely reporting evidence about it.
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
   a `task` becomes a draft task file, unless its title (normalised) or its body's file and
   error already match an open task in this phase or the next one, in which case it is noted

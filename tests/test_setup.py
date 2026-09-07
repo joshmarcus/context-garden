@@ -119,8 +119,11 @@ def test_setup_failure_marks_run_failed_not_leaked(garden, fake_github, monkeypa
     sc = Scheduler(store, github=fake_github, log=print)
     sc.tick()
     run = sc.runs.latest("DM-001")
-    assert run.status == "failed" and run.error
+    assert run.status == "failed" and run.error and run.finished_at
     assert sc.runs.active() == []  # slot freed, not leaked
+    finished = [e for e in sc.events.read(task_id="DM-001", kinds=["run_finished"])
+                if e.get("run") == run.run_id]
+    assert len(finished) == 1 and finished[0]["status"] == "failed"
 
 
 def test_pre_pr_checks_prepare_the_local_worktree(garden, fake_github):

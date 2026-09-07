@@ -16,7 +16,7 @@
         </a>
         {% if c == 'waiting_human' and row.question %}<span class="lfact q">Q: {{ row.question[:120] }}</span>
         {% elif c in ('awaiting_triage', 'in_review', 'changes_requested') %}<span class="lfact">{% if t.pr %}<a href="{{ t.pr }}">PR</a>{% endif %}{% if row.review %}{{ ' · ' if t.pr else '' }}{{ row.review }}{% endif %}</span>
-        {% elif c == 'running' and t.id in active %}<span class="lfact">{{ '%.0f' % active[t.id].elapsed_minutes() }} min</span>
+        {% elif c == 'running' and t.id in active %}<span class="lfact">{{ live_clock(active[t.id]) }}</span>
         {% elif c == 'blocked' and row.blockers %}<span class="lfact">waits on {{ row.blockers|join(', ') }}</span>
         {% elif c == 'failed' and row.reason %}<span class="lfact">{{ row.reason[:120] }}</span>
         {% endif %}
@@ -36,7 +36,7 @@
       <a class="card" href="/tasks/{{ t.id }}">
         <span class="top"><span class="id">{{ t.id }}</span><span class="muted mono" style="font-size:11px" title="{{ priority_label(t.priority) }}">p{{ t.priority }} · {{ t.difficulty }}</span></span>
         <span class="t">{{ t.title }}{% if t.discovered_from %}<span class="badge" title="discovered by {{ t.discovered_from }}">found</span>{% endif %}{% if row.stack %}<span class="badge" title="stacked on {{ row.stack }}">stack</span>{% endif %}{% if row.merged_parent %}<span class="badge" title="merged into {{ row.merged_parent }}'s branch; done once it reaches the base">merged→parent</span>{% endif %}{% if row.needs_human %}<span class="badge hot" title="{{ row.needs_human }}">needs you</span>{% endif %}</span>
-        <span class="meta">{{ t.phase }}{% if row.blockers %} · waits on {{ row.blockers|join(', ') }}{% endif %}{% if t.id in active %} · {{ '%.0f' % active[t.id].elapsed_minutes() }} min{% endif %}{% if t.pr %} · PR{% endif %}</span>
+        <span class="meta">{{ t.phase }}{% if row.blockers %} · waits on {{ row.blockers|join(', ') }}{% endif %}{% if t.id in active %} · {{ live_clock(active[t.id]) }}{% endif %}{% if t.pr %} · PR{% endif %}</span>
         {% if row.question %}<span class="q">Q: {{ row.question[:110] }}</span>{% endif %}
       </a>
     {% endfor %}

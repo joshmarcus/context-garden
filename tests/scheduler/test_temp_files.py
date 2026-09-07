@@ -66,3 +66,21 @@ def test_terminal_worktree_sweep_prunes_caches_but_skips_active_runs(sched):
     os.utime(worktree, (old, old))
     sched.tick(dispatch=False)
     assert not worktree.exists()
+
+
+def test_temp_cleanup_requires_terminal_record_and_inactive_process(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local")
+    temp = sched.cfg.work_dir / "tmp" / run.run_id
+    temp.mkdir(parents=True)
+    run.status = "done"
+    run.pid = 424242
+    run.save()
+    monkeypatch.setattr(type(run), "process_finished", lambda self: False)
+
+    sched._cleanup_reaped_temp_dirs()
+    assert temp.exists()
+
+    monkeypatch.setattr(type(run), "process_finished", lambda self: True)
+    sched._cleanup_reaped_temp_dirs()
+    assert not temp.exists()

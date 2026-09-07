@@ -8,6 +8,7 @@ import datetime as dt
 from typing import Any
 
 from .brief import brief_gaps
+from .criteria import required_evidence, required_evidence_rows
 from .graph import effective_status
 from .model import Status, Task
 from .runs import RunStore
@@ -18,9 +19,9 @@ from .store import Store
 # informational — the loop is already handling it — so it renders but never counts.
 GROUPS = [
     ("tool", "Upgrade the garden's tool", "A PR merged into the tool's own product; the pinned install can move forward onto the merged code.", "notice"),
-    ("question", "Answer a worker's question", "A worker paused and is waiting for you. Its session resumes with your answer.", "decision"),
+    ("question", "Questions to answer", "A worker, kickoff, or retrospective is waiting for your answer.", "decision"),
     ("retro_verdict", "Accept or change a retro's verdict", "A retrospective reopened the phase: the named tasks must land before it can close. Accept to approve them and keep the phase open, or change the verdict to close instead.", "decision"),
-    ("decision", "Accept or reject a worker's call", "A worker says the task should not be done, or a revise round had nothing to change. Read its reasoning, then accept or send it back with a note.", "decision"),
+    ("decision", "Choose the product outcome", "A worker recommends cancelling or changing the promised outcome. The card explains what each choice does.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
@@ -207,6 +208,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if t.status.terminal:
         return None
     info = needs_human_info(st.get("needs_human"))
+    if info and info["kind"] == "review_cap" and any(row["state"] != "posted" for row in required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)):
+        return None
     can_resume = info is not None
     if info is None:
         if t.status != Status.FAILED:
@@ -251,18 +254,33 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
     dec = st.get("decision")
     if isinstance(dec, dict) and dec.get("kind"):
         kind = str(dec["kind"])
-        verb = "will not do this task" if kind == "wont_do" else "found nothing to change this round"
+        cancelling = kind == "wont_do"
         return {
             "type": "worker_decision", "kind": kind,
-            "title": "The worker asks you to decide",
+            "title": "Decide whether to cancel this work" if cancelling else "Decide whether to change the promised outcome",
             "reason": str(dec.get("reason") or "(no reason given)"),
-            "blurb": f"The worker {verb}.", "final": str(dec.get("final") or ""),
+            "blurb": ("Recommendation: cancel the task. Cancelling ends it without merging; keeping it sends the reason back for another bounded revision."
+                      if cancelling else
+                      "Recommendation: accept the stated limitation. Accepting continues verification with that limitation; keeping the original outcome sends it back for another bounded revision."),
+            "final": str(dec.get("final") or ""),
             "evidence": _evidence_lines(t, st, runs),
         }
     if t.status == Status.WAITING_HUMAN:
+        question = str(st.get("question") or "").strip()
+        if not question:
+            evidence = _evidence_lines(t, st, runs)
+            return {
+                "type": "attention", "title": "Recovery needed: waiting state is incomplete",
+                "reason": "No question was recorded, so there is nothing for you to answer.",
+                "blurb": "This is an operational state mismatch. Continue the loop to reconcile the live run and task state.",
+                "final": "", "evidence": evidence,
+                "attention": {"actions": [
+                    {"label": "Reconcile state", "kind": "recover-check", "command": f"garden recover-check {t.id}",
+                     "detail": "checks live run state and returns the task to the automated loop"}], "discuss": ""},
+            }
         return {
             "type": "question", "title": "The worker is waiting for you",
-            "reason": str(st.get("question") or "(no question recorded)"),
+            "reason": question,
             "blurb": "Its session resumes with your answer.", "final": "",
             "evidence": _evidence_lines(t, st, runs),
         }
@@ -341,16 +359,26 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             dec = st.get("decision") or {}
             kind = str(dec.get("kind") or "")
             reason = str(dec.get("reason") or "(no reason given)")
-            verb = "will not do this task" if kind == "wont_do" else "found nothing to change this round"
-            add("decision", t, f"the worker {verb}: {reason}", [
-                {"label": "Accept", "kind": "accept", "command": f"garden accept {t.id}"},
-                {"label": "Reject", "kind": "reject", "command": f'garden reject {t.id} "..."'},
+            cancelling = kind == "wont_do"
+            why = (("recommendation: cancel this task" if cancelling else "recommendation: accept a changed outcome")
+                   + f" · why: {reason}")
+            add("decision", t, why, [
+                {"label": "Cancel this task" if cancelling else "Accept the changed outcome", "kind": "accept", "command": f"garden accept {t.id}"},
+                {"label": "Keep this task" if cancelling else "Keep the original outcome", "kind": "reject", "command": f'garden reject {t.id} "..."'},
             ], decision_kind=kind, reason=reason, final=str(dec.get("final") or ""),
                 decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.WAITING_HUMAN:
-            add("question", t, str(st.get("question") or "(no question recorded)"),
-                [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=st.get("question", ""),
-                decision_card=decision_card_view(t, st, runs), card_task=t)
+            question = str(st.get("question") or "").strip()
+            if question:
+                add("question", t, question,
+                    [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=question,
+                    decision_card=decision_card_view(t, st, runs), card_task=t)
+            else:
+                card = decision_card_view(t, st, runs)
+                add("attention", t, "waiting state is incomplete; no question exists to answer",
+                    card["attention"]["actions"], kind="state_mismatch", kind_title="Waiting state is incomplete",
+                    kind_blurb=card["blurb"], reason=card["reason"], resume_to="", evidence=card["evidence"],
+                    discuss="", decision_card=card, card_task=t)
         elif t.status == Status.AWAITING_TRIAGE:
             rev = st.get("last_review") or {}
             why = "draft PR open"
@@ -429,7 +457,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             source = str(d.get("source") or d.get("discovered_from") or "")
             origin = "retro" if source.startswith("retro:") else "kickoff"
             items.append({
-                "group": "attention", "group_title": titles["attention"], "task": "",
+            "group": "question", "group_title": titles["question"], "task": "",
                 "title": str(d.get("question") or ""),
                 "phase": str(d.get("phase") or ""), "status": "", "pr": "",
                 "why": f"the {d.get('phase') or 'phase'} {origin} is asking",
@@ -458,10 +486,13 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             "title": (tgt.title if tgt else str(d.get("target_title") or "")) or target,
             "phase": str(d.get("phase") or ""), "status": tgt.status.value if tgt else "",
             "pr": tgt.pr if tgt else "", "why": why,
-            "actions": [
-                {"label": "Accept", "kind": "decision-accept", "command": f"garden decide {d['id']} --accept"},
-                {"label": "Reject", "kind": "decision-reject", "command": f"garden decide {d['id']} --reject"},
-            ],
+            "actions": ([
+                {"label": "Cancel this task", "kind": "decision-accept", "command": f"garden decide {d['id']} --accept"},
+                {"label": "Keep this task", "kind": "decision-reject", "command": f"garden decide {d['id']} --reject"},
+            ] if d.get("kind") == "cancel" else [
+                {"label": f"Use {d.get('of') or 'the existing task'}", "kind": "decision-accept", "command": f"garden decide {d['id']} --accept"},
+                {"label": "Keep both tasks", "kind": "decision-reject", "command": f"garden decide {d['id']} --reject"},
+            ]),
             "age": _age(tgt.updated if tgt else str(d.get("at") or "")),
             "difficulty": tgt.difficulty if tgt else "",
             "decision": str(d.get("id") or ""), "decision_kind": str(d.get("kind") or ""),
@@ -525,7 +556,12 @@ def counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 def decisions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Items whose group needs a person's call — what the badge and digest count."""
-    return [i for i in items if GROUP_KIND.get(i["group"]) == "decision"]
+    return [i for i in items if needs_you(i)]
+
+
+def needs_you(item: dict[str, Any]) -> bool:
+    """Whether an Inbox item needs a person, shared by every surface's badge or count."""
+    return GROUP_KIND.get(str(item.get("group") or "")) == "decision"
 
 
 def notices(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -539,6 +575,9 @@ def running_now(store: Store) -> list[dict[str, Any]]:
     warn = float(store.config.get("idle_minutes", 0) or 0)
     out = []
     for r in rs.active():
+        has_process = r.pid is not None and not r.process_finished()
+        if not has_process:
+            continue
         t = tasks.get(r.task_id)
         idle = round(r.idle_minutes())
         out.append({"task": r.task_id, "title": t.title if t else "", "mode": r.mode, "model": r.model,

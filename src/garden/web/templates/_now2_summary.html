@@ -1,0 +1,2 @@
+<h2 id="now-heading">Now</h2><p class="n2-meta">{{ d.running|selectattr('run.status', 'equalto', 'running')|list|length }} runs in flight · {{ d.attention|length }} need attention · {{ 'Next tick not reported' if watch else 'Scheduler off' }}</p>
+<div class="n2-quiet" {{ 'hidden' if d.running else '' }}><h3>{{ 'Nothing running' if d.ever_run else 'No runs yet' }}</h3><p>{{ d.quiet }}</p><p class="n2-meta">{{ 'Next tick not reported' if watch else 'Scheduler off' }}</p><a href="/board?view=backlog">Open backlog</a></div>

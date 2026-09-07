@@ -14,7 +14,9 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 
 from __future__ import annotations
 
+import fcntl
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -48,11 +50,25 @@ from .quota import QuotaMixin
 from .reap import ReapMixin
 from .rebase import RebaseMixin
 from .report import TickReport
+from .resources import ResourceMixin
 from .retro import RetroMixin
 from .review import ReviewMixin
 from .state import State, _TaskState
 from .trials import TrialsMixin
 from .upgrades import UpgradeMixin
+
+_TICK_LOCKS: dict[str, threading.Lock] = {}
+_TICK_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _tick_thread_lock(path: Path) -> Iterator[None]:
+    """Also serialise threads: flock alone is process-scoped on some platforms."""
+    key = str(path.resolve())
+    with _TICK_LOCKS_GUARD:
+        lock = _TICK_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
 
 __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "_TaskState"]
 
@@ -63,6 +79,7 @@ CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge che
 
 class Scheduler(
     BudgetMixin,
+    ResourceMixin,
     ReapMixin,
     CheckRunMixin,
     QueueMixin,
@@ -95,6 +112,7 @@ class Scheduler(
         log: Callable[[str], None] | None = None,
         upgrader: Any | None = None,
         restarter: Callable[[], None] | None = None,
+        read_only: bool = False,
     ):
         self.store = store
         self.cfg = store.config
@@ -103,9 +121,11 @@ class Scheduler(
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self.log = log or (lambda msg: None)
-        # A new CLI process has no old Store instance to compare against.  Check active
-        # dispatch manifests before constructing anything that could use garden.yaml.
-        self._hold_startup_config_against_fences()
+        if not read_only:
+            self._migrate_fence_bookkeeping()
+            # A new CLI process has no old Store instance to compare against.  Check active
+            # dispatch manifests before constructing anything that could use garden.yaml.
+            self._hold_startup_config_against_fences()
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
@@ -150,6 +170,7 @@ class Scheduler(
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
+        cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
         return get_runner(name, cfg, harness)
 
     def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
@@ -289,14 +310,16 @@ class Scheduler(
         return [r for r in self.active_runs() if r.mode in CHECK_MODES]
 
     def slots_free(self) -> int:
-        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active()))
+        queue_free = self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active())
+        return max(0, queue_free)
 
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
 
     def review_slots_free(self) -> int:
-        return max(0, self.review_parallel_limit() - len(self.review_runs_active()))
+        queue_free = self.review_parallel_limit() - len(self.review_runs_active())
+        return max(0, min(queue_free, self.local_slots_free()))
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:
@@ -318,6 +341,10 @@ class Scheduler(
             run = self.latest_worker_run(t.id)
             if self._is_unreaped(t, run):
                 out.add(run.run_id)
+            review_id = str(self.state.get(t.id).get("review_run") or "")
+            review = next((r for r in self.runs.runs_for(t.id) if r.run_id == review_id), None)
+            if review is not None and review.status == "running" and review.process_finished():
+                out.add(review.run_id)
         return out
 
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
@@ -404,6 +431,7 @@ class Scheduler(
         tasks = self.store.tasks()
         for t in list(tasks.values()):
             try:
+                review_pending = bool(self.state.get(t.id).get("review_run"))
                 if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
                     rep.reaped.append(t.id)
                     continue
@@ -419,7 +447,10 @@ class Scheduler(
                     continue
                 if t.status == Status.RUNNING and self.reap(t, rep):
                     rep.reaped.append(t.id)
-                elif t.status.pr_open and self.reap_review(t, rep):
+                # A review is its own run, not part of the task's status machine. A
+                # failed rebase can put the task back in READY before its already-finished
+                # review is collected.
+                if review_pending and self.reap_review(t, rep):
                     rep.reaped.append(t.id)
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 rep.errors.append(f"{t.id}: reap failed: {e}")
@@ -446,6 +477,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()
         self.state = State(self.state.path)
+        self._migrate_fence_bookkeeping()
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
             self._reap_all(rep)
@@ -456,10 +488,19 @@ class Scheduler(
         return rep
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
+        """Run one controller-owned pass, serialised across processes for this garden."""
+        lock_path = self.cfg.garden_dir / "tick.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with _tick_thread_lock(lock_path), open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            return self._tick_locked(dispatch)
+
+    def _tick_locked(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()
         started = time.monotonic()
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
+        self._migrate_fence_bookkeeping()
         try:
             # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
             # change against an in-flight run's fence manifest until it's safe or an operator
@@ -471,6 +512,10 @@ class Scheduler(
             # its own guard (or a bug in a guard itself) cannot lose a transition an earlier
             # phase already made (CG-203).
             self.state.save()
+        # A `garden pin` command may have written its request while this pass was in
+        # flight.  Its state was not part of this Scheduler instance's snapshot, so reload
+        # at the boundary before deciding whether this controller should consume it.
+        self.state = State(self.state.path)
         self.maybe_auto_upgrade(rep)
         rep.duration_s = time.monotonic() - started
         budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
@@ -481,6 +526,7 @@ class Scheduler(
     def _tick_body(self, rep: TickReport, dispatch: bool | None) -> None:
         with self._step(rep, "reap"):
             self._reap_all(rep)
+        self.refresh_resource_pressure()
         self.store.invalidate_tasks()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):

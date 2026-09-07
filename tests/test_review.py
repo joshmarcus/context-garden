@@ -1,7 +1,28 @@
 from garden.model import Status
+from garden.now1 import strip_for_run
 from garden.review import feedback_from_review, parse_review, review_brief, review_to_markdown
 from garden.scheduler import Scheduler
 from garden.store import Store
+
+
+def _writer_run(sched, task_id, harness, model):
+    run = sched.runs.new_run(task_id, "local", mode="work")
+    run.harness = harness
+    run.model = model
+    run.status = "done"
+    run.save()
+    return run
+
+
+def _review_ladder(sched):
+    sched.cfg.data["review"]["ladder"] = [
+        "codex:gpt-5.6-luna",
+        "claude:claude-sonnet-5",
+        "codex:gpt-5.6-terra",
+        "codex:gpt-5.6-sol",
+        "claude:claude-fable-5-1",
+        "codex:gpt-6-astra",
+    ]
 
 
 def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
@@ -25,6 +46,50 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st2.get("last_review_run") == run_id
 
 
+def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
+    """A review uses the next configured harness:model pair, not the PR's harness."""
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    expected = [
+        ("codex", "gpt-5.6-terra", "codex", "gpt-5.6-sol"),
+        ("claude", "claude-fable-5-1", "codex", "gpt-6-astra"),
+        ("codex", "gpt-5.6-luna", "claude", "claude-sonnet-5"),
+    ]
+    for writer_harness, writer_model, reviewer_harness, reviewer_model in expected:
+        _writer_run(sched, task.id, writer_harness, writer_model)
+        run = sched.dispatch_review(task)
+        assert (run.harness, run.model) == (reviewer_harness, reviewer_model)
+        assert run.env_snapshot["writer_harness"] == writer_harness
+        assert run.env_snapshot["writer_model"] == writer_model
+    assert "reviewed by claude-sonnet-5, one above gpt-5.6-luna" in task.body
+
+
+def test_review_ladder_top_rung_reviews_itself_and_unlisted_writer_falls_back(sched):
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    _writer_run(sched, task.id, "codex", "gpt-6-astra")
+    top = sched.dispatch_review(task)
+    assert (top.harness, top.model) == ("codex", "gpt-6-astra")
+
+    _writer_run(sched, task.id, "other", "not-on-the-ladder")
+    fallback = sched.dispatch_review(task)
+    assert (fallback.harness, fallback.model) == ("claude", "sonnet")
+    assert "writer_model" not in fallback.env_snapshot
+
+
+def test_review_ladder_defers_when_the_selected_reviewer_harness_is_paused(sched):
+    _review_ladder(sched)
+    task = sched.store.task("DM-001")
+    writer = _writer_run(sched, task.id, "codex", "gpt-5.6-luna")
+    sched.pause_harness("claude", "quota limit")
+    from garden.scheduler import TickReport
+
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(task, [{"kind": "review"}], rep, work_run=writer)
+    assert rep.dispatched == []
+    assert sched.state.get(task.id)["pending_reviews"] == [{"kind": "review"}]
+
+
 def test_review_brief_and_parse(garden):
     store = Store(garden)
     t = store.task("DM-001")
@@ -39,6 +104,52 @@ def test_review_brief_and_parse(garden):
     fb = feedback_from_review(rev)
     assert "blocking" in fb and "pr_body" in fb
     assert parse_review("nothing") == {}
+
+
+def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
+    store = Store(garden)
+    review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."},{"severity":"high","file":"b.py","line":3,"summary":"edge case","fix":"Handle the empty collection."},{"severity":"nit","file":"c.py","line":4,"summary":"unclear name","fix":"Rename result to parsed_value."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')
+    assert review["findings"][0]["fix"].startswith("Guard")
+    assert review["improvements"][0]["effort"] == "small"
+    # Older reviewers have neither field and remain parseable.
+    old = parse_review('GARDEN_REVIEW: {"verdict":"approve","summary":"old","findings":[]}')
+    assert "improvements" not in old
+    markdown = review_to_markdown(review)
+    assert "**Fix:** Guard the empty value" in markdown
+    assert "**Improvements**" in markdown and "Rename x to parsed_value" in markdown
+    feedback = feedback_from_review(review)
+    assert "Guard the empty value" in feedback
+    assert "**automated review** blocking (`a.py`:2): bug" in feedback
+    assert "**automated review** high (`b.py`:3): edge case" in feedback
+    assert "**automated review** nit (`c.py`:4): unclear name" in feedback
+    assert "Handle the empty collection." in feedback
+    assert "Rename result to parsed_value." in feedback
+    assert "Optional improvements" in feedback and "improvements_declined" in feedback
+    task = store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    brief = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
+                         max_diff_chars=100, reask_missing_fixes=True)
+    assert "Follow-up required" in brief and "`fix` for every blocking finding" in brief
+
+
+def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):
+    from tests.fake_claude import REVIEWS
+
+    REVIEWS["review-no-fix"] = {"verdict": "request_changes", "summary": "needs a test",
+                                "description_ok": True,
+                                "findings": [{"severity": "blocking", "file": "a.py", "line": 1,
+                                              "summary": "missing test"}]}
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-no-fix")
+    sched.tick()
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-001 review re-asked for blocking fixes" in rep.transitions
+    rerun = sched.runs.latest("DM-001")
+    assert rerun.mode == "review"
+    assert "Follow-up required" in (rerun.path / "brief.md").read_text()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
 
 
 def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
@@ -272,10 +383,50 @@ def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
     run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == review_run_id)
     assert run.status in ("done", "failed")
     assert run.cost_usd == 0.02  # usage/cost still recorded from the fake worker's output
-    assert any(f"{review_run_id} closed (orphaned)" in t for t in rep.transitions)
+    assert any(f"{review_run_id} closed (obsolete)" in t for t in rep.transitions)
     # no verdict posted and the task's own status is left alone
     assert sched.store.task("DM-001").status == Status.DONE
+    assert not sched.state.get("DM-001").get("review_run")
     assert not any("request_changes" in c or "approve" in c for c in fake_github.comments)
+
+
+def test_finished_review_on_a_ready_task_is_collected_without_reusing_stale_head(sched, fake_github):
+    """A failed rebase can return a task to ready before its review is collected."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched and finished
+    st = sched.state.get("DM-001")
+    run_id = st["review_run"]
+    run = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run_id)
+    run.env_snapshot["review_head"] = "head-before-the-failed-rebase"
+    run.save()
+    task = sched.store.task("DM-001")
+    task.status = Status.READY
+    sched.store.save(task)
+    sched.pause(by="test")
+
+    assert run_id in sched.unreaped_run_ids()
+    strip = strip_for_run(run, {task.id: task}, sched.store, {})
+    assert strip["state"] == "finishing"
+    assert strip["verdict"] == "finished; awaiting collection"
+
+    rep = sched.tick()
+
+    closed = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run_id)
+    assert closed.status == "done" and closed.cost_usd == 0.02
+    assert not sched.state.get("DM-001").get("review_run")
+    assert not sched.state.get("DM-001").get("last_review_run")
+    assert sched.store.task("DM-001").status == Status.READY
+    assert any(f"{run_id} closed (obsolete)" in item for item in rep.transitions)
+    finished = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
+                if e.get("run") == run_id]
+    assert len(finished) == 1
+
+    sched.tick()
+    finished_again = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
+                      if e.get("run") == run_id]
+    assert len(finished_again) == 1
 
 
 def test_maybe_review_never_dispatches_for_a_merged_task(sched, fake_github):

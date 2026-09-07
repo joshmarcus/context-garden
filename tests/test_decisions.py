@@ -73,7 +73,7 @@ def test_wont_do_reject_carries_the_note_into_a_revise(sched, fake_github, monke
 
 
 # ---- no_change ---------------------------------------------------------------
-def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monkeypatch):
+def test_satisfied_no_change_reconciles_without_a_human_decision(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
     sched.tick()
     sched.tick()
@@ -83,33 +83,99 @@ def test_no_change_pauses_then_accept_resumes_the_round(sched, fake_github, monk
     fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
     rep = sched.tick()  # -> changes_requested + revise dispatched
     assert rep.dispatched == ["DM-001(revise)"]
-    sched.tick()  # reap the revise run: it reports no_change
-    assert statuses(sched)["DM-001"] == "waiting_human"
-    assert sched.state.get("DM-001")["decision"]["kind"] == "no_change"
-
-    n_runs = len(sched.runs.runs_for("DM-001"))
-    n_comments = len(fake_github.comments)
-    sched.accept_decision(sched.store.task("DM-001"))
-    # resumed as if the round had pushed: no new run, back to the PR, not stalled
+    rep = sched.tick()  # reap no_change: unchanged head goes through checks/review itself
     assert statuses(sched)["DM-001"] == "in_review"
-    assert len(sched.runs.runs_for("DM-001")) == n_runs
-    assert len(fake_github.comments) > n_comments
+    assert "DM-001 no-change -> verification" in rep.transitions
+    assert not sched.state.get("DM-001").get("decision")
     assert not sched.state.get("DM-001").get("needs_human")
 
 
-def test_no_change_reject_revises(sched, fake_github, monkeypatch):
+def test_real_scope_disagreement_is_a_product_decision(sched):
+    result = {"status": "no_change", "verified": [
+        {"criterion": "Keep the old API", "not_done": True, "reason": "That would break compatibility"}
+    ]}
+    assert sched._no_change_changes_outcome(result)
+    assert sched._no_change_changes_outcome({"improvements_declined": [{"suggestion": "remove API", "reason": "public"}]})
+    assert not sched._no_change_changes_outcome({"verified": [{"criterion": "works", "evidence": "green"}]})
+
+
+def test_no_change_does_not_erase_an_internal_review_finding(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 4, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change")
-    sched.tick()
-    sched.tick()
-    pr = fake_github.prs["garden/dm-001-first-task"]
-    pr.updated_at = "t2"
-    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh", "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
-    sched.tick()
-    sched.tick()
-    assert statuses(sched)["DM-001"] == "waiting_human"
-    sched.reject_decision(sched.store.task("DM-001"), "there is a real change to make here")
-    assert statuses(sched)["DM-001"] == "changes_requested"
-    assert "The person disagrees" in sched.state.get("DM-001")["pending_feedback"]
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    seen: list[str] = []
+    dispatched: list[str] = []
+    original_keys: list[str] = []
+    for _ in range(16):
+        rep = sched.tick()
+        seen.extend(rep.transitions)
+        dispatched.extend(rep.dispatched)
+        keys = list(sched.state.get("DM-001").get("last_findings") or [])
+        if keys and not original_keys:
+            original_keys = keys
+        if sched.state.get("DM-001").get("needs_human", {}).get("kind") == "stall":
+            break
+    assert "DM-001 no-change -> verification" in seen
+    assert original_keys
+    assert set(original_keys) <= set(sched.state.get("DM-001").get("last_findings") or [])
+    assert sched.state.get("DM-001")["needs_human"]["kind"] == "stall"
+    assert sched.store.task("DM-001").status == Status.CHANGES_REQUESTED
+
+
+def test_waiting_state_recovery_retains_a_live_check_and_its_continuation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "running"
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "pre_pr", "cont": {"task_status": "in_review"}
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda run, runner: False)
+    monkeypatch.setattr(run, "kill", lambda: (_ for _ in ()).throw(AssertionError("live check killed")))
+
+    result = sched.recover_waiting_check(task)
+
+    assert "retained" in result
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert sched.state.get(task.id)["check_run"]["cont"]["task_status"] == "in_review"
+
+
+def test_waiting_state_recovery_reaps_a_finished_check_normally(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "running"
+    run.save()
+    info = {"run_id": run.run_id, "stage": "pre_pr", "cont": {"task_status": "running"}}
+    sched.state.get(task.id)["check_run"] = info
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda run, runner: True)
+    reaped: list[dict] = []
+    monkeypatch.setattr(sched, "reap_check", lambda task, rep: reaped.append(dict(sched.state.get(task.id)["check_run"])) or True)
+
+    result = sched.recover_waiting_check(task)
+
+    assert "reaped" in result
+    assert reaped == [info]
+
+
+def test_waiting_state_recovery_clears_only_missing_check_metadata(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": "missing", "stage": "pre_pr", "cont": {"task_status": "running"}}
+    st["pending_feedback"] = "still actionable"
+
+    result = sched.recover_waiting_check(task)
+
+    assert "stale check metadata cleared" in result
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.state.get(task.id)["pending_feedback"] == "still actionable"
+    assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
 
 
 # ---- CLI and web agree -------------------------------------------------------
@@ -173,9 +239,10 @@ def test_web_decision_flow(garden, monkeypatch):
     sched.tick()
     c = TestClient(create_app(Store(garden), watch=False))
     page = c.get("/tasks/DM-001").text
-    assert "asks you to decide" in page and "duplicates DM-002" in page
+    assert "Decide whether to cancel this work" in page and "duplicates DM-002" in page
+    assert "Cancel this task" in page and "Keep this task" in page
     assert "I do not think this should be done" in page  # the full message
-    assert "Accept or reject a worker" in c.get("/").text
+    assert "Choose the product outcome" in c.get("/").text
     assert "s-wont_do" in c.get("/partials/board").text
     r = c.post("/tasks/DM-001/accept", follow_redirects=False)
     assert r.status_code == 303

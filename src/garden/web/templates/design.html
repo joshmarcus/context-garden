@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ name }}{% endblock %}
+{% block body %}
+<div class="page-head"><div><span class="eyebrow">Design{% if ref %} · {{ ref }}{% endif %}</span><h1>{{ name }}</h1></div><div class="tools"><a class="btn" href="/design">Design</a></div></div>
+<div class="panel prose">{{ content|safe }}</div>
+{% endblock %}

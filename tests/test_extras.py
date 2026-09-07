@@ -1,5 +1,6 @@
 """Trials, persona reviews, and token-free checks."""
 
+import json
 import os
 from pathlib import Path
 
@@ -32,6 +33,23 @@ def test_run_check_command_and_python(tmp_path, monkeypatch):
     fb = to_feedback([ok, bad], "pre-PR check")
     assert "boom" in fb and "FAILED test_x" in fb and "true" not in fb
     assert run_checks([], {}) == []
+
+
+def test_check_runner_records_failures_before_running_checks(tmp_path, monkeypatch):
+    """A detached check must leave a useful result when setup or plugin loading raises."""
+    import garden.checkrun
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "checks_input.json").write_text("{}")
+    monkeypatch.setattr(garden.checkrun, "run_check_job", lambda _payload: (_ for _ in ()).throw(
+        RuntimeError("plugin import failed")))
+
+    assert garden.checkrun.main([str(run_dir)]) == 0
+    assert json.loads((run_dir / "checks.json").read_text()) == [{
+        "name": "checks", "status": "error",
+        "summary": "check runner failed: RuntimeError: plugin import failed", "details": "",
+    }]
 
 
 def test_run_check_killed_or_empty_did_not_finish(tmp_path):

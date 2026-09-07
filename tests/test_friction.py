@@ -6,6 +6,7 @@ from garden.friction import (
     FRICTION_COMMENT_MARKER,
     append_friction_report,
     collect_comment_friction,
+    declined_improvement_items,
     extract_friction,
     extract_section,
     friction_comment,
@@ -23,6 +24,13 @@ from garden.friction import (
 def test_extract_friction_basic():
     body = "## Summary\n\nDid the thing.\n\n## Friction\n\nNo docs for X.\n\n## Notes\n\nOK."
     assert extract_friction(body) == "No docs for X."
+
+
+def test_declined_improvements_are_retro_visible_friction():
+    items = declined_improvement_items({"improvements_declined": [
+        {"suggestion": "Rename x.", "reason": "Public API compatibility."},
+    ]})
+    assert items == ["Declined review improvement: Rename x. — Public API compatibility."]
 
 
 def test_extract_friction_missing():

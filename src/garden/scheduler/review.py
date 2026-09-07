@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
-from ..criteria import criteria_counts
+from ..criteria import criteria_counts, required_evidence
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -40,6 +40,10 @@ class ReviewMixin:
         # A review that follows a conflict rebase (or a stale-base rebase, CG-131) re-reads
         # code the reviewer already approved: it runs, but must not count toward review.max_rounds.
         after_rebase = bool(st.pop("last_round_rebase", False))
+        requirements = required_evidence(task.body, task.extra.get("requires"))
+        evidence = st.setdefault("required_evidence", {})
+        for item in requirements:
+            evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         wanted: list[dict[str, Any]] = []
         if bool(self.cfg.get("review.enabled", True)):
             max_rounds = int(self.cfg.get("review.max_rounds", 2))
@@ -53,8 +57,11 @@ class ReviewMixin:
                 self.store.save(task)
                 notify(self.cfg.data, task.id, "needs_human", reason, task.pr or "")
                 rep.transitions.append(f"{task.id} review cap reached")
-        for name in list(self.cfg.get("review.personas", []) or []):
-            wanted.append({"kind": "persona", "name": str(name)})
+        required_personas = [item["name"] for item in requirements if item["kind"] == "persona"]
+        for name in dict.fromkeys([*required_personas, *(str(n) for n in list(self.cfg.get("review.personas", []) or []))]):
+            if name in required_personas and evidence.get(f"persona:{name}") in ("running", "posted"):
+                continue  # required evidence is produced when this PR opens, not once per review round
+            wanted.append({"kind": "persona", "name": name, "required": name in required_personas})
         self._dispatch_or_defer_reviews(task, wanted, rep, work_run=work_run)
 
     def _dispatch_or_defer_reviews(self, task: Task, wanted: list[dict[str, Any]], rep: TickReport,
@@ -64,27 +71,31 @@ class ReviewMixin:
         on a later tick, so a full review_parallel does not lose the round — it just waits its
         turn, the same way a full max_parallel makes a work task wait in the ready queue."""
         st = self.state.get(task.id)
+        required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
+                             if item["kind"] == "persona"}
+        evidence = st.setdefault("required_evidence", {})
         # Never dispatch a review under a worker round still in flight (work/revise/resume/rebase):
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
-        if any(r.task_id == task.id for r in self.worker_runs_active()):
+        if self._worker_holding_reviews(task) is not None:
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
                 self.log(f"{task.id}: review deferred while a worker run is in flight")
             return
         st.pop("reviews_deferred_for_worker", None)
-        # review and persona rounds share the same `review.harness` config, so one resolved
-        # name gates both kinds; a paused harness defers the round into pending_reviews
-        # instead of failing it, the same way a full review_parallel does (CG-212).
-        review_harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         deferred: list[dict[str, Any]] = []
         for item in wanted:
+            if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
+                deferred.append(item)
+                continue
             if self.review_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            if self.is_harness_paused(review_harness):
+            harness_name = (self._review_route(task, work_run)[0] if item["kind"] == "review"
+                            else self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")))
+            if self.is_harness_paused(harness_name):
                 deferred.append(item)
                 continue
             kind = item["kind"]
@@ -94,14 +105,72 @@ class ReviewMixin:
                     rep.dispatched.append(f"{task.id}(review)")
                     self.log(f"{task.id}: review run {run.run_id} started")
                 else:
-                    self.dispatch_persona_pr(task, item["name"])
+                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
+                    if item.get("required"):
+                        evidence[f"persona:{item['name']}"] = "running"
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
             except Exception as e:  # noqa: BLE001
                 task.log(f"automated {kind} could not start: {e}")
                 self.store.save(task)
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
+                if kind == "persona" and item.get("required"):
+                    self._required_persona_failed(task, str(item["name"]), f"could not start: {e}", rep)
         if deferred:
             self._queue_pending_reviews(st, deferred)
+
+    def _review_route(self, task: Task, work_run: Run | None = None) -> tuple[str, str, Run | None]:
+        """Resolve a PR reviewer's harness and model from the live review ladder.
+
+        The last work or revise run is the PR's author.  A writer absent from the ladder
+        deliberately retains the existing tier/review_model route.
+        """
+        writer = work_run if work_run and work_run.mode in ("work", "revise") else None
+        if writer is None:
+            writer = next((r for r in reversed(self.runs.runs_for(task.id))
+                           if r.mode in ("work", "revise")), None)
+        writer_key = f"{writer.harness}:{writer.model}" if writer and writer.harness and writer.model else ""
+        ladder = [str(entry).strip() for entry in (self.cfg.get("review.ladder") or [])]
+        try:
+            index = ladder.index(writer_key)
+        except ValueError:
+            return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
+        reviewer_key = ladder[min(index + 1, len(ladder) - 1)]
+        harness, separator, model = reviewer_key.partition(":")
+        if not separator or not harness or not model:
+            return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
+        return harness, model, writer
+
+    def _worker_holding_reviews(self, task: Task) -> Run | None:
+        """The worker run a review for this task waits behind (a review never runs beside a
+        worker round for the same task, CG-177): the newest one, or None."""
+        mine = [r for r in self.worker_runs_active() if r.task_id == task.id]
+        return mine[-1] if mine else None
+
+    def review_wait_reason(self, task: Task, last_tick: str = "", last_moved: str = "") -> tuple[str, str]:
+        """Why a queued review (`pending_reviews`) has not started: the first of the gates the
+        tick applies, in the tick's own order, as a gate word and a sentence. The Now page
+        shows it, and it reads the predicates `_drain_pending_reviews` and
+        `_dispatch_or_defer_reviews` apply, so the page and the tick cannot disagree: the
+        drain runs inside dispatch (so a pause holds it), then the worker gate, the review
+        harness, the review slots. When none holds it the next tick starts it; when none holds
+        it and a tick (`last_tick`, the hub's) has passed since the task last moved
+        (`last_moved`, its newest event), something this cannot see is in the way, and the
+        sentence sends the person to the task's log rather than promising a recovery."""
+        if self.is_dispatch_paused():
+            return "paused", "dispatch paused: reviews start again with dispatch"
+        run = self._worker_holding_reviews(task)
+        if run is not None:
+            if run.no_process:
+                return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
+            return "worker", f"waits for its {run.mode} run to finish"
+        harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
+        if self.is_harness_paused(harness):
+            return "harness", f"{harness} harness paused"
+        if self.review_slots_free() <= 0:
+            return "slots", f"no review slot ({len(self.review_runs_active())} of {self.review_parallel_limit()} busy)"
+        if last_tick and last_tick > last_moved:
+            return "overdue", "still queued after a tick and no gate explains it: see the task's log"
+        return "tick", "queued: the next tick starts it"
 
     @staticmethod
     def _queue_pending_reviews(st: dict[str, Any], items: list[dict[str, Any]]) -> None:
@@ -124,6 +193,8 @@ class ReviewMixin:
             if self.review_slots_free() <= 0:
                 break
             st = self.state.get(task.id)
+            if st.get("needs_human"):
+                continue
             pending = list(st.get("pending_reviews") or [])
             if not pending:
                 continue
@@ -164,9 +235,10 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
-    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True) -> Run:
+    def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
+                        reask_missing_fixes: bool = False) -> Run:
         ensure_open(task)
-        harness_name = str(self.cfg.get("review.harness") or "")
+        harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner = self.runner_for(task, "local", harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
@@ -192,9 +264,12 @@ class ReviewMixin:
                 pass
         capture_paths: list[str] = []
         capture_pages: list[str] = []
+        check_results: list[dict[str, Any]] = []
         for check_run in reversed(self.runs.runs_for(task.id)):
             if check_run.mode != "check":
                 continue
+            if not check_results:
+                check_results = list((check_run.result or {}).get("checks", []))
             ui_results = [result for result in (check_run.result or {}).get("checks", [])
                           if result.get("name") == "ui"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
@@ -204,20 +279,28 @@ class ReviewMixin:
                 break
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
-                            pr_comment=pr_comment, verified=verified, captures=capture_paths)
-        run = self.runs.new_run(task.id, runner.name, mode="review")
+                            pr_comment=pr_comment, verified=verified, captures=capture_paths,
+                            checks=check_results, reask_missing_fixes=reask_missing_fixes)
+        run = self._new_local_run(task.id, "review", "review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages))}
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+                            "review_head": gitops.head_sha(wt),
+                            "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
         run.model = self.model_for(task, runner, review_difficulty)
-        if runner.harness and runner.harness.cfg.get("review_model"):
+        if ladder_model:
+            run.model = ladder_model
+        elif runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
+        if ladder_model and writer:
+            run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
+                                     "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
         runner.start(run, wt, text)
@@ -225,6 +308,9 @@ class ReviewMixin:
         st["review_run"] = run.run_id
         if count_round:
             st["review_rounds"] = int(st.get("review_rounds", 0)) + 1
+        if ladder_model and writer:
+            task.log(f"reviewed by {run.model}, one above {writer.model}")
+            self.store.save(task)
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
@@ -249,6 +335,8 @@ class ReviewMixin:
         if run is None:
             st["review_run"] = ""
             return False
+        if self._verdict_is_moot(task) or not self._review_evidence_is_current(task, run):
+            return self._close_obsolete_review(task, run, rep)
         if run.status != "running":
             # The run record is already terminal. Usually a prior reap applied its verdict and
             # only the tick that would clear this pointer was lost — but if the process was
@@ -315,6 +403,42 @@ class ReviewMixin:
             run.save()
         return self._apply_review(task, run, review, rep, emitted=False)
 
+    def _review_evidence_is_current(self, task: Task, run: Run) -> bool:
+        """Whether this review inspected the branch head that is still current."""
+        reviewed = str((run.env_snapshot or {}).get("review_head") or "")
+        if not reviewed:
+            return False
+        current = gitops.head_sha(self.worktree_for(task))
+        return current == reviewed
+
+    def _close_obsolete_review(self, task: Task, run: Run, rep: TickReport) -> bool:
+        """Collect a completed review for accounting without applying an obsolete verdict."""
+        st = self.state.get(task.id)
+        if run.status == "running":
+            runner = self.runner_for(task, run.runner, run.harness)
+            if not self._finished_or_timed_out(run, runner):
+                return False
+            if run.status != "timeout":
+                run.exit_code = run.read_exit_code()
+                run.finished_at = now_iso()
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
+                run.error = collected.get("error") or ""
+                run.status = "done" if run.exit_code in (0, None) else "failed"
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review",
+                             cost_usd=run.cost_usd, usage=run.usage, status=run.status,
+                             obsolete=True)
+        st["review_run"] = ""
+        note = "review verdict discarded because the task or reviewed head moved on"
+        run.error = f"{run.error} ({note})" if run.error else note
+        run.save()
+        self.state.save()
+        self.log(f"{task.id}: review run {run.run_id} closed; {note}")
+        rep.transitions.append(f"{task.id} review run {run.run_id} closed (obsolete)")
+        return True
+
     def _review_comment_posted(self, slug: str, number: int, run_id: str) -> bool:
         """True if a comment carrying this run's marker (see `mark_garden_comment`) is already
         on the PR — the backstop for the narrow window `_apply_review` still leaves open (a kill
@@ -374,11 +498,29 @@ class ReviewMixin:
                     self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
+        missing_fixes = self._blocking_findings_without_fix(review)
+        # A replay restores a verdict whose worker run had already been reaped before the
+        # scheduler crashed. Older reviews legitimately lack `fix`, and recovery must put
+        # their original changes_requested state back rather than replacing it with a new
+        # review round. Freshly reaped reviews still get the one actionable re-ask.
+        if missing_fixes and not emitted and not st.get("review_fix_reasked"):
+            st["review_fix_reasked"] = True
+            self.dispatch_review(task, count_round=False, reask_missing_fixes=True)
+            rep.transitions.append(f"{task.id} review re-asked for blocking fixes")
+            return True
+        if not missing_fixes:
+            st.pop("review_fix_reasked", None)
         # repeated blocking findings across rounds = the loop isn't converging
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         st["last_findings"] = keys
+        reconciliation = st.get("no_change_reconciliation")
+        if isinstance(reconciliation, dict):
+            reconciled_head = str(reconciliation.get("head") or "")
+            current_head = str(st.get("head_sha") or "")
+            if not reconciled_head or not current_head or reconciled_head == current_head:
+                st.pop("no_change_reconciliation", None)
         if task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
             # Only the description is wrong (no blocking finding) and the reviewer supplied the
             # corrected body: apply it directly instead of spending a revise round on wording.
@@ -400,6 +542,7 @@ class ReviewMixin:
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
                     st.pop("pending_feedback_rebase", None)
+                    st.pop("review_fix_reasked", None)
                     self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
                     rep.transitions.append(f"{task.id} -> changes_requested (review)")
                     return True
@@ -423,6 +566,13 @@ class ReviewMixin:
                   f"automated review: {verdict} — {review.get('summary', '')}{cost}", task.pr or "")
         rep.transitions.append(f"{task.id} review: {verdict}")
         return True
+
+    @staticmethod
+    def _blocking_findings_without_fix(review: dict[str, Any]) -> list[dict[str, Any]]:
+        """Blocking findings need actionable advice; older reviewers can omit new fields."""
+        return [finding for finding in review.get("findings") or []
+                if isinstance(finding, dict) and finding.get("severity") == "blocking"
+                and not str(finding.get("fix") or "").strip()]
 
     def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
         """The reviewer found nothing blocking but the description, and returned the corrected

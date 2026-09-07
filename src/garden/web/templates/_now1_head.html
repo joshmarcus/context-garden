@@ -1,0 +1,5 @@
+{#- The five-second sentence and the Now region's slot count: the two elements the stream
+    rewrites together on a dispatch, a finish or a pause; the page places each where it goes. -#}
+{% from "_now1_macros.html" import five, slots with context %}
+{{ five(snap) }}
+{{ slots(snap) }}

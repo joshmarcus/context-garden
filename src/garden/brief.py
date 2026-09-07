@@ -21,20 +21,24 @@ RESULT_MARKER = "GARDEN_RESULT:"
 OPERATING_RULES = """\
 ## Operating rules
 
-- You are working in a git worktree checked out on branch `{branch}` (based on `{base}`). Everything you change must be committed on this branch. Commit in small, well-described steps. Do NOT push and do NOT open a pull request: the garden runner does that when you finish.
+- You are working in a git worktree checked out on branch `{branch}` (based on `{base}`). Everything you change must be committed on this branch. Commit in small, well-described steps. {push_rule}
 {turn_cap_rule}- Do NOT edit files under `**/tasks/` in the context garden; task state is managed by the scheduler.
 - Work only in the directory you were started in: it is your checkout on your branch. Do not change into any other checkout of this repository.
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
 {env_rule}- Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
 - Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
-- Run the project's own fast checks (tests, lint, typecheck) before you finish. Fix what you broke.
+- During iteration run focused tests only. Before finishing, run the project's checks sequentially
+  (tests, lint, typecheck); full CI remains the merge gate. Fix what you broke.
+- In a supervised local run, launch each potentially heavy validation as
+  `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
+  within its execution budget. Run ordinary lightweight inspection commands directly.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
 - Speak to every acceptance criterion. In `verified`, give one entry per criterion in the task's **Acceptance criteria** list, in order: quote the `criterion` and give its `evidence` — the test that proves it (by name), the command and its output, or the page and what it shows. A criterion you did not meet is `{{"criterion": "...", "not_done": true, "reason": "<why>"}}`, never a silent omission. Do not write a Verification section in `pr_body`: the garden builds one from `verified`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name, command and output, or page and observation>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
   The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty; each item carries a `kind` (default `task`):
 
@@ -59,13 +63,13 @@ The human answered your question.
 
 **Answer:** {answer}
 
-Continue the task from where you stopped, in the same worktree and branch. The same rules apply: commit your work, do not push, and end your final message with the `{marker}` line (status `done`, or `needs_input` again with a new question).
+Continue the task from where you stopped, in the same worktree and branch. The same rules apply: commit your work, follow the original brief's push/CI rules, and end your final message with the `{marker}` line (status `done`, or `needs_input` again with a new question).
 """
 
 REVISE_RULES = """\
 ## Revision round
 
-This branch already has an open pull request: {pr}. Reviewers left feedback (below). Address every item: make the change, or explain why not. Do not start over; build on the existing commits. To reply to reviewers (e.g., if you decline a suggestion or explain a tradeoff), set `pr_comment` in your GARDEN_RESULT JSON; the garden will post it as a comment on the PR. Do not add review responses to the PR description (`pr_body`) — they belong in the comment thread, not in the change description.
+This branch already has an open pull request: {pr}. Reviewers left feedback (below). Findings and their fixes are this round's work: address every one, or explain why not. Improvements are optional: take or decline each one, and name your choices in `improvements_taken` and `improvements_declined` (with a reason for each decline). Do not start over; build on the existing commits. To reply to reviewers (e.g., if you decline a suggestion or explain a tradeoff), set `pr_comment` in your GARDEN_RESULT JSON; the garden will post it as a comment on the PR. Do not add review responses to the PR description (`pr_body`) — they belong in the comment thread, not in the change description.
 """
 
 PRE_PR_REVISE_RULES = """\
@@ -146,6 +150,19 @@ class Brief:
         return max(1, chars // 4)
 
 
+def _push_rule(setup: dict) -> str:
+    if setup.get("worker_push") is True:
+        return (
+            "You may push ONLY this assigned branch to origin for the configured CI checks, "
+            "without force or changing git configuration. Run focused local checks first, "
+            "commit, push and wait for CI on the exact final commit in this session. Fix "
+            "failures and recheck before declaring done; missing, pending or stale CI is not "
+            "a pass. Report the commit, run URL and conclusion in your acceptance evidence. "
+            "Do NOT open, edit or merge pull requests: the garden runner owns them."
+        )
+    return "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
+
+
 def _env_rule(setup: dict) -> str:
     """The operating rule about the working environment: it is already prepared, so the worker
     must not install packages or make a virtualenv, and here are the exact commands to run its
@@ -161,7 +178,8 @@ def _env_rule(setup: dict) -> str:
         if cmd:
             checks.append(f"`{cmd}` ({label})")
     if checks:
-        prepared += " Run the project's checks with " + " and ".join(checks) + " before you finish."
+        prepared += (" During iteration run focused tests only. Before finishing, run the project's checks "
+                     "sequentially with " + " and ".join(checks) + "; full CI remains the merge gate.")
     return prepared + "\n"
 
 
@@ -307,6 +325,7 @@ def build_brief(
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
             env_rule=_env_rule(cfg.product_setup(task.product)),
+            push_rule=_push_rule(cfg.product_setup(task.product)),
         )
         sections.append(("rules", rules))
         if review_feedback:

@@ -7,8 +7,14 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from ...brief import build_brief
-from ...criteria import parse_criteria, reconcile, worker_verified
+from ...brief import brief_gaps, build_brief
+from ...criteria import (
+    parse_criteria,
+    reconcile,
+    required_evidence,
+    required_evidence_rows,
+    worker_verified,
+)
 from ...events import EventLog
 from ...graph import blockers, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
@@ -17,6 +23,21 @@ from ...runs import RunStore
 from ...scheduler import State
 from ...trials import TrialLog, ranking_markdown
 from ..common import Site, render_md
+
+
+def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
+    """Design paths changed by the task branch, using the local checkout when available."""
+    if not task.branch:
+        return []
+    from ... import gitops
+    try:
+        repo = gitops.ensure_repo(store.config.product_repo(task.product), store.config.repos_dir)
+        base = store.config.product_base_branch(task.product)
+        names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}"}
+            for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -48,6 +69,8 @@ def register(app: FastAPI, site: Site) -> None:
         edit_diff = _edit_diff(runs)
         criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
                                   (st.get("last_review") or {}).get("criteria"))
+        evidence_rows = required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)
+        gaps = brief_gaps(s, t) if t.status.value == "draft" else []
 
         # Phases this task can move to (the product's own phases, current one always shown even
         # if closed), and any dependency that now sits in a later phase and so can never merge
@@ -71,6 +94,9 @@ def register(app: FastAPI, site: Site) -> None:
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
+            evidence_rows=evidence_rows,
+            brief_gaps=gaps,
+            acceptance_text=_acceptance_text(t.body),
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
             edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
@@ -82,7 +108,9 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
-            prior_trials=prior_trials, trial_view=trial_view,
+            prior_trials=prior_trials,
+            trial_view=trial_view,
+            design_files=_design_files(t, s),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -144,6 +172,14 @@ def _edit_diff(runs: list[Any]) -> str:
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile="before", tofile="after"))
     return ""
+
+
+def _acceptance_text(body: str) -> str:
+    """The editable contents of the acceptance-criteria section, without its heading."""
+    import re
+
+    match = re.search(r"(?ms)^##\s+Acceptance criteria\s*$\n?(.*?)(?=^##\s|\Z)", body)
+    return match.group(1).strip() if match else ""
 
 
 def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:

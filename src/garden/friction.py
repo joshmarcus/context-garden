@@ -50,6 +50,23 @@ def friction_items(result: dict) -> list[str]:
     return [str(i).strip() for i in raw if str(i).strip()]
 
 
+def declined_improvement_items(result: dict) -> list[str]:
+    """Turn optional review improvements declined by a worker into retro-visible friction."""
+    raw = result.get("improvements_declined") if isinstance(result, dict) else None
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            items.append(f"Declined review improvement: {item.strip()}")
+        elif isinstance(item, dict):
+            suggestion = str(item.get("suggestion") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            if suggestion:
+                items.append(f"Declined review improvement: {suggestion}" + (f" — {reason}" if reason else ""))
+    return items
+
+
 def friction_comment(items: list[str]) -> str:
     """Render friction items as the body of one marked PR comment."""
     bullets = "\n".join(f"- {i}" for i in items)

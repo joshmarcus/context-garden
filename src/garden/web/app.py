@@ -20,6 +20,7 @@ from markupsafe import Markup
 
 from ..harness import DIFFICULTIES
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
+from ..now1 import live_clock_html
 from ..plants import (
     DEFS,
     PLATE_CREDIT,
@@ -32,6 +33,7 @@ from ..plants import (
     stage_word,
     vine_svg,
 )
+from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
@@ -101,6 +103,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     templates.env.globals["stage_word"] = stage_word
     templates.env.globals["plant_info"] = plant_info
     templates.env.globals["mark"] = lambda *a, **k: Markup(mark_svg(*a, **k))
+    # A running run's elapsed time as the markup the clock in base.html ticks (the Board's
+    # running cards, a task page's run row): trusted markup built from the run record.
+    templates.env.globals["live_clock"] = lambda run: Markup(live_clock_html(run))
     templates.env.globals["PRIORITY_SCALE"] = PRIORITY_SCALE
     templates.env.globals["priority_label"] = priority_label
     templates.env.globals["DIFFICULTIES"] = DIFFICULTIES
@@ -112,6 +117,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     site = Site(hub, templates, plates)
     pages.register(app, site)
     actions.register(app, site)
+
+    @app.exception_handler(HistoryUnavailable)
+    async def unavailable_history_page(_request: Request, exc: HistoryUnavailable) -> PlainTextResponse:
+        return PlainTextResponse(
+            f"Run history is temporarily unavailable: {exc}. "
+            "Verify or rebuild .garden/run-archive/index.json before relying on totals.",
+            status_code=503,
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_error_page(request: Request, exc: Exception) -> Any:

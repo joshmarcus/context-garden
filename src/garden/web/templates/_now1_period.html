@@ -1,0 +1,55 @@
+{#- The last period: the window links, the four figures, the cost chart, runs by harness and
+    model, hand steps, and the five difficulty-by-model tables. -#}
+{% from "_now1_macros.html" import heat_table with context %}
+{%- set w = snap.period -%}
+<div id="period-body">
+  <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
+    <span class="right filters" style="margin-bottom:0">{% for key, label in snap.windows %}<a href="/now1?window={{ key }}#period" class="{{ 'on' if key == snap.window }}">{{ label }}</a>{% endfor %}</span></div>
+  {#- The window is quiet only when nothing at all was recorded in it (`period` decides): a
+      window with only the operator's ledger entries or a profile change still shows its
+      figures, so the operator's spend and share are never hidden behind "no runs". -#}
+  {% if not w.quiet %}
+  <div class="figures">
+    <div class="fig"><div class="v">{{ w.merged }}</div><div class="l">merged{% if w.merged_ids %} · {{ w.merged_ids[:4] | join(', ') }}{% if w.merged_ids | length > 4 %} and {{ w.merged_ids | length - 4 }} more{% endif %}{% endif %}</div></div>
+    <div class="fig"><div class="v">{% if w.first_pass.reviewed %}{{ (100 * w.first_pass.approved / w.first_pass.reviewed) | round | int }} %<small>{{ w.first_pass.approved }} of {{ w.first_pass.reviewed }}</small>{% else %}—{% endif %}</div><div class="l">first-pass approval</div></div>
+    <div class="fig"><div class="v">${{ '%.2f' % w.cost }}<small>{% if w.runs %}{{ w.runs }} run{{ 's' if w.runs != 1 }} {% if w.throughput | length > 1 %}{{ f.spark(w.throughput) }}{% endif %}{% else %}no run finished{% endif %}</small></div><div class="l">cost{% if w.runs and w.throughput | length > 1 %} · runs finished per {{ w.bucket }}{% endif %}</div></div>
+    <div class="fig"><div class="v">{{ f.money(w.per_accepted) }}</div><div class="l">per accepted task</div></div>
+  </div>
+  <div class="period-grid">
+    <div class="chart-box"><div class="eyebrow">Cost by activity, per {{ w.bucket }}</div><div class="chart-wide">{{ f.chart(w, 640) }}</div><div class="chart-narrow">{{ f.chart(w, 360) }}</div></div>
+    <div class="hands">
+      {#- The phase's definition-of-done numbers that are not on the four figures: what a person
+          did by hand, what the rebases cost, and what the operator seat spent. Typed like the
+          sheet's label, a figure per line, the note under each saying what it is made of. -#}
+      {%- set rb = w.rebase -%}{%- set op = w.operator -%}
+      <div class="eyebrow">By hand, and the operator</div>
+      <dl class="kv">
+        <dt>hand merges</dt><dd><b>{{ w.hand_merges }} of {{ w.merged }}</b><small>{% if w.hand_merged_ids %}{{ w.hand_merged_ids[:4] | join(', ') }}{% if w.hand_merged_ids | length > 4 %} and {{ w.hand_merged_ids | length - 4 }} more{% endif %}{% else %}every merge in the window was the loop's{% endif %}</small></dd>
+        <dt>hand steps</dt><dd><b>{{ w.hand_steps }}</b><small>{% if w.hand_kinds %}{% for k, n in w.hand_kinds.items() %}{{ k | replace('_', ' ') }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}{% else %}no answer, triage, pause or move{% endif %}</small></dd>
+        <dt>rebase rounds</dt><dd><b>{{ f.per_merge(rb.mechanical_per_merge) }} <span class="unit">mechanical</span> · {{ f.per_merge(rb.agent_per_merge) }} <span class="unit">agent</span></b><small>per merge: {{ rb.mechanical }} + {{ rb.agent }} over {{ rb.merges }} merge{{ 's' if rb.merges != 1 }}{% if rb.cost %} · {{ f.money(rb.cost) }}{% endif %}</small></dd>
+        <dt>operator</dt><dd>{% if op.spend %}<b>{{ f.money(op.spend) }}{% if op.share is not none %} <span class="unit">· {{ (100 * op.share) | round | int }} % of the window's spend</span>{% endif %}</b><small>{{ op.sessions }} session{{ 's' if op.sessions != 1 }} in the ledger the Costs page reads</small>{% else %}<b class="faint">—</b><small>no ledger entry in this window</small>{% endif %}</dd>
+      </dl>
+      {% if w.annotations %}<p class="hand">{% for a in w.annotations %}{{ a.at[11:16] }}Z {{ a.kind | replace('_', ' ') }}{% if a.changed %}: {{ a.changed | join(', ') }}{% endif %}{% if a.to %}: {{ a['from'] or '(none)' }} → {{ a.to }}{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</p>
+      {% else %}<p class="hand faint">no profile change or config reload in this window</p>{% endif %}
+    </div>
+  </div>
+  {% set bm = w.by_model %}
+  {% if bm.columns %}
+  <div class="tiers">
+    <div class="eyebrow">Runs by harness and model</div>
+    <p class="lead">a row per mode that ran, a column per harness and model with what it cost in all, each cell the mean cost of one run over its n runs, shaded and marked within the row the way every table here is</p>
+    <div class="runs-table">{{ heat_table(bm, bm.columns, bm.rows.keys() | list, bm.thin, bm.heads) }}</div>
+  </div>
+  {% endif %}
+  {% set tiers = w.tiers %}
+  <div class="tiers">
+    <div class="eyebrow">By difficulty and model</div>
+    {% if tiers.models %}
+    <p class="lead">the five figures <code>garden metrics</code> reports, each cell with its n. Along a row the ground runs from green at the best value to red at the worst, <span class="mark best">▲</span> and <span class="mark worst">▽</span> mark the two ends; a cell under {{ tiers.thin }} samples is faint and marked <span class="mark thin">~</span>, and is never an end</p>
+    <div class="tier-tables{{ ' wide' if tiers.models | length > 5 }}">
+      {% for m in tiers.metrics %}{{ heat_table(m, tiers.models, ("easy", "medium", "hard"), tiers.thin) }}{% endfor %}
+    </div>
+    {% else %}<p class="lead">No model did work in this window.</p>{% endif %}
+  </div>
+  {% else %}<div class="empty">{{ f.quiet_period }}</div>{% endif %}
+</div>

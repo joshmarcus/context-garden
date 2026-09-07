@@ -96,11 +96,12 @@ of the loop touch different files.
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
+| `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
-| `web/pages/` | one module per page family (`inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes |
+| `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
@@ -115,6 +116,7 @@ Git is the database. The split between the four stores is deliberate.
 | `<product>/<phase>/tasks/*.md` | one task per file: YAML frontmatter is the state (`status`, `depends_on`, `priority`, `difficulty`, `branch`, `pr`, `attempts`, `last_dispatched_at`), the body is what the worker reads, `## Log` is one line per transition | humans (everything but the scheduler-owned fields), the planner, the scheduler | reviewable in git, readable by people, the source of truth for *state* |
 | `.garden/state.json` | per-task bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; safe to delete and rebuild from GitHub, at the cost of one poll; concurrent writers are safe (see below) |
 | `.garden/runs/<task>/<run>/` | one directory per worker run: the exact brief, raw output, exit code, usage and cost | runners and the scheduler | the audit trail and the token ledger |
+| `.garden/run-archive/<task>/<run>/` | old terminal run artifacts plus `index.json`, a compact metadata ledger | `garden archive-runs` | keeps transcripts available on demand without putting their directories in ordinary request scans |
 | `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
@@ -122,6 +124,31 @@ Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the tas
 `reservations.json` (durable id reservations, below).
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
+
+Run metadata is indexed in process and shared by scheduler/read facades. A writer in the
+process invalidates its task bucket immediately and touches that bucket for other processes;
+external changes appear within one second. An expiry stats the bounded set of task buckets
+and reparses only buckets whose fingerprint changed, while concurrent callers wait for that
+single refresh. It does not reparse every historical `run.json`. The archive's compact
+`index.json` is read only when its own fingerprint changes and participates in costs and run
+listings; ordinary reads never walk the archive tree. If that ledger is missing or corrupt,
+totals and affected web pages report history unavailable instead of silently showing partial
+figures.
+
+`garden archive-runs --older-than-days 30` moves only terminal runs with a recorded finish
+before the cutoff. It retains running/unreaped records and any run id still named by
+`state.json` recovery bookkeeping. Each move and the manifest replacement is atomic, and a
+retry rebuilds the manifest from the archive, making interruption recoverable. `garden
+restore-run TASK RUN` returns one run and all of its logs to `.garden/runs`. A missing or
+invalid manifest is reported by the run store rather than inferred as empty history. Deploy
+the indexed reader by restarting `garden serve` normally; no cache file or temporary
+operator parsing cache is retained, and active workers remain detached across the restart.
+
+Fence manifests protect live config, state and concurrently active run evidence. They are
+stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while
+the run is active; completed run directories remain the durable audit and accounting history
+but are not copied into every later dispatch snapshot. On load, legacy inline manifests for
+completed runs are removed through the ordinary locked state writer.
 
 ### Reserving task ids
 
@@ -182,6 +209,7 @@ owned by a single code path (e.g. only `poll()` writes `pr_updated_at`).
 | stacking | `stack_parent`, `restack_pending` | the dependency this branch is built on, and whether to rebase when the current run ends |
 | questions | `question`, `question_run`, `session_id`, `session_host`, `session_harness`, `qa` | enough to resume the paused session, and every earlier answer |
 | trials, discovered work | `trial`, `worktree`, `discovered_ids` | contenders and their scores; a worktree override for the winning contender; tasks this one reported |
+| active fence | `fence`, `fence_guard_manifest` | dispatch snapshot plus a compact run-id/content-hash reference; released after run and task finalization, while the content-addressed manifest and run audit remain on disk |
 | suggestions | `edit_run`, `edit_attempts` | the edit run folding pending suggestions into the task body, and how many edit runs failed (capped) |
 
 Two special entries: `_phase:<product>/<phase>` records when a budget was hit, and `_aux`
@@ -274,6 +302,33 @@ unfinished dependency has an open PR to build on. Order is priority, then id. Ea
 candidate is skipped when no slot is free (`max_parallel` minus every active run that is
 not human-driven, review and persona runs included), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
+
+Local admission is also host-wide: `resources.max_parallel` counts workers, reviews,
+personas and checks together, including automatic base probes and direct CLI dispatches.
+Optional available-memory and work-dir temp-free thresholds defer every new local launch.
+The capacity check and new running record are published under one filesystem lock, so a
+service action and concurrent CLI commands cannot all claim the final slot.
+Reaping is never gated, so pressure drains without a restart; the rail and operator feed
+name the effective bound and recovery action. Queue-specific `max_parallel` and
+`review_parallel` remain narrower caps inside that host bound.
+
+Supported local setup, checks, probes and worker-issued validations additionally share
+`resources.heavy_test_parallel` kernel leases across every garden owned by the same OS user
+(one by default). The first limit stored in the shared runtime directory is authoritative;
+conflicting garden limits are recorded and use that capacity rather than minting more slots.
+Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
+cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
+release its `flock`, so reservations cannot become stale. A supported worker-issued validation
+uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` and takes both the host
+lease and a separate owner-scoped lease. The parent model session holds neither lease, so two
+validations in one run serialize without a nested-lock deadlock.
+Raw child commands are still contained by the aggregate cgroup but cannot be recognized as
+heavy and are not serialized. With `resources.execution_cgroup`, the
+supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU
+and memory controls and its resulting membership, so all descendants
+share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose
+waiting counts and whether cgroup isolation is enforced. Arbitrary commands launched outside
+the local runner and remote hosts are outside this boundary and must be bounded separately.
 
 Dispatching one task means: choose the runner (task, then product, then garden default),
 the harness (same order), the model (an explicit `model:`, else the harness's tier map by
@@ -699,3 +754,5 @@ spending tokens; a failed flow exits non-zero and fails the job.
   config, never from a check's own JSON output (code the branch wrote), and runs in the same
   scrubbed environment — so a check cannot smuggle a shell command out through its output.
 - No model runs in the tick. Waiting is a sleeping Python process.
+
+The fence verifies the authoritative manifest against its saved digest. Missing or invalid trusted metadata fails the run for operator inspection; the worker-writable audit copy is never a restoration authority. References survive manual runs and interrupted finalization so a recovered reap can repeat the check safely.

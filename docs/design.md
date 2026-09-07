@@ -71,7 +71,7 @@ token-free scripts; `events` records history; `store` and `model` read and write
 2. **Dispatch.** `tick` fills `max_parallel` slots from the ready set: tasks whose
    dependencies are done, or (with stacking) whose one open dependency has a PR to build
    on. Phase budgets can pause this.
-3. **Work.** A worker runs in a worktree with only its brief. It commits, never pushes,
+3. **Work.** A worker runs in a worktree with only its brief. It commits (and may push for explicitly enabled CI),
    and ends with a `GARDEN_RESULT` line: done, or a question (`needs_input`), plus any
    discovered work.
 4. **Gate.** Token-free pre-PR checks (tests, lint) run in the worktree. Failures become

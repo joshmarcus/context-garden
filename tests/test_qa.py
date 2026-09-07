@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from garden import runner as runner_registry
 from garden.cli import app
 from garden.qa import _normalise, qa_brief, run_qa
-from garden.qa.flows import FLOWS, Flow, FlowFailed
+from garden.qa.flows import FLOWS, Client, Flow, FlowFailed
 from garden.runner.local import LocalRunner
 
 
@@ -51,6 +51,19 @@ def test_scripted_agent_completes_every_flow(tmp_path):
     assert "DM-003" in next(p for p in pages if "tasks-dm-003" in p.name).read_text()
     # the throwaway garden is gone without --keep
     assert not (out / "garden").exists() and report.garden is None
+
+
+def test_scripted_client_uses_the_flow_timeout_for_http_requests(monkeypatch):
+    """A busy scheduler action may use most of the flow's allowed time before redirecting."""
+    observed = {}
+
+    class FakeHTTPClient:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
+    Client("http://example.test", timeout=42)
+    assert observed["timeout"] == 42
 
 
 def test_a_broken_flow_names_the_step_and_exits_non_zero(tmp_path, monkeypatch):

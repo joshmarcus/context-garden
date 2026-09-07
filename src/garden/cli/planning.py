@@ -323,7 +323,7 @@ def retro(
     console.print("[dim]run `garden tick` (or `garden watch`) to let it finish[/dim]")
 
 
-@app.command("retro-decide")
+@app.command("retro-decide", rich_help_panel=PANEL_QUALITY)
 def retro_decide(
     target: str = typer.Argument(..., help="product/phase"),
     choice: str = typer.Argument(..., help="close | followups | reopen"),

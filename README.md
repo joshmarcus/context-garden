@@ -50,6 +50,10 @@ name: my-garden
 runner: local                      # local | ssh | manual
 harness: claude                    # claude | codex | a name under harnesses:
 max_parallel: 5                    # detached runs at once (work, revise, review)
+resources:                         # one host-wide gate across workers, reviews and checks
+  max_parallel: 3
+  min_memory_available_mb: 1536
+  min_temp_free_mb: 1024
 max_attempts: 2
 max_revisions: 3
 review:

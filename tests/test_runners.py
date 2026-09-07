@@ -1,5 +1,9 @@
+import json
 import os
+import shlex
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -190,6 +194,347 @@ def test_local_runner_launch_flips_process_finished(tmp_path):
     assert run.process_finished()
     assert (d / "exit_code").read_text().strip() == "0"
     assert "hello from the brief" in (d / "stdout.json").read_text()
+
+
+def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
+    """A child in a new session still keeps its run active through the subreaper."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "setsid sh -c 'sleep 0.8' >/dev/null 2>&1 &"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    d = tmp_path / "run"
+    d.mkdir()
+    run = Run(task_id="T-001", run_id="r1", dir=str(d), runner="local")
+    brief = tmp_path / "brief.md"
+    brief.write_text("")
+
+    runner.launch(run, tmp_path, brief, dict(os.environ))
+    assert run.pid is not None
+    # The harness shell returns immediately, but the supervisor remains the subreaper for
+    # its new-session descendant and withholds the completion signal.
+    deadline = time.monotonic() + 0.5
+    while not (d / "stdout.json").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not run.process_finished()
+    os.waitpid(run.pid, 0)
+    assert run.process_finished()
+    isolation = __import__("json").loads((d / "isolation.json").read_text())
+    assert isolation == {"configured": False, "enforced": False,
+                         "reason": "execution cgroup is not configured"}
+
+
+def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
+    """Independent launchers queue on the host lease; exit releases it without cleanup."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 0.35"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    runs = []
+    for number in (1, 2):
+        d = tmp_path / f"run{number}"
+        d.mkdir()
+        brief = d / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"r{number}", dir=str(d), runner="local")
+        env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+               "GARDEN_HEAVY_EXECUTION": "1"}
+        runner.launch(run, tmp_path, brief, env)
+        runs.append(run)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        states = [(r.path / "execution.json").read_text() for r in runs if (r.path / "execution.json").exists()]
+        if any('"state": "running"' in s for s in states) and any('"state": "waiting"' in s for s in states):
+            break
+        time.sleep(0.01)
+    assert sum('"state": "running"' in (r.path / "execution.json").read_text() for r in runs) == 1
+    assert sum('"state": "waiting"' in (r.path / "execution.json").read_text() for r in runs) == 1
+    for run in runs:
+        os.waitpid(run.pid, 0)
+    assert all(run.process_finished() for run in runs)
+
+
+def test_conflicting_garden_limits_keep_first_authoritative_capacity(tmp_path):
+    """A limit-2 garden cannot add a slot while the shared authority is limit 1."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    runner = LocalRunner({"timeout_minutes": 0}, Harness("tiny", {"command": ["sh", "-c", "sleep 0.3"]}))
+    runs = []
+    for number, limit in ((1, 1), (2, 2)):
+        run_dir = tmp_path / f"mixed-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"mixed-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_TEST_PARALLEL": str(limit),
+                                            "GARDEN_HEAVY_EXECUTION": "1"})
+        runs.append(run)
+        if number == 1:
+            deadline = time.monotonic() + 2
+            while not (run_dir / "execution.json").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+    deadline = time.monotonic() + 2
+    conflict = None
+    while time.monotonic() < deadline:
+        path = runs[1].path / "execution.json"
+        if path.exists() and (conflict := json.loads(path.read_text())).get("conflict"):
+            break
+        time.sleep(0.01)
+    assert conflict is not None
+    assert conflict["state"] == "waiting"
+    assert conflict["limit"] == 1 and conflict["requested_limit"] == 2
+    assert "conflicts with authoritative limit 1" in conflict["reason"]
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+
+
+def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path):
+    """Agent capacity is independent of the authoritative local validation budget."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    counter = tmp_path / "counter.py"
+    counter.write_text(
+        "import fcntl, pathlib, sys, time\n"
+        "name, delay = sys.argv[1], float(sys.argv[2])\n"
+        "state = pathlib.Path(name + '.txt')\n"
+        "with pathlib.Path(name + '.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, (state.read_text() if state.exists() else '0 0').split())\n"
+        " state.write_text(f'{active + 1} {max(active + 1, peak)}')\n"
+        "time.sleep(delay)\n"
+        "with pathlib.Path(name + '.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, state.read_text().split())\n"
+        " state.write_text(f'{active - 1} {peak}')\n"
+    )
+    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {counter} heavy 0.25'
+    command = ["sh", "-c", f"{shlex.quote(sys.executable)} {counter} model 0.15 & {validation}; wait"]
+    runner = LocalRunner({"timeout_minutes": 1}, Harness("agent", {"command": command}))
+    runs = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"agent-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"agent-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_TEST_PARALLEL": "1"})
+        runs.append(run)
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+    assert (tmp_path / "model.txt").read_text() == "0 2"
+    assert (tmp_path / "heavy.txt").read_text() == "0 1"
+
+
+def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
+    """A real focused pytest target runs once while the other supported launch waits."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    target = tmp_path / "test_bounded_target.py"
+    target.write_text("import time\n\ndef test_bounded_workload():\n    time.sleep(0.25)\n")
+    command = [sys.executable, "-m", "pytest", str(target), "-q"]
+    runner = LocalRunner({"timeout_minutes": 1}, Harness("focused-pytest", {"command": command}))
+    runs = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"pytest-run-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"pytest-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1",
+                                            "GARDEN_EXECUTION_CGROUP": ""})
+        runs.append(run)
+
+    deadline = time.monotonic() + 3
+    observed = set()
+    while time.monotonic() < deadline:
+        for run in runs:
+            if (run.path / "execution.json").exists():
+                observed.add(json.loads((run.path / "execution.json").read_text())["state"])
+        if observed == {"running", "waiting"}:
+            break
+        time.sleep(0.01)
+    assert observed == {"running", "waiting"}
+    running = next(run for run in runs
+                   if json.loads((run.path / "execution.json").read_text())["state"] == "running")
+    execution = json.loads((running.path / "execution.json").read_text())
+    assert execution["pid"] == running.pid
+    assert "pytest" in (running.path / "command.txt").read_text()
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+        assert "1 passed" in (run.path / "stdout.json").read_text()
+
+
+def test_local_worker_env_carries_execution_budget(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    runner = LocalRunner({"resources": {"heavy_test_parallel": 3,
+                                        "execution_cgroup": "/sys/fs/cgroup/example"}},
+                         Harness("tiny", {"command": ["true"]}))
+    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local")
+    env = runner.worker_env(run, {}, tmp_path)
+    assert env["GARDEN_HEAVY_TEST_PARALLEL"] == "3"
+    assert env["GARDEN_EXECUTION_CGROUP"] == "/sys/fs/cgroup/example"
+
+
+def test_execution_cgroup_requires_finite_limits_and_verified_migration(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    group = tmp_path / "bounded"
+    group.mkdir()
+    for name, value in (("cgroup.procs", ""), ("cpu.max", "100000 100000"),
+                        ("memory.high", "2147483648"), ("memory.max", "2684354560")):
+        (group / name).write_text(value)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("GARDEN_EXECUTION_CGROUP", str(group))
+
+    monkeypatch.setattr(supervisor, "_process_cgroup_path", lambda: group.resolve())
+    supervisor._enter_execution_cgroup(run_dir)
+    status = json.loads((run_dir / "isolation.json").read_text())
+    assert status["enforced"] is True
+    assert status["limits"]["cpu.max"] == "100000 100000"
+
+    monkeypatch.setattr(supervisor, "_process_cgroup_path", lambda: tmp_path.resolve())
+    supervisor._enter_execution_cgroup(run_dir)
+    status = json.loads((run_dir / "isolation.json").read_text())
+    assert status["enforced"] is False
+    assert "migration failed" in status["reason"]
+
+
+def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch):
+    import garden.run_supervisor as supervisor
+
+    run_dir = tmp_path / "nested"
+    run_dir.mkdir()
+    monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "outer-run")
+    monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
+    slot = supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
+    status = json.loads((run_dir / "execution.json").read_text())
+    assert slot is not None
+    assert status["state"] == "running" and status["owner_scoped"] is True
+
+
+def test_two_validations_from_one_worker_are_serialized(tmp_path):
+    """Competing supported validation wrappers cannot multiply one worker's workload."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    workload = tmp_path / "workload.py"
+    workload.write_text(
+        "import fcntl, pathlib, time\n"
+        "state = pathlib.Path('active.txt')\n"
+        "with pathlib.Path('active.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, (state.read_text() if state.exists() else '0 0').split())\n"
+        " active += 1\n"
+        " state.write_text(f'{active} {max(active, peak)}')\n"
+        "time.sleep(0.25)\n"
+        "with pathlib.Path('active.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, state.read_text().split())\n"
+        " state.write_text(f'{active - 1} {peak}')\n"
+    )
+    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {workload}'
+    harness = Harness("nested", {"command": ["sh", "-c", f"{validation} & {validation} & wait"]})
+    runner = LocalRunner({"timeout_minutes": 1}, harness)
+    run_dir = tmp_path / "outer"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="outer", dir=str(run_dir), runner="local")
+    env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+           "GARDEN_EXECUTION_CGROUP": ""}
+    runner.launch(run, tmp_path, brief, env)
+
+    deadline = time.monotonic() + 3
+    saw_waiting = False
+    while time.monotonic() < deadline and not run.process_finished():
+        statuses = list((run_dir / "validations").glob("*/execution.json"))
+        states = [json.loads(path.read_text())["state"] for path in statuses]
+        saw_waiting |= "waiting" in states
+        time.sleep(0.01)
+    os.waitpid(run.pid, 0)
+    assert run.read_exit_code() == 0
+    assert saw_waiting
+    assert (tmp_path / "active.txt").read_text() == "0 1"
+    statuses = list((run_dir / "validations").glob("*/execution.json"))
+    assert len(statuses) == 2
+    assert all(json.loads(path.read_text())["owner_scoped"] is True for path in statuses)
+
+
+def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 1"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    runs = []
+    for number in (1, 2):
+        d = tmp_path / f"cancel{number}"
+        d.mkdir()
+        brief = d / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"c{number}", dir=str(d), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1"})
+        runs.append(run)
+    deadline = time.monotonic() + 2
+    while not all((r.path / "execution.json").exists() for r in runs) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    waiting = next(r for r in runs if '"state": "waiting"' in (r.path / "execution.json").read_text())
+    assert waiting.stop(timeout=2)
+    assert waiting.read_exit_code() == 143
+    for run in runs:
+        if run is not waiting:
+            run.stop(timeout=2)
+
+
+def test_setup_waits_inside_the_heavy_execution_budget(tmp_path, monkeypatch):
+    """Setup is validation-capable, so it must not run before the supervisor's lease."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    runner = LocalRunner({"timeout_minutes": 0, "worker_env": {"pass": ["XDG_RUNTIME_DIR"]},
+                          "setup": {"command": "touch setup-started; sleep 0.35"}},
+                         Harness("tiny", {"command": ["true"]}))
+    runs = []
+    for number in (1, 2):
+        worktree = tmp_path / f"wt{number}"
+        worktree.mkdir()
+        d = tmp_path / f"setup-run{number}"
+        d.mkdir()
+        run = Run(task_id=f"T-{number}", run_id=f"s{number}", dir=str(d), runner="local")
+        runner.start(run, worktree, "")
+        runs.append((run, worktree))
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        states = [json.loads((run.path / "execution.json").read_text()).get("state")
+                  for run, _ in runs if (run.path / "execution.json").exists()]
+        started = sum((worktree / "setup-started").exists() for _, worktree in runs)
+        if sorted(states) == ["running", "waiting"] and started == 1:
+            break
+        time.sleep(0.01)
+    assert sum((worktree / "setup-started").exists() for _, worktree in runs) == 1
+    for run, _ in runs:
+        os.waitpid(run.pid, 0)
+    assert all((worktree / "setup-started").exists() for _, worktree in runs)
 
 
 def test_ssh_runner_uses_bare_bin(sched, fake_github):

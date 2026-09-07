@@ -22,7 +22,7 @@ from .common import (
 
 
 # --------------------------------------------------------------------------- move
-@app.command()
+@app.command(rich_help_panel=PANEL_PLAN)
 def move(task_id: str, target: str = typer.Argument(..., help="product/phase")):
     """Move a task to another phase of the same product, keeping its id, history and state."""
     store = _store()
@@ -178,6 +178,18 @@ def retry(task_id: str):
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
+
+
+@app.command("recover-check", rich_help_panel=PANEL_DECIDE)
+def recover_check(task_id: str):
+    """Repair an inconsistent waiting/check state without cancelling live check work."""
+    store = _store()
+    try:
+        outcome = _scheduler(store).recover_waiting_check(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: {outcome}")
 
 
 @app.command(rich_help_panel=PANEL_DECIDE)

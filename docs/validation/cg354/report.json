@@ -1,0 +1,82 @@
+{
+  "recorded_at": "2026-09-07T00:12:27.491552+00:00",
+  "baseline_is_parent_of_split_commit": "4cfcc8c",
+  "execution": "serial in one systemd user service",
+  "verified_in_process_limits": {
+    "cpu.max": "200000 100000",
+    "memory.max": "1073741824"
+  },
+  "requested_service_properties": {
+    "CPUQuota": "200%",
+    "MemoryHigh": "512M",
+    "MemoryMax": "1G",
+    "MemorySwapMax": "0",
+    "TasksMax": "128",
+    "RuntimeMaxSec": "180"
+  },
+  "interpreter": "/home/joshua/garden/.venv/bin/python",
+  "bytecode_disabled": true,
+  "unit_peak_memory": "153.8 MiB (rounded systemd report)",
+  "unit_swap": "0 B",
+  "results": [
+    {
+      "selection": "before",
+      "revision": "58e13b99ddaf62b751b01771e5660039a421d46c",
+      "suite": "tests/test_retro.py",
+      "summary": "34 passed in 5.81s",
+      "elapsed_seconds": 6.29,
+      "peak_rss_kib": 67084,
+      "pytest_basetemp_kib": 14112,
+      "test_source_sha256": "8aa48135e6c066217c9558b008862299a2aa10f964b960d4ced46b3d87d2895f"
+    },
+    {
+      "selection": "after",
+      "revision": "1f3cbb29270119fc84630e8f8abf00ce4077409b",
+      "suite": "tests/test_retro_documents.py",
+      "summary": "6 passed in 0.01s",
+      "elapsed_seconds": 0.27,
+      "peak_rss_kib": 54060,
+      "pytest_basetemp_kib": 0,
+      "test_source_sha256": "64f93011fcccfa1feb0675ea6c542d2a44156965d7ffcc5091384e3237c91ffa"
+    }
+  ],
+  "measurement_scope": "Wall time and peak RSS from /usr/bin/time; du -sk of only each pytest --basetemp; checkout archives, logs and auxiliary temp excluded. Pure tests did not create a basetemp directory, so allocated pytest temp is zero.",
+  "collection_note": "Both targeted suites reported success. The original collector then exited1 because du was called on the absent after basetemp. This report was reconstructed from retained test/time logs and directories; tests were not rerun for the reporting-only correction.",
+  "limitations": "One ordered pair on a shared host; not a claim about full-suite throughput or peak memory. Focused selection omits lifecycle tests during document iteration; those tests remain in full CI.",
+  "retained_retro_test_function_names": [
+    "test_features_section_renders_rank_ids_and_skips",
+    "test_next_phase_name_increments_the_number",
+    "test_numbers_section_handles_zero_total",
+    "test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimension",
+    "test_numbers_section_reports_the_operators_share_of_total_spend",
+    "test_parse_retro_reads_the_last_marker_line",
+    "test_reap_retro_defers_the_reconcile_while_the_harness_is_paused_then_dispatches_on_resume",
+    "test_reap_retro_reconcile_env_error_pauses_the_harness_instead_of_failing_the_retro",
+    "test_reconcile_brief_includes_reported_and_comment_friction",
+    "test_reconcile_brief_marks_absent_reported_and_comment_friction",
+    "test_reconcile_dispatch_refuses_a_paused_harness",
+    "test_reconciliation_table_empty",
+    "test_reconciliation_table_escapes_pipes",
+    "test_reconciliation_table_marks_each_item_with_a_verdict_and_evidence",
+    "test_render_documents_carry_the_verdicts_and_the_next_goals",
+    "test_render_retro_doc_includes_numbers_when_given",
+    "test_resolve_features_empty",
+    "test_resolve_features_flags_a_title_match_and_an_explicit_duplicate",
+    "test_retro_commit_failure_becomes_a_card_not_a_silent_vanish",
+    "test_retro_document_reports_operator_spend_and_its_share",
+    "test_retro_dry_run_prints_the_plan_and_a_cost_estimate",
+    "test_retro_dry_run_shows_waiting_for_personas_when_a_retro_is_already_in_flight",
+    "test_retro_files_features_in_the_next_phase_and_skips_a_duplicate",
+    "test_retro_files_persona_findings_merged_across_personas_by_title",
+    "test_retro_lifts_a_personas_structured_features_into_the_features_list",
+    "test_retro_materials_reads_reported_section_and_pr_comment_friction",
+    "test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo",
+    "test_retro_reconciliation_uses_retro_difficulty_not_review_difficulty",
+    "test_retro_reconciliation_uses_retro_model_when_set",
+    "test_retro_rerun_reclaims_an_abandoned_batch_of_reserved_ids",
+    "test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collides",
+    "test_retro_runs_missing_personas_first_then_reconciles",
+    "test_retro_skip_personas_refuses_to_dispatch_with_no_reports_on_disk",
+    "test_retro_waits_for_every_persona_report_before_reconciling"
+  ]
+}

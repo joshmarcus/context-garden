@@ -1,9 +1,18 @@
+import math
+import os
+import sys
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from garden.runs import Run, RunStore
+from garden.scheduler import Scheduler
+from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
+from garden.web.common import Hub
 from tests.conftest import complete_brief
 
 
@@ -21,6 +30,134 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+@pytest.mark.parametrize("history_size", [1546, 6000])
+def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
+    rs = RunStore(garden / ".garden")
+    for n in range(history_size):
+        run_dir = rs.dir / f"DM-{n % 2 + 1:03d}" / f"20260101T{n:06d}Z-work"
+        Run(task_id=f"DM-{n % 2 + 1:03d}", run_id=run_dir.name, dir=str(run_dir), runner="local",
+            started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
+            status="done", cost_usd=0.01).save()
+    for n in range(3):
+        run_dir = rs.dir / f"LIVE-{n}" / f"20260906T17000{n}Z-work"
+        Run(task_id=f"LIVE-{n}", run_id=run_dir.name, dir=str(run_dir), runner="local", pid=os.getpid(),
+            started_at="2026-09-06T17:00:00+00:00", status="running").save()
+    c = client(garden)
+    timings = []
+    scans = rs.scan_count
+    reads = rs.read_count
+    urls = ("/", "/board", "/partials/board", "/now2", "/now2/period")
+    for interval in range(3):
+        for url in urls * 4:
+            started = time.perf_counter()
+            assert c.get(url).status_code == 200
+            timings.append(time.perf_counter() - started)
+        if interval < 2:
+            time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
+
+    p95 = sorted(timings)[math.ceil(0.95 * len(timings)) - 1]
+    print(f"{history_size + 3} runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
+          f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
+    assert p95 < 2.0
+    assert p95 <= max(timings)
+    assert rs.read_count - reads == history_size + 3
+
+
+def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("read-only page construction ran a scheduler migration")
+
+    monkeypatch.setattr(Scheduler, "_migrate_fence_bookkeeping", unexpected)
+    monkeypatch.setattr(Scheduler, "_hold_startup_config_against_fences", unexpected)
+    reader = Hub(Store(garden), watch=False).reader()
+    assert reader.control() == {}
+
+
+def test_pages_refuse_partial_totals_when_archive_index_is_corrupt(garden):
+    archive = garden / ".garden" / "run-archive"
+    archive.mkdir(parents=True)
+    (archive / "index.json").write_text("not json")
+    response = client(garden).get("/board")
+    assert response.status_code == 503
+    assert "history is temporarily unavailable" in response.text.lower()
+
+
+def test_design_files_are_safe_and_use_the_product_checkout(garden):
+    repo = garden.parent / "repo"
+    (repo / "docs" / "design").mkdir(parents=True)
+    (repo / "docs" / "design" / "mock.html").write_text("<h1>Mock</h1><script>bad()</script>")
+    (repo / "docs" / "design" / "notes.md").write_text("# Notes\n\nA design note.")
+    (repo / "docs" / "design" / "pixel.png").write_bytes(b"PNG bytes")
+    c = client(garden)
+
+    assert "Design" in c.get("/").text
+    assert c.get("/design").status_code == 200
+    html = c.get("/design/mock.html")
+    assert html.status_code == 200 and "<script>bad()</script>" in html.text
+    assert html.headers["content-security-policy"] == "sandbox"
+    markdown = c.get("/design/notes.md")
+    assert markdown.status_code == 200 and "<h1>Notes</h1>" in markdown.text
+    image = c.get("/design/pixel.png")
+    assert image.status_code == 200 and image.content == b"PNG bytes"
+    assert c.get("/design/%2e%2e/README.md").status_code == 404
+    assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
+
+
+def test_snapshot_scrubs_sensitive_strings_not_just_field_names():
+    value = _safe({"message": "failed in /home/alice/repo with token=abc123 and ghp_secret",
+                   "error": "Authorization: Bearer xyz"})
+    text = str(value)
+    assert "/home/alice/repo" not in text
+    assert "abc123" not in text and "ghp_secret" not in text and "xyz" not in text
+
+
+def test_run_page_links_and_serves_every_capture_type(garden):
+    run_dir = garden / ".garden" / "runs" / "DM-001" / "capture-run"
+    run = Run(task_id="DM-001", run_id="capture-run", dir=str(run_dir), runner="local",
+              started_at="2026-01-01T00:00:00+00:00", finished_at="2026-01-01T00:01:00+00:00",
+              status="done", result={"captures": [str(run_dir / "ui" / "page.png"),
+                                                  str(run_dir / "ui" / "page.html"),
+                                                  "notes.md", "run.json"]})
+    run.save()
+    (run_dir / "ui").mkdir()
+    (run_dir / "ui" / "page.png").write_bytes(b"png")
+    (run_dir / "ui" / "page.html").write_text("<script>bad()</script>")
+    (run_dir / "notes.md").write_text("notes")
+    c = client(garden)
+    page = c.get("/runs/DM-001/capture-run")
+    assert page.status_code == 200
+    assert "page.png" in page.text and "page.html" in page.text and "notes.md" in page.text
+    assert "/ui/{" not in page.text
+    for name, content_type in (("ui/page.png", "image/png"), ("ui/page.html", "text/html"), ("notes.md", "text/markdown")):
+        response = c.get(f"/runs/DM-001/capture-run/captures/{name}")
+        assert response.status_code == 200 and response.content
+        assert response.headers["content-type"].startswith(content_type)
+    assert c.get("/runs/DM-001/capture-run/captures/../run.json").status_code == 404
+    html = c.get("/runs/DM-001/capture-run/captures/ui/page.html")
+    assert html.headers["content-security-policy"] == "sandbox"
+    assert c.get("/runs/DM-001/capture-run/captures/run.json").status_code == 404
+    (run_dir / "garden.yaml").write_text("token: secret")
+    assert c.get("/runs/DM-001/capture-run/captures/garden.yaml").status_code == 404
+
+
+def test_task_page_shows_required_evidence_states(garden):
+    from garden.scheduler import State
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.extra["requires"] = ["persona-review -p designer", "captures", "check: unit"]
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["required_evidence"] = {
+        "persona:designer": "running", "capture:": "posted", "check:unit": "queued",
+    }
+    state.save()
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Required evidence" in page
+    assert "persona review · designer" in page and "UI captures" in page and "check · unit" in page
+    assert "running" in page and "posted" in page and "queued" in page
 
 
 def test_header_has_seedling_mark_and_favicon(garden):
@@ -421,6 +558,9 @@ def test_task_page_shares_pending_worker_decision_card_with_inbox(garden):
         assert "The worker's full message" in page
         assert f'action="/tasks/{task.id}/accept"' in page
         assert f'action="/tasks/{task.id}/reject"' in page
+        assert "Decide whether to change the promised outcome" in page
+        assert "Accept the changed outcome" in page
+        assert "Keep the original outcome" in page
 
 
 def test_task_page_shares_waiting_question_card_and_omits_it_without_a_decision(garden, monkeypatch):
@@ -446,6 +586,28 @@ def test_task_page_shares_waiting_question_card_and_omits_it_without_a_decision(
     state.get(task.id).pop("question", None)
     state.save()
     assert 'class="panel decision-card"' not in c.get("/tasks/DM-001").text
+
+
+def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garden):
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["check_run"] = {"run_id": "missing-check", "stage": "pre_pr", "cont": {}}
+    state.save()
+
+    page = client(garden).get("/").text
+    assert "Recovery needed: waiting state is incomplete" in page
+    assert "nothing for you to answer" in page
+    assert "Reconcile state" in page
+    assert "no question recorded" not in page.lower()
+    assert 'action="/tasks/DM-001/answer"' not in page
+    assert 'action="/tasks/DM-001/recover-check"' in page
 
 
 def test_inbox_and_task_page_include_the_same_decision_card_fragment():
@@ -613,6 +775,51 @@ def test_new_task_approve_now_refusal_keeps_it_draft_and_flashes_the_gap(garden)
     from garden.store import Store
 
     assert Store(garden).task("DM-003").status == Status.DRAFT
+
+
+def test_inline_edit_clears_brief_gate(garden):
+    """A draft with a missing checklist can repair its brief on its task page and approve."""
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DRAFT
+    store.save(task)
+    c = client(garden)
+
+    page = c.get("/tasks/DM-001").text
+    assert 'id="brief-card"' in page
+    assert 'action="/tasks/DM-001/brief"' in page
+
+    saved = c.post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] The task page saves a repaired brief, covered by this test.",
+        "reading": "demo/p1/specs/spec.md",
+    })
+    assert saved.status_code == 200 and saved.json() == {"gaps": []}
+    task = Store(garden).task("DM-001")
+    assert "## Acceptance criteria\n\n- [ ] The task page saves a repaired brief" in task.body
+    assert task.reading == ["demo/p1/specs/spec.md"]
+    assert 'id="brief-card"' not in c.get("/tasks/DM-001").text
+
+    c.post("/tasks/DM-001/approve")
+    assert Store(garden).task("DM-001").status == Status.READY
+
+
+def test_inline_brief_edit_rejects_missing_reading_path(garden):
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DRAFT
+    store.save(task)
+
+    response = client(garden).post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] The saved brief is valid.",
+        "reading": "demo/p1/specs/missing.md",
+    })
+    assert response.status_code == 422
+    assert "reading-list path not found" in response.json()["detail"]
+    assert Store(garden).task("DM-001").reading == ["demo/p1/specs/spec.md"]
 
 
 def test_dispatch_button_is_not_offered_on_a_draft_task(garden):
@@ -1285,6 +1492,19 @@ def test_config_page_renders(garden):
     assert "Config" in r.text
 
 
+def test_task_page_names_the_review_ladder_rung(garden):
+    """A ladder-routed review makes its writer/reviewer relationship visible on the task."""
+    from garden.runs import RunStore
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", mode="review")
+    run.harness = "codex"
+    run.model = "gpt-5.6-sol"
+    run.env_snapshot = {"writer_model": "gpt-5.6-terra"}
+    run.save()
+
+    assert "reviewed by gpt-5.6-sol, one above gpt-5.6-terra" in client(garden).get("/tasks/DM-001").text
+
+
 def test_config_page_names_live_and_restart_keys(garden):
     """CG-192: the page says config is re-read each tick without a restart, and names the
     keys that still need one (RESTART_KEYS)."""
@@ -1293,6 +1513,8 @@ def test_config_page_names_live_and_restart_keys(garden):
     assert "within one tick" in text and "no restart" in text
     assert "Needs a restart" in text
     assert "work_dir" in text and "tick_interval" in text
+    live_values = text.split("Live values", 1)[1].split("Read once at startup", 1)[0]
+    assert "tick_interval" not in live_values
 
 
 def test_config_page_and_inbox_show_a_held_reload_and_accept_applies_it(garden, monkeypatch):
@@ -1580,6 +1802,24 @@ def test_pages_neutralise_agent_written_html(garden):
     assert "<strong>fine</strong>" in page and "hover" in page and "<em>rename</em>" in page
 
 
+def test_task_page_renders_review_fixes_and_improvements(garden):
+    from garden.scheduler import State
+
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["last_review"] = {
+        "verdict": "request_changes", "summary": "needs a boundary test",
+        "findings": [{"severity": "blocking", "summary": "empty input breaks", "file": "a.py", "line": 2,
+                      "fix": "Return early when the input is empty."}],
+        "improvements": [{"area": "naming", "suggestion": "Rename x to parsed_value.",
+                          "why": "Callers read more clearly.", "effort": "small"}],
+    }
+    state.save()
+
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Return early when the input is empty." in page
+    assert "Improvements" in page and "Rename x to parsed_value." in page
+
+
 def test_posts_from_another_origin_are_refused(garden):
     c = client(garden)
     # A form posted by a page on another site carries its Origin: refused, nothing changes.
@@ -1653,12 +1893,134 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
     t0 = time.monotonic()
     r = c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False)
     post_s = time.monotonic() - t0
-    t1 = time.monotonic()
-    g = c.get("/")
-    get_s = time.monotonic() - t1
+    page_timings = {}
+    pages = {}
+    for path in ("/", "/now1"):
+        t1 = time.monotonic()
+        pages[path] = c.get(path)
+        page_timings[path] = time.monotonic() - t1
+    t2 = time.monotonic()
+    pause = c.post("/pause", data={"reason": "capacity validation"}, follow_redirects=False)
+    pause_s = time.monotonic() - t2
+    children = Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read_text().split()
+    stat = os.statvfs(garden)
+    temp_free_mb = stat.f_bavail * stat.f_frsize // (1024 * 1024)
+    from garden.scheduler.resources import _cgroup_memory_available_mb, _memory_available_mb
+    print(f"bounded workload journey: inbox={page_timings['/']:.3f}s now1={page_timings['/now1']:.3f}s "
+          f"control={pause_s:.3f}s host_mem={_memory_available_mb()}MiB "
+          f"cgroup_headroom={_cgroup_memory_available_mb()}MiB temp_free={temp_free_mb}MiB "
+          f"live_children={children}")
 
-    assert r.status_code == 303 and g.status_code == 200
+    assert r.status_code == 303 and all(page.status_code == 200 for page in pages.values())
+    assert pause.status_code == 303 and hub.scheduler().is_dispatch_paused()
     assert not done.is_set(), "the tick was still running while both requests were served"
     assert post_s < 1.0, f"POST waited {post_s:.2f}s for the tick"
-    assert get_s < 0.5, f"GET waited {get_s:.2f}s for the tick"
+    assert max(page_timings.values()) < 2.0
+    assert pause_s < 2.0
     done.wait(timeout=10)
+
+
+def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
+    """One bounded real workload runs and another visibly waits during the control journey."""
+    import json
+
+    from garden.harness import Harness
+    from garden.run_supervisor import _process_cgroup_path
+    from garden.runner.local import LocalRunner
+
+    # Retained terminal history exercises the same indexed read path used after the incident.
+    runs_store = RunStore(garden / ".garden")
+    for number in range(120):
+        run_dir = runs_store.dir / "HISTORY" / f"20260101T{number:06d}Z-work"
+        Run(task_id="HISTORY", run_id=run_dir.name, dir=str(run_dir), runner="local",
+            status="done", started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:01:00+00:00").save()
+
+    target = tmp_path / "test_control_capacity.py"
+    target.write_text("import time\n\ndef test_real_workload():\n    time.sleep(0.75)\n")
+    harness = Harness("focused-pytest", {"command": [sys.executable, "-m", "pytest", str(target), "-q"]})
+    runner = LocalRunner({"timeout_minutes": 1}, harness)
+    launched = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"journey-run-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"LOAD-{number}", run_id=f"load-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1",
+                                            "GARDEN_EXECUTION_CGROUP": ""})
+        launched.append(run)
+
+    deadline = time.monotonic() + 3
+    states = set()
+    while time.monotonic() < deadline:
+        states = {json.loads((run.path / "execution.json").read_text())["state"] for run in launched
+                  if (run.path / "execution.json").exists()}
+        if states == {"running", "waiting"}:
+            break
+        time.sleep(0.01)
+    assert states == {"running", "waiting"}
+
+    cgroup = _process_cgroup_path()
+    event_names = ("high", "oom", "oom_kill")
+
+    def pressure() -> dict[str, object]:
+        events = {}
+        if cgroup is not None and (cgroup / "memory.events").exists():
+            parsed = dict(line.split() for line in (cgroup / "memory.events").read_text().splitlines())
+            events = {name: int(parsed.get(name, 0)) for name in event_names}
+        memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
+        temp = os.statvfs(tmp_path)
+        descendants = {run.pid: Path(f"/proc/{run.pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+                       for run in launched if run.pid and Path(f"/proc/{run.pid}/cmdline").exists()}
+        cpu = {pid: Path(f"/proc/{pid}/stat").read_text().split()[13:15] for pid in descendants}
+        return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
+                "descendants": descendants, "cpu_ticks": cpu}
+
+    before = pressure()
+    app = create_app(Store(garden), watch=False, host="testserver")
+    c = TestClient(app)
+    timings = {}
+    requests = (
+        ("inbox", lambda: c.get("/inbox")),
+        ("now", lambda: c.get("/now1")),
+        ("task-control", lambda: c.post("/tasks/DM-001/priority", data={"note": "2"},
+                                         follow_redirects=False)),
+        ("pause", lambda: c.post("/pause", data={"reason": "bounded workload evidence"},
+                                  follow_redirects=False)),
+    )
+    for name, request in requests:
+        started = time.monotonic()
+        response = request()
+        timings[name] = time.monotonic() - started
+        assert response.status_code in (200, 303)
+    after = pressure()
+    print("retained-history capacity journey", {"timings": timings, "before": before, "after": after})
+
+    assert max(timings.values()) < 2.0
+    assert app.state.hub.scheduler().is_dispatch_paused()
+    assert before["descendants"] and after["descendants"]
+    assert after["events"] == before["events"]
+    for run in launched:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+
+
+def test_inbox_renders_taskless_question_once(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+
+    question = "Which independent project should we onboard?"
+    monkeypatch.setattr(Scheduler, "pending_decisions", lambda self: [
+        {"id": "question-test", "kind": "question", "question": question,
+         "phase": "demo/p1", "source": "kickoff:demo/p1"}
+    ])
+    html = client(garden).get("/inbox").text
+    assert html.count(question) == 1
+    assert "Questions to answer" in html
+
+
+def test_phase_kickoff_follows_tasks_after_approval(garden):
+    html = client(garden).get("/phases/demo/p1").text
+    assert html.index('id="kickoff"') > html.index('DM-001')

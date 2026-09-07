@@ -1,0 +1,7 @@
+Edge live /now2 capture: goal membership fixture
+light 1280: viewport=1280 scroll=1280 height=3235
+dark 1280: viewport=1280 scroll=1280 height=3235
+light 390: viewport=390 scroll=390 height=5284
+dark 390: viewport=390 scroll=390 height=5284
+All four full PNGs inspected; phone goal sections also read at full resolution.
+Goal marks: in flight 0/1, merged 1/1, not started 0/1.

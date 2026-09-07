@@ -1,0 +1,2 @@
+{"passed":["clock 0s","clock 59s","clock 1:00","clock 59:59","clock 1:00:00","plain overdue label","typical fill is capped","missing typical is not overdue","server anchor ignores skewed browser wall clock: 41s","one matrix: total_cost","one matrix: work_cost","one matrix: first_pass","one matrix: revise_rounds","one matrix: lead_time","phone table scrolls independently","no document overflow","no page or notification polling","motion off"],"width":390}
+{"disclosureRetained":true,"focusRetained":true,"metricRetained":true,"connected":true}
