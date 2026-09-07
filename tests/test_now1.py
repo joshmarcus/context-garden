@@ -419,6 +419,13 @@ def test_review_wait_reason_is_the_first_of_the_ticks_gates(garden):
     assert reason(last_tick="2026-09-06T03:06:00+00:00", last_moved="2026-09-06T03:05:00+00:00") == (
         "overdue", "still queued after a tick and no gate explains it: see the task's log")
     assert reason(last_tick="2026-09-06T03:04:00+00:00", last_moved="2026-09-06T03:05:00+00:00")[0] == "tick"
+    first = store.task("DM-001")
+    first.status = now1.Status.IN_REVIEW
+    first.priority = 0
+    store.save(first)
+    sched.state.get(first.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+    assert reason() == ("queue", "queued behind DM-001 (priority 0; reviews use priority, order, then id)")
+    sched.state.get(first.id)["pending_reviews"] = []
     for _ in range(2):  # review_parallel follows max_parallel, two in this garden
         _record_running(garden, task="DM-001", mode="review")
     assert reason() == ("slots", "no review slot (2 of 2 busy)")
