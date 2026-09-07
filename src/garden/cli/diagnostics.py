@@ -182,8 +182,8 @@ def doctor():
                 console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
                 fix = detail or f"run {h.bin}'s login command"
-                console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
-                              f"  (fix: {fix})")
+                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  (fix: {fix})  "
+                              f"models={h.cfg.get('models') or 'cli default'}  {found}")
                 fail(f"harness {hn}")
         else:
             console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"
