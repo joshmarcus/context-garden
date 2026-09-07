@@ -18,10 +18,28 @@ from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
-NON_INTERACTION_PATHS = (
-    "src/garden/charts.py", "src/garden/costs.py", "src/garden/friction.py", "src/garden/graph.py",
-    "src/garden/operator_spend.py", "src/garden/personas.py", "src/garden/plants.py",
-    "src/garden/suggestions.py", "src/garden/trials.py",
+INTERACTION_PATHS = (
+    "src/garden/browser.py", "src/garden/canary.py", "src/garden/gitops.py",
+    "src/garden/github.py", "src/garden/harness.py", "src/garden/inbox.py",
+    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py",
+    "src/garden/now2.py", "src/garden/now2_stream.py", "src/garden/onboard.py",
+    "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
+    "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runner/",
+    "src/garden/runs.py", "src/garden/scheduler/__init__.py", "src/garden/scheduler/aux.py",
+    "src/garden/scheduler/browser.py", "src/garden/scheduler/budget.py",
+    "src/garden/scheduler/checkruns.py", "src/garden/scheduler/discovered.py",
+    "src/garden/scheduler/dispatch.py", "src/garden/scheduler/edits.py",
+    "src/garden/scheduler/fence.py", "src/garden/scheduler/human.py",
+    "src/garden/scheduler/kickoff.py", "src/garden/scheduler/persona.py",
+    "src/garden/scheduler/poll.py", "src/garden/scheduler/queue.py",
+    "src/garden/scheduler/quota.py", "src/garden/scheduler/reap.py",
+    "src/garden/scheduler/rebase.py", "src/garden/scheduler/resources.py",
+    "src/garden/scheduler/retro.py", "src/garden/scheduler/review.py",
+    "src/garden/scheduler/selection.py", "src/garden/scheduler/snapshot.py",
+    "src/garden/scheduler/state.py", "src/garden/scheduler/trials.py",
+    "src/garden/scheduler/upgrades.py", "src/garden/stabilization.py",
+    "src/garden/tui/", "src/garden/upgrade.py", "src/garden/walkthrough.py",
+    "src/garden/web/",
 )
 
 SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
@@ -38,14 +56,20 @@ def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
 
 def interaction_requirement(changed: list[str], *review_context: str) -> tuple[bool, bool, str]:
     """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
-    affected = [path for path in changed
-                if path.startswith("src/garden/") and not path.startswith(NON_INTERACTION_PATHS)]
-    required = bool(affected)
+    affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
+    context = "\n".join(review_context)
+    explicitly_required = bool(re.search(r"\binteraction[-_ ]evidence\s*:\s*required\b", context, re.I))
+    required = bool(affected) or explicitly_required
     scalability = bool(re.search(
         r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
-        "\n".join(review_context), re.I,
+        context, re.I,
     ))
-    reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6]) if affected else "non-UI change"
+    if affected:
+        reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6])
+    elif explicitly_required:
+        reason = "change metadata requires interaction evidence"
+    else:
+        reason = "non-UI change"
     return required, scalability, reason
 
 
@@ -135,14 +159,21 @@ def _interaction_event_gaps(events: Any) -> list[str]:
     if not isinstance(events, list) or not events:
         return ["performed HTTP/browser interaction events were not reported"]
     covered: set[str] = set()
-    for event in events:
+    failure_index: int | None = None
+    recovery_index: int | None = None
+    for index, event in enumerate(events):
         if not isinstance(event, dict):
             return ["interaction events must be structured request or browser-action records"]
         state = event.get("state")
         kind = event.get("kind")
         observed = event.get("observed")
-        if state not in {"affected", "empty", "failure_recovery"}:
-            return ["each interaction event must name an affected, empty, or failure/recovery state"]
+        if state not in {"affected", "empty", "failure", "recovery"}:
+            return ["each interaction event must name an affected, empty, failure, or recovery phase"]
+        outcome = event.get("outcome")
+        expected_outcome = {"affected": "success", "empty": "empty", "failure": "failure",
+                            "recovery": "success"}[state]
+        if outcome != expected_outcome:
+            return [f"{state} interaction event must record outcome {expected_outcome}"]
         if not isinstance(observed, str) or not observed.strip():
             return ["each interaction event must record its resulting observation"]
         if kind == "http_request":
@@ -151,6 +182,10 @@ def _interaction_event_gaps(events: Any) -> list[str]:
                     or not isinstance(url, str) or not url.startswith(("http://", "https://"))
                     or isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599):
                 return ["HTTP interaction events require a method, served URL, and response status"]
+            if state == "failure" and status < 400:
+                return ["failure HTTP event must record an unsuccessful response"]
+            if state == "recovery" and status >= 400:
+                return ["recovery HTTP event must record a successful response"]
         elif kind == "browser_action":
             action, target = event.get("action"), event.get("target")
             if (not isinstance(action, str) or not action.strip()
@@ -160,8 +195,14 @@ def _interaction_event_gaps(events: Any) -> list[str]:
         else:
             return ["interaction events must be served HTTP requests or browser actions"]
         covered.add(state)
-    if {"affected", "empty", "failure_recovery"} - covered:
-        return ["performed interaction events do not cover every required state"]
+        if state == "failure" and failure_index is None:
+            failure_index = index
+        elif state == "recovery" and recovery_index is None:
+            recovery_index = index
+    if {"affected", "empty", "failure", "recovery"} - covered:
+        return ["performed interaction events do not cover affected, empty, failure, and recovery phases"]
+    if failure_index is None or recovery_index is None or failure_index >= recovery_index:
+        return ["a failure event must be followed chronologically by a successful recovery event"]
     return []
 
 REVIEW_RULES = """\
@@ -216,9 +257,11 @@ histories, repeated cache-expiry intervals, actual executing bounded workload pr
 latency samples/distribution, and read/scan counts. State whether load is controlled or uses real
 model harnesses; controlled load must not be described as a real harness run.
 
-Report `interaction.events` as a chronological sequence covering every required state. A served
-HTTP event contains `kind: http_request`, `state`, `method`, `url`, `status_code`, and `observed`.
-A browser event contains `kind: browser_action`, `state`, `action`, `target`, and `observed`.
+Report `interaction.events` as a chronological sequence with explicit `state` phases: `affected`,
+`empty`, `failure`, and `recovery`. Each event includes `outcome`: `success` for affected/recovery,
+`empty` for empty, and `failure` for failure. A served HTTP event also contains `kind: http_request`,
+`method`, `url`, `status_code`, and `observed`; failure HTTP status is unsuccessful and recovery is
+successful. A browser event also contains `kind: browser_action`, `action`, `target`, and `observed`.
 Screenshot/image operations are not actions. Preserve the same events in the structured artifact.
 
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only

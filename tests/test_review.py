@@ -228,12 +228,29 @@ def test_review_and_phase_close_implementations_require_interaction_evidence(pat
 
 
 @pytest.mark.parametrize("path", [
-    "src/garden/browser.py", "src/garden/criteria.py", "src/garden/events.py",
-    "src/garden/profiles.py", "src/garden/validation.py",
+    "src/garden/browser.py", "src/garden/profiles.py", "src/garden/web/pages/task.py",
+    "src/garden/tui/app.py", "src/garden/scheduler/human.py",
 ])
-def test_package_changes_are_interaction_affecting_unless_explicitly_excluded(path):
+def test_behavior_owning_surfaces_require_interaction_evidence(path):
     required, _, _ = interaction_requirement([path], "Behavior change")
     assert required
+
+
+@pytest.mark.parametrize("path", [
+    "src/garden/brief.py", "src/garden/criteria.py", "src/garden/events.py",
+    "src/garden/model.py", "src/garden/validation.py", "src/garden/charts.py",
+    "src/garden/scheduler/report.py",
+])
+def test_offline_and_formatting_modules_keep_proportionate_validation(path):
+    assert interaction_requirement([path], "Internal refactor") == (False, False, "non-UI change")
+
+
+def test_explicit_change_metadata_can_require_interaction_evidence():
+    required, scalability, reason = interaction_requirement(
+        ["src/garden/model.py"], "Interaction-evidence: required",
+    )
+    assert required and not scalability
+    assert reason == "change metadata requires interaction evidence"
 
 
 def test_scalability_claim_in_pr_description_requires_load_evidence():
@@ -295,17 +312,27 @@ def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkey
     assert "structured interaction artifact" in persisted.result["findings"][-1]["summary"]
 
 
+def interaction_events() -> list[dict[str, object]]:
+    return [
+        {"kind": "http_request", "state": state, "outcome": outcome, "method": "POST",
+         "url": f"http://127.0.0.1:8765/{state}", "status_code": status,
+         "observed": observed}
+        for state, outcome, status, observed in (
+            ("affected", "success", 200, "requested change completed"),
+            ("empty", "empty", 200, "empty queue shown"),
+            ("failure", "failure", 503, "service unavailable shown"),
+            ("recovery", "success", 200, "request succeeded after retry"),
+        )
+    ]
+
+
 def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):
     artifact = tmp_path / "journey.json"
     states = {
         name: {"status": "pass", "actions": [f"POST /{name}"], "observed": "state changed"}
         for name in ("affected", "empty", "failure_recovery")
     }
-    events = [
-        {"kind": "http_request", "state": name, "method": "POST",
-         "url": f"http://127.0.0.1:8765/{name}", "status_code": 200, "observed": "state changed"}
-        for name in states
-    ]
+    events = interaction_events()
     artifact.write_text(json.dumps({"head": "head-a", "states": states, "events": events}))
     review = {"interaction": {
         "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
@@ -323,6 +350,51 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
     assert any("remain unverified" in gap for gap in gaps)
 
 
+@pytest.mark.parametrize("events", [
+    [
+        {"kind": "http_request", "state": "affected", "outcome": "success", "method": "GET",
+         "url": "http://localhost/affected", "status_code": 200, "observed": "ok"},
+        {"kind": "http_request", "state": "empty", "outcome": "empty", "method": "GET",
+         "url": "http://localhost/empty", "status_code": 200, "observed": "ok"},
+        {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "GET",
+         "url": "http://localhost/failure", "status_code": 200, "observed": "ok"},
+        {"kind": "http_request", "state": "recovery", "outcome": "success", "method": "GET",
+         "url": "http://localhost/recovery", "status_code": 200, "observed": "ok"},
+    ],
+    [
+        {"kind": "http_request", "state": state, "outcome": "success", "method": "GET",
+         "url": f"http://localhost/{state}", "status_code": 200, "observed": "ok"}
+        for state in ("affected", "empty", "failure_recovery")
+    ],
+])
+def test_label_only_success_responses_do_not_prove_empty_and_failure_recovery(tmp_path, events):
+    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
+              for name in ("affected", "empty", "failure_recovery")}
+    artifact = tmp_path / "journey.json"
+    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
+    review = {"interaction": {
+        "head": "h", "environment": "disposable", "command": "serve fixture",
+        "states": states, "events": events, "artifacts": [str(artifact)],
+        "automated_checks": [], "unverified": [],
+    }}
+
+    assert interaction_evidence_gaps(review, required=True, scalability=False, expected_head="h")
+
+
+def test_recovery_must_follow_failure_chronologically():
+    events = interaction_events()
+    events[2], events[3] = events[3], events[2]
+
+    gaps = interaction_evidence_gaps(
+        {"interaction": {"head": "h", "environment": "disposable", "command": "serve fixture",
+                         "states": {}, "events": events, "artifacts": [],
+                         "automated_checks": [], "unverified": []}},
+        required=True, scalability=False, expected_head="h",
+    )
+
+    assert any("chronologically" in gap for gap in gaps)
+
+
 @pytest.mark.parametrize("action", ["echo screenshot-only", "opened screenshot.png"])
 def test_screenshot_only_placeholders_are_not_performed_interaction(tmp_path, action):
     states = {
@@ -330,9 +402,10 @@ def test_screenshot_only_placeholders_are_not_performed_interaction(tmp_path, ac
         for name in ("affected", "empty", "failure_recovery")
     }
     events = [
-        {"kind": "browser_action", "state": name, "action": action,
+        {"kind": "browser_action", "state": state, "outcome": outcome, "action": action,
          "target": "screenshot.png", "observed": "opened screenshot.png"}
-        for name in states
+        for state, outcome in (("affected", "success"), ("empty", "empty"),
+                               ("failure", "failure"), ("recovery", "success"))
     ]
     artifact = tmp_path / "journey.json"
     artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
@@ -351,11 +424,7 @@ def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp
     artifact = tmp_path / "latencies.json"
     states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
               for name in ("affected", "empty", "failure_recovery")}
-    events = [
-        {"kind": "http_request", "state": name, "method": "GET",
-         "url": f"http://localhost:8783/{name}", "status_code": 200, "observed": "ok"}
-        for name in states
-    ]
+    events = interaction_events()
     artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
     required, scalability, _ = interaction_requirement([], "Keep p95 latency bounded after cache expiry")
     assert not required and scalability
@@ -393,11 +462,7 @@ def test_scalability_evidence_rejects_malformed_boundaries(tmp_path, field, valu
     artifact = tmp_path / "latencies.json"
     states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
               for name in ("affected", "empty", "failure_recovery")}
-    events = [
-        {"kind": "http_request", "state": name, "method": "GET",
-         "url": f"http://localhost:8783/{name}", "status_code": 200, "observed": "ok"}
-        for name in states
-    ]
+    events = interaction_events()
     artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
     interaction = {
         "head": "h", "environment": "disposable", "command": "serve fixture",
