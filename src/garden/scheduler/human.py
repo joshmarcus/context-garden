@@ -514,14 +514,22 @@ class HumanMixin:
         """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
         from ..runner.manual import ManualRunner
 
+        def refuse(reason: str) -> None:
+            run.completion_attempts.append({"at": now_iso(), "status": "refused", "reason": reason,
+                                            "cost_usd": None})
+            run.save()
+            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
+                             cost_usd=None, supervised=True)
+            raise RuntimeError(reason)
+
         url = str(result.get("pr") or run.external_pr or task.pr or "")
         match = re.search(r"/pull/(\d+)", url)
         slug = self.slug_for(task)
         if not match or not slug or not self.github.available:
-            raise RuntimeError("external completion needs an accessible PR URL")
+            refuse("external completion needs an accessible PR URL")
         pr = self.github.get_pr(slug, int(match.group(1)))
         if not run.branch or pr.head != run.branch:
-            raise RuntimeError(
+            refuse(
                 f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
                 "claim it again with `garden take ID --pr URL`"
             )
@@ -532,11 +540,11 @@ class HumanMixin:
                 gitops.fetch(repo)
                 merged = gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
             except gitops.GitError as e:
-                raise RuntimeError(f"could not verify merged PR ancestry: {e}") from e
+                refuse(f"could not verify merged PR ancestry: {e}")
             if not merged:
-                raise RuntimeError(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
+                refuse(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
         elif pr.state != "OPEN":
-            raise RuntimeError(f"external PR is {pr.state.lower()}, not open or merged")
+            refuse(f"external PR is {pr.state.lower()}, not open or merged")
         st = self.state.get(task.id)
         task.pr, task.branch = pr.url, pr.head
         st.update({"pr_number": pr.number, "pr_state": pr.state, "pr_base": pr.base,

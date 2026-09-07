@@ -100,6 +100,7 @@ class Run:
     # conventional name, and must never acquire managed-worktree behaviour by accident.
     completion_mode: str = "managed"  # managed | external
     external_pr: str = ""
+    completion_attempts: list[dict[str, Any]] = field(default_factory=list)
     branch: str = ""
     base: str = ""
     start_head: str = ""  # origin/<branch>'s sha this run started from, for a lease-protected push (CG-220)

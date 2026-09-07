@@ -155,7 +155,10 @@ def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_gi
     with pytest.raises(RuntimeError, match="does not match claimed branch"):
         sched.finish_manual(task, {"status": "done", "pr": pr.url})
     assert sched.store.task(task.id).status == Status.RUNNING
-    assert sched.runs.latest(task.id).status == "running"
+    failed = sched.runs.latest(task.id)
+    assert failed.status == "running"
+    assert failed.completion_attempts[-1]["status"] == "refused"
+    assert failed.completion_attempts[-1]["cost_usd"] is None
 
 
 def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):
@@ -187,8 +190,9 @@ def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base
     with pytest.raises(RuntimeError, match="not included in final base"):
         sched.finish_manual(task, {"status": "done", "pr": pr.url})
     assert sched.store.task(task.id).status == Status.RUNNING
-    assert sched.runs.latest(task.id).run_id == run.run_id
-    assert sched.runs.latest(task.id).status == "running"
+    failed = sched.runs.latest(task.id)
+    assert failed.run_id == run.run_id and failed.status == "running"
+    assert "not included in final base" in failed.completion_attempts[-1]["reason"]
 
 
 def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):
