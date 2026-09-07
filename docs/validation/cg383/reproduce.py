@@ -7,6 +7,8 @@ temporary directory, so it never reads, deletes, or perturbs a garden cache.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import json
 import os
 import subprocess
@@ -87,7 +89,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache-mib", type=int, default=72)
     parser.add_argument("--reclaim-mib", type=int, default=64)
-    parser.add_argument("--slot-mib", type=int, default=40)
+    parser.add_argument("--slot-mib", type=int, default=8)
     args = parser.parse_args()
     group = cgroup_path()
     cache_bytes = args.cache_mib * 1024 * 1024
@@ -98,13 +100,25 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cg383-file-cache-") as directory:
         populate_file_cache(Path(directory) / "payload.bin", cache_bytes)
         populated = sample(group)
-        (group / "memory.reclaim").write_text(str(reclaim_bytes))
+        reclaim_error: dict[str, object] | None = None
+        try:
+            (group / "memory.reclaim").write_text(str(reclaim_bytes))
+        except OSError as exc:
+            # Reclaim is explicitly best effort.  Keep an EAGAIN result in the evidence
+            # and continue to the slot measurement rather than claiming capacity exists.
+            reclaim_error = {"errno": exc.errno, "message": str(exc)}
         reclaimed = sample(group)
         one_slot_high_water(slot_bytes)
         launched = sample(group)
     result = {
+        "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reproducer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "python": sys.version,
+        "invocation": {"cache_mib": args.cache_mib, "reclaim_mib": args.reclaim_mib,
+                       "slot_mib": args.slot_mib},
         "fixture": {"cgroup": str(group), "limits": limits, "cache_bytes": cache_bytes,
                     "reclaim_request_bytes": reclaim_bytes, "slot_bytes": slot_bytes},
+        "reclaim_error": reclaim_error,
         "samples": {"before": before, "populated": populated, "reclaimed": reclaimed, "one_slot": launched},
         "deltas": {
             "cache_population": {"memory_current": populated["memory_current"] - before["memory_current"],
