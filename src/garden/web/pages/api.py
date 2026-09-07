@@ -181,6 +181,8 @@ def register(app: FastAPI, site: Site) -> None:
                     run.start_head = gitops.remote_head(scheduler_repo, run.branch)
                 except (AttributeError, gitops.GitError):
                     run.start_head = ""
+                if isinstance(body.get("host_facts"), dict):
+                    (run.path / "host_facts.json").write_text(json.dumps(body["host_facts"]))
                 run.save()
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
@@ -227,6 +229,8 @@ def register(app: FastAPI, site: Site) -> None:
         body = await request.json()
         with hub.action_lock:
             run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            if isinstance(body.get("host_facts"), dict):
+                (run.path / "host_facts.json").write_text(json.dumps(body["host_facts"]))
             chunk = str(body.get("transcript") or "")
             if chunk:
                 with (run.path / "stdout.json").open("a") as f:
