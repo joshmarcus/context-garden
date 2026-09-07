@@ -3,7 +3,9 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
+from garden import gitops
 from garden.model import Status
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
@@ -73,6 +75,54 @@ def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched,
     finished = [e for e in sched.events.read(task_id="DM-001", kinds=["run_finished"])
                 if e.get("run") == run.run_id]
     assert len(finished) == 1
+
+
+def test_reap_preserves_dirty_snapshot_without_adding_it_to_the_pr_or_next_round(sched, fake_github):
+    """CG-359: committed work reaches the PR while an unrelated dirty artifact remains
+    recoverable by run, and a revise/reap cycle cannot sweep it back into the branch."""
+    sched.cfg.data["stack"] = False
+    sched.tick()  # fake worker commits worker-output.txt
+    task = sched.store.task("DM-001")
+    worktree = sched.worktree_for(task)
+    snapshot = worktree / "docs" / "design" / "snapshot.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text('{"large": "unrelated runtime state"}\n')
+
+    sched.tick()  # reap and open the PR
+    assert statuses(sched)["DM-001"] == "in_review"
+    assert not snapshot.exists()
+    artifacts = sched.runs.latest("DM-001").recovery_artifacts
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact["reason"] == "reap" and artifact["run"] == sched.runs.latest("DM-001").run_id
+    assert "docs/design/snapshot.json" in "\n".join(artifact["files"])
+    assert "git stash apply" in artifact["restore"]
+    assert "docs/design/snapshot.json" not in gitops.git("diff", "--name-only", "main...HEAD", cwd=worktree)
+
+    sched.triage(sched.store.task("DM-001"), changes="please revise")
+    sched.dispatch(sched.store.task("DM-001"), mode="revise")
+    sched.tick()  # reap the revise run
+    assert "docs/design/snapshot.json" not in gitops.git("diff", "--name-only", "main...HEAD", cwd=worktree)
+    assert len(sched.runs.latest("DM-001").recovery_artifacts) == 0
+
+
+def test_missing_result_preserves_dirty_new_file_without_discarding_committed_work(sched, fake_github):
+    """CG-359: a crashed/missing result keeps both the committed salvage and the separate
+    uncommitted recovery artifact."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    worktree = Path(run.worktree)
+    (worktree / "interrupted.txt").write_text("keep me\n")
+    (run.path / "stdout.json").unlink()
+
+    sched.tick()
+    assert int(gitops.git("rev-list", "--count", "main..HEAD", cwd=worktree).strip()) >= 1
+    completed = next(item for item in sched.runs.runs_for("DM-001") if item.run_id == run.run_id)
+    artifact = completed.recovery_artifacts[0]
+    assert artifact["reason"] == "reap"
+    assert "interrupted.txt" in "\n".join(artifact["files"])
+    assert not (worktree / "interrupted.txt").exists()
 
 
 def _run_fake_claude(cwd, task_id, run_id, when):

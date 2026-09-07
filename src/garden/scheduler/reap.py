@@ -19,6 +19,33 @@ from .report import TickReport
 
 
 class ReapMixin:
+    def _preserve_dirty_worktree(self, task: Task, run: Run, worktree: Path) -> None:
+        """Set aside uncommitted work without turning it into a task-branch commit."""
+        if not gitops.has_uncommitted_changes(worktree):
+            return
+        files = gitops.status_lines(worktree)
+        name = f"garden:{task.id}:{run.run_id}:reap"
+        sha = gitops.stash_all(worktree, name)
+        if not sha:
+            return
+        artifact = {"name": name, "sha": sha, "at": now_iso(), "run": run.run_id,
+                    "reason": "reap", "files": files,
+                    "restore": f"git stash apply {sha}"}
+        if not any(item.get("sha") == sha for item in run.recovery_artifacts):
+            run.recovery_artifacts.append(artifact)
+        st = self.state.get(task.id)
+        stashes = list(st.get("stashes") or [])
+        if not any(item.get("sha") == sha for item in stashes):
+            stashes.append(artifact)
+            st["stashes"] = stashes
+        run.save()
+        self.events.emit("recovery_preserved", task.id, run=run.run_id, sha=sha,
+                         name=name, files=files)
+        task.log(f"preserved uncommitted worktree changes from run {run.run_id} outside the PR: "
+                 f"`git stash apply {sha}` in {worktree} ({name})")
+        self.store.save(task)
+        self.log(f"{task.id}: preserved dirty worktree changes from {run.run_id} ({sha[:12]})")
+
     @staticmethod
     def _no_change_changes_outcome(result: dict[str, Any]) -> bool:
         """Whether a no-change report is really asking to narrow or change the task.
@@ -63,6 +90,7 @@ class ReapMixin:
             # there instead of declaring "no active run" and redispatching a
             # second run on top of the first one's finished work.
             if run.status == "timeout":
+                self._preserve_timeout_worktree(task, run)
                 self._retry_or_fail(task, run, rep, "worker timed out")
             else:
                 runner = self.runner_for(task, run.runner, run.harness)
@@ -96,11 +124,24 @@ class ReapMixin:
         if not self._finished_or_timed_out(run, runner):
             return False
         if run.status == "timeout":
+            self._preserve_timeout_worktree(task, run)
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="timeout", cost_usd=None)
             self._retry_or_fail(task, run, rep, f"worker {run.error}" if run.error else "worker timed out")
             return True
         self.finalize(task, run, runner, rep)
         return True
+
+    def _preserve_timeout_worktree(self, task: Task, run: Run) -> None:
+        """Keep interrupted local edits even when no final result is available."""
+        if run.runner != "local":
+            return
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not worktree.exists():
+            return
+        try:
+            self._preserve_dirty_worktree(task, run, worktree)
+        except gitops.GitError as exc:
+            self.log(f"{task.id}: could not preserve timed-out worktree changes: {exc}")
 
     def _finished_or_timed_out(self, run: Run, runner: Runner) -> bool:
         if run.process_finished():
@@ -174,6 +215,20 @@ class ReapMixin:
         if violations:
             self._fence_fail(task, run, violations, rep)
             return
+
+        # A result only vouches for commits.  Preserve every uncommitted path before any
+        # result branch (including missing-result retry) can recover the task, so it cannot
+        # later be swept into a PR by a repeat reap or revise round.
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not runner.remote and worktree.exists():
+            try:
+                self._preserve_dirty_worktree(task, run, worktree)
+            except gitops.GitError as exc:
+                run.status = "failed"
+                run.error = f"could not preserve dirty worktree: {exc}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
 
         if collected.get("env_error"):
             # A quota/spend-limit message from the harness's own account, not the worker's
@@ -308,8 +363,6 @@ class ReapMixin:
             self._maybe_review(task, run, rep)
             return
         try:
-            if gitops.has_uncommitted_changes(worktree):
-                gitops.commit_all(worktree, f"{task.id}: leftover changes from worker run {run.run_id}")
             ahead = gitops.commits_ahead(worktree, base)
         except gitops.GitError as e:
             run.status = "failed"
