@@ -23,7 +23,7 @@ from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
 from ..preflight import mechanical_results
-from ..review import validation_plan
+from ..review import validation_plan, visual_source_digest
 from ..runs import Run
 from .report import TickReport
 
@@ -86,6 +86,7 @@ class CheckRunMixin:
             plan = validation_plan(changed, task.title, task.body,
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
                                    head=gitops.head_sha(worktree), check_specs=specs)
+            plan["visual_source"] = visual_source_digest(worktree, plan)
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):

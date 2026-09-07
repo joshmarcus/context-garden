@@ -58,6 +58,41 @@ _PAGE_MODULES = {
 _SHARED_UI_PATHS = ("src/garden/web/app.py", "src/garden/web/common.py",
                     "src/garden/web/templates/base.html", "templates/base.html")
 _SHARED_UI_PREFIXES = ("src/garden/web/static/",)
+_CAPTURE_ARTIFACT_PREFIXES = ("docs/design/captures/", "docs/design/snapshots/")
+_CAPTURE_ARTIFACT_NAMES = {"docs/design/snapshot.json"}
+# A path says where a change lives, not whether a person can see it.  The task and PR
+# describe the intended behaviour; use that declaration to distinguish a route or
+# authentication change in a web module from a rendered change in the same module.
+_VISUAL_BEHAVIOR = re.compile(
+    r"\b(?:visual|visible|render(?:ed|ing)?|layout|style(?:sheet)?|css|theme|colour|color|"
+    r"spacing|typograph(?:y|ic)|responsive|viewport|rail|chrome|panel|button|form)\b", re.I)
+_REPRESENTATIVE_SHARED_PAGES = ("board", "inbox")
+
+
+def _is_capture_artifact(path: str) -> bool:
+    """Whether a generated visual-evidence output must not request more evidence."""
+    return path in _CAPTURE_ARTIFACT_NAMES or path.startswith(_CAPTURE_ARTIFACT_PREFIXES)
+
+
+def _visible_behavior(review_context: tuple[str, ...]) -> str:
+    """Return the declared visible behaviour, or an empty string for nonvisual work."""
+    for context in review_context:
+        for line in context.splitlines():
+            if _VISUAL_BEHAVIOR.search(line):
+                return line.strip()[:240]
+    return ""
+
+
+def visual_source_digest(worktree: Path, plan: dict[str, Any]) -> str:
+    """Fingerprint just the source responsible for planned captures on a reviewed head."""
+    digest = hashlib.sha256()
+    for name in sorted(str(path) for path in plan.get("visual_paths", [])):
+        path = worktree / name
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
@@ -90,32 +125,50 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
                     check_specs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Return the head-bound validation required by this change, not the capture inventory.
+    """Return the head-bound functional and visual evidence decision for a change.
 
-    A UI page gets that page's captures.  Shared chrome and styles intentionally fan out to
-    every walkthrough consumer.  Unmapped UI code is an inspection request, which keeps an
-    uncertain diff reviewable without silently exempting it or demanding the whole app.
+    A screenshot is evidence for a named visible behaviour, never a side effect of touching
+    a web module. Unknown UI code remains a bounded inspection request, so it cannot silently
+    evade functional validation or turn into an all-pages capture demand.
     """
     interaction, scalability, interaction_reason = interaction_requirement(changed, *review_context)
     pages: set[str] = set()
     reasons: list[dict[str, str]] = []
     unknown: list[str] = []
+    visual_paths: set[str] = set()
     shared = False
+    behavior = _visible_behavior(review_context)
     for path in changed:
-        if (path in _SHARED_UI_PATHS or path.startswith(_SHARED_UI_PREFIXES)
+        if _is_capture_artifact(path):
+            continue
+        # app.py and common.py contain route/auth and shared helpers as well as rendering
+        # plumbing. They need normal functional evidence unless the stated behavior is visual.
+        if path in _SHARED_UI_PATHS[:2]:
+            if behavior:
+                shared = True
+            continue
+        if (path in _SHARED_UI_PATHS[2:] or path.startswith(_SHARED_UI_PREFIXES)
                 or path.endswith((".css", ".scss"))):
             shared = True
             continue
         match = re.search(r"(?:pages/|templates/)([a-z0-9_]+)\.(?:py|html)$", path)
-        if match and match.group(1) in _PAGE_MODULES:
+        if behavior and match and match.group(1) in _PAGE_MODULES:
             names = _PAGE_MODULES[match.group(1)]
             pages.update(names)
-            reasons.append({"item": ", ".join(names), "reason": f"changed page implementation: {path}"})
+            visual_paths.add(path)
+            reasons.append({"item": ", ".join(names),
+                            "reason": f"visible behavior: {behavior}; changed page implementation: {path}"})
         elif path.startswith("src/garden/web/") or "/templates/" in path:
             unknown.append(path)
-    if shared:
-        pages = {"*"}
-        reasons.append({"item": "all walkthrough pages", "reason": "shared template or stylesheet affects every consumer"})
+    if shared and behavior:
+        pages.update(_REPRESENTATIVE_SHARED_PAGES)
+        visual_paths.update(path for path in changed if path in _SHARED_UI_PATHS or path.startswith(_SHARED_UI_PREFIXES)
+                            or path.endswith((".css", ".scss")))
+        reasons.append({"item": ", ".join(_REPRESENTATIVE_SHARED_PAGES),
+                        "reason": f"visible shared behavior: {behavior}; representative consumers cover distinct board and inbox layouts"})
+    elif shared:
+        reasons.append({"item": "no screenshot scope",
+                        "reason": "shared UI path changed without a declared visible behavior; retain functional evidence"})
     if unknown:
         reasons.append({"item": "bounded UI inspection", "reason": "map affected consumers for: " + ", ".join(unknown)})
     if interaction:
@@ -136,7 +189,8 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
     if not reasons:
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
-            "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons}
+            "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons,
+            "visual_paths": sorted(visual_paths)}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
@@ -359,8 +413,9 @@ Check, in this order:
 
 The Validation plan below is the required evidence for this reviewed head, not the available
 walkthrough inventory. Inspect each planned page and name it in `pages_seen`; do not demand an
-unrelated page merely because a capture exists. Shared templates and styles list every consumer
-deliberately. For bounded UI inspection, inspect the named paths and either map consumers or
+unrelated page merely because a capture exists. A plan names pages only for a declared visible
+behavior; shared styling uses representative consumers, expanding only for a distinct visual
+risk. For bounded UI inspection, inspect the named paths and either map consumers or
 report a `scope_expansions` entry with the changed claim or discovered risk that justifies it.
 New evidence demands likewise need that entry; frozen criteria and current valid evidence remain
 valid, but evidence for another head never does.
