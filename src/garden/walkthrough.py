@@ -305,6 +305,7 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                         try:
                             url = base_url.rstrip("/") + s.url
                             if narrow:
+                                measurements: dict[str, int] | None = None
                                 try:
                                     measurements = _narrow_frame(page, url)
                                     log(f"  narrow frame {s.slug} {scheme}: "
@@ -325,7 +326,7 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                                         )
                                     except Exception as e:  # noqa: BLE001 - outer handler logs it
                                         log(f"  diagnostic screenshot {s.slug} at {width}/{scheme} failed: {e}")
-                                else:
+                                if measurements is not None:
                                     evidence.append({"page": s.slug, "action": "frame", "viewport": width,
                                                      "color_scheme": scheme, **measurements})
                             else:
