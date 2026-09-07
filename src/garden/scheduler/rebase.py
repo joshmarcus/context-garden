@@ -54,6 +54,7 @@ class RebaseOutcome:
     run: Run | None = None
     files: list[str] = field(default_factory=list)
     hunks: dict[str, str] = field(default_factory=dict)
+    artifacts: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 class RebaseMixin:
@@ -74,6 +75,7 @@ class RebaseMixin:
         wt = wt or self.worktree_for(task)
         repo = self.repo_for(task)
         patch_before = ""
+        artifact_dir: Path | None = None
         try:
             if not wt.exists():
                 gitops.prepare_worktree(repo, wt, branch, base)
@@ -81,11 +83,21 @@ class RebaseMixin:
             # same id computed after the rebase, this is how rule 2 tells a mechanical shift of
             # line numbers and context (CG-210) apart from a genuine change to the PR's own patch.
             patch_before = gitops.patch_id(wt, base)
-            ok, files, hunks = gitops.sync_and_rebase(wt, branch, base)
+            identity = hashlib.sha256(f"{branch}\0{base}\0{gitops.rev_parse(wt, 'HEAD')}".encode()).hexdigest()[:16]
+            artifact_dir = self.cfg.garden_dir / "rebase-conflicts" / task.id / identity
+            ok, files, hunks = gitops.sync_and_rebase(wt, branch, base, artifact_dir=artifact_dir)
         except gitops.GitError as e:
             ok, files, hunks = False, [str(e)], {}
         if not ok:
-            return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks)
+            artifacts: dict[str, dict[str, object]] = {}
+            manifest = artifact_dir / "manifest.json" if artifact_dir is not None else None
+            if manifest is not None and manifest.exists():
+                import json
+
+                artifacts = json.loads(manifest.read_text())
+                for item in artifacts.values():
+                    item["manifest"] = str(manifest)
+            return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks, artifacts=artifacts)
         if skip_if_current:
             # A branch already on the base's tip whose diff is exactly what was reviewed: the
             # rebase above was a no-op, origin already holds this head, and the verdict still
@@ -143,7 +155,7 @@ class RebaseMixin:
         outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
         if outcome.status == "conflict":
             self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")
-            self._dispatch_rebase_agent(task, base, outcome.files, outcome.hunks, rep, reason)
+            self._dispatch_rebase_agent(task, base, outcome.files, outcome.hunks, outcome.artifacts, rep, reason)
             return "conflict"
         if outcome.status in ("current", "error"):
             return outcome.status
@@ -161,7 +173,7 @@ class RebaseMixin:
         return "clean"
 
     def _dispatch_rebase_agent(self, task: Task, base: str, files: list[str], hunks: dict[str, str],
-                               rep: TickReport, reason: str) -> None:
+                               artifacts: dict[str, dict[str, object]], rep: TickReport, reason: str) -> None:
         """A plain rebase conflicted textually: queue an easy-tier agent that resolves it. The
         actual dispatch happens in the dispatch phase (see DispatchMixin.dispatch, mode `rebase`),
         so it waits for a free slot like any other run. The force-push flag is set for the push
@@ -175,7 +187,7 @@ class RebaseMixin:
         st["rebase_base"] = base
         st["rebase_files"] = list(files)
         st["rebase_hunks"] = hunks
-        st["rebase_artifacts"] = self._preserve_rebase_conflicts(task, hunks)
+        st["rebase_artifacts"] = artifacts
         self._queue_leave(task)  # a conflict takes the task off the merge queue
         st["force_push"] = True
         if task.status.pr_open:
@@ -185,19 +197,6 @@ class RebaseMixin:
         else:
             task.log(f"{reason}; rebase onto {base} conflicts; the next run must resolve it")
             self.store.save(task)
-
-    def _preserve_rebase_conflicts(self, task: Task, hunks: dict[str, str]) -> dict[str, dict[str, object]]:
-        """Persist captured conflict blobs without putting generated data in the prompt."""
-        root = self.cfg.garden_dir / "rebase-conflicts" / task.id
-        root.mkdir(parents=True, exist_ok=True)
-        artifacts: dict[str, dict[str, object]] = {}
-        for path, content in hunks.items():
-            digest = hashlib.sha256(path.encode("utf-8") + b"\0" + content.encode("utf-8", "replace")).hexdigest()
-            artifact = root / f"{digest}.conflict"
-            artifact.write_text(content)
-            artifacts[path] = {"path": str(artifact), "bytes": len(content.encode("utf-8", "replace")),
-                               "sha256": digest}
-        return artifacts
 
     # ---- verdict keep (rule 2) ---------------------------------------------
     def _rebase_review_or_keep(self, task: Task, run: Run, base: str, rep: TickReport, cost: str = "") -> None:
