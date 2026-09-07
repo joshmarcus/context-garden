@@ -40,8 +40,12 @@ def base_acceptance(event: dict, merged_tasks: set[str] | None = None) -> bool:
     if event.get("base_merged") is not None:
         return event.get("base_merged") is True
     note = str(event.get("note") or "")
-    if note.startswith("PR merged") or (note.startswith("parent ") and
-                                        "this task's commits are now on " in note):
+    if (note.startswith("PR merged") or (note.startswith("parent ") and
+                                          "this task's commits are now on " in note) or
+            # Before base_merged was recorded, merge transitions often had no note at all.
+            # Keep that empty-note event shape as a legacy merge fact; a custom note must
+            # identify the merge (or carry explicit provenance).
+            not note):
         return True
     return bool(merged_tasks and str(event.get("task") or "") in merged_tasks)
 
