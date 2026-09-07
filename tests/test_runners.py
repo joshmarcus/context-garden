@@ -238,7 +238,8 @@ def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
         brief = d / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"r{number}", dir=str(d), runner="local")
-        env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path)}
+        env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+               "GARDEN_HEAVY_EXECUTION": "1"}
         runner.launch(run, tmp_path, brief, env)
         runs.append(run)
 
@@ -253,6 +254,84 @@ def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
     for run in runs:
         os.waitpid(run.pid, 0)
     assert all(run.process_finished() for run in runs)
+
+
+def test_conflicting_garden_limits_keep_first_authoritative_capacity(tmp_path):
+    """A limit-2 garden cannot add a slot while the shared authority is limit 1."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    runner = LocalRunner({"timeout_minutes": 0}, Harness("tiny", {"command": ["sh", "-c", "sleep 0.3"]}))
+    runs = []
+    for number, limit in ((1, 1), (2, 2)):
+        run_dir = tmp_path / f"mixed-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"mixed-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_TEST_PARALLEL": str(limit),
+                                            "GARDEN_HEAVY_EXECUTION": "1"})
+        runs.append(run)
+        if number == 1:
+            deadline = time.monotonic() + 2
+            while not (run_dir / "execution.json").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+    deadline = time.monotonic() + 2
+    conflict = None
+    while time.monotonic() < deadline:
+        path = runs[1].path / "execution.json"
+        if path.exists() and (conflict := json.loads(path.read_text())).get("conflict"):
+            break
+        time.sleep(0.01)
+    assert conflict is not None
+    assert conflict["state"] == "waiting"
+    assert conflict["limit"] == 1 and conflict["requested_limit"] == 2
+    assert "conflicts with authoritative limit 1" in conflict["reason"]
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+
+
+def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path):
+    """Agent capacity is independent of the authoritative local validation budget."""
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    counter = tmp_path / "counter.py"
+    counter.write_text(
+        "import fcntl, pathlib, sys, time\n"
+        "name, delay = sys.argv[1], float(sys.argv[2])\n"
+        "state = pathlib.Path(name + '.txt')\n"
+        "with pathlib.Path(name + '.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, (state.read_text() if state.exists() else '0 0').split())\n"
+        " state.write_text(f'{active + 1} {max(active + 1, peak)}')\n"
+        "time.sleep(delay)\n"
+        "with pathlib.Path(name + '.lock').open('a+') as lock:\n"
+        " fcntl.flock(lock, fcntl.LOCK_EX)\n"
+        " active, peak = map(int, state.read_text().split())\n"
+        " state.write_text(f'{active - 1} {peak}')\n"
+    )
+    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {counter} heavy 0.25'
+    command = ["sh", "-c", f"{shlex.quote(sys.executable)} {counter} model 0.15 & {validation}; wait"]
+    runner = LocalRunner({"timeout_minutes": 1}, Harness("agent", {"command": command}))
+    runs = []
+    for number in (1, 2):
+        run_dir = tmp_path / f"agent-{number}"
+        run_dir.mkdir()
+        brief = run_dir / "brief.md"
+        brief.write_text("")
+        run = Run(task_id=f"T-{number}", run_id=f"agent-{number}", dir=str(run_dir), runner="local")
+        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_TEST_PARALLEL": "1"})
+        runs.append(run)
+    for run in runs:
+        os.waitpid(run.pid, 0)
+        assert run.read_exit_code() == 0
+    assert (tmp_path / "model.txt").read_text() == "0 2"
+    assert (tmp_path / "heavy.txt").read_text() == "0 1"
 
 
 def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
@@ -273,6 +352,7 @@ def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
         run = Run(task_id=f"T-{number}", run_id=f"pytest-{number}", dir=str(run_dir), runner="local")
         runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
                                             "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1",
                                             "GARDEN_EXECUTION_CGROUP": ""})
         runs.append(run)
 
@@ -340,14 +420,12 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
 
     run_dir = tmp_path / "nested"
     run_dir.mkdir()
-    monkeypatch.setenv("GARDEN_EXECUTION_LEASED", "1")
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "outer-run")
     monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
-    slot = supervisor._execution_slot(run_dir, lambda: False)
+    slot = supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
     status = json.loads((run_dir / "execution.json").read_text())
     assert slot is not None
-    assert status["state"] == "running" and status["inherited"] is True
-    assert status["owner"] == "outer-run"
+    assert status["state"] == "running" and status["owner_scoped"] is True
 
 
 def test_two_validations_from_one_worker_are_serialized(tmp_path):
@@ -395,7 +473,7 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
     assert (tmp_path / "active.txt").read_text() == "0 1"
     statuses = list((run_dir / "validations").glob("*/execution.json"))
     assert len(statuses) == 2
-    assert all(json.loads(path.read_text())["inherited"] is True for path in statuses)
+    assert all(json.loads(path.read_text())["owner_scoped"] is True for path in statuses)
 
 
 def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
@@ -412,7 +490,8 @@ def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"c{number}", dir=str(d), runner="local")
         runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
-                                            "XDG_RUNTIME_DIR": str(tmp_path)})
+                                            "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1"})
         runs.append(run)
     deadline = time.monotonic() + 2
     while not all((r.path / "execution.json").exists() for r in runs) and time.monotonic() < deadline:
@@ -432,8 +511,8 @@ def test_setup_waits_inside_the_heavy_execution_budget(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     runner = LocalRunner({"timeout_minutes": 0, "worker_env": {"pass": ["XDG_RUNTIME_DIR"]},
-                          "setup": {"command": "touch setup-started"}},
-                         Harness("tiny", {"command": ["sh", "-c", "sleep 0.35"]}))
+                          "setup": {"command": "touch setup-started; sleep 0.35"}},
+                         Harness("tiny", {"command": ["true"]}))
     runs = []
     for number in (1, 2):
         worktree = tmp_path / f"wt{number}"

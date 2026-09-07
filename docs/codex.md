@@ -120,7 +120,7 @@ max_parallel: 1
 review_parallel: 1
 resources:
   max_parallel: 2               # all local workers, reviews, personas and checks together
-  heavy_test_parallel: 1        # host-wide: only one local run may execute at once
+  heavy_test_parallel: 1        # per-user: one supported heavy local command at once
   min_memory_available_mb: 1536 # defer new processes below this headroom
   min_temp_free_mb: 1024        # measured on work_dir/tmp, not the system /tmp
   execution_cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/garden-execution.slice
@@ -135,14 +135,20 @@ web rail and `garden observe` show the effective local limit, the measured press
 the recovery action. `garden pause --reason "resource pressure"` is available when an
 operator also wants to hold ordinary dispatch while the current work drains.
 
-Every local supervisor also takes one kernel-backed, per-user heavy-execution lease before
-starting the harness. The default budget of one covers checks, base probes, workers and
-reviewers from every garden on the same account. Extra admitted runs are visible as waiting;
+Supported local setup, checks, probes, and worker-issued validations take a kernel-backed,
+per-user heavy-execution lease shared by every garden using the same runtime directory. The
+first configured limit recorded there is authoritative; a different limit is reported in the
+run's `execution.json` and uses the authoritative capacity instead of creating extra slots.
+Change capacity only while idle by removing the user-owned `garden-heavy-test-*-capacity.json`
+from `$XDG_RUNTIME_DIR` (or `/tmp`) before restarting with one consistent configuration.
+Model sessions and remote-CI waits do not hold this lease, so independently configured local
+run capacity can keep agents thinking while heavy commands remain serial. Extra heavy work is visible as waiting;
 cancellation works while waiting, and process exit or a crash releases the lease without stale
 cleanup. Inside a worker, each supported heavy command is launched as
 `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>`; the variable selects the
-garden installation's Python even when the product uses another environment. Concurrent wrappers share a second, owner-scoped
-lease and therefore serialize without trying to reacquire the outer slot. Raw commands that
+garden installation's Python even when the product uses another environment. Concurrent wrappers
+take both the host slot and a second, owner-scoped lease. Their model-session parent owns
+neither lock, avoiding nested acquisition deadlocks. Raw commands that
 bypass this wrapper still remain inside the aggregate cgroup but are not individually serialized.
 Arbitrary operator terminal commands and remote runners are not intercepted; use the wrapper
 from a local supervised run, CI, or an equivalent host-side unit for those paths.

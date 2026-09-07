@@ -1949,6 +1949,7 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         run = Run(task_id=f"LOAD-{number}", run_id=f"load-{number}", dir=str(run_dir), runner="local")
         runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
                                             "XDG_RUNTIME_DIR": str(tmp_path),
+                                            "GARDEN_HEAVY_EXECUTION": "1",
                                             "GARDEN_EXECUTION_CGROUP": ""})
         launched.append(run)
 

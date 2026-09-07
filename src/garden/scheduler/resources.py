@@ -142,7 +142,6 @@ class ResourceMixin:
         heavy_running = heavy_waiting = 0
         for run in self.local_runs_active():
             try:
-                state = json.loads((run.path / "execution.json").read_text()).get("state")
                 if execution_cgroup:
                     actual = json.loads((run.path / "isolation.json").read_text())
                     if actual.get("enforced"):
@@ -150,9 +149,15 @@ class ResourceMixin:
                     else:
                         isolation = str(actual.get("reason") or "unavailable")
             except (OSError, ValueError):
-                continue
-            heavy_running += state == "running"
-            heavy_waiting += state == "waiting"
+                pass
+            status_paths = [run.path / "execution.json", *run.path.glob("validations/*/execution.json")]
+            for status_path in status_paths:
+                try:
+                    state = json.loads(status_path.read_text()).get("state")
+                except (OSError, ValueError):
+                    continue
+                heavy_running += state == "running"
+                heavy_waiting += state == "waiting"
         reasons: list[str] = []
         if active >= limit:
             reasons.append(f"local execution limit reached ({active}/{limit})")

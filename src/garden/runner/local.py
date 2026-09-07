@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,7 @@ class LocalRunner(Runner):
         the in-process test runner to run the same job synchronously."""
         d = run.path
         env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        env["GARDEN_HEAVY_EXECUTION"] = "1"
         if env.get("TMPDIR"):
             payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
@@ -160,8 +162,31 @@ class LocalRunner(Runner):
     def _probe_launch(self, argv: list[str], stdin_text: str, cwd: Path, env: dict[str, str]) -> tuple[str, str]:
         """The actual invocation, split out so the test suite's in-process runner can call the
         fake harness synchronously instead of spawning a real process (see tests/inprocess.py)."""
-        proc = subprocess.run(argv, input=stdin_text, capture_output=True, text=True, cwd=str(cwd), env=env, timeout=90)
-        return proc.stdout, proc.stderr
+        with tempfile.TemporaryDirectory(prefix="garden-probe-", dir=cwd) as raw_dir:
+            run_dir = Path(raw_dir)
+            stdin_path = run_dir / "stdin"
+            stdout_path = run_dir / "stdout"
+            stderr_path = run_dir / "stderr"
+            stdin_path.write_text(stdin_text)
+            script = (
+                f"{shlex.join(argv)} < {shlex.quote(str(stdin_path))} "
+                f"> {shlex.quote(str(stdout_path))} 2> {shlex.quote(str(stderr_path))}"
+            )
+            supervised_env = {
+                **env,
+                "GARDEN_HEAVY_EXECUTION": "1",
+                "GARDEN_HEAVY_TEST_PARALLEL": str(
+                    int(self.config.get("resources", {}).get("heavy_test_parallel", 1))
+                ),
+                "GARDEN_EXECUTION_CGROUP": str(
+                    self.config.get("resources", {}).get("execution_cgroup", "") or ""
+                ),
+            }
+            subprocess.run(
+                [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
+                cwd=str(cwd), env=supervised_env, timeout=95, check=False,
+            )
+            return stdout_path.read_text(), stderr_path.read_text()
 
     def doctor(self) -> list[str]:
         if os.name == "nt":
