@@ -177,6 +177,8 @@ def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
     run = sched.runs.latest("DM-001")
     assert run.env_snapshot["requires_preflight"] is True
     frozen = list(run.env_snapshot["criteria"])
+    committed_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=run.worktree,
+                                    capture_output=True, text=True, check=True).stdout.strip()
     (run.path / "stdout.json").unlink()
 
     report = sched.tick()
@@ -189,6 +191,8 @@ def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
     assert "Criteria frozen for the interrupted dispatch" in brief
     for criterion in frozen:
         assert criterion in brief
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", committed_head, "HEAD"], cwd=revise.worktree,
+                          check=False).returncode == 0
 
 
 def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):
