@@ -52,7 +52,7 @@ def _read(p: Path) -> str:
 
 
 _RETRO_EVIDENCE_PATH = re.compile(
-    r"(?<![\w/])((?:[\w.-]+/)*docs/(?:friction|retro)\.md)(?=$|[\s\])},.;:!?])"
+    r"(?<![\w/])((?:[\w.-]+/)*docs/(?:friction|retro)\.md)(?=$|[\s\])},.;:!?`'\"])"
 )
 
 

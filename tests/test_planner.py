@@ -127,7 +127,7 @@ def test_import_plan_inlines_cited_retro_evidence(garden):
 
     created = import_plan(store, "demo", "p1", [{
         "title": "Sequence quota work",
-        "body": "## Goal\n\nAddress the finding in docs/retro.md.",
+        "body": "## Goal\n\nAddress the finding in `docs/retro.md` and \"docs/retro.md\".",
     }])
 
     body = store.task(created[0].id).body
@@ -139,7 +139,12 @@ def test_plan_prompt_inlines_retro_evidence_cited_by_human_guidance(garden):
     write(garden / "demo" / "p1" / "docs" / "friction.md", "# Friction\n\nA worker needed quota rules.\n")
     store = Store(garden)
 
-    prompt = plan_prompt(store, "demo", "p1", extra="Use the finding in docs/friction.md.")
+    prompt = plan_prompt(
+        store,
+        "demo",
+        "p1",
+        extra="Use the finding in `demo/p1/docs/friction.md`.",
+    )
 
     assert "## Retro evidence cited in additional guidance" in prompt
     assert "A worker needed quota rules." in prompt
