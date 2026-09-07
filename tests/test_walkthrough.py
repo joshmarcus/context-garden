@@ -304,6 +304,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
 
 def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     task = sched.store.task("DM-001")
+    task.title = "Tighten inbox layout"
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
     captured = []
@@ -338,7 +339,7 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
-    assert ui["pages"] == ["*"]
+    assert ui["pages"] == ["board", "inbox"]
 
 
 def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):
