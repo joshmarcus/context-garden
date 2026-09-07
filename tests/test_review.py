@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -281,10 +282,9 @@ def test_scalability_claim_in_pr_description_requires_load_evidence():
 def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
     sched, fake_github, monkeypatch, path,
 ):
-    monkeypatch.setattr("garden.scheduler.review.produce_interaction_replay", lambda *args: None)
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: [path])
     task = sched.store.task("DM-001")
-    run = sched.dispatch_review(task)
+    run = _review_after_completed_empty_replay(sched, task)
 
     assert run.env_snapshot["interaction_required"] is True
     assert run.process_finished()
@@ -297,10 +297,9 @@ def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
 
 
 def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.produce_interaction_replay", lambda *args: None)
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
     task = sched.store.task("DM-001")
-    run = sched.dispatch_review(task)
+    run = _review_after_completed_empty_replay(sched, task)
     malformed = {
         "verdict": "approve", "summary": "looks good", "pages_seen": [], "criteria": [],
         "description_ok": True, "description_feedback": "", "description_rewrite": "",
@@ -914,3 +913,43 @@ def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(s
     sched.store.invalidate()
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def _review_after_completed_empty_replay(sched, task):
+    from garden import gitops
+
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                task.branch or task.default_branch(), sched.base_for(task))
+    sched.state.get(task.id)["interaction_replay"] = {"head": gitops.head_sha(wt)}
+    return sched.dispatch_review(task)
+
+
+def test_interaction_replay_defers_model_review_and_survives_collection(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    check = sched.dispatch_review(task)
+    assert check.mode == "check"
+    assert not sched.state.get(task.id).get("review_run")
+    assert sched.state.get(task.id).get("review_rounds", 0) == 0
+    # Repeated requests while the detached check owns the slot must reuse that run.
+    assert sched.dispatch_review(task).run_id == check.run_id
+    assert len([r for r in sched.runs.runs_for(task.id) if r.mode == "check"]) == 1
+    info = sched.state.get(task.id)["check_run"]
+    manifest = Path(info["cont"]["manifest"])
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text('{"fixture": "completed independently before reviewer"}')
+    (check.path / "checks.json").write_text(json.dumps([
+        {"name": "interaction replay", "status": "pass", "summary": "fixture"}]))
+    (check.path / "exit_code").write_text("0")
+    sched.state.save()
+    sched = Scheduler(Store(sched.store.root), github=sched.github)
+    task = sched.store.task(task.id)
+    assert sched.reap_check(task, TickReport())
+    digest = sched.state.get(task.id)["interaction_replay"]["digest"]
+    assert digest == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    run = sched.dispatch_review(task)
+    assert run.mode == "review"
+    assert run.env_snapshot["interaction_replay_digest"] == digest
+    assert sched.state.get(task.id)["review_rounds"] == 1

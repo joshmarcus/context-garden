@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import secrets
-import subprocess
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,22 +27,6 @@ from ..review import (
 )
 from ..runs import Run
 from .report import TickReport
-
-
-def produce_interaction_replay(worktree: Any, out: Any, head: str, nonce: str) -> None:
-    """Run the reviewed checkout's controlled journey outside the reviewer process."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(worktree / "src")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "garden.interaction_replay", "--out", str(out),
-             "--head", head, "--nonce", nonce],
-            cwd=worktree, env=env, check=False, timeout=180,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        # Missing evidence is a mechanical request-changes verdict. A replay infrastructure
-        # failure must not strand the review queue or crash the scheduler tick.
-        return
 
 
 class ReviewMixin:
@@ -134,8 +117,11 @@ class ReviewMixin:
             try:
                 if kind == "review":
                     run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
-                    rep.dispatched.append(f"{task.id}(review)")
-                    self.log(f"{task.id}: review run {run.run_id} started")
+                    if run.mode == "review":
+                        rep.dispatched.append(f"{task.id}(review)")
+                        self.log(f"{task.id}: review run {run.run_id} started")
+                    else:
+                        rep.dispatched.append(f"{task.id}(check:interaction_replay)")
                 else:
                     self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
                     if item.get("required"):
@@ -314,12 +300,37 @@ class ReviewMixin:
         needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
             changed, task.title, task.body, pr_title, pr_body,
         )
+        replay = self.state.get(task.id).get("interaction_replay") or {}
+        if needs_interaction and replay.get("head") != review_head:
+            # The replay is an ordinary detached check, with the same scrubbed
+            # environment, heavy-work lease and resource limits as other validation.
+            # A later tick collects its digest before the reviewer process can start.
+            self._queue_pending_reviews(self.state.get(task.id), [
+                {"kind": "review", "count_round": count_round}])
+            current = self.state.get(task.id).get("check_run") or {}
+            if current.get("run_id"):
+                existing = self._run_by_id(task, current["run_id"])
+                if existing is not None:
+                    return existing
+            nonce = secrets.token_urlsafe(24)
+            out = self.cfg.garden_dir / "interaction-replays" / task.id / nonce
+            command = shlex.join([
+                "env", f"PYTHONPATH={wt / 'src'}", sys.executable,
+                "-m", "garden.interaction_replay", "--out", str(out),
+                "--head", review_head, "--nonce", nonce,
+            ])
+            return self._dispatch_check_run(
+                task, worktree=wt, branch=branch, base=base,
+                specs=[{"name": "interaction replay", "command": command}],
+                stage="interaction_replay", extra={"timeout": 180},
+                cont={"head": review_head, "nonce": nonce,
+                      "manifest": str(out / "interaction-manifest.json"),
+                      "worktree": str(wt), "branch": branch, "base": base}, rep=TickReport(),
+            )
+        replay_nonce = str(replay.get("nonce") or "") if needs_interaction else ""
+        replay_manifest = Path(str(replay.get("manifest") or "."))
+        replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
         run = self._new_local_run(task.id, "review", "review")
-        replay_nonce = secrets.token_urlsafe(24) if needs_interaction else ""
-        replay_manifest = run.path / "interaction-replay" / "interaction-manifest.json"
-        if needs_interaction:
-            produce_interaction_replay(wt, replay_manifest.parent, review_head, replay_nonce)
-        replay_digest = hashlib.sha256(replay_manifest.read_bytes()).hexdigest() if replay_manifest.exists() else ""
         capture_paths: list[str] = []
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
@@ -380,6 +391,21 @@ class ReviewMixin:
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
+
+    def _after_interaction_replay_check(self, task: Task, run: Run,
+                                        results: list[dict[str, Any]], cont: dict[str, Any],
+                                        rep: TickReport) -> None:
+        """Record completed replay provenance before admitting any model reviewer."""
+        path = Path(str(cont["manifest"]))
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = ""
+        self.state.get(task.id)["interaction_replay"] = {
+            "head": cont["head"], "nonce": cont["nonce"], "manifest": str(path),
+            "digest": digest, "run_id": run.run_id,
+        }
+        self.state.save()
 
     def review_again(self, task: Task) -> Run:
         """The person asked for one more automated review after the cap stopped it: raise

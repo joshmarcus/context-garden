@@ -191,6 +191,7 @@ class CheckRunMixin:
                                       int(info.get("retries", 0)), rep)
             return True
         handler = {
+            "interaction_replay": self._after_interaction_replay_check,
             "pre_pr": self._after_pre_pr_check,
             "base_probe": self._after_base_probe_check,
             "rebase_recheck": self._after_rebase_recheck,
