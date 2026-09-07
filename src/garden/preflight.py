@@ -1,0 +1,108 @@
+"""Shared worker pre-flight rules and token-free mechanical checks."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+PREFLIGHT_ITEMS = (
+    "A test or stated reason for every acceptance criterion",
+    "Lint is clean",
+    "No conflict markers remain",
+    "UI changes have 1280px and 390px captures",
+    "The PR description states the goal and outcome without process history",
+    "Every acceptance criterion is addressed by name",
+)
+
+PREFLIGHT_RULES = """\
+## Review pre-flight
+
+Before writing your result, walk this rubric and include `pre_flight` in `GARDEN_RESULT`.
+It is a list with one entry for each item below, each shaped as
+`{{"item": "<item>", "status": "pass" | "not_applicable" | "fail", "evidence": "<short reason>"}}`.
+
+{items}
+
+The garden rejects a result that omits this list or any item. Mechanical failures are sent
+back before review; include a stated reason rather than silently skipping an item.
+"""
+
+# A regular unified diff prefixes newly-added source lines with ``+``.  Match both
+# that form and raw file content, but not a marker removed from the branch.
+# A separator alone is also valid Setext Markdown; require a boundary marker.
+_CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|>>>>>>>)(?:[ \t]|$)", re.MULTILINE)
+
+
+def _is_ui_path(path: str) -> bool:
+    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
+            or path.endswith((".css", ".scss")))
+
+
+def preflight_section() -> str:
+    return PREFLIGHT_RULES.format(items="\n".join(f"- {item}" for item in PREFLIGHT_ITEMS))
+
+
+def missing_preflight(value: Any) -> list[str]:
+    """Return required rubric items missing from a worker result."""
+    if not isinstance(value, list):
+        return list(PREFLIGHT_ITEMS)
+    reported = {str(row.get("item") or "").strip() for row in value if isinstance(row, dict)
+                and str(row.get("status") or "").strip()}
+    return [item for item in PREFLIGHT_ITEMS if item not in reported]
+
+
+def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_description: bool,
+                       ui_changed: bool, captures: list[str], inspection_error: str = "") -> list[dict[str, Any]]:
+    """Checks that never need a reviewer or model, one concise failure each."""
+    if inspection_error:
+        return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {inspection_error}")]
+    try:
+        from . import gitops
+
+        ref = gitops.base_ref(worktree, base)
+        diff = gitops.git("diff", f"{ref}...HEAD", cwd=worktree)
+        names = [name.strip() for name in gitops.git("diff", "--name-only", f"{ref}...HEAD", cwd=worktree).splitlines()
+                 if name.strip()]
+    except gitops.GitError as exc:
+        return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {exc}")]
+
+    results: list[dict[str, Any]] = []
+    if _CONFLICT.search(diff):
+        results.append(_fail("conflict markers", "diff contains unresolved conflict markers"))
+    else:
+        results.append(_pass("conflict markers"))
+    syntax_error = ""
+    for name in names:
+        if not name.endswith(".py"):
+            continue
+        path = worktree / name
+        # A deleted Python module is still listed by `git diff --name-only`, but
+        # it cannot be a syntax error in the candidate branch.
+        if not path.is_file():
+            continue
+        try:
+            compile(path.read_text(), str(path), "exec")
+        except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+            syntax_error = str(exc).splitlines()[-1]
+            break
+    results.append(_fail("syntax", f"Python syntax error: {syntax_error}") if syntax_error else _pass("syntax"))
+    ui_changed = ui_changed or any(_is_ui_path(name) for name in names)
+    pngs = [p for p in captures if p.endswith(".png")]
+    if ui_changed and not pngs:
+        results.append(_fail("UI captures", "UI files changed but this run produced no PNG captures"))
+    else:
+        results.append(_pass("UI captures"))
+    if require_description and not pr_body.strip():
+        results.append(_fail("PR description", "worker result has an empty pr_body"))
+    else:
+        results.append(_pass("PR description"))
+    return results
+
+
+def _pass(name: str) -> dict[str, Any]:
+    return {"name": name, "status": "pass", "summary": "ok", "details": ""}
+
+
+def _fail(name: str, summary: str) -> dict[str, Any]:
+    return {"name": name, "status": "fail", "summary": summary, "details": ""}

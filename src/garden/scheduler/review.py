@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import gitops
-from ..criteria import criteria_counts, required_evidence
+from ..criteria import criteria_counts, parse_criteria, required_evidence
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, ensure_open, now_iso
@@ -255,14 +255,28 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
-        pr_title, pr_body, pr_comment, verified = task.title, "", "", None
+        pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
             pr_comment = str(work_run.result.get("pr_comment") or "")
             verified = work_run.result.get("verified")
+            pre_flight = work_run.result.get("pre_flight")
+        criteria_snapshot: list[str] | None = None
+        if work_run is not None and "criteria" in (work_run.env_snapshot or {}):
+            criteria_snapshot = list((work_run.env_snapshot or {}).get("criteria") or [])
+        if criteria_snapshot is None:
+            for prior in reversed(self.runs.runs_for(task.id)):
+                if prior.mode in ("work", "revise", "resume") and "criteria" in (prior.env_snapshot or {}):
+                    criteria_snapshot = list((prior.env_snapshot or {}).get("criteria") or [])
+                    if criteria_snapshot is not None:
+                        break
+        if criteria_snapshot is None:
+            criteria_snapshot = parse_criteria(task.body)
         if verified is None:
             verified = self._last_worker_verified(task)
+        if pre_flight is None:
+            pre_flight = self._last_worker_preflight(task)
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if slug and number and self.github.available and not pr_body:
@@ -289,7 +303,8 @@ class ReviewMixin:
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
-                            checks=check_results, reask_missing_fixes=reask_missing_fixes)
+                            checks=check_results, reask_missing_fixes=reask_missing_fixes,
+                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight)
         run = self._new_local_run(task.id, "review", "review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
@@ -297,7 +312,8 @@ class ReviewMixin:
         # review.max_rounds and must not be charged for having been retried.
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
                             "review_head": gitops.head_sha(wt),
-                            "reask_missing_fixes": reask_missing_fixes}
+                            "reask_missing_fixes": reask_missing_fixes,
+                            "criteria": criteria_snapshot}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -548,6 +564,9 @@ class ReviewMixin:
                     self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                     return True
                 fb = feedback_from_review(review)
+                changed = self._criteria_changed_note(task, run)
+                if changed:
+                    fb = (fb + "\n\n" + changed).strip()
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = review_is_description_only(review)
@@ -561,6 +580,9 @@ class ReviewMixin:
                 # rewrite to apply directly: dispatch a description-only revise round rather
                 # than leaving the flagged description sitting on an in_review task forever.
                 fb = feedback_from_review(review)
+                changed = self._criteria_changed_note(task, run)
+                if changed:
+                    fb = (fb + "\n\n" + changed).strip()
                 if fb and bool(self.cfg.get("auto_revise", True)):
                     st["pending_feedback"] = fb
                     st["pending_feedback_easy"] = True
@@ -583,6 +605,21 @@ class ReviewMixin:
         return [finding for finding in review.get("findings") or []
                 if isinstance(finding, dict) and finding.get("severity") == "blocking"
                 and not str(finding.get("fix") or "").strip()]
+    def _criteria_changed_note(self, task: Task, review_run: Run) -> str:
+        """Add task edits made after dispatch to the next revise brief."""
+        snapshot = review_run.env_snapshot or {}
+        if "criteria" not in snapshot:
+            return ""
+        frozen = list(snapshot.get("criteria") or [])
+        current = parse_criteria(task.body)
+        if frozen == current:
+            return ""
+        added = [item for item in current if item not in frozen]
+        removed = [item for item in frozen if item not in current]
+        lines = ["### Criteria changed after dispatch", "", "The review judged the frozen criteria in your prior brief. The task was edited while you worked; address this delta now:"]
+        lines += [f"- Added: {item}" for item in added]
+        lines += [f"- Removed: {item}" for item in removed]
+        return "\n".join(lines)
 
     def _apply_description_rewrite(self, task: Task, run: Run, rewrite: str, rep: TickReport, cost: str) -> None:
         """The reviewer found nothing blocking but the description, and returned the corrected
