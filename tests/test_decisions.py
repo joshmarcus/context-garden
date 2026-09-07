@@ -144,7 +144,14 @@ def test_accept_no_change_without_pr_keeps_detached_check_out_of_inbox(sched, fa
                    for item in inbox)
     assert not any(item["task"] == task.id and item.get("group") == "question" for item in inbox)
 
-    sched.tick()  # reap the detached pre-PR check; no PR still means in_review
+    # The check runner is detached in production, so allow the continuation to be
+    # collected before asserting the final status.  In-process tests usually finish
+    # in one tick, but the lifecycle contract is eventual and must not depend on that
+    # scheduling detail.
+    for _ in range(3):
+        if not sched.state.get(task.id).get("check_run"):
+            break
+        sched.tick()
     assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
