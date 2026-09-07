@@ -215,7 +215,15 @@ class CheckRunMixin:
                                      cont=cont, rep=rep, retries=retries + 1)
             return
         note = f"check did not run ({run.run_id}): {cause}; retry also failed; needs human"
-        self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage)
+        # Keep the mechanical continuation, not merely its prose diagnostic.  A delegated
+        # operator can retry this exact check without turning it into a worker revision or
+        # losing the PR/check stage it belongs to.
+        self.state.get(task.id)["recovery_check"] = {
+            "stage": stage, "cont": cont, "specs": specs, "retries": retries,
+            "run": run.run_id, "cause": cause,
+        }
+        self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage,
+                              delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))
         self.events.emit("needs_human", task.id, stop_kind="check_did_not_run", reason=note, run=run.run_id)
         self.state.save()
         self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
