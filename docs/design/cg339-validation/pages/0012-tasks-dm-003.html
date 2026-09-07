@@ -319,7 +319,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </style>
 
 </head>
-<body class="" data-server-now="2026-09-07T02:04:41+00:00">
+<body class="" data-server-now="2026-09-07T06:06:09+00:00">
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <pattern id="hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)"><rect width="4" height="4" fill="var(--leaf-tint)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--hatch)" stroke-width="0.7"/></pattern>
@@ -441,19 +441,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/trials" class="">Trials</a>
     <a href="/runs" class="">Runs</a>
     <a href="/costs" class="">Costs</a>
-
+    
     <a href="/config" class="">Config</a>
   </nav>
   <div>
     <h4>Phases</h4>
     <a class="drawer " href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
-
-
+    
+    
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
     <span class="faint">0 of 8 local execution slots · heavy 0/0 · isolation not configured</span>
-
+    
     <div class="running-now">
       <span class="faint">nothing running</span>
     </div>
@@ -468,7 +468,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <noscript><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-
+    
     <span class="faint" style="display:block">$0.11/hr last hour</span>
   </div>
   <div class="notify" id="notify">
@@ -476,9 +476,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span class="notify-state faint" id="notify-state"></span>
   </div>
   <div class="foot">
-
-    <span>scheduler loop on · tick <span data-tick-at>02:04:41Z</span></span>
-
+    
+    <span>scheduler loop on · tick <span data-tick-at>06:06:09Z</span></span>
+    
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
@@ -488,7 +488,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 <div class="page-head">
   <div><span class="eyebrow">demo / p1 · <a href="/tasks/DM-003" class="id">DM-003</a></span><h1>Planned: a plain task</h1>
     <p style="display:flex;align-items:center;gap:10px"><svg class="stage" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><span class="state s-changes_requested">changes requested <span class="stage-word">pruned</span></span><span class="muted">priority next · 1 · easy · S · <a href="/qa/github/pull/1" target="_blank">PR ↗</a></span></p></div>
-  <div class="tools"><a class="btn" href="/tasks/DM-003/brief" target="_blank">Brief</a><a class="btn" href="/runs/DM-003/20260907T020437Z-work">Latest run</a></div>
+  <div class="tools"><a class="btn" href="/tasks/DM-003/brief" target="_blank">Brief</a><a class="btn" href="/runs/DM-003/20260907T060607Z-work">Latest run</a></div>
 </div>
 
 
@@ -498,32 +498,32 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 
 
 <div class="actions" style="margin-bottom:14px">
-
-
+  
+  
   <form class="inline" method="post" action="/tasks/DM-003/dispatch"><button class="primary" >Dispatch revise run</button></form>
   <form class="inline" method="post" action="/tasks/DM-003/retry"><button>Continue the loop</button></form>
-
+  
   <form class="inline" method="post" action="/tasks/DM-003/review"><button class="quiet">Automated review</button></form>
   <button class="quiet" data-toggle="persona-form">Persona review…</button>
   <form class="inline" method="post" action="/tasks/DM-003/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()"><option value="easy" selected>easy</option><option value="medium">medium</option><option value="hard">hard</option></select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/DM-003/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()"><option value="0">first · 0</option><option value="1" selected>next · 1</option><option value="2">normal · 2</option><option value="3">later · 3</option><option value="4">someday · 4</option></select><span class="autosave-mark" aria-live="polite"></span></form>
-
+  
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
-
+  
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
-
-
+  
+  
   <form class="inline" method="post" action="/tasks/DM-003/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>
   <form class="inline" method="post" action="/tasks/DM-003/cancel"><button class="quiet danger">Cancel</button></form>
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/DM-003/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: designer, product-manager, project-manager, security, staff-engineer, usability-expert, user</span></form></div>
 <div id="trial-form" class="panel" hidden>
   <div class="eyebrow">Start a model trial</div>
-
+  
   <form method="post" action="/tasks/DM-003/trial" class="trial-form" data-trial-form data-harnesses='{"claude": ["qa-easy", "qa-medium", "qa-hard", "sonnet", "opus", "haiku", "fable", "claude-sonnet-5", "claude-opus-4-8"]}' data-default-harness="claude">
     <input type="hidden" name="note">
-
+    
     <div class="trial-rows"></div>
     <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">Start trial</button></div>
   </form>
@@ -569,72 +569,72 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <div class="panel"><div class="eyebrow">Acceptance criteria</div>
       <table style="margin-top:6px;width:100%">
         <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>
-
+        
         <tr>
           <td style="vertical-align:top">The plain task lands with a passing test.</td>
           <td style="vertical-align:top"><span class="faint">—</span></td>
           <td style="vertical-align:top"><span class="faint">—</span></td>
         </tr>
-
+        
       </table>
     </div>
-
-
-
-
+    
+    
+    
+    
     <div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px"><ul>
 <li><strong>triage</strong> (human): tighten the tests</li>
 </ul></div></div>
-
-
-
-
-
+    
+    
+    
+    
+    
     <div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr><tr><td>work</td><td>1</td><td>100</td><td>0</td><td>20</td><td>$0.05</td></tr></table></div>
-
+    
     <div class="panel"><div class="eyebrow">Runs</div>
       <div id="runs" data-poll="/partials/tasks/DM-003/runs" data-every="5000" style="margin-top:6px">
 <div class="scroll"><table>
 <tr><th>run</th><th>mode</th><th>status</th><th>model</th><th>min</th><th>brief tok</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th><th></th></tr>
 
 <tr>
-  <td class="mono">20260907T020437Z-work</td><td>work</td><td><span class="pill s-done">done</span></td>
-  <td class="mono">claude:qa-easy</td><td>0</td><td>1,579</td>
+  <td class="mono">20260907T060607Z-work</td><td>work</td><td><span class="pill s-done">done</span></td>
+  <td class="mono">claude:qa-easy</td><td>0</td><td>1,640</td>
   <td>100</td><td></td><td>20</td>
   <td>$0.05</td>
-  <td><a href="/runs/DM-003/20260907T020437Z-work">open run</a></td>
+  <td><a href="/runs/DM-003/20260907T060607Z-work">open run</a></td>
 </tr>
 
 </table></div>
 </div>
     </div>
-    <div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px"><li><span class="faint mono">09-07T02:04</span><span class="k">transition</span><span>awaiting_triage → changes_requested: triage: changes requested by hand: tighten the tests</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">triaged</span><span>changes by human</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">transition</span><span>running → awaiting_triage: opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">pr_opened</span><span>/qa/github/pull/1 (draft)</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">run_finished</span><span>work done $0.05</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">transition</span><span>ready → running: dispatched work run 20260907T020437Z-work via local [claude model=qa-easy] (fresh session, base main, ~1579 tokens)</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">dispatch</span><span>work qa-easy  base main</span></li><li><span class="faint mono">09-07T02:04</span><span class="k">transition</span><span>draft → ready: approved (web)</span></li></ul></div>
-    <div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">2026-09-07T02:04:37+00:00 approved (web)
-2026-09-07T02:04:37+00:00 dispatched work run 20260907T020437Z-work via local [claude model=qa-easy] (fresh session, base main, ~1579 tokens)
-2026-09-07T02:04:38+00:00 opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05
-2026-09-07T02:04:41+00:00 triage: changes requested by hand: tighten the tests
+    <div class="panel"><div class="eyebrow">Timeline</div><ul class="tl" style="margin-top:6px"><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>awaiting_triage → changes_requested: triage: changes requested by hand: tighten the tests</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">triaged</span><span>changes by human</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>running → awaiting_triage: opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">pr_opened</span><span>/qa/github/pull/1 (draft)</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">run_finished</span><span>work done $0.05</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>ready → running: dispatched work run 20260907T060607Z-work via local [claude model=qa-easy] (fresh session, base main, ~1640 tokens)</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">dispatch</span><span>work qa-easy  base main</span></li><li><span class="faint mono">09-07T06:06</span><span class="k">transition</span><span>draft → ready: approved (web)</span></li></ul></div>
+    <div class="panel"><div class="eyebrow">Log</div><div class="log" style="margin-top:6px">2026-09-07T06:06:07+00:00 approved (web)
+2026-09-07T06:06:07+00:00 dispatched work run 20260907T060607Z-work via local [claude model=qa-easy] (fresh session, base main, ~1640 tokens)
+2026-09-07T06:06:07+00:00 opened draft /qa/github/pull/1 (base main): implemented the thing cost=$0.05
+2026-09-07T06:06:09+00:00 triage: changes requested by hand: tighten the tests
 </div></div>
   </div>
   <div class="stack">
     <div class="panel">
       <dl class="kv">
         <dt>file</dt><dd class="mono">demo/p1/tasks/DM-003-planned-a-plain-task.md</dd>
-
-
-
-
+        
+        
+        
+        
         <dt>depends on</dt><dd><span class="faint">—</span></dd>
         <dt>unblocks</dt><dd><a href="/tasks/DM-004">DM-004</a> </dd>
-        <dt>reading</dt><dd><span class="faint">—</span></dd>
+        <dt>reading</dt><dd><span class="mono">demo/p1/specs/spec.md</span><br></dd>
         <dt>branch</dt><dd class="mono">garden/dm-003-planned-a-plain-task</dd>
         <dt>PR</dt><dd><a href="/qa/github/pull/1" target="_blank">/qa/github/pull/1</a> <span class="badge">draft</span></dd>
-
-
-
-
+        
+        
+        
+        
         <dt>attempts</dt><dd>1</dd>
         <dt>runner</dt><dd>default / default harness</dd>
-        <dt>updated</dt><dd class="mono">2026-09-07T02:04</dd>
+        <dt>updated</dt><dd class="mono">2026-09-07T06:06</dd>
       </dl>
     </div>
   </div>

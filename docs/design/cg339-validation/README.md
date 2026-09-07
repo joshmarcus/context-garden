@@ -1,6 +1,6 @@
 # CG-339 running-application validation
 
-The proposed worktree was exercised with:
+Code commit `a7cf00bd1050330e701c70919c30b28024cb77b5` was exercised with:
 
 ```sh
 PYTHONPATH=src .venv/bin/python -c 'from pathlib import Path; from garden.qa import run_qa; r=run_qa(Path("docs/design/cg339-validation"), scripted=True, keep=False, log=print); print(r.summary()); raise SystemExit(0 if r.ok else 1)'
