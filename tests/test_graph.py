@@ -6,6 +6,7 @@ from garden.graph import (
     GraphError,
     blockers,
     critical_path,
+    dependency_after,
     effective_status,
     mermaid,
     ready,
@@ -25,6 +26,30 @@ def test_ready_and_blocked():
     assert blockers(tasks["C"], tasks) == ["B"]
     assert effective_status(tasks["C"], tasks) == "blocked"
     assert effective_status(tasks["E"], tasks) == "draft"
+
+
+def test_merge_dependency_does_not_stack_and_design_defaults_to_merge():
+    parent = T("A", status="in_review")
+    parent.kind = "design"
+    parent.branch, parent.pr = "design-branch", "https://example.test/pull/1"
+    explicit = T("B", ["A"])
+    explicit.dependency_after["A"] = "merge"
+    default = T("C", ["A"])
+    tasks = {t.id: t for t in (parent, explicit, default)}
+    assert dependency_after(explicit, "A", tasks) == "merge"
+    assert dependency_after(default, "A", tasks) == "merge"
+    assert blockers(explicit, tasks, stack=True) == ["A"]
+    assert blockers(default, tasks, stack=True) == ["A"]
+    assert "after merge" in mermaid(tasks)
+
+
+def test_code_dependency_keeps_stacking_default():
+    parent = T("A", status="in_review")
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    child = T("B", ["A"])
+    tasks = {"A": parent, "B": child}
+    assert dependency_after(child, "A", tasks) == "stack"
+    assert blockers(child, tasks, stack=True) == []
 
 
 def test_ready_sorts_by_priority_then_order_then_id():

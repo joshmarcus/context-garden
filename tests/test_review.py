@@ -1,6 +1,14 @@
+import pytest
+
 from garden.model import Status
 from garden.now1 import strip_for_run
-from garden.review import feedback_from_review, parse_review, review_brief, review_to_markdown
+from garden.review import (
+    enforce_criteria_verdict,
+    feedback_from_review,
+    parse_review,
+    review_brief,
+    review_to_markdown,
+)
 from garden.scheduler import Scheduler
 from garden.store import Store
 
@@ -104,6 +112,18 @@ def test_review_brief_and_parse(garden):
     fb = feedback_from_review(rev)
     assert "blocking" in fb and "pr_body" in fb
     assert parse_review("nothing") == {}
+
+
+@pytest.mark.parametrize("criterion", [
+    {"criterion": "The outcome works.", "met": False, "evidence": "test_outcome"},
+    {"criterion": "The outcome works.", "met": True},
+])
+def test_unmet_or_evidenceless_criterion_forces_request_changes(criterion):
+    review = enforce_criteria_verdict({"verdict": "approve", "criteria": [criterion], "findings": []})
+
+    assert review["verdict"] == "request_changes"
+    assert review["findings"][-1]["severity"] == "blocking"
+    assert "The outcome works." in review["findings"][-1]["summary"]
 
 
 def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
@@ -261,6 +281,16 @@ def test_review_brief_advertises_description_rewrite(garden):
                         diff="+a", max_diff_chars=1000)
     assert "description_rewrite" in text
     assert "rewrite the description yourself" in text
+
+
+def test_review_brief_marks_an_amended_criterion(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The revised outcome works.\n"
+    task.extra["criteria_amended"] = [{"index": 0, "text": "The revised outcome works.", "reason": "The original was false."}]
+    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+a", max_diff_chars=1000)
+    assert "## Amended acceptance criteria" in text
+    assert "amended — The original was false." in text
 
 
 def test_review_description_only_rewrite_applied_without_a_round(sched, fake_github, monkeypatch):

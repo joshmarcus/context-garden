@@ -95,6 +95,29 @@ class KickoffMixin:
         question = str(item.get("question") or "").strip()
         if not question:
             return {}
+        if source.startswith("retro:"):
+            from ..retro import normalize_question
+
+            key = normalize_question(question)
+            for decision in self.state.get("_decisions").values():
+                if (isinstance(decision, dict) and decision.get("kind") == "question"
+                        and decision.get("phase") == phase.key
+                        and decision.get("source", "").startswith("retro:")
+                        and normalize_question(str(decision.get("question") or "")) == key):
+                    return {"question": question, "context": str(item.get("context") or "").strip(),
+                            "options": [str(o) for o in (item.get("options") or [])],
+                            "blocking": bool(item.get("blocking")), "decision_id": decision["id"],
+                            "duplicate": True}
+            for decision in self.state.get("_decision_history").get("questions") or []:
+                if (isinstance(decision, dict) and decision.get("kind") == "question"
+                        and decision.get("phase") == phase.key
+                        and decision.get("source", "").startswith("retro:")
+                        and normalize_question(str(decision.get("question") or "")) == key):
+                    return {"question": question, "context": str(item.get("context") or "").strip(),
+                            "options": [str(o) for o in (item.get("options") or [])],
+                            "blocking": bool(item.get("blocking")), "decision_id": decision["id"],
+                            "status": decision.get("status", "answered"), "answer": decision.get("answer", ""),
+                            "duplicate": True}
         decisions = self.state.get("_decisions")
         did = f"{run_id}-q{idx}"
         decisions[did] = {
@@ -110,8 +133,13 @@ class KickoffMixin:
                 "options": [str(o) for o in (item.get("options") or [])],
                 "blocking": bool(item.get("blocking")), "decision_id": did}
 
+    def _remember_question(self, decision: dict[str, Any], status: str, answer: str = "") -> None:
+        history = self.state.get("_decision_history").setdefault("questions", [])
+        history.append({**decision, "status": status, "answer": answer})
+
     def answer_question(self, decision_id: str, answer: str, by: str = "cli") -> dict[str, Any]:
         d = self._pop_question(decision_id)
+        self._remember_question(d, "answered", answer.strip())
         phase = self._phase_of_decision(d)
         if phase is not None:
             if str(d.get("source") or d.get("discovered_from") or "").startswith("retro:"):
@@ -128,6 +156,7 @@ class KickoffMixin:
 
     def dismiss_question(self, decision_id: str, by: str = "cli") -> dict[str, Any]:
         d = self._pop_question(decision_id)
+        self._remember_question(d, "dismissed")
         phase = self._phase_of_decision(d)
         if phase is not None:
             if str(d.get("source") or d.get("discovered_from") or "").startswith("retro:"):

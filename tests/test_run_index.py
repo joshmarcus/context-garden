@@ -23,11 +23,13 @@ def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
     return run
 
 
-def test_shared_index_coalesces_concurrent_history_reads(tmp_path: Path):
+def test_shared_index_coalesces_concurrent_history_reads(tmp_path: Path, monkeypatch):
     rs = RunStore(tmp_path)
     for n in range(200):
         _finished(rs, f"CG-{n % 10:03d}", f"20260101T000{n:03d}Z-work")
 
+    clock = [100.0]
+    monkeypatch.setattr("garden.runs.time.monotonic", lambda: clock[0])
     before = rs.scan_count
     with ThreadPoolExecutor(max_workers=12) as pool:
         sizes = list(pool.map(lambda _: len(RunStore(tmp_path).all_runs()), range(24)))
@@ -36,7 +38,7 @@ def test_shared_index_coalesces_concurrent_history_reads(tmp_path: Path):
     assert rs.scan_count - before == 1
 
     reads = rs.read_count
-    time.sleep(rs.MAX_INDEX_AGE_SECONDS + 0.05)
+    clock[0] += rs.MAX_INDEX_AGE_SECONDS + 0.05
     assert len(rs.all_runs()) == 200
     assert rs.read_count == reads, "cache expiry must not re-read unchanged run records"
 

@@ -5,6 +5,7 @@
   <div><h1>What needs you</h1><p>Every item here is a decision only a person can make. Beyond that, the garden grows.</p></div>
   <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
+<div class="panel" style="margin-bottom:12px"><div class="eyebrow">Serving build</div><p><b>{{ tool_build.get('active', '')[:12] if tool_build.get('active') else 'unversioned' }}</b>{% if tool_build.get('status') %} · update {{ tool_build.status }}{% if tool_build.get('sha') %} {{ tool_build.sha[:12] }}{% endif %}{% if tool_build.get('reason') %} · {{ tool_build.reason }}{% endif %}{% endif %}</p></div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
   <div class="kpi"><div class="v">{{ workers_running }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
@@ -63,7 +64,7 @@
     <div class="do">
       {% if it.get('decision_card') %}
       {% elif it.group == 'tool' %}
-        <form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>
+        {% if it.actions %}<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>{% endif %}
       {% elif it.group == 'question' and it.task %}
         <form method="post" action="/tasks/{{ it.task }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><button class="primary">Answer and resume</button></form>
       {% elif it.group == 'question' %}

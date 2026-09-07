@@ -96,6 +96,8 @@ class DispatchMixin:
                 continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
+            if self.capture_required(task) and not self.browser_ready_for(task):
+                continue  # infrastructure hold: no worker run or task attempt is consumed
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
@@ -325,6 +327,12 @@ class DispatchMixin:
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
+        if mode == "revise" and not feedback.strip() and st.get("pending_feedback_rebase"):
+            feedback = (
+                "## Concrete blocker\n\n"
+                "GitHub has no open review comments to address. The branch instead needs its "
+                "rebase conflict resolved against the current base."
+            )
         revise_easy = mode == "revise" and bool(st.get("pending_feedback_easy"))
         easy_tier = revise_easy or mode == "rebase"
         # Snapshot what this dispatch is about to clear from state, before it clears it, so a

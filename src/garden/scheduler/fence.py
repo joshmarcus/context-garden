@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -272,7 +273,12 @@ class FenceMixin:
             if not self._worker_named(transcript, root, rel, worktree):
                 continue  # the scheduler's own state.json write, or a person's config edit
             reverted = False
-            if rel == str(self.state.path.relative_to(root)):
+            # A sibling owns its live run evidence. Even an explicit forbidden write is
+            # failed and reported, never repaired from a stale dispatch snapshot that may
+            # predate legitimate concurrent appends.
+            if rel.startswith(".garden/runs/"):
+                pass
+            elif rel == str(self.state.path.relative_to(root)):
                 try:
                     snapshot = json.loads((run.path / "fence_guard" / str(entry["snap"])).read_text())
                     self.state.restore_other_task_keys(snapshot, task.id, set(self.store.tasks()))
@@ -499,17 +505,14 @@ class FenceMixin:
 
     @staticmethod
     def _worker_named(transcript: str, repo: Path, rel: str, worktree: Path | None = None) -> bool:
-        """True if the worker's transcript names this path, so the change is attributable to
-        the worker rather than to a person editing the live garden or the scheduler's own git.
+        """Return whether structured harness output contains explicit write evidence.
 
-        `claude`'s output (a single result JSON, or stream-json tool events) carries the
-        worker's `Edit`/`Write` `file_path`, the `Bash` commands it ran, and its final
-        message — all as substrings of stdout. A path the worker touched appears there by its
-        absolute form; a path a person changed while the run was live does not. We also match
-        the path as it would be written relative to the worktree or its parent (the worker's
-        likely cwd), so a fenced path named across tool calls as `../../../garden.yaml` is
-        still attributed. Matching is always by a full path — never a bare filename — so a
-        person's edit that merely shares a name is not swept up."""
+        Tool results and agent prose may quote arbitrary paths observed by read-only commands,
+        so neither is attribution. Claude's editing tools and Codex file-change events are
+        direct evidence. Shell commands count only when their syntax identifies a familiar
+        mutating operation or output redirection; an opaque program that might write remains
+        deliberately ambiguous and is not used as authority to restore bytes.
+        """
         if not transcript:
             return False
         target = repo / rel
@@ -524,7 +527,146 @@ class FenceMixin:
                 candidates.add(os.path.relpath(str(target), str(anchor)))
             except (OSError, ValueError):
                 pass
-        return any(c in transcript for c in candidates)
+        return any(any(FenceMixin._evidence_names(item, candidate) for candidate in candidates)
+                   for item in FenceMixin._worker_write_evidence(transcript))
+
+    @staticmethod
+    def _evidence_names(evidence: str, candidate: str) -> bool:
+        if evidence == candidate:
+            return True
+        path_char = r"A-Za-z0-9_./-"
+        return re.search(rf"(?<![{path_char}]){re.escape(candidate)}(?![{path_char}])", evidence) is not None
+
+    @staticmethod
+    def _worker_write_evidence(transcript: str) -> list[str]:
+        evidence: list[str] = []
+        for line in transcript.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "assistant":  # Claude stream-json
+                blocks = (event.get("message") or {}).get("content") or []
+                for block in blocks:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    name = str(block.get("name") or "")
+                    tool_input = block.get("input") or {}
+                    if not isinstance(tool_input, dict):
+                        continue
+                    if name in {"Edit", "Write", "MultiEdit", "NotebookEdit"}:
+                        path = tool_input.get("file_path") or tool_input.get("path")
+                        if path:
+                            evidence.append(str(path))
+                    elif name == "Bash":
+                        command = tool_input.get("command")
+                        if isinstance(command, str):
+                            evidence.extend(FenceMixin._shell_write_paths(command))
+            if event.get("type") in {"item.started", "item.completed"}:  # Codex JSONL
+                item = event.get("item") or {}
+                if not isinstance(item, dict):
+                    continue
+                kind = item.get("type")
+                if kind in {"file_change", "file_changes"}:
+                    evidence.extend(FenceMixin._paths_in_file_change(item))
+                elif kind == "command_execution":
+                    command = item.get("command")
+                    if isinstance(command, str):
+                        evidence.extend(FenceMixin._shell_write_paths(command))
+        return evidence
+
+    @staticmethod
+    def _paths_in_file_change(value: Any) -> list[str]:
+        paths: list[str] = []
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"path", "file_path"} and isinstance(child, str):
+                    paths.append(child)
+                else:
+                    paths.extend(FenceMixin._paths_in_file_change(child))
+        elif isinstance(value, list):
+            for child in value:
+                paths.extend(FenceMixin._paths_in_file_change(child))
+        return paths
+
+    @staticmethod
+    def _shell_write_paths(command: str) -> list[str]:
+        """Return destinations made explicit by a small, unambiguous shell subset.
+
+        Unsupported commands and option-heavy forms are deliberately unattributed. A command
+        being mutating does not make its read operands evidence of writes.
+        """
+        try:
+            redirect_marker = "\ue000"
+            masked_command = FenceMixin._mask_quoted_redirects(command, redirect_marker)
+            lexer = shlex.shlex(masked_command, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            words = list(lexer)
+        except ValueError:
+            return []
+        writes: list[str] = []
+        separators = {";", "&", "&&", "|", "||"}
+        start = 0
+        for end in range(len(words) + 1):
+            if end < len(words) and words[end] not in separators:
+                continue
+            segment = words[start:end]
+            start = end + 1
+            operands: list[str] = []
+            index = 0
+            while index < len(segment):
+                word = segment[index]
+                if word in {">", ">>"} and index + 1 < len(segment):
+                    writes.append(segment[index + 1])
+                    index += 2
+                    continue
+                if word in {"<", "<<"} and index + 1 < len(segment):
+                    index += 2
+                    continue
+                # shlex separates a file-descriptor prefix: ``2 > errors.log``.
+                if (word.isdigit() and index + 2 < len(segment)
+                        and segment[index + 1] in {">", ">>"}):
+                    writes.append(segment[index + 2])
+                    index += 3
+                    continue
+                operands.append(word)
+                index += 1
+            if not operands:
+                continue
+            executable = Path(operands[0]).name
+            args = operands[1:]
+            if any(arg.startswith("-") and arg != "--" for arg in args):
+                continue
+            args = [arg for arg in args if arg != "--"]
+            if executable in {"cp", "install", "ln", "mv"} and len(args) >= 2:
+                writes.append(args[-1])
+            elif executable in {"mkdir", "rm", "rmdir", "touch", "truncate", "tee"}:
+                writes.extend(args)
+        return [path.replace(redirect_marker, ">") for path in writes]
+
+    @staticmethod
+    def _mask_quoted_redirects(command: str, marker: str) -> str:
+        """Keep a quoted ``>`` from becoming shell punctuation during tokenisation."""
+        quote = ""
+        escaped = False
+        masked: list[str] = []
+        for char in command:
+            if escaped:
+                escaped = False
+                masked.append(marker if char == ">" else char)
+                continue
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = ""
+            elif char in {"'", '"'}:
+                quote = char
+            masked.append(marker if quote and char == ">" else char)
+        return "".join(masked)
 
     def _fence_check(self, task: Task, run: Run | None = None) -> list[dict[str, Any]]:
         """Compare each guarded repo against its dispatch snapshot; revert and report only the

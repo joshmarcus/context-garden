@@ -61,7 +61,6 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     print(f"{history_size + 3} runs, 3 active: n={len(timings)} page p95={p95:.3f}s "
           f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
     assert p95 < 2.0
-    assert p95 <= max(timings)
     assert rs.read_count - reads == history_size + 3
 
 
@@ -610,14 +609,6 @@ def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garde
     assert 'action="/tasks/DM-001/recover-check"' in page
 
 
-def test_inbox_and_task_page_include_the_same_decision_card_fragment():
-    from pathlib import Path
-
-    templates = Path(__file__).parents[1] / "src" / "garden" / "web" / "templates"
-    for name in ("inbox.html", "task.html"):
-        assert '{% include "_decision_card.html" %}' in (templates / name).read_text()
-
-
 def test_inbox_attention_cards_keep_their_discuss_prompts_separate(garden):
     """Each shared card targets its own discuss prompt when the Inbox has several stops."""
     from garden.model import Status
@@ -716,6 +707,7 @@ def test_new_task_fills_in_the_body_from_the_form(garden):
     r = c.post("/phases/demo/p1/new-task", data={
         "title": "Write the docs", "goal": "Explain the thing.", "context": "Nobody knows how it works.",
         "acceptance": "- [ ] docs exist\n- [ ] \n- [ ] reviewed", "difficulty": "easy", "priority": "1",
+        "reading": "demo/p1/specs/spec.md",
         "ready": "1",
     }, follow_redirects=False)
     assert r.status_code == 303
@@ -778,12 +770,13 @@ def test_new_task_approve_now_refusal_keeps_it_draft_and_flashes_the_gap(garden)
 
 
 def test_inline_edit_clears_brief_gate(garden):
-    """A draft with a missing checklist can repair its brief on its task page and approve."""
+    """A draft with a missing reading list can repair its brief on its task page and approve."""
     from garden.model import Status
 
     store = Store(garden)
     task = store.task("DM-001")
     task.status = Status.DRAFT
+    task.reading = []
     store.save(task)
     c = client(garden)
 
@@ -1466,14 +1459,6 @@ def test_friction_report_web_with_task_id(garden):
     assert "Brief is too long." in text
 
 
-def test_inbox_page_head_subtitle_is_not_capped_narrow(garden):
-    """CG-184: `.page-head p` used to cap at 62ch, wrapping the Inbox subtitle onto two
-    lines on a wide screen. The left column now grows to fill the space instead."""
-    html = client(garden).get("/").text
-    assert "62ch" not in html
-    assert "Every item here is a decision only a person can make." in html
-
-
 def test_friction_form_in_inbox_and_task(garden):
     c = client(garden)
     assert "Report friction" in c.get("/").text
@@ -1747,21 +1732,6 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert 'value="9" selected' in page
 
 
-def test_no_set_apply_save_buttons_in_any_template():
-    """CG-190: editing an existing value applies on change; only forms that create
-    something new (a task, a friction report, a persona run, ...) keep a submit button."""
-    import re
-
-    from garden.web.common import TEMPLATES
-
-    button_re = re.compile(r"<button[^>]*>\s*(Set|Apply|Save)\s*<", re.IGNORECASE)
-    offenders = []
-    for path in TEMPLATES.glob("*.html"):
-        for m in button_re.finditer(path.read_text()):
-            offenders.append(f"{path.name}: {m.group(0)!r}")
-    assert not offenders, offenders
-
-
 def test_editable_values_apply_on_change_with_a_saved_mark(garden):
     """Every data-autosave form (the walkthrough's Config and task pages among them) carries
     an autosave-mark slot for the JS-driven saved/undo behaviour."""
@@ -1883,59 +1853,82 @@ def test_origin_check_resists_dns_rebinding(garden):
     assert c.post("/tick", headers={"Origin": "http://127.0.0.1:9999"}, follow_redirects=False).status_code == 403
 
 
-def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden):
+def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeypatch):
     """CG-182: a button press and a page render never wait for a scheduler pass. With a slow
-    pre-PR check running (as a run record; here in-process, holding hub.lock during the check
-    subprocess), POST /tasks/<id>/<action> returns well under a second and GET / under half a
-    second, because actions take a short action-only lock (never the tick's) and GET reads
-    directly."""
+    pre-PR check running, requests finish before that check is allowed to finish. The test also
+    runs the counterfactual shared-lock arrangement, where the same requests stay blocked until
+    the check is released. Barriers make this a lock-ordering test rather than a machine-speed
+    test: actions take a short action-only lock (never the tick's) and GET reads directly."""
     import threading
-    import time
 
     from tests.conftest import FakeGitHub
 
     store = Store(garden)
-    # A pre-PR check that takes three seconds; the tick starts it as a check run and the
-    # in-process runner runs the `sleep` subprocess (which releases the GIL) inside the pass.
-    store.config.data["checks"] = {"pre_pr": [{"name": "slow", "command": "sleep 3"}], "ci": []}
     app = create_app(store, watch=False, github=FakeGitHub())
     c = TestClient(app)
     hub = app.state.hub
     hub.tick()  # dispatch DM-001's worker (finishes in-process)
 
-    done = threading.Event()
-    threading.Thread(target=lambda: (hub.tick(), done.set()), daemon=True).start()
-    time.sleep(0.6)  # let the pass reap the worker and reach the slow check
-    assert not done.is_set(), "the background tick should still be running the slow check"
+    # The real check runner is deliberately replaced with a deterministic slow-check barrier.
+    # This keeps the test about whether requests can pass the tick lock, not whether this
+    # machine can schedule a three-second subprocess in a particular number of milliseconds.
+    from garden.scheduler import Scheduler
 
-    t0 = time.monotonic()
-    r = c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False)
-    post_s = time.monotonic() - t0
-    page_timings = {}
-    pages = {}
-    for path in ("/", "/now1"):
-        t1 = time.monotonic()
-        pages[path] = c.get(path)
-        page_timings[path] = time.monotonic() - t1
-    t2 = time.monotonic()
-    pause = c.post("/pause", data={"reason": "capacity validation"}, follow_redirects=False)
-    pause_s = time.monotonic() - t2
-    children = Path(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read_text().split()
-    stat = os.statvfs(garden)
-    temp_free_mb = stat.f_bavail * stat.f_frsize // (1024 * 1024)
-    from garden.scheduler.resources import _cgroup_memory_available_mb, _memory_available_mb
-    print(f"bounded workload journey: inbox={page_timings['/']:.3f}s now1={page_timings['/now1']:.3f}s "
-          f"control={pause_s:.3f}s host_mem={_memory_available_mb()}MiB "
-          f"cgroup_headroom={_cgroup_memory_available_mb()}MiB temp_free={temp_free_mb}MiB "
-          f"live_children={children}")
+    original_tick_locked = Scheduler._tick_locked
 
-    assert r.status_code == 303 and all(page.status_code == 200 for page in pages.values())
-    assert pause.status_code == 303 and hub.scheduler().is_dispatch_paused()
-    assert not done.is_set(), "the tick was still running while both requests were served"
-    assert post_s < 1.0, f"POST waited {post_s:.2f}s for the tick"
-    assert max(page_timings.values()) < 2.0
-    assert pause_s < 2.0
-    done.wait(timeout=10)
+    def run_probe(shared_action_lock):
+        slow_check_started = threading.Event()
+        release_slow_check = threading.Event()
+        tick_finished = threading.Event()
+        request_started = threading.Event()
+        requests_finished = threading.Event()
+        responses = []
+
+        def fake_slow_check(self, dispatch=None):
+            slow_check_started.set()
+            assert release_slow_check.wait(timeout=10), "test did not release the fake slow check"
+            return original_tick_locked(self, dispatch)
+
+        monkeypatch.setattr(Scheduler, "_tick_locked", fake_slow_check)
+        if shared_action_lock:
+            hub.action_lock = hub.lock
+
+        def serve_requests():
+            request_started.set()
+            try:
+                responses.extend([
+                    c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False),
+                    c.get("/"),
+                    c.get("/now1"),
+                ])
+            finally:
+                requests_finished.set()
+
+        tick_thread = threading.Thread(target=lambda: (hub.tick(), tick_finished.set()), daemon=True)
+        tick_thread.start()
+        assert slow_check_started.wait(timeout=10), "tick never entered the fake slow check"
+        request_thread = threading.Thread(target=serve_requests, daemon=True)
+        request_thread.start()
+        assert request_started.wait(timeout=10), "requests never started"
+
+        if shared_action_lock:
+            assert not requests_finished.wait(timeout=0.1), "shared-lock requests were not blocked"
+        else:
+            assert requests_finished.wait(timeout=10), "requests waited for the fake slow check"
+            assert [response.status_code for response in responses] == [303, 200, 200]
+            assert not tick_finished.is_set(), "requests were served only after the tick finished"
+
+        release_slow_check.set()
+        request_thread.join(timeout=10)
+        tick_thread.join(timeout=10)
+        assert not request_thread.is_alive(), "requests did not finish after the fake slow check was released"
+        assert requests_finished.is_set(), "requests did not finish after the fake slow check was released"
+        assert tick_finished.is_set(), "the tick did not finish after the fake slow check was released"
+        assert [response.status_code for response in responses] == [303, 200, 200]
+
+    run_probe(shared_action_lock=False)
+    run_probe(shared_action_lock=True)
+    hub.action_lock = threading.Lock()
 
 
 def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):

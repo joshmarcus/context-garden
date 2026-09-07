@@ -5,10 +5,9 @@ the findings into the normal revise loop."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from .brief import build_brief
+from .brief import _parse_marked_json, build_brief
 from .criteria import parse_criteria, reconcile
 from .model import Task
 from .store import Store
@@ -27,11 +26,14 @@ checks if they are fast. Do NOT modify any file and do NOT commit.
 Check, in this order:
 
 1. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
-   quote the `criterion`, set `met` true or false, and give a one-line `reason` pointing at
-   the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
+   quote the `criterion`, set `met` true or false, and give an `evidence` field plus a
+   one-line `reason` pointing at it (the diff, a test, a page). The author's own per-criterion evidence is under
    "Author's verification" below; check each claim against the diff rather than taking it on
    trust. A criterion with no evidence, or one the author marked not done without a reason you
-   accept, is `met: false` and a blocking finding.
+   accept, is `met: false` and a blocking finding. If the task has no criteria, judge its Goal
+   on the author's evidence and return `criteria: []`.
+   Every returned criterion needs its own non-empty `evidence`: the scheduler mechanically
+   changes the verdict to `request_changes` for an unmet or evidence-less criterion.
 2. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
 3. **Scope.** Changes outside the task, or task work that is missing.
 4. **PR description.** It must give a reader without the task file the broader context:
@@ -67,7 +69,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or page that proves the assessment>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -95,12 +97,24 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False) -> str:
     task_brief = build_brief(store, task, include_rules=False)
+    amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
+                  if isinstance(a, dict) and isinstance(a.get("index"), int)}
+    criteria_note = ""
+    if amendments:
+        lines = ["## Amended acceptance criteria\n",
+                 "Judge each amended line against its stated outcome; the original wording is superseded.\n"]
+        for index, criterion in enumerate(parse_criteria(task.body)):
+            if index in amendments:
+                lines.append(f"- **{criterion}** *(amended — {amendments[index].get('reason', '')})*")
+        criteria_note = "\n".join(lines) + "\n"
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if criteria_note:
+        parts.append(criteria_note)
     verification = _verification_brief(task, verified)
     if verification:
         parts.append(verification)
@@ -129,19 +143,38 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
 
 
 def parse_review(text: str) -> dict[str, Any]:
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line.startswith(REVIEW_MARKER):
-            payload = line[len(REVIEW_MARKER):].strip()
-            s, e = payload.find("{"), payload.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    data = json.loads(payload[s : e + 1])
-                    if isinstance(data, dict) and "verdict" in data:
-                        return data
-                except json.JSONDecodeError:
-                    continue
+    data = _parse_marked_json(text, REVIEW_MARKER)
+    if "verdict" in data:
+        return data
     return {}
+
+
+def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
+    """Make unsupported or unmet criteria mechanically request changes.
+
+    A reviewer is advisory about its conclusion, but not about this gate: an approving
+    top-level verdict cannot override a criterion marked unmet or without evidence.
+    """
+    unsupported = [
+        criterion for criterion in review.get("criteria") or []
+        if isinstance(criterion, dict)
+        and (criterion.get("met") is not True or not str(criterion.get("evidence") or "").strip())
+    ]
+    if not unsupported:
+        return review
+
+    review["verdict"] = "request_changes"
+    findings = review.setdefault("findings", [])
+    if not isinstance(findings, list):
+        findings = review["findings"] = []
+    existing = {str(finding.get("summary") or "") for finding in findings if isinstance(finding, dict)}
+    for criterion in unsupported:
+        text = str(criterion.get("criterion") or "unnamed criterion")
+        summary = f"Acceptance criterion lacks a passing, evidenced assessment: {text}"
+        if summary not in existing:
+            findings.append({"severity": "blocking", "file": "", "line": None, "summary": summary,
+                             "fix": "Make the criterion pass and cite concrete review evidence."})
+    return review
 
 
 def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:

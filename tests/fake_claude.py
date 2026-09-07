@@ -207,7 +207,9 @@ def retro(call: Call) -> None:
         if os.environ.get("FAKE_CLAUDE_RETRO_INCOMPLETE"):
             blocking.append({"title": "Document the base failure", "difficulty": "easy", "priority": 2,
                              "body": "Capture the remaining base failure.", "reason": "operators need the cause",
-                             "acceptance": [], "reading": ["gdn/product.md"]})
+                             # Criteria may be absent, so use the same placeholder the brief gate
+                             # rejects to keep this fixture's incomplete-blocker path meaningful.
+                             "acceptance": ["..."], "reading": ["gdn/product.md"]})
     questions = []
     if os.environ.get("FAKE_CLAUDE_RETRO_QUESTIONS"):
         questions = [
@@ -326,6 +328,7 @@ def review(call: Call) -> None:
             crit, ev = line.group(1), line.group(2)
             met = "gave no evidence" not in ev and not ev.startswith("author says NOT DONE")
             criteria.append({"criterion": crit, "met": met,
+                             "evidence": ev if met else "",
                              "reason": "evidence checks out" if met else "no evidence for this criterion"})
     rev["criteria"] = criteria
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
@@ -487,7 +490,8 @@ def add_discovered_same(call: Call, result: dict) -> None:
     # workers hitting the same bug should file one draft, not three (CG-199).
     result["discovered"] = [
         {"title": "Retry loop spins forever on a dead runner",
-         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."},
+         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load.",
+         "file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"},
     ]
 
 
@@ -517,10 +521,20 @@ def skip_a_criterion(call: Call, result: dict) -> None:
     result["verified"] = verified_for(call, skip=True)
 
 
+def amend_a_criterion(call: Call, result: dict) -> None:
+    result["criteria_amended"] = [{
+        "index": 0,
+        "text": "The corrected outcome works.",
+        "reason": "The original outcome was false.",
+    }]
+
+
 WORKERS: dict[str, Worker] = {
     "done": Worker(),
     "nocommit": Worker(commits=False),
     "noresult": Worker(final=lambda call: "I did some things but forgot the result line."),
+    "noresult-nocommit": Worker(commits=False, final=lambda call: "I did not finish the result line."),
+    "statusless": Worker(final=lambda call: 'Finished the change.\nGARDEN_RESULT: {"summary": "forgot status"}'),
     "authnotloggedin": Worker(commits=False, final=lambda call: "Not logged in · Please run /login"),
     "blocked": Worker(commits=False, final=lambda call: 'Need a decision.\nGARDEN_RESULT: {"status": "blocked", "summary": "Which database?", "notes": ""}'),
     "needs_input": Worker(early=ask_once),
@@ -539,6 +553,7 @@ WORKERS: dict[str, Worker] = {
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),
     "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
+    "criteria-amend": Worker(tweak=amend_a_criterion),
 }
 
 
@@ -588,6 +603,11 @@ def run_worker(call: Call, worker: Worker) -> None:
         "usage": {"input_tokens": 1234, "output_tokens": 321, "cache_read_input_tokens": 100},
         "total_cost_usd": 0.05, "num_turns": 3, "session_id": "fake",
     }
+    if call.escaped_path:
+        print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "escape", "name": "Bash",
+             "input": {"command": f"printf escaped >> {call.escaped_path}"}}
+        ]}}))
     if call.stream:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake", "tools": []}))
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task..."}]}}))

@@ -44,6 +44,27 @@ automated review is dispatched, and their state is shown on the task page. Faile
 checks enter the normal mechanical changes-requested path with their diagnostic in the
 revise brief.
 
+Before dispatching a task that explicitly requires captures, the scheduler performs one
+bounded Chromium launch in the product check's final scrubbed child environment. A failed
+probe holds only capture-dependent tasks and is cached for five minutes; unrelated work
+continues without consuming an attempt or starting a worker/base-probe run. Changes to the
+relevant environment or `worker_env.pass` invalidate the cache immediately, and a successful
+retry admits the preserved task through its normal dispatch path.
+
+The diagnostic distinguishes missing Playwright setup, an absent configured browser
+executable, missing shared libraries, a service-versus-child environment mismatch, and a
+sandbox/launch failure. Install Playwright in the product's prepared check environment; in
+an unprivileged environment, install browser/runtime files in a user-owned location and
+expose only the necessary variable (commonly `LD_LIBRARY_PATH`) with `worker_env.pass`, or use product `setup.env`.
+There is no universal library path, and the garden never installs host packages or grants
+privileges. If Config shows `worker_env.pass` as held by an in-flight fence, accept the reload
+through the supported Config action before expecting the probe to see it.
+
+Browser readiness is infrastructure evidence only. It is not application acceptance: the
+current PR head must still produce every expected PNG and provide executed interaction and
+viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
+they are retained as diagnostics, never presented as successful captures.
+
 ## The sequence
 
 ```mermaid
@@ -180,8 +201,8 @@ It is enforced in two layers:
   scheduler's side-store, where an approve verdict lives) are gitignored or otherwise the
   scheduler's own, so the HEAD/working-tree snapshot above would miss a worker writing to
   them. At dispatch the fence also hashes each of these files into the run directory (keeping
-  a copy of the config files). On reap, a hash that changed *and whose path the worker's
-  transcript names* is an escape: a `garden*.yaml` is restored from its snapshot; `state.json`
+  a copy of the config files). On reap, a hash that changed *and appears in explicit
+  structured write evidence* is an escape: a `garden*.yaml` is restored from its snapshot; `state.json`
   is the scheduler's to rewrite every tick and is not reverted, but the run still fails and
   the Inbox card names it for a person to inspect. A change the worker did not name is the
   scheduler's own `state.json` write, or an operator editing config by hand — left alone.
@@ -189,10 +210,9 @@ It is enforced in two layers:
   automerge on, self-merging.
 - **Belt and braces — the runner reverts what the worker itself wrote.** At dispatch the
   scheduler snapshots the HEAD and working tree of the live garden and the product clone.
-  On reap, `finalize` compares them and reverts a change *only when the worker's own
-  transcript names the path* — `claude`'s output carries every `Edit`/`Write` `file_path`,
-  every `Bash` command it ran, and its final message, so a path the worker touched appears
-  there by its absolute form. A named write is reverted (commits dropped with a soft reset
+  On reap, `finalize` compares them and reverts a change *only when structured harness
+  output provides explicit write evidence for the path*. An attributed write is reverted
+  (commits dropped with a soft reset
   that preserves unrelated in-flight edits, files restored or removed) and the run is marked
   **failed** with a card in the Inbox quoting exactly what was touched. Everything else
   outside the worktree is *left in place*: task files and `.garden/` are the scheduler's
@@ -201,6 +221,15 @@ It is enforced in two layers:
   moved HEAD alone is not an escape). Such un-attributed changes are noted on the card for a
   person to check, never undone. A person answers the card; the answer cannot un-fail the
   run or reach back into the garden.
+
+Attribution reads structured harness events, not arbitrary transcript text. Claude
+Edit/Write tools, Codex file-change events, and shell commands with an evident mutating
+operation or unquoted output redirect count as write evidence. Tool results, read-only
+commands and final prose do not. Opaque commands whose effects cannot be established remain
+ambiguous rather than becoming restoration authority. Mutable stdout, stderr and run audit
+evidence owned by a concurrent worker is never restored from a dispatch snapshot: an explicit
+forbidden write still fails and is reported, but the latest bytes remain available for
+containment and incident recovery.
 
 > The `sandbox: true` block is opt-in and has not been exercised against a real harness. It
 > emits an OS-level sandbox stanza (`filesystem.allowWrite` = the worktree and `$TMPDIR`,
@@ -248,7 +277,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
                 "friction": ["short item"], "notes": "...",
-                "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
+                "discovered": [{"kind", "title", "body", "file", "error", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
@@ -286,8 +315,8 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   leaves a criterion undone or declines an improvement, because that changes the promised
   product outcome rather than merely reporting evidence about it.
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
-  a `task` becomes a draft task file, unless its title (normalised) or its body's file and
-  error already match an open task in this phase or the next one, in which case it is noted
+  a `task` becomes a draft task file, unless its title (normalised) or its structured `file`
+  and `error` fields already match an open task in this phase or the next one, in which case it is noted
   on that task ("also found by") instead of filing a near-duplicate, with a
   `discovered_duplicate` event; a `duplicate` (`of`/`duplicates`) or `cancel`
   (`task`) becomes a decision card for a human — Accept cancels the named task with the
@@ -340,10 +369,12 @@ A review is a worker with a different brief: the task brief without the operatin
 the PR title and body, the diff against the base (inlined under `review.max_diff_chars`,
 otherwise read from git in the worktree), and the author's per-criterion `verified` claims
 under "Author's verification". It ends with `GARDEN_REVIEW: {"verdict", "summary",
-"criteria": [{"criterion", "met", "reason"}], "description_ok", "description_feedback",
+"criteria": [{"criterion", "met", "evidence", "reason"}], "description_ok", "description_feedback",
 "findings": [...]}`. `criteria` speaks to each acceptance criterion by name, checking the
 author's evidence against the diff; a criterion with no evidence, or one the author marked
-not done without a reason the reviewer accepts, is `met: false` and a blocking finding.
+not done without a reason the reviewer accepts, is `met: false` and a blocking finding. The
+scheduler mechanically changes the verdict to `request_changes` when any returned criterion
+is unmet or lacks its own `evidence`, so an approving top-level verdict cannot bypass the gate.
 Reaping it posts the verdict as a PR comment; `request_changes`
 turns the blocking findings and the description feedback into the next revise brief.
 Persona reviews (`GARDEN_PERSONA:`) and trial comparisons (`GARDEN_COMPARE:`) use the same
@@ -444,7 +475,7 @@ reach `ready`, whatever `plan.auto_approve` says.
 | GitHub is unreachable | `gh` and the token both unavailable, or the API errors | the task moves to `in_review` with a note to open the PR by hand and register it with `garden pr ID URL` |
 | the answer arrives but the session is gone | `session_id` set, resume command fails or the harness cannot resume | a fresh run with the Q&A in its brief |
 | two ticks overlap | both read the same `run.json` | the run is reaped by whichever finishes first; the second sees the run already marked done and finds no active run |
-| the worker wrote outside its worktree | a path the worker's transcript names changed in the live garden or the product clone since dispatch | that write is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched; any change the transcript does *not* name (a person's hand-edit, a fetched HEAD) is left in place and noted on the card (§2a) |
+| the worker wrote outside its worktree | explicit structured write evidence names a changed path in the live garden or product clone | that write is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched; mutable sibling run evidence is reported but never rewound, and ambiguous changes are left in place (§2a) |
 
 ## Where to look
 

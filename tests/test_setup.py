@@ -216,6 +216,7 @@ def test_brief_env_rule_without_commands(garden):
     assert "already prepared" in b.text  # still tells the worker not to install, even with no commands
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_runs_setup_on_host(garden, fake_github):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["products"]["demo"]["setup"] = {"command": "npm ci", "env": {"WIDGET_HOME": "/opt/widget"}}
@@ -231,6 +232,7 @@ def test_ssh_runner_runs_setup_on_host(garden, fake_github):
     assert "GARDEN_SETUP_MARKER=" in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_setup_honors_timeout(garden, fake_github):
     """The remote setup command is wrapped with the configured setup timeout (when `timeout` is
     on the host), not left to run until the much larger whole-run limit."""
@@ -247,6 +249,7 @@ def test_ssh_setup_honors_timeout(garden, fake_github):
     assert 'timeout $GARDEN_SETUP_TIMEOUT sh -c' in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_host_setup_override(garden, fake_github):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["products"]["demo"]["setup"] = {"command": "npm ci", "env": {"A": "1"}}

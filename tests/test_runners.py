@@ -94,6 +94,7 @@ def test_easy_task_gets_cheap_model(sched):
 
 
 @pytest.mark.parametrize("harness, output", [("claude", "worker-output.txt"), ("codex", "codex-output.txt")])
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path, harness, output):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
@@ -537,6 +538,7 @@ def test_setup_waits_inside_the_heavy_execution_budget(tmp_path, monkeypatch):
     assert all((worktree / "setup-started").exists() for _, worktree in runs)
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_uses_bare_bin(sched, fake_github):
     t = sched.store.task("DM-001")
     t.runner = "ssh"
@@ -549,6 +551,7 @@ def test_ssh_runner_uses_bare_bin(sched, fake_github):
     assert "/resolved/claude" not in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_sets_garden_root(sched, fake_github):
     """The ssh remote script must export GARDEN_ROOT at a non-garden path, so a worker on a
     remote clone that is itself a garden cannot run garden commands against it."""
@@ -561,6 +564,7 @@ def test_ssh_runner_sets_garden_root(sched, fake_github):
     assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_path, monkeypatch):
     """The ssh runner's remote script must run the harness under the same allowlist as the
     local worker (runner.base.PASS_ENV plus worker_env.pass and setup.env): a host's ambient
@@ -597,6 +601,7 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_github, tmp_path, monkeypatch):
     """CG-218: `worker_env.config_dirs` overrides the remote script's CLAUDE_CONFIG_DIR/
     CODEX_HOME defaults, the same way it overrides `scrubbed_env` for the local runner."""
@@ -623,6 +628,7 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_github, tmp_path, monkeypatch):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg.setdefault("worker_env", {})["config_dirs"] = {"CUSTOM_HARNESS_HOME": "/srv/custom-creds"}
@@ -643,6 +649,7 @@ def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_
     assert seen["CUSTOM_HARNESS_HOME"] == "/srv/custom-creds"
 
 
+@pytest.mark.needs_remote_clone
 def test_ssh_host_capacity(sched):
     for tid in ("DM-001", "DM-002"):
         t = sched.store.task(tid)

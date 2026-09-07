@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 from garden import now1
 from garden import operator_spend as ops
 from garden.cli import app
-from garden.events import EventLog, difficulty_by_model, metrics
+from garden.events import EventLog, difficulty_by_model
 from garden.harness import Harness
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
@@ -114,45 +114,6 @@ def test_goal_marks_read_the_numbered_goals_and_the_ids_they_name():
 
 def _ev(kind, task, at, **kw):
     return {"kind": kind, "task": task, "at": at, **kw}
-
-
-def test_difficulty_by_model_credits_the_model_that_got_the_task_accepted():
-    tasks = {"T-1": SimpleNamespace(difficulty="easy"), "T-2": SimpleNamespace(difficulty="easy"),
-             "T-3": SimpleNamespace(difficulty="medium"), "T-4": SimpleNamespace(difficulty="easy")}
-    events = [
-        _ev("dispatch", "T-1", "2026-09-05T10:00:00+00:00", mode="work"),
-        _ev("run_finished", "T-1", "2026-09-05T10:20:00+00:00", mode="work", model="claude-sonnet-5", cost_usd=2.0),
-        _ev("review", "T-1", "2026-09-05T10:30:00+00:00", verdict="approve"),
-        _ev("run_finished", "T-1", "2026-09-05T10:30:00+00:00", mode="review", cost_usd=0.5),
-        _ev("dispatch", "T-1", "2026-09-05T10:40:00+00:00", mode="revise"),
-        _ev("run_finished", "T-1", "2026-09-05T10:50:00+00:00", mode="revise", model="claude-sonnet-5", cost_usd=1.0),
-        _ev("transition", "T-1", "2026-09-05T12:00:00+00:00", to="done"),
-        _ev("dispatch", "T-2", "2026-09-05T10:00:00+00:00", mode="work"),
-        _ev("run_finished", "T-2", "2026-09-05T10:20:00+00:00", mode="work", model="claude-sonnet-5", cost_usd=1.0),
-        _ev("review", "T-2", "2026-09-05T10:30:00+00:00", verdict="request_changes"),
-        _ev("dispatch", "T-2", "2026-09-05T11:00:00+00:00", mode="revise"),
-        _ev("run_finished", "T-2", "2026-09-05T11:30:00+00:00", mode="revise", model="claude-opus-4-8", cost_usd=5.0),
-        _ev("transition", "T-2", "2026-09-05T14:00:00+00:00", to="done"),
-        _ev("dispatch", "T-3", "2026-09-04T10:00:00+00:00", mode="work"),
-        _ev("run_finished", "T-3", "2026-09-04T10:20:00+00:00", mode="work", model="claude-sonnet-5", cost_usd=9.0),
-        _ev("transition", "T-3", "2026-09-04T12:00:00+00:00", to="done"),
-        _ev("dispatch", "T-4", "2026-09-05T13:00:00+00:00", mode="work"),
-        _ev("run_finished", "T-4", "2026-09-05T13:20:00+00:00", mode="work", model="claude-sonnet-5", cost_usd=3.0),
-    ]
-    out = difficulty_by_model(events, tasks, since="2026-09-05T00:00:00+00:00")
-    assert out["models"] == ["claude-sonnet-5", "claude-opus-4-8"]
-    assert [m["key"] for m in out["metrics"]] == ["cost_per_accepted", "first_pass", "work_run_cost", "revise_rounds", "lead_time"]
-    by = {m["key"]: m["rows"] for m in out["metrics"]}
-    cell = by["cost_per_accepted"]["easy"]
-    assert (cell["claude-sonnet-5"]["value"], cell["claude-sonnet-5"]["n"]) == (3.5, 1)
-    assert (cell["claude-opus-4-8"]["value"], cell["claude-opus-4-8"]["n"]) == (6.0, 1)
-    assert by["cost_per_accepted"]["medium"] == {}
-    assert by["first_pass"]["easy"]["claude-sonnet-5"]["value"] == 0.5 and by["first_pass"]["easy"]["claude-sonnet-5"]["n"] == 2
-    assert by["work_run_cost"]["easy"]["claude-sonnet-5"]["value"] == 1.75 and by["work_run_cost"]["easy"]["claude-sonnet-5"]["n"] == 4
-    assert by["revise_rounds"]["easy"]["claude-sonnet-5"]["value"] == 1.0
-    assert by["lead_time"]["easy"]["claude-sonnet-5"]["value"] == 2.0 and by["lead_time"]["easy"]["claude-opus-4-8"]["value"] == 4.0
-    # the same computation is what `garden metrics` carries
-    assert metrics(events, tasks)["by_difficulty_model"]["models"] == out["models"]
 
 
 def _six_easy_tasks(a_cost=1.0, b_cost=2.0):

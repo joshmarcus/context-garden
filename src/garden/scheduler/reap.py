@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import to_feedback
-from ..criteria import apply_verification, parse_criteria
+from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -59,6 +59,33 @@ class ReapMixin:
         return bool(result.get("improvements_declined")) or any(
             isinstance(row, dict) and row.get("not_done") for row in verified
         )
+
+    def _apply_criteria_amendments(self, task: Task, run: Run, result: dict[str, Any]) -> None:
+        """Persist a worker's narrowly-scoped criterion correction before routing its result."""
+        body, applied = amend_criteria(task.body, result.get("criteria_amended"))
+        if not applied:
+            return
+        recorded = list(task.extra.get("criteria_amended") or [])
+        new_amendments = [
+            amendment for amendment in applied
+            if not any(
+                existing.get("run") == run.run_id
+                and all(existing.get(field) == amendment[field] for field in ("index", "text", "reason"))
+                for existing in recorded if isinstance(existing, dict)
+            )
+        ]
+        if not new_amendments:
+            return
+        task.body = body
+        for amendment in new_amendments:
+            recorded.append({**amendment, "run": run.run_id})
+            task.log(
+                f"acceptance criterion {amendment['index'] + 1} amended: "
+                f"{amendment['reason']}"
+            )
+            self.events.emit("criteria_amended", task.id, run=run.run_id, **amendment)
+        task.extra["criteria_amended"] = recorded
+        self.store.save(task)
 
     def _cleanup_reaped_temp_dirs(self) -> None:
         """Remove disk-backed temp directories once their local run is no longer active."""
@@ -192,6 +219,7 @@ class ReapMixin:
         # can no longer re-emit it (CG-198). A resumed finalize skips the emit because the first
         # pass already made it, so the run's cost is never counted twice (CG-153).
         run.save()
+        self._apply_criteria_amendments(task, run, result)
         if not resumed:
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
@@ -238,6 +266,30 @@ class ReapMixin:
             self._handle_quota_env_error(task, run, rep, collected)
             return
 
+        status = str(result.get("status", "")).lower()
+        # A headless worker can finish its commits but lose its final result while waiting for
+        # an unattended command.  The worktree is the durable record in that case: salvage its
+        # commits before treating the missing protocol marker as a failed attempt.  A reported
+        # status still wins, so `blocked` and the other deliberate outcomes below are unchanged.
+        if not status and run.mode in ("work", "revise") and not runner.remote and worktree.exists():
+            try:
+                base = run.base or self.base_for(task)
+                start = run.start_head or gitops.base_ref(worktree, base)
+                ahead = int(gitops.git("rev-list", "--count", f"{start}..HEAD", cwd=worktree).strip() or 0)
+            except gitops.GitError:
+                ahead = 0
+            if ahead:
+                plural = "s" if ahead != 1 else ""
+                summary = f"result missing; {ahead} commit{plural} reaped from the worktree"
+                last_message = " ".join(final_text.split()) or "(no final message captured)"
+                task.log(f"{summary}; worker's last message: {last_message!r}")
+                self.store.save(task)
+                self.events.emit("result_missing_reaped", task.id, run=run.run_id, commits=ahead,
+                                 last_message=last_message)
+                self.log(f"{task.id}: {summary}")
+                result = {"summary": summary}
+                run.result = result
+                run.save()
         if run.exit_code not in (0, None) and not result:
             run.status = "failed"
             run.save()
@@ -248,7 +300,6 @@ class ReapMixin:
             run.save()
             self._retry_or_fail(task, run, rep, f"no GARDEN_RESULT in worker output ({run.error[:200] or 'see final.md'})")
             return
-        status = str(result.get("status", "")).lower()
         if status == "blocked":
             run.status = "blocked"
             run.save()
@@ -844,7 +895,7 @@ class ReapMixin:
             st["rebase_run_retries"] = retries + 1
             st["rebase_pending"] = True
             st["rebase_retry_files"] = list(st.get("rebase_files", []))
-            note = f"rebase run {run.run_id} did not finish: {reason}; will retry"
+            note = f"rebase conflict run {run.run_id} did not finish: {reason}; will retry"
             task.log(note)
             self.store.save(task)
             self.events.emit("rebase_retry", task.id, run=run.run_id, cause=reason, retry=retries + 1)
@@ -854,7 +905,7 @@ class ReapMixin:
             return
         files = list(st.get("rebase_files", [])) or list(st.get("rebase_retry_files", []))
         conflict = ", ".join(str(p) for p in files if p) or "the rebase conflict"
-        note = f"rebase run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
+        note = f"rebase conflict run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
         self._set_needs_human(task, "rebase_failed", note, run=run.run_id, cause=reason,
                               files=files)
         st.pop("rebase_pending", None)
