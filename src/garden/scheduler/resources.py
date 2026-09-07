@@ -154,7 +154,8 @@ class ResourceMixin:
         return (self.cfg.garden_dir / "resource-reclaim.json",
                 self.cfg.garden_dir / "resource-reclaim-report.json")
 
-    def _reclaim_state(self) -> dict[str, Any]:
+    def _read_reclaim_state(self) -> dict[str, Any]:
+        """Observe published state without reconciling or writing from UI/read paths."""
         state_path, report_path = self._reclaim_paths()
         try:
             state = json.loads(state_path.read_text())
@@ -165,6 +166,19 @@ class ResourceMixin:
         except (OSError, ValueError):
             report = None
         if state.get("running") and report and report.get("token") == state.get("token"):
+            return {**state, "running": False, "result": report,
+                    "finished_at": report.get("finished_at")}
+        return state
+
+    def _reconcile_reclaim_state(self) -> dict[str, Any]:
+        """Publish helper completion while the caller holds the admission lock."""
+        state_path, report_path = self._reclaim_paths()
+        state = self._read_reclaim_state()
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, ValueError):
+            report = None
+        if state.get("running") is False and report and report.get("token") == state.get("token"):
             state.update({"running": False, "result": report, "finished_at": report.get("finished_at")})
             self._write_reclaim_state(state_path, state)
         elif state.get("running"):
@@ -188,12 +202,12 @@ class ResourceMixin:
 
     @staticmethod
     def _write_reclaim_state(path: Path, state: dict[str, Any]) -> None:
-        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary = path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
         os.replace(temporary, path)
 
     def _reclaim_description(self) -> str:
-        state = self._reclaim_state()
+        state = self._read_reclaim_state()
         if state.get("running"):
             return f"bounded cache reclaim running for {state.get('boundary', 'limiting cgroup')}"
         result = state.get("result") or {}
@@ -331,7 +345,7 @@ class ResourceMixin:
         stats = _memory_stat(group) if group else None
         if not group or not maximum_mb or not stats or stats["inactive_file"] <= 0:
             return False
-        state = self._reclaim_state()
+        state = self._reconcile_reclaim_state()
         if state.get("running"):
             return False
         cooldown = max(0, float(self.effective("resources.reclaim_cooldown_seconds", 300) or 0))
@@ -342,6 +356,7 @@ class ResourceMixin:
         state_path, report_path = self._reclaim_paths()
         proc: subprocess.Popen[bytes] | None = None
         try:
+            identity = group.stat()
             report_path.unlink(missing_ok=True)
             started = time.time()
             token = uuid.uuid4().hex
@@ -349,7 +364,7 @@ class ResourceMixin:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "garden.resource_reclaim", "--cgroup", str(group),
                  "--bytes", str(request), "--timeout", str(timeout), "--report", str(report_path),
-                 "--token", token],
+                 "--token", token, "--device", str(identity.st_dev), "--inode", str(identity.st_ino)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
@@ -398,6 +413,12 @@ class ResourceMixin:
         if status.admission_blocked:
             return 0
         return max(0, status.limit - status.active)
+
+    def _try_reclaim_for_pending_local_launch(self) -> bool:
+        """Give queued local work one serialized reclaim attempt without admitting it."""
+        with self._local_admission_lock():
+            status = self.refresh_resource_pressure()
+            return status.pressured and self._start_reclaim_if_eligible(status)
 
     def _admit_local_launch(self, kind: str) -> None:
         status = self.refresh_resource_pressure()

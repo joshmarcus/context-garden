@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import threading
 from pathlib import Path
 
 import pytest
@@ -443,3 +444,50 @@ def test_stuck_reclaim_helper_is_killed_and_cooldown_preserves_stop(sched, monke
     assert killed == [(456, resources.signal.SIGKILL)]
     result = json.loads(state_path.read_text())["result"]
     assert result == {"error": "reclaim helper timed out", "status": "error"}
+
+
+def test_resource_status_reads_completed_reclaim_without_publishing(sched, monkeypatch):
+    state_path, report_path = sched._reclaim_paths()
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": 1, "token": "x"}))
+    report_path.write_text(json.dumps({"token": "x", "status": "complete", "finished_at": 2}))
+    monkeypatch.setattr(sched, "_write_reclaim_state", lambda *args: pytest.fail("read path wrote state"))
+
+    errors = []
+    def read_status():
+        try:
+            sched.resource_status()
+        except Exception as exc:  # noqa: BLE001 - retain failures raised inside test threads
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read_status, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert json.loads(state_path.read_text())["running"] is True
+
+
+def test_dispatch_queue_attempts_reclaim_before_worker_slot_reader_stops_it(sched, monkeypatch):
+    attempts = []
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: attempts.append("worker"))
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    monkeypatch.setattr(sched, "local_slots_free", lambda: 0)
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert attempts == ["worker"]
+
+
+def test_pending_review_attempts_reclaim_before_review_slot_reader_stops_it(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = task.status.IN_REVIEW
+    sched.state.get(task.id)["pending_reviews"] = [{"kind": "review"}]
+    attempts = []
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: attempts.append("review"))
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert attempts == ["review"]
