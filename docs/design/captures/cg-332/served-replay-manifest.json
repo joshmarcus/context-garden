@@ -1,0 +1,60 @@
+{
+  "schema": "cg-332.served-replay.v1",
+  "reviewed_head": "42d5652c2117624d7c5d47f0ba80147f43c9488b",
+  "fixture": "garden.qa disposable fixture",
+  "interaction": {
+    "transport": "served HTTP app driven by Playwright Chromium",
+    "viewport": {
+      "requested": 390,
+      "client_width": 390,
+      "scroll_width": 390
+    },
+    "events": [
+      {
+        "label": "held",
+        "action": "navigate",
+        "pages": ["/tasks/DM-001", "/inbox"],
+        "observed": [
+          "/tasks/DM-001 contains `Waiting for claude to resume`",
+          "/inbox contains the Harness paused notice"
+        ]
+      },
+      {
+        "label": "failed_probe",
+        "action": "scheduler_tick",
+        "probe_result": "env_error: quota",
+        "observed": [
+          "claude remains paused",
+          "no dispatch occurs",
+          "the task page still contains `Waiting for claude to resume`"
+        ]
+      },
+      {
+        "label": "successful_recovery",
+        "action": "scheduler_tick",
+        "probe_result": "ok",
+        "observed": [
+          "dispatch_resumed is emitted",
+          "harness_hold is cleared"
+        ]
+      },
+      {
+        "label": "automatic_redispatch",
+        "action": "scheduler_tick",
+        "observed": [
+          "DM-001 is selected as the first ready queue item in work mode",
+          "the dispatch call occurs without operator action"
+        ]
+      },
+      {
+        "label": "recovered_plain_ready",
+        "action": "navigate",
+        "pages": ["/tasks/DM-001", "/inbox"],
+        "observed": [
+          "/tasks/DM-001 has no harness hold text",
+          "/inbox has no Harness paused notice"
+        ]
+      }
+    ]
+  }
+}
