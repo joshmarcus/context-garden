@@ -353,7 +353,7 @@ def take(
     external = bool(branch or external_worktree or pr_url)
     if pr_url:
         import re
-        match = re.search(r"/pull/(\\d+)", pr_url)
+        match = re.search(r"/pull/(\d+)", pr_url)
         if not match or not sched.github.available or not sched.slug_for(t):
             err.print("[red]--pr needs an accessible pull-request URL[/red]")
             raise typer.Exit(1)

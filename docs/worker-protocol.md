@@ -520,6 +520,20 @@ does this from inside an interactive Claude Code session. `garden finish WID-003
 `finalize` as a detached run, so the push, checks, PR and review are identical. A manual
 run never times out and never occupies a scheduler slot.
 
+For work already implemented in an operator's checkout, claim its real identity instead:
+
+```bash
+garden take WID-003 --branch operator/fix --external-worktree /path/to/checkout
+# commit, push and open the PR from that checkout
+garden finish WID-003 --pr https://github.com/OWNER/REPO/pull/123 --summary '...'
+```
+
+The claim records the branch and PR rather than creating or inferring a garden worktree.
+An already merged PR completes only after its head is verified on the final base; an open
+PR retains its normal checks and review. If the external work cannot proceed before a PR,
+use `garden finish WID-003 --blocked --summary '...'`; it follows ordinary manual blocked
+handling. Git and fence protections remain in force in all three cases.
+
 **the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
 model call that is not detached: it runs the harness synchronously with the planning prompt
 on stdin and imports the JSON array it prints as task files. Goals, specs and docs are

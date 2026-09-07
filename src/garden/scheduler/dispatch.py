@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -330,6 +331,19 @@ class DispatchMixin:
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        # An external claim names an operator-owned branch (and sometimes a PR) before
+        # there is anything to finish. Keep that identity on the task as well as the
+        # run, so a restart and every task-facing surface describe the claimed work
+        # rather than falling back to the scheduler-generated default branch. Internal
+        # callers may still use branch_override without changing the task identity.
+        if completion_mode == "external":
+            task.branch = branch
+            if external_pr:
+                task.pr = external_pr
+                match = re.search(r"/pull/(\d+)", external_pr)
+                if match:
+                    st["pr_number"] = int(match.group(1))
+            self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
         # worktree's stash (further below) can both name themselves after the run about to

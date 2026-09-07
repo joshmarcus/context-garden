@@ -822,6 +822,23 @@ def test_take_finish_revise_and_cost(garden):
     assert run_rec.cost_usd == 2.5
 
 
+def test_external_take_persists_pr_identity_and_can_finish_blocked(garden):
+    """External branch-first work retains its claim and can stop before opening a PR."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    r = run(garden, "take", "DM-001", "--branch", "operator/blocked", "-q")
+    assert r.exit_code == 0, r.output
+    task = Store(garden).task("DM-001")
+    assert task.branch == "operator/blocked"
+
+    r = run(garden, "finish", "DM-001", "--blocked", "--summary", "waiting on access")
+    assert r.exit_code == 0, r.output
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
 def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
     """CG-238: `garden take` used to flip a draft straight to ready by hand, skipping the
     approve gate; a placeholder acceptance criterion (or an unresolved reading path) must

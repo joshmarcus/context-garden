@@ -4,6 +4,7 @@
 import pytest
 
 from garden import gitops
+from garden.github import GitHubError
 from garden.model import Status
 from garden.runner.manual import ManualRunner
 from tests.scheduler.conftest import statuses
@@ -146,6 +147,21 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
 
 
+def test_external_claim_persists_actual_identity_before_finish(sched, fake_github):
+    """A restart after take retains the operator's branch and PR, not a generated default."""
+    from garden.store import Store
+
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    reloaded = Store(sched.store.root).task(task.id)
+    assert reloaded.branch == "operator/actual"
+    assert reloaded.pr == pr.url
+    assert sched.state.get(task.id)["pr_number"] == pr.number
+
+
 def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
@@ -163,6 +179,41 @@ def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_gi
     assert failed.completion_attempts[-1]["pr_number"] == pr.number
     event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
     assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+@pytest.mark.parametrize("error_type", [GitHubError, KeyError])
+def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    def unavailable(*_):
+        raise error_type("unavailable")
+
+    monkeypatch.setattr(sched.github, "get_pr", unavailable)
+
+    with pytest.raises(RuntimeError, match="could not read external PR: .*unavailable"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.store.task(task.id).pr == pr.url
+    refused = sched.runs.latest(task.id).completion_attempts[-1]
+    assert refused["pr_url"] == pr.url and refused["pr_number"] == pr.number
+    assert refused["cost_usd"] is None
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+def test_external_blocked_result_uses_ordinary_manual_completion(sched, fake_github):
+    task = sched.store.task("DM-001")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="operator/blocked", completion_mode="external")
+
+    rep = sched.finish_manual(task, {"status": "blocked", "summary": "waiting on access"})
+
+    assert sched.store.task(task.id).status == Status.FAILED
+    assert "failed" in rep.transitions[0]
+    assert sched.runs.latest(task.id).result["status"] == "blocked"
 
 
 def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):

@@ -503,6 +503,15 @@ class HumanMixin:
         if run is None or run.status != "running":
             raise RuntimeError(f"{task.id} has no active run to finish")
         if run.completion_mode == "external":
+            # A branch-first external session can truthfully end blocked before a PR
+            # exists. Its outcome is still guarded and finalized exactly like an
+            # ordinary manual run; only successful external work needs PR reconciliation.
+            if result.get("status") == "blocked":
+                ManualRunner.finish(run, result)
+                rep = TickReport()
+                self.finalize(task, run, self.runner_for(task, run.runner), rep)
+                self.state.save()
+                return rep
             return self._finish_external_manual(task, run, result)
         ManualRunner.finish(run, result)
         rep = TickReport()
@@ -552,7 +561,10 @@ class HumanMixin:
         slug = self.slug_for(task)
         if not match or not slug or not self.github.available:
             refuse("external completion needs an accessible PR URL")
-        pr = self.github.get_pr(slug, pr_number)
+        try:
+            pr = self.github.get_pr(slug, pr_number)
+        except (GitHubError, KeyError) as e:
+            refuse(f"could not read external PR: {e}")
         if not run.branch or pr.head != run.branch:
             refuse(
                 f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
