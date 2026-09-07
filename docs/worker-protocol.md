@@ -369,10 +369,12 @@ A review is a worker with a different brief: the task brief without the operatin
 the PR title and body, the diff against the base (inlined under `review.max_diff_chars`,
 otherwise read from git in the worktree), and the author's per-criterion `verified` claims
 under "Author's verification". It ends with `GARDEN_REVIEW: {"verdict", "summary",
-"criteria": [{"criterion", "met", "reason"}], "description_ok", "description_feedback",
+"criteria": [{"criterion", "met", "evidence", "reason"}], "description_ok", "description_feedback",
 "findings": [...]}`. `criteria` speaks to each acceptance criterion by name, checking the
 author's evidence against the diff; a criterion with no evidence, or one the author marked
-not done without a reason the reviewer accepts, is `met: false` and a blocking finding.
+not done without a reason the reviewer accepts, is `met: false` and a blocking finding. The
+scheduler mechanically changes the verdict to `request_changes` when any returned criterion
+is unmet or lacks its own `evidence`, so an approving top-level verdict cannot bypass the gate.
 Reaping it posts the verdict as a PR comment; `request_changes`
 turns the blocking findings and the description feedback into the next revise brief.
 Persona reviews (`GARDEN_PERSONA:`) and trial comparisons (`GARDEN_COMPARE:`) use the same

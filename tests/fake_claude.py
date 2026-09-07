@@ -328,6 +328,7 @@ def review(call: Call) -> None:
             crit, ev = line.group(1), line.group(2)
             met = "gave no evidence" not in ev and not ev.startswith("author says NOT DONE")
             criteria.append({"criterion": crit, "met": met,
+                             "evidence": ev if met else "",
                              "reason": "evidence checks out" if met else "no evidence for this criterion"})
     rev["criteria"] = criteria
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
