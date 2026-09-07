@@ -265,6 +265,13 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .bl-row .bl-ctrls select { padding:5px 6px; font-size:12px; }
 .bl-row[data-movable="0"] { cursor:default; }
 .bl-empty { padding:12px; font:12.5px/1.4 var(--mono); }
+@media (max-width:600px) {
+  .bl-row { position:relative; flex-wrap:wrap; gap:8px 10px; padding-left:34px; }
+  .bl-row .bl-grip { position:absolute; left:12px; top:11px; }
+  .bl-row .bl-main { flex:1 0 100%; min-width:0; }
+  .bl-row .pill, .bl-row .meta, .bl-row .bl-ctrls { flex:0 1 auto; }
+  .bl-row .bl-ctrls { flex-wrap:wrap; min-width:0; }
+}
 
 /* ---- inbox --------------------------------------------------------------------------- */
 .group { margin-bottom:20px; border:1px solid var(--line); background:var(--label); }

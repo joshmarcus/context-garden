@@ -28,12 +28,22 @@ def timestamp(value: Any) -> dt.datetime | None:
         return None
 
 
-def base_acceptance(event: dict) -> bool:
+def base_acceptance(event: dict, merged_tasks: set[str] | None = None) -> bool:
+    """Return whether a done transition proves the task reached its base branch.
+
+    New transitions carry explicit provenance.  The note forms are retained only for logs
+    written before that field existed; an otherwise unannotated transition is accepted only
+    when the event stream also contains the garden's merge fact for that task.
+    """
+    if event.get("kind") != "transition" or event.get("to") != "done":
+        return False
+    if event.get("base_merged") is not None:
+        return event.get("base_merged") is True
     note = str(event.get("note") or "")
-    return event.get("kind") == "transition" and event.get("to") == "done" and (
-        event.get("base_merged") is True or note.startswith("PR merged")
-        or (note.startswith("parent ") and "this task's commits are now on " in note)
-        or not any(marker in note.lower() for marker in ("forced", "without merging", "marked done")))
+    if note.startswith("PR merged") or (note.startswith("parent ") and
+                                        "this task's commits are now on " in note):
+        return True
+    return bool(merged_tasks and str(event.get("task") or "") in merged_tasks)
 
 
 def cell(values: list[float], missing: int, unit: str, direction: str, med: bool = False) -> dict:
@@ -72,12 +82,13 @@ def difficulty_by_model(events: list[dict], tasks: dict[str, Any], since: str = 
     lives: dict[str, list[dict]] = defaultdict(list)
     accepted: dict[str, dt.datetime] = {}
     finished: dict[tuple, dict] = {}
+    merge_facts = {str(e.get("task")) for e in history if e.get("kind") == "automerged" and e.get("task")}
     for e in history:
         tid = e.get("task", "")
         if tid in tasks:
             lives[tid].append(e)
             at = timestamp(e["at"])
-            if base_acceptance(e) and start <= at:
+            if base_acceptance(e, merge_facts) and start <= at:
                 accepted.setdefault(tid, at)
         if e.get("kind") == "run_finished":
             finished[(tid, e.get("run") or e["at"], e.get("mode"))] = e

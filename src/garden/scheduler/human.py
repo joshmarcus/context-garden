@@ -249,7 +249,7 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
-        self._transition(task, Status.DONE, note or "marked done")
+        self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""

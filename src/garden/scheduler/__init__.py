@@ -354,7 +354,8 @@ class Scheduler(
                 out.add(review.run_id)
         return out
 
-    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False,
+                    notify_now: bool = True, base_merged: bool | None = None) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
@@ -374,7 +375,10 @@ class Scheduler(
             changed = self._queue_drop_head(task) or changed
         if changed:
             self.state.save()
-        self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
+        transition = {"from": old, "to": status.value, "note": note}
+        if status == Status.DONE and base_merged is not None:
+            transition["base_merged"] = base_merged
+        self.events.emit("transition", task.id, **transition)
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
         if notify_now and should_notify(status.value, needs_human=needs_human):
             notify(self.cfg.data, task.id, status.value, note, task.pr or "")

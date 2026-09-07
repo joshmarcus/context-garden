@@ -268,6 +268,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     # completion window while the poll which observes the merge lands inside it.
     # Keep that fact before applying the window to completion events.
     queued_history: set[str] = set()
+    merge_facts = {str(ev.get("task")) for ev in events if ev.get("kind") == "automerged" and ev.get("task")}
     for ev in events:
         at = str(ev.get("at") or "")
         if until and at >= until:
@@ -310,7 +311,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                 for dimension in ("model", "harness"):
                     value = str(ev.get(dimension) or "unknown")
                     task_dimensions[t][dimension].add(value)
-        elif k == "transition" and base_acceptance(ev):
+        elif k == "transition" and base_acceptance(ev, merge_facts):
             done_at[t] = ev["at"]
             merged_tasks.add(str(t))
             merges += 1
