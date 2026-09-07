@@ -10,9 +10,9 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status
-from garden.suggestions import record_suggestion
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
+from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
 
