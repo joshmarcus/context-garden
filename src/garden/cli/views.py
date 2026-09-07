@@ -91,13 +91,18 @@ def status(
     mp_line += f"  operating profile: {active_profile or '(none)'}"
     console.print(mp_line)
     up = sched.upgrade_available()
+    build = sched.upgrade_status()
+    console.print(f"tool active: {str(build.get('active') or 'unversioned')[:12]}")
     if up:
         sha = str(up.get("sha") or "")[:12]
         count = up.get("count")
-        line = f"tool update available: {sha}"
+        state = str(up.get("status") or "available")
+        line = f"tool update {state}: {sha}"
         if count is not None:
             line += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
-        console.print(f"[cyan]{line}[/cyan] — run `garden upgrade`")
+        if up.get("reason"):
+            line += f" — {up['reason']}"
+        console.print(f"[cyan]{line}[/cyan]" + (" — run `garden upgrade`" if state in {"available", "held"} else ""))
     from ..scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     if ctrl.get("dispatch") == "paused":

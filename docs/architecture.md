@@ -90,7 +90,7 @@ of the loop touch different files.
 | `scheduler/human.py` | `approve` (the one draft→ready gate the CLI, web and TUI share), answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it |
-| `scheduler/upgrades.py` | the pinned tool install: note a merge, upgrade, auto-upgrade on an idle tick |
+| `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
@@ -588,6 +588,25 @@ startup and so are *not* picked up live — `config.RESTART_KEYS`: `work_dir` (f
 client and `upgrade.*` installer settings that are built when the scheduler is constructed. The
 Configuration page names both sets, and changing a restart key needs a restart of
 `garden watch` / `garden serve`.
+
+**Automatic tool updates.** With `upgrade: auto`, each controller tick fetches only the
+product marked `provides_tool: true` and compares that product's configured `base_branch`
+tip with the commit recorded by the installed package. Fetching another branch is not
+authorization to install it, and a configured-base rewrite that does not descend from the
+active commit is reported but not followed. Once a descendant base tip is available, the
+controller admits no new workers or checks, reaps the detached work already running, and
+installs at the first drained tick boundary. A dispatch pause is an explicit maintenance
+hold: the available build and reason remain visible until dispatch resumes. `serve
+--no-watch` likewise performs no controller ticks and therefore never installs behind an
+operator's maintenance window.
+
+The installer records `available`, `held`, `installing`, and `restart_pending` before each
+step. The replacement process confirms its installed commit on startup before recording
+the build as `active`; a successful pip exit alone is never called active. Failed install,
+validation, restart, or startup confirmation remains visible with its diagnosis. Failures
+after replacement attempt reinstall the prior commit, while the already-running old process
+continues serving until a verified replacement can exec. The web rail and `garden status`
+show the commit actually installed in the serving interpreter alongside the pending state.
 
 **Held reloads (CG-242).** A change to an *executable* field — `notify.command`, `checks`
 (including any check's `retry_command`), a product's `setup.command`, a harness's `bin`/
