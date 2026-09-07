@@ -106,9 +106,9 @@ have had to make:
 - **Branch and base**: the branch is `garden/<id>-<slug>` (kept across runs). The base is
   the product's base branch, or, when stacking applies, the branch of the one dependency
   whose PR is still open.
-- **Worktree**: `.garden/worktrees/<id>` is created from `origin/<base>` (fetched first)
-  or reused if it already exists on that branch. Remote runners skip this; the host makes
-  its own.
+- **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
+  (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
+  creates or reuses its host-side worktree as described in its variant below. Remote runners beyond ssh are not implemented; the `runner: remote` claim, heartbeat and finish flow are deferred to CG-216.
 - **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
