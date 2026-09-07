@@ -105,6 +105,7 @@ of the loop touch different files.
 | `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
 | `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch` |
 | `scheduler/human.py` | `approve` (the one draft→ready gate the CLI, web and TUI share), answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
+| `scheduler/scope.py` | checkout-ownership preflight: separates declared operator-owned live configuration from worker deliverables, records operator evidence, and releases checkout work only after that prerequisite is verified |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it |
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
