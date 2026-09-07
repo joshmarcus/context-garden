@@ -16,6 +16,7 @@ from garden import gitops
 from garden.gitops import head_sha
 from garden.harness import Harness
 from garden.inbox import build_inbox
+from garden.scheduler.report import TickReport
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -573,6 +574,33 @@ def test_live_garden_escape_reports_transcript_evidence_and_keeps_worktree_write
     assert "transcript evidence: Claude Bash command destination names garden.yaml" in card
     assert "worktree writes kept:" in card and "worker-output.txt" in card
     assert worker_output.exists()
+
+
+def test_fence_card_reports_same_relative_write_in_each_guarded_repository(sched, garden, tmp_path):
+    """A live-garden and product-clone write with the same relative name are distinct
+    destinations, so the fence card must retain both attribution records and their evidence."""
+    _init_repo(garden)
+    clone = tmp_path / "repo"
+    task = sched.store.task("DM-001")
+    live_readme = garden / "README.md"
+    clone_readme = clone / "README.md"
+
+    sched._fence_snapshot(task)
+    live_readme.write_text("live garden escape\n")
+    clone_readme.write_text("product clone escape\n")
+    run = _run_naming(sched, task.id, str(live_readme), str(clone_readme))
+
+    violations = sched._fence_check(task, run)
+
+    assert {(v["label"], tuple(v["files"])) for v in violations} == {
+        ("the live garden", ("README.md",)),
+        ("the product clone", ("README.md",)),
+    }
+    sched._fence_fail(task, run, violations, TickReport())
+    card = sched.state.get(task.id)["needs_human"]
+    assert "the live garden: wrote README.md" in card
+    assert "the product clone: wrote README.md" in card
+    assert card.count("transcript evidence: Claude Write tool call names README.md") == 2
 
 
 def test_fence_records_codex_destination_evidence(sched, tmp_path):

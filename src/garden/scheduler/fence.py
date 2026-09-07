@@ -757,13 +757,16 @@ class FenceMixin:
         parts = []
         foreign_seen = False
         kept_seen = False
-        reported_files: set[str] = set()
+        reported_destinations: set[str] = set()
         for v in violations:
             # Lead with the operator-critical facts (which repo, which files) and put the
             # long absolute path last, so a truncated Inbox card still names what was touched.
             bits = []
-            files = [path for path in v["files"] if path not in reported_files]
-            reported_files.update(files)
+            files = [
+                rel for rel in v["files"]
+                if self._fence_destination_key(v, rel) not in reported_destinations
+            ]
+            reported_destinations.update(self._fence_destination_key(v, rel) for rel in files)
             if files:
                 if not v.get("reverted", True):
                     kept_seen = True
@@ -799,6 +802,19 @@ class FenceMixin:
         run.save()
         self._transition(task, Status.FAILED, f"fenced: {card}"[:400], needs_human=True)
         rep.transitions.append(f"{task.id} -> failed (wrote outside worktree)")
+
+    @staticmethod
+    def _fence_destination_key(violation: dict[str, Any], rel: str) -> str:
+        """Identity of a reported forbidden destination, not just its relative name.
+
+        Ordinary fence entries name a guarded repository, while guard-hash entries already
+        name the guarded file itself.  The card may suppress a duplicate report for the same
+        destination, but `garden.yaml` in the live garden and product clone must remain two
+        separately auditable writes.
+        """
+        path = Path(str(violation["path"]))
+        destination = path / rel if path.is_dir() else path
+        return str(destination.resolve())
 
     # ---- held config reload (CG-242) ----------------------------------------
     def _fenced_runs_in_flight(self) -> list[Run]:
