@@ -57,6 +57,11 @@ def test_operator_spend_record_codex_transcript_marks_unknown_price_unavailable(
     assert record["tokens"] == {"input": 80, "cache_read": 20, "cache_write": 0, "output": 30}
     assert record["list_price_usd"] is None
 
+    summary = run(garden, "operator-spend")
+    assert summary.exit_code == 0, summary.output
+    assert "0 priced session(s), 1 unavailable" in summary.output
+    assert "$0.00 total" not in summary.output
+
 
 def test_operator_spend_prints_sessions_and_totals_after_recording(garden, tmp_path):
     transcript = tmp_path / "sess-one.jsonl"

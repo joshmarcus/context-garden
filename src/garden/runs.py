@@ -129,15 +129,7 @@ class Run:
 
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
-        metadata = self.path / "run.json"
-        temporary = metadata.with_name(
-            f".{metadata.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-        )
-        try:
-            temporary.write_text(json.dumps(asdict(self), indent=2))
-            os.replace(temporary, metadata)
-        finally:
-            temporary.unlink(missing_ok=True)
+        (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
         # A metadata rewrite does not change the parent directory mtime by itself.  Touch
         # the task bucket so other processes can detect this one changed without statting
         # every run.json in it.

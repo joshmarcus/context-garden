@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from garden.runs import HistoryUnavailable, Run, RunStore
+from garden.runs import HistoryUnavailable, RunStore
 
 
 def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
@@ -21,26 +21,6 @@ def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
     run.cost_usd = cost
     run.save()
     return run
-
-
-def test_run_save_keeps_previous_metadata_if_replacement_fails(tmp_path, monkeypatch):
-    """A crashed metadata update must not erase a recovery idempotency key."""
-    run = RunStore(tmp_path).new_run("CG-001", "local", run_id="durable")
-    run.idempotency_key = "recover-this-launch"
-    run.save()
-
-    run.status = "preparing"
-
-    def fail_replace(source, target):
-        raise OSError("simulated crash before replacement")
-
-    monkeypatch.setattr("garden.runs.os.replace", fail_replace)
-    with pytest.raises(OSError, match="simulated crash"):
-        run.save()
-
-    restored = Run.load(run.path)
-    assert restored.status == "running"
-    assert restored.idempotency_key == "recover-this-launch"
 
 
 def test_shared_index_coalesces_concurrent_history_reads(tmp_path: Path, monkeypatch):

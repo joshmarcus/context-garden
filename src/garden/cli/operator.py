@@ -40,8 +40,17 @@ def operator_spend_default(ctx: typer.Context, json_out: bool = typer.Option(Fal
         table.add_row(r["session"][:12], r["harness"], r["at"][:16], str(r["turns"]), avg_context,
                       cost, str(r["compactions"]) if r["compactions"] else "")
     console.print(table)
-    total = round(sum(r["cost_usd"] for r in rows if r["cost_usd"] is not None), 2)
-    console.print(f"[dim]{len(rows)} session(s), ${total:.2f} total, from {store.rel(path)}[/dim]")
+    priced = [r for r in rows if r["cost_usd"] is not None]
+    unavailable = len(rows) - len(priced)
+    if unavailable and not priced:
+        summary = f"0 priced session(s), {unavailable} unavailable"
+    elif unavailable:
+        total = round(sum(r["cost_usd"] for r in priced), 2)
+        summary = f"${total:.2f} known total; {unavailable} session(s) unavailable"
+    else:
+        total = round(sum(r["cost_usd"] for r in priced), 2)
+        summary = f"{len(rows)} session(s), ${total:.2f} total"
+    console.print(f"[dim]{summary}, from {store.rel(path)}[/dim]")
 
 
 @operator_spend_app.command("record")
