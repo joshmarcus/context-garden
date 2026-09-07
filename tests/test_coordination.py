@@ -2,6 +2,8 @@
 
 import subprocess
 
+import pytest
+
 from garden.events import EventLog, digest, metrics, parse_since
 from garden.github import Feedback
 from garden.model import Status
@@ -352,6 +354,7 @@ def test_stacked_child_automerges_only_after_restack(sched, fake_github, tmp_pat
     assert sched.state.get("DM-002").get("automerged")
 
 
+@pytest.mark.needs_remote_clone
 def test_stacked_child_merged_into_parent_branch_stays_open_until_parent_merges(sched, fake_github, tmp_path):
     """CG-228: a person can merge a stacked child's PR straight into its parent's branch on
     GitHub, long before the parent itself reaches main. That must not read as `done` -- a
@@ -400,6 +403,7 @@ def test_stacked_child_merged_into_parent_branch_stays_open_until_parent_merges(
     assert "DM-003(work)" in rep.dispatched
 
 
+@pytest.mark.needs_remote_clone
 def test_stacked_child_promoted_after_parent_squash_merge(sched, fake_github, tmp_path):
     """CG-228 (review): the garden's own default `automerge_method` is squash, which folds the
     whole parent branch into one brand-new commit on the base -- unrelated, by commit parentage,
@@ -453,6 +457,7 @@ def test_stacked_child_promoted_after_parent_squash_merge(sched, fake_github, tm
     assert s["DM-001"] == "done" and s["DM-002"] == "done"
 
 
+@pytest.mark.needs_remote_clone
 def test_restack_keeps_remote_only_commits(sched, fake_github, tmp_path):
     """A rebase round on the restack path folds in commits pushed only to the remote branch."""
     sched.tick()
