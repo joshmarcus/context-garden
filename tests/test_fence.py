@@ -115,6 +115,29 @@ def test_scheduler_task_file_edits_do_not_trip_the_fence(sched, garden, monkeypa
     assert not _attention_card(sched, "DM-001")
 
 
+def test_operator_spec_commit_during_completed_run_is_reaped_without_fence(sched, garden):
+    """Replay the Now incident: an operator commits a live-garden spec after dispatch,
+    while the completed worker is waiting to be reaped.  The commit is neither reverted nor
+    attributed because the worker transcript contains no write evidence for that path."""
+    _init_repo(garden)
+    spec = garden / "demo" / "p1" / "specs" / "spec.md"
+
+    sched.tick()  # dispatches a completing worker; reap happens on the following tick
+    spec.write_text("# spec\n\nEdited by the operator during this run.\n")
+    _git("add", str(spec.relative_to(garden)), cwd=garden)
+    _git("commit", "-q", "-m", "operator: clarify the spec", cwd=garden)
+    operator_head = head_sha(garden)
+
+    sched.tick()  # reap the completed worker after the operator's live-garden commit
+
+    task = sched.store.task("DM-001")
+    assert task.status.value == "in_review"
+    assert task.status.value != "failed"
+    assert head_sha(garden) == operator_head
+    assert spec.read_text() == "# spec\n\nEdited by the operator during this run.\n"
+    assert not _attention_card(sched, "DM-001")
+
+
 # ---- the config/state hash-check (CG-194) ---------------------------------
 
 def test_fence_guard_targets_include_harness_config_files(sched):
