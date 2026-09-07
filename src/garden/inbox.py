@@ -464,6 +464,16 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             ], kind="infrastructure_hold", kind_title="Capture runtime unavailable",
                 kind_blurb="No worker attempt was consumed; this is an operator environment repair, not a product decision.",
                 reason=str(hold["diagnostic"]), evidence=[])
+        scope = st.get("operator_scope")
+        if isinstance(scope, dict) and scope.get("steps"):
+            steps = list(scope["steps"])
+            summary = "; ".join(f"{step.get('path')}: {step.get('action')}" for step in steps)
+            add("operator", t, f"live-config prerequisite: {summary}", [
+                {"label": "Record operator evidence", "kind": "operator-evidence", "command": f'garden evidence {t.id} "..."',
+                 "detail": "record what was verified; the worker remains restricted to its checkout"},
+            ], kind="operator_scope", kind_title="Operator-owned configuration",
+                kind_blurb="This configuration is outside the worker checkout. Verify it as an operator, then dispatch resumes without granting production-write access.",
+                reason=summary, evidence=[])
 
     up = getattr(sched, "upgrade_available", lambda: None)()
     if up:

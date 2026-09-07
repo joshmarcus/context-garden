@@ -70,6 +70,31 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
     assert reads == 1
 
 
+def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
+    """An operator can clear a live-config prerequisite without exposing it to a worker."""
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.extra["deliverables"] = [
+        {"path": "src/demo.py", "action": "change checkout code"},
+        {"path": "/etc/demo/live.yaml", "owner": "operator", "action": "enable live setting"},
+    ]
+    store.save(task)
+    scheduler = Scheduler(Store(garden))
+    assert not scheduler.operator_scope_ready(task)
+
+    c = client(garden)
+    page = c.get("/inbox").text
+    assert "Operator recovery" in page
+    assert "enable live setting" in page
+    assert "/tasks/DM-001/operator-evidence" in page
+    response = c.post("/tasks/DM-001/operator-evidence", data={"note": "verified in disposable environment"},
+                      headers={"Origin": "http://testserver", "Referer": "http://testserver/inbox"},
+                      follow_redirects=False)
+    assert response.status_code == 303
+    state = Scheduler(Store(garden)).state.get("DM-001")
+    assert state["operator_evidence"]["text"] == "verified in disposable environment"
+
+
 @pytest.mark.parametrize("history_size", [1546, 6000])
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")

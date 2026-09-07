@@ -124,6 +124,11 @@ def recover_check(s: Store, sched: Scheduler, t: Task, note: str, applies_to: st
     sched.recover_waiting_check(t)
 
 
+@action("operator-evidence")
+def operator_evidence(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.submit_operator_evidence(t, note)
+
+
 @action("resume")
 def resume(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.resume_task(t)

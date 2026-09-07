@@ -127,6 +127,37 @@ def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sche
     assert [card["kind"] for card in cards if card["group"] == "operator"] == ["infrastructure_hold"]
 
 
+def test_mixed_checkout_and_live_config_work_waits_for_operator_evidence(sched, fake_github):
+    """A live setting is an operator prerequisite, never a worker instruction or owner card."""
+    from garden.brief import build_brief
+    from garden.inbox import build_inbox, needs_you
+
+    task = sched.store.task("DM-001")
+    task.extra["deliverables"] = [
+        {"path": "src/demo.py", "action": "add the product behavior"},
+        {"path": "/etc/demo/live.yaml", "owner": "operator", "action": "enable the deployed feature"},
+    ]
+    sched.store.save(task)
+
+    # Preflight parks the live change as an operator action before a worker/run exists.
+    assert not sched.operator_scope_ready(task)
+    cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
+    card = next(item for item in cards if item["kind"] == "operator_scope")
+    assert card["group"] == "operator"
+    assert not needs_you(card)
+    assert "/etc/demo/live.yaml" in card["reason"]
+    assert "enable the deployed feature" not in build_brief(sched.store, task).text
+    assert not sched.runs.runs_for(task.id)
+
+    sched.submit_operator_evidence(task, "deployed setting enabled in the disposable environment")
+    assert sched.operator_scope_ready(sched.store.task(task.id))
+    evidence = sched.state.get(task.id)["operator_evidence"]
+    assert evidence["text"] == "deployed setting enabled in the disposable environment"
+
+    # The product-only work now runs normally; the worker still receives no live config step.
+    assert "DM-001(work)" in sched.tick().dispatched
+
+
 # ---- CG-142: a done or cancelled task is terminal; no action reopens it -----
 @pytest.mark.parametrize("action", ["triage", "retry", "cancel", "answer", "accept_decision", "reject_decision", "resume_task", "dispatch", "dispatch_review", "review_again", "dispatch_persona_pr", "integrate_now"])
 def test_state_changing_actions_refuse_a_merged_done_task(sched, fake_github, action):
