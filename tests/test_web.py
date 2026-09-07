@@ -50,6 +50,26 @@ def test_backlog_move_has_no_javascript_fallback(garden):
     assert "/board?view=backlog" in response.headers["location"]
 
 
+def test_inbox_reads_event_history_once(garden, monkeypatch):
+    """The loaded Inbox derives every event-backed panel from one fresh snapshot."""
+    from garden.events import EventLog
+
+    reads = 0
+    original = EventLog.read
+
+    def counted_read(self, *args, **kwargs):
+        nonlocal reads
+        reads += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(EventLog, "read", counted_read)
+
+    response = client(garden).get("/inbox")
+
+    assert response.status_code == 200
+    assert reads == 1
+
+
 @pytest.mark.parametrize("history_size", [1546, 6000])
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")

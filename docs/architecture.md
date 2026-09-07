@@ -56,11 +56,14 @@ flowchart LR
   agent CLI (`claude -p`, `codex exec`, or any CLI described under `harnesses:` in
   `garden.yaml`) running on this machine or on a host reached over ssh. They are
   detached: the scheduler keeps no handle to them and they outlive whichever process
-  started them. The same transport carries reviewers, persona reviewers and trial
-  comparisons; they are workers with a different brief.
-- **GitHub** holds the pull requests and the review conversation. Only the scheduler talks
-  to it, through the `gh` CLI when it is installed and logged in, otherwise the REST API
-  with `GITHUB_TOKEN`. Workers never push and never open PRs.
+  started them. Local workers leave branches for the scheduler to push; the SSH runner
+  commits and pushes its remote worktree so the scheduler can fetch it. The same transport
+  carries reviewers, persona reviewers and trial comparisons; they are workers with a
+  different brief.
+- **GitHub** holds the pull requests and the review conversation. Only the scheduler opens
+  PRs and talks to it through the `gh` CLI when it is installed and logged in, otherwise
+  the REST API with `GITHUB_TOKEN`. Local workers never push or open PRs; a remote SSH
+  worker pushes its assigned branch, but does not open a PR.
 - **The filesystem** carries everything between those three: the garden's markdown, the
   run directories, the git worktrees, the JSON side-store and the event log. There is no
   queue, no database and no socket.
@@ -83,24 +86,33 @@ of the loop touch different files.
 | `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
+| `scheduler/kickoff.py` | the phase kickoff run: dispatches or synchronously files design gaps, goal gaps, owner questions and stale-doc findings |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
 | `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
-| `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
+| `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
 | `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch` |
 | `scheduler/human.py` | `approve` (the one draft→ready gate the CLI, web and TUI share), answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it |
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
-| `harness.py`, `runner/` | harness definitions and output parsing; the `local`, `ssh` and `manual` runner backends |
+| `harness.py` | harness definitions and output parsing |
+| `runner/base.py` | shared runner lifecycle helpers |
+| `runner/local.py` | the local worker runner backend |
+| `runner/ssh.py` | the remote-over-SSH worker runner backend |
+| `runner/manual.py` | the human-driven runner backend |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
+| `profiles.py` | named operating profiles that combine worker/review concurrency, model tiers, review and retro difficulty, and observation settings |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
+| `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
+| `web/pages/api.py` | JSON task, recent-event, and decision-notification endpoints under `/api/`, backed by the task store and event log |
 | `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |

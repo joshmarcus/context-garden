@@ -21,7 +21,7 @@ attention and tokens. So:
   bookkeeping are deterministic Python. Tokens are spent only on planning, working,
   reviewing and revising, and every one of those is bounded.
 - **The human does the parts only a human can do**: write goals and specs, answer the
-  questions workers raise, review and merge, and decide when the loop should stop.
+  questions workers raise, review, and decide when the loop should stop.
 
 ## Vocabulary
 
@@ -83,7 +83,8 @@ token-free scripts; `events` records history; `store` and `model` read and write
 7. **Humans.** Review on GitHub. Comments and red CI (analysed by token-free checkers,
    with flaky reruns) become revise runs. Stall detection stops loops that do not
    converge; questions pause the task until answered.
-8. **Merge.** The task is done, dependents unblock or restack, the worktree is removed.
+8. **Merge.** The scheduler automatically merges eligible reviewed PRs. The task is done,
+   dependents unblock or restack, and the worktree is removed.
 9. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each
    difficulty tier really cost; persona reviews of the phase and the friction log feed
    the next plan. `garden retro product/phase` runs the whole retrospective as one
@@ -160,5 +161,5 @@ the page evidence.
 
 ## Non-goals
 
-Hosted or multi-user operation, automatic merging, and being a general workflow engine.
+Hosted or multi-user operation and being a general workflow engine.
 If the garden ever needs a database or a queue, something has gone wrong with the design.
