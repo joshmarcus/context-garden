@@ -38,6 +38,42 @@ def queued_run(store):
     return run
 
 
+@pytest.mark.parametrize("mode", ["work", "review", "persona"])
+def test_worker_with_no_harnesses_cannot_claim_harness_backed_run(garden, monkeypatch, mode):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    run.mode = mode
+    run.save()
+
+    response = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": []},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert response.status_code == 204
+    assert not RunStore(store.config.garden_dir).latest("DM-001").host
+
+
+def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    run.mode = "check"
+    run.harness = ""
+    (run.path / "checks_input.json").write_text('{"specs": [], "ctx": {}}')
+    run.save()
+
+    response = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": []},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "check"
+    assert response.json()["harness"] == ""
+
+
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
@@ -72,11 +108,12 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
     auth = {"Authorization": "Bearer secret-token"}
-    claim1 = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    offer = {"host": "build-1", "harnesses": ["claude"]}
+    claim1 = client.post("/api/runs/claim", json=offer, headers=auth).json()
     run = RunStore(store.config.garden_dir).latest("DM-001")
     run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     run.save()
-    claim2 = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    claim2 = client.post("/api/runs/claim", json=offer, headers=auth).json()
 
     assert claim2["lease_token"] != claim1["lease_token"]
     assert claim2["push_ref"] != claim1["push_ref"]
@@ -100,7 +137,7 @@ def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch
 
     monkeypatch.setattr("garden.web.pages.api.gitops.git", credentialed_remote)
     store.config.data["harnesses"]["claude"]["args"] = ["--api-key", "harness-secret"]
-    response = client.post("/api/runs/claim", json={"host": "build-1"},
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
 
     assert response.status_code == 200
@@ -128,7 +165,7 @@ def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch
         return original_git(*args, **kwargs)
 
     monkeypatch.setattr("garden.web.pages.api.gitops.git", unsafe_remote)
-    response = client.post("/api/runs/claim", json={"host": "build-1"},
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
 
     assert response.status_code == 409
@@ -146,7 +183,7 @@ def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
         return original_git(*args, **kwargs)
 
     monkeypatch.setattr("garden.web.pages.api.gitops.git", safe_remote)
-    response = client.post("/api/runs/claim", json={"host": "build-1"},
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
 
     assert response.status_code == 200
@@ -199,7 +236,7 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     store.invalidate_tasks()
     task = store.task("DM-001")
     assert task.pr and task.status.value == "in_review"
-    review_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    review_claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
     assert review_claim["mode"] == "review"
     execute_claim(review_claim, tmp_path / "independent-host", PostingClient())
     scheduler.tick()  # reap and apply the approving review
@@ -250,7 +287,7 @@ def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, t
         assert not errors
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
-    work_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    work_claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
     execute_while_asserting_not_reclaimed(work_claim, setup_command="sleep 2")
     scheduler.tick()
     check_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
@@ -325,7 +362,7 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
                                headers={"Origin": "https://evil.test"}).status_code == 403
             assert scheduler.tick().dispatched
             auth = {"Authorization": "Bearer secret-token"}
-            claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+            claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
             assert "scheduler-secret" not in json.dumps(claim)
             run = scheduler.runs.latest("DM-001")
             run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()

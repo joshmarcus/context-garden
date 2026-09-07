@@ -141,7 +141,10 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 if run.host and leased(run):
                     continue
-                if run.harness and offered and run.harness not in offered:
+                # Checks execute the portable check payload and need no model harness.
+                # Every other remote mode is harness-backed: an empty offer means the
+                # host cannot execute it, rather than acting as a wildcard.
+                if run.mode != "check" and (not run.harness or run.harness not in offered):
                     continue
                 if run.difficulty and tiers and run.difficulty not in tiers:
                     continue
