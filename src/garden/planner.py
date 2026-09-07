@@ -139,13 +139,33 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("title"):
             raise ValueError(f"bad task item: {item!r}")
         out.append(item)
+    _validate_dependency_rules(out)
     return out
+
+
+def _validate_dependency_rules(items: list[dict[str, Any]]) -> None:
+    """Reject dependency rules before a planner result can create any task files."""
+    for item in items:
+        raw_deps = item.get("depends_on") or []
+        if not isinstance(raw_deps, list):
+            raise ValueError(f"depends_on must be a list for task {item.get('title')!r}")
+        for raw_dep in raw_deps:
+            if isinstance(raw_dep, str):
+                continue
+            if not isinstance(raw_dep, dict) or set(raw_dep) not in ({"id"}, {"id", "after"}):
+                raise ValueError(f"malformed depends_on entry {raw_dep!r}")
+            dep_id = raw_dep.get("id")
+            if not isinstance(dep_id, str) or not dep_id.strip():
+                raise ValueError(f"depends_on entry has a missing or non-string id: {raw_dep!r}")
+            if "after" in raw_dep and raw_dep["after"] not in ("stack", "merge"):
+                raise ValueError(f"invalid dependency rule {raw_dep['after']!r}")
 
 
 def import_plan(
     store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None, reopen: bool = False
 ) -> list[Task]:
     """Create task files; resolve batch-internal dependencies by title."""
+    _validate_dependency_rules(items)
     ph = store.phase(product, phase)
     if ph.closed:
         if not reopen:
@@ -189,10 +209,10 @@ def import_plan(
         for raw_d in item.get("depends_on") or []:
             rule = ""
             if isinstance(raw_d, dict):
-                d = str(raw_d.get("id") or "").strip()
-                rule = str(raw_d.get("after") or "")
+                d = raw_d["id"].strip()
+                rule = raw_d.get("after", "")
             else:
-                d = str(raw_d).strip()
+                d = raw_d.strip()
             resolved = d if d in all_ids else title_to_id.get(d.lower(), existing_titles.get(d.lower()))
             if resolved:
                 deps.append(resolved)

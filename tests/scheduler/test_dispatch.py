@@ -92,7 +92,6 @@ def test_design_dependency_waits_for_merge_instead_of_stacking(sched):
     parent = sched.store.task("DM-001")
     parent.kind = "design"
     child = sched.store.task("DM-002")
-    child.dependency_after[parent.id] = "merge"
     sched.store.save(parent)
     sched.store.save(child)
     rep = sched.tick()
@@ -100,6 +99,19 @@ def test_design_dependency_waits_for_merge_instead_of_stacking(sched):
     rep = sched.tick()
     assert "DM-002(work)" not in rep.dispatched
     assert statuses(sched)["DM-002"] == "ready"
+
+
+def test_design_dependency_can_explicitly_override_default_with_stack(sched):
+    sched.cfg.data["stack"] = True
+    parent = sched.store.task("DM-001")
+    parent.kind = "design"
+    child = sched.store.task("DM-002")
+    child.dependency_after[parent.id] = "stack"
+    sched.store.save(parent)
+    sched.store.save(child)
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-002(work)" in rep.dispatched
 
 
 def test_brief_drops_reading_not_present_at_the_task_base(sched, tmp_path):
