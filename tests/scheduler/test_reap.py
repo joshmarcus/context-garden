@@ -349,11 +349,66 @@ def test_no_commits_is_a_failure(sched, monkeypatch):
     assert "Which database?" in sched.store.task("DM-001").body
 
 
-def test_noresult_retries(sched, monkeypatch):
+def test_missing_result_with_commits_is_reaped_and_sent_to_review(sched, fake_github, monkeypatch):
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.tick()
     rep = sched.tick()
+    task = sched.store.task("DM-001")
+    run = sched.latest_worker_run("DM-001")
+    assert task.status == Status.IN_REVIEW
+    assert task.pr
+    assert run.status == "done"
+    assert "result missing; 1 commit reaped from the worktree" in task.body
+    assert "worker's last message: 'I did some things but forgot the result line.'" in task.body
+    assert any(event["run"] == run.run_id for event in sched.events.read(task_id="DM-001", kinds=["result_missing_reaped"]))
+    assert any(item.startswith("DM-001(review)") for item in rep.dispatched)
+
+
+def test_statusless_result_with_commits_is_reaped(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "statusless")
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW
+    assert task.pr
+    assert "result missing; 1 commit reaped from the worktree" in task.body
+    assert "Finished the change." in task.body
+
+
+def test_missing_result_without_commits_retries(sched, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult-nocommit")
+    sched.tick()
+    rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
+
+
+def test_missing_result_revise_pushes_with_lease_and_keeps_revision_count(sched, fake_github, monkeypatch):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    sched.triage(task, changes="please revise")
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
+    sched.dispatch(sched.store.task("DM-001"), mode="revise")
+    run = sched.runs.latest("DM-001")
+    assert run.start_head
+    real_push = gitops.push
+    leases: list[str] = []
+
+    def capture_push(*args, **kwargs):
+        leases.append(kwargs.get("lease", ""))
+        return real_push(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "push", capture_push)
+
+    sched.tick()
+
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW
+    assert sched.state.get("DM-001")["revisions"] == 1
+    assert "result missing; 1 commit reaped from the worktree" in task.body
+    assert fake_github.created[0]["head"] == task.branch
+    assert run.start_head in leases
 
 
 def test_failed_rebase_retries_then_parks_without_restarting_work(sched, monkeypatch):

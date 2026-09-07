@@ -238,6 +238,30 @@ class ReapMixin:
             self._handle_quota_env_error(task, run, rep, collected)
             return
 
+        status = str(result.get("status", "")).lower()
+        # A headless worker can finish its commits but lose its final result while waiting for
+        # an unattended command.  The worktree is the durable record in that case: salvage its
+        # commits before treating the missing protocol marker as a failed attempt.  A reported
+        # status still wins, so `blocked` and the other deliberate outcomes below are unchanged.
+        if not status and run.mode in ("work", "revise") and not runner.remote and worktree.exists():
+            try:
+                base = run.base or self.base_for(task)
+                start = run.start_head or gitops.base_ref(worktree, base)
+                ahead = int(gitops.git("rev-list", "--count", f"{start}..HEAD", cwd=worktree).strip() or 0)
+            except gitops.GitError:
+                ahead = 0
+            if ahead:
+                plural = "s" if ahead != 1 else ""
+                summary = f"result missing; {ahead} commit{plural} reaped from the worktree"
+                last_message = " ".join(final_text.split()) or "(no final message captured)"
+                task.log(f"{summary}; worker's last message: {last_message!r}")
+                self.store.save(task)
+                self.events.emit("result_missing_reaped", task.id, run=run.run_id, commits=ahead,
+                                 last_message=last_message)
+                self.log(f"{task.id}: {summary}")
+                result = {"summary": summary}
+                run.result = result
+                run.save()
         if run.exit_code not in (0, None) and not result:
             run.status = "failed"
             run.save()
@@ -248,7 +272,6 @@ class ReapMixin:
             run.save()
             self._retry_or_fail(task, run, rep, f"no GARDEN_RESULT in worker output ({run.error[:200] or 'see final.md'})")
             return
-        status = str(result.get("status", "")).lower()
         if status == "blocked":
             run.status = "blocked"
             run.save()

@@ -521,6 +521,8 @@ WORKERS: dict[str, Worker] = {
     "done": Worker(),
     "nocommit": Worker(commits=False),
     "noresult": Worker(final=lambda call: "I did some things but forgot the result line."),
+    "noresult-nocommit": Worker(commits=False, final=lambda call: "I did not finish the result line."),
+    "statusless": Worker(final=lambda call: 'Finished the change.\nGARDEN_RESULT: {"summary": "forgot status"}'),
     "authnotloggedin": Worker(commits=False, final=lambda call: "Not logged in · Please run /login"),
     "blocked": Worker(commits=False, final=lambda call: 'Need a decision.\nGARDEN_RESULT: {"status": "blocked", "summary": "Which database?", "notes": ""}'),
     "needs_input": Worker(early=ask_once),
