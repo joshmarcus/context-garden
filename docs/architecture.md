@@ -110,6 +110,7 @@ of the loop touch different files.
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `profiles.py` | named operating profiles that combine worker/review concurrency, model tiers, review and retro difficulty, and observation settings |
+| `inbox.py` | the shared operator decision-card vocabulary |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
@@ -120,10 +121,12 @@ of the loop touch different files.
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
 | `web/pages/api.py` | JSON task, recent-event, and decision-notification endpoints under `/api/`, backed by the task store and event log |
 | `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
+| `web/pages/costs.py` | the Costs page's GET route and cost breakdown rendering |
 | `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
 | `canary.py` | `garden canary`: install a pinned build into a throwaway venv and drive it (the scripted QA flows plus a stacked-PR and a merge-queue scenario against the in-memory GitHub) before the pin is trusted with real PRs (CG-180) |
+| supporting modules | `__main__.py`, `browser.py`, `now2.py`, `now2_stream.py`, `onboard.py`, `outcomes.py`, `platefetch.py`, `run_supervisor.py`, `scaffold.py`, `stabilization.py`, `validation.py`; `cli/__init__.py`, `cli/common.py`, `cli/costs.py`, `cli/diagnostics.py`, `cli/loop.py`, `cli/now2.py`, `cli/operator.py`, `cli/planning.py`, `cli/scaffold.py`, `cli/stabilization.py`, `cli/state.py`, `cli/views.py`; `scheduler/browser.py`, `scheduler/resources.py`, `scheduler/selection.py`, `scheduler/snapshot.py`; `runner/base.py`, `runner/local.py`, `runner/manual.py`, `runner/ssh.py`; `qa/__init__.py`, `qa/flows.py`, `qa/sandbox.py`, `qa/worker.py`; `tui/__init__.py`; `web/actions/__init__.py`, `web/actions/control.py`, `web/actions/decisions.py`, `web/actions/friction.py`, `web/actions/phases.py`; `web/pages/__init__.py`, `web/pages/api.py`, `web/pages/board.py`, `web/pages/config.py`, `web/pages/design.py`, `web/pages/events.py`, `web/pages/inbox.py`, `web/pages/now1.py`, `web/pages/now2.py`, `web/pages/phase.py`, `web/pages/runs.py`, `web/pages/task.py`, `web/pages/trellis.py`, `web/pages/trials.py` |
 
 ## Where state lives
 
@@ -653,6 +656,15 @@ Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 defaults to two but accepts a positive cap or `null` for unlimited review rounds; its
 separate `review.friction_after` threshold emits one non-blocking loop record. Stall
 handling still stops unchanged paid attempts.
+
+**Restart recovery timing (CG-198).** Restart the controller only at a tick boundary. On
+startup, `reap_on_start` runs before the first tick and reaps every finished-but-unreaped run,
+including reviews, so completed work is applied exactly once; the normal tick then continues
+with the recovered state. Active workers remain detached while the controller restarts.
+
+Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
+`review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+Hitting a cap flags the task for a human instead of retrying.
 
 **`notify.command`** (`src/garden/notify.py`) is a shell command the scheduler runs
 whenever a task needs a human: `awaiting_triage` (once a pending review's verdict is

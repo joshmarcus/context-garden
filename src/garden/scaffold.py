@@ -284,8 +284,9 @@ every gap as a task so the loop needs you less next time. Written from the first
 
 ## Where the truth is
 
-- `garden.yaml` (plus `garden.<env>.yaml`, `garden.local.yaml`): read once at start.
-  **Any config change needs a restart.**
+- `garden.yaml` (plus `garden.<env>.yaml`, `garden.local.yaml`): re-read when it changes,
+  at the start of each tick. Most configuration changes take effect within that tick; only
+  keys in `RESTART_KEYS` need a restart.
 - `.garden/state.json`: per-task scheduler state (`revisions`, `review_rounds`,
   `pending_feedback`, `needs_human`, `automerge_blocked`, `last_review`), plus `_control`
   (pause) and `_phase:*`. Re-read by every tick; written at the end of every tick, so its
