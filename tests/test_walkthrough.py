@@ -205,6 +205,8 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "ui" / "now.html").exists()
     assert (tmp_path / "ui" / "board.html").exists()
     assert (tmp_path / "ui" / "task.html").exists()
+    assert "task-decision" in result["pages"]
+    assert 'class="panel decision-card"' in (tmp_path / "ui" / "task-decision.html").read_text()
     for slug in ("now", "inbox", "board", "task"):
         for width in VIEWPORTS:
             for scheme in COLOR_SCHEMES:
