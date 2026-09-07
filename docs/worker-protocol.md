@@ -108,9 +108,7 @@ have had to make:
   whose PR is still open.
 - **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
   (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
-  creates or reuses its host-side worktree as described in its variant below. Remote runners beyond
-  `ssh` are not implemented; the `runner: remote` claim, heartbeat and finish flow are deferred
-  to CG-216.
+  creates or reuses its host-side worktree as described in its variant below. Remote runners beyond ssh are not implemented; the `runner: remote` claim, heartbeat and finish flow are deferred to CG-216.
 - **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
