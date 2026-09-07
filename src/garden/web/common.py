@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -72,6 +73,11 @@ class Hub:
 
     def __init__(self, store: Store, watch: bool, github: Any | None = None):
         self.store = store
+        # A Store has mutable discovery caches.  A web request gets its own instance so its
+        # first read observes files written by another process, while its page body and base
+        # template share one stable discovery snapshot.  The scheduler/watch thread keeps using
+        # ``self.store`` and continues to invalidate it at the start of a pass.
+        self._request_store: ContextVar[Store | None] = ContextVar("garden_web_request_store", default=None)
         self.github = github
         self.lock = threading.Lock()  # held only by tick(): one scheduler pass at a time
         # A short lock around an action so two POSTs don't clobber one task, held *only* for
@@ -96,12 +102,31 @@ class Hub:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
         # every action's scheduler() call, so a button press between ticks can't hand a held
         # reload's executable fields (notify.command, checks, ...) a route around the gate.
-        self.store.invalidate_tasks()
-        return Scheduler(self.store, github=self.github, log=self._log)
+        store = self.fresh()
+        if self._request_store.get() is None:
+            store.invalidate_tasks()
+        return Scheduler(store, github=self.github, log=self._log)
 
     def reader(self) -> Scheduler:
         """A scheduler-shaped read facade for pages; it never runs startup migrations."""
-        return Scheduler(self.store, github=self.github, log=lambda m: None, read_only=True)
+        return Scheduler(self.fresh(), github=self.github, log=lambda m: None, read_only=True)
+
+    def begin_request(self) -> Token[Store | None]:
+        """Install a fresh, request-local Store and return its context token.
+
+        Creating the Store without loading config keeps the scheduler's config-reload gate in
+        charge of executable config changes.  Its empty discovery cache means every request
+        still sees task files written by other processes before the request began.
+        """
+        snapshot = Store(self.store.root, config=self.store.config)
+        # Store.__init__ samples the current config mtime. Keep the shared Store's accepted
+        # signature instead: a POST /tick still needs to notice an edit made before this
+        # request and route it through the scheduler's fence-aware reload gate.
+        snapshot._config_sig = self.store._config_sig
+        return self._request_store.set(snapshot)
+
+    def end_request(self, token: Token[Store | None]) -> None:
+        self._request_store.reset(token)
 
     def stop(self) -> None:
         """End the watch loop (a test or `garden qa` shutting the server down)."""
@@ -150,8 +175,14 @@ class Hub:
             self._stop.wait(interval)
 
     def fresh(self) -> Store:
-        """Re-scan task files for a page read. Config reload is gated by tick() (CG-242); see
-        `scheduler()`."""
+        """Return the current request's fresh discovery snapshot.
+
+        Outside an HTTP request this retains the original re-scan behaviour used by direct
+        callers and the scheduler. Config reload remains gated by tick() (CG-242).
+        """
+        store = self._request_store.get()
+        if store is not None:
+            return store
         self.store.invalidate_tasks()
         return self.store
 

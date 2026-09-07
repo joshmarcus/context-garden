@@ -70,6 +70,93 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
     assert reads == 1
 
 
+def test_page_store_snapshot_scans_once_and_refreshes_next_request(garden, monkeypatch):
+    """A retained-task page parses one fresh discovery snapshot, not one per component."""
+    from garden import store as store_module
+    from garden.model import Task
+
+    task_dir = garden / "demo" / "p1" / "tasks"
+    source = (task_dir / "DM-001-first.md").read_text()
+    for number in range(3, 123):
+        (task_dir / f"DM-{number:03d}-retained.md").write_text(source.replace("DM-001", f"DM-{number:03d}"))
+
+    scans = 0
+    parses = 0
+    stats = 0
+    original_scan = Store._scan
+    original_parse = Task.parse.__func__
+    original_stat = store_module.os.stat
+    c = client(garden)
+    samples = 10
+
+    def page_latencies(web_client):
+        measurements = []
+        for _ in range(samples):
+            started = time.perf_counter()
+            response = web_client.get("/board")
+            assert response.status_code == 200
+            measurements.append(time.perf_counter() - started)
+        return measurements
+
+    after_latencies = page_latencies(c)
+    with monkeypatch.context() as legacy_patch:
+        legacy_patch.setattr(Hub, "begin_request", lambda self: None)
+        legacy_patch.setattr(Hub, "end_request", lambda self, token: None)
+        legacy = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+        before_latencies = page_latencies(legacy)
+
+    def counted_scan(self):
+        nonlocal scans
+        scans += 1
+        return original_scan(self)
+
+    def counted_parse(cls, *args, **kwargs):
+        nonlocal parses
+        parses += 1
+        return original_parse(cls, *args, **kwargs)
+
+    def counted_stat(self, *args, **kwargs):
+        nonlocal stats
+        stats += 1
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "_scan", counted_scan)
+    monkeypatch.setattr(Task, "parse", classmethod(counted_parse))
+    monkeypatch.setattr(store_module.os, "stat", counted_stat)
+    scans = parses = stats = 0
+    response = c.get("/board")
+
+    assert response.status_code == 200
+    assert scans == 1
+    assert parses == 122
+    assert stats > 0
+    after = (scans, parses, stats)
+
+    # This app deliberately bypasses the request snapshot to measure the old route against
+    # the same build, fixture, command and one-sample request. It only reads the disposable
+    # pytest garden; no cache, pressure safeguard, or production state is touched.
+    monkeypatch.setattr(Hub, "begin_request", lambda self: None)
+    monkeypatch.setattr(Hub, "end_request", lambda self, token: None)
+    scans = parses = stats = 0
+    response = legacy.get("/board")
+    assert response.status_code == 200
+    before = (scans, parses, stats)
+
+    assert before[0:2] == (2, 244)
+    assert before[2] > after[2]
+    before_p95 = sorted(before_latencies)[math.ceil(samples * 0.95) - 1]
+    after_p95 = sorted(after_latencies)[math.ceil(samples * 0.95) - 1]
+    print("store profile: fixture_tasks=122 samples=1 "
+          f"before=scans:{before[0]},yaml_parses:{before[1]},stats:{before[2]} "
+          f"after=scans:{after[0]},yaml_parses:{after[1]},stats:{after[2]}; "
+          f"latency_samples={samples} before_p95={before_p95:.4f}s after_p95={after_p95:.4f}s")
+
+    changed = task_dir / "DM-001-first.md"
+    changed.write_text(changed.read_text().replace("First task", "Fresh task title"))
+    response = c.get("/board")
+    assert "Fresh task title" in response.text
+
+
 @pytest.mark.parametrize("history_size", [1546, 6000])
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")
