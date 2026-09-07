@@ -2178,7 +2178,7 @@ def test_served_incident_controls_retry_and_restart_during_overload(garden, tmp_
     config = yaml.safe_load(config_path.read_text())
     setup_script = Path(__file__).with_name("blocked_setup.py")
     config["products"]["demo"]["setup"] = {
-        "command": f"{shlex.quote(str(Path(__file__).parents[1] / '.venv/bin/python'))} "
+        "command": f"{shlex.quote(sys.executable)} "
                    f"{shlex.quote(str(setup_script))} {shlex.quote(str(gate))}"
     }
     config_path.write_text(yaml.safe_dump(config))
@@ -2186,7 +2186,7 @@ def test_served_incident_controls_retry_and_restart_during_overload(garden, tmp_
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
-    command = [str(Path(__file__).parents[1] / ".venv/bin/python"),
+    command = [sys.executable,
                str(Path(__file__).with_name("served_incident_app.py")),
                str(garden), str(port), str(gate)]
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}

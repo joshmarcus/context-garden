@@ -429,7 +429,9 @@ class RunStore:
         for run in found:
             grouped.setdefault(run.task_id, []).append(run)
         idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
-        idx.active = tuple(run for run in found if run.status == "running")
+        idx.active = tuple(
+            run for run in found if run.status in ("requested", "preparing", "running")
+        )
         idx.totals = _totals(found)
         idx.task_fingerprints = task_fingerprints
         idx.archive_fingerprint = archive_fingerprint
