@@ -180,8 +180,8 @@ It is enforced in two layers:
   scheduler's side-store, where an approve verdict lives) are gitignored or otherwise the
   scheduler's own, so the HEAD/working-tree snapshot above would miss a worker writing to
   them. At dispatch the fence also hashes each of these files into the run directory (keeping
-  a copy of the config files). On reap, a hash that changed *and whose path the worker's
-  transcript names* is an escape: a `garden*.yaml` is restored from its snapshot; `state.json`
+  a copy of the config files). On reap, a hash that changed *and appears in explicit
+  structured write evidence* is an escape: a `garden*.yaml` is restored from its snapshot; `state.json`
   is the scheduler's to rewrite every tick and is not reverted, but the run still fails and
   the Inbox card names it for a person to inspect. A change the worker did not name is the
   scheduler's own `state.json` write, or an operator editing config by hand — left alone.
@@ -189,10 +189,9 @@ It is enforced in two layers:
   automerge on, self-merging.
 - **Belt and braces — the runner reverts what the worker itself wrote.** At dispatch the
   scheduler snapshots the HEAD and working tree of the live garden and the product clone.
-  On reap, `finalize` compares them and reverts a change *only when the worker's own
-  transcript names the path* — `claude`'s output carries every `Edit`/`Write` `file_path`,
-  every `Bash` command it ran, and its final message, so a path the worker touched appears
-  there by its absolute form. A named write is reverted (commits dropped with a soft reset
+  On reap, `finalize` compares them and reverts a change *only when structured harness
+  output provides explicit write evidence for the path*. An attributed write is reverted
+  (commits dropped with a soft reset
   that preserves unrelated in-flight edits, files restored or removed) and the run is marked
   **failed** with a card in the Inbox quoting exactly what was touched. Everything else
   outside the worktree is *left in place*: task files and `.garden/` are the scheduler's
@@ -201,6 +200,15 @@ It is enforced in two layers:
   moved HEAD alone is not an escape). Such un-attributed changes are noted on the card for a
   person to check, never undone. A person answers the card; the answer cannot un-fail the
   run or reach back into the garden.
+
+Attribution reads structured harness events, not arbitrary transcript text. Claude
+Edit/Write tools, Codex file-change events, and shell commands with an evident mutating
+operation or unquoted output redirect count as write evidence. Tool results, read-only
+commands and final prose do not. Opaque commands whose effects cannot be established remain
+ambiguous rather than becoming restoration authority. Mutable stdout, stderr and run audit
+evidence owned by a concurrent worker is never restored from a dispatch snapshot: an explicit
+forbidden write still fails and is reported, but the latest bytes remain available for
+containment and incident recovery.
 
 > The `sandbox: true` block is opt-in and has not been exercised against a real harness. It
 > emits an OS-level sandbox stanza (`filesystem.allowWrite` = the worktree and `$TMPDIR`,
@@ -444,7 +452,7 @@ reach `ready`, whatever `plan.auto_approve` says.
 | GitHub is unreachable | `gh` and the token both unavailable, or the API errors | the task moves to `in_review` with a note to open the PR by hand and register it with `garden pr ID URL` |
 | the answer arrives but the session is gone | `session_id` set, resume command fails or the harness cannot resume | a fresh run with the Q&A in its brief |
 | two ticks overlap | both read the same `run.json` | the run is reaped by whichever finishes first; the second sees the run already marked done and finds no active run |
-| the worker wrote outside its worktree | a path the worker's transcript names changed in the live garden or the product clone since dispatch | that write is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched; any change the transcript does *not* name (a person's hand-edit, a fetched HEAD) is left in place and noted on the card (§2a) |
+| the worker wrote outside its worktree | explicit structured write evidence names a changed path in the live garden or product clone | that write is reverted (commits soft-reset, files restored), the run is marked `failed`, and the Inbox shows a card quoting what was touched; mutable sibling run evidence is reported but never rewound, and ambiguous changes are left in place (§2a) |
 
 ## Where to look
 

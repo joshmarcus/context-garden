@@ -209,23 +209,28 @@ def test_fence_attributes_a_worker_edit_to_a_live_task_file(sched, garden):
     assert task_path.read_text() == before
 
 
-def test_fence_restores_attributed_sibling_run_output_and_audit_manifest(sched):
+def test_fence_flags_explicit_sibling_run_write_without_rewinding_output(sched):
     task = sched.store.task("DM-001")
     sibling = sched.runs.new_run("DM-002", "local")
     output = sibling.path / "stdout.json"
     output.write_text("sibling before\n")
     run = _run_naming(sched, "DM-001", str(output))
     sched._fence_snapshot(task, run)
-    output.write_text("worker redirect\n")
+    latest = b"sibling before\nsibling concurrent append\n"
+    output.write_bytes(latest)
 
     violations = sched._fence_guard_check(task, run)
 
     assert violations and str(output.relative_to(sched.store.root)) in violations[0]["files"]
-    assert output.read_text() == "sibling before\n"
+    assert violations[0]["reverted"] is False
+    assert output.read_bytes() == latest
 
     manifest = run.path / "fence_guard.json"
     before = manifest.read_text()
-    (run.path / "stdout.json").write_text(json.dumps({"result": f"redirect {manifest}"}))
+    write_event = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write", "input": {"file_path": str(manifest)}}
+    ]}}
+    (run.path / "stdout.json").write_text(json.dumps(write_event))
     manifest.write_text("worker redirect\n")
     violations = sched._fence_guard_check(task, run)
     assert violations and str(manifest.relative_to(sched.store.root)) in violations[0]["files"]
@@ -276,7 +281,7 @@ def test_fence_manifest_size_does_not_scale_with_completed_run_history(sched):
     assert len(json.dumps(ref)) < 160
 
 
-def test_fence_manifest_still_protects_a_concurrently_active_run(sched):
+def test_fence_manifest_reports_but_does_not_restore_a_concurrently_active_run(sched):
     task = sched.store.task("DM-001")
     sibling = sched.runs.new_run("DM-002", "local")
     output = sibling.path / "stdout.json"
@@ -288,7 +293,106 @@ def test_fence_manifest_still_protects_a_concurrently_active_run(sched):
     violations = sched._fence_guard_check(task, run)
 
     assert violations
-    assert output.read_text() == "active evidence before\n"
+    assert not violations[0]["reverted"]
+    assert output.read_text() == "worker redirect\n"
+
+
+@pytest.mark.parametrize("claude_result", [
+    lambda path: {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "read-1", "content": [{"type": "text", "text": path}]}
+    ]}},
+    lambda path: {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "read-1", "content": path}
+    ]}},
+    lambda path: {"type": "result", "result": f"Observed {path}; no changes made."},
+])
+def test_claude_observation_and_prose_do_not_attribute_sibling_append(sched, claude_result):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_bytes(b"before\n")
+    observer = sched.runs.new_run(task.id, "local")
+    sched._fence_snapshot(task, observer)
+    latest = b"before\nlatest claude bytes\n"
+    output.write_bytes(latest)
+    (observer.path / "stdout.json").write_text(json.dumps(claude_result(str(output))))
+
+    assert sched._fence_guard_check(task, observer) == []
+    assert output.read_bytes() == latest
+
+
+def test_codex_command_output_cannot_attribute_sibling_append(sched):
+    task = sched.store.task("DM-001")
+    sibling = sched.runs.new_run("DM-002", "local")
+    output = sibling.path / "stdout.json"
+    output.write_bytes(b"before\n")
+    observer = sched.runs.new_run(task.id, "local")
+    sched._fence_snapshot(task, observer)
+    latest = b"before\nexact latest codex bytes\n"
+    output.write_bytes(latest)
+    event = {"type": "item.completed", "item": {"type": "command_execution",
+             "command": "ps aux", "aggregated_output": f"codex exec > {output}"}}
+    (observer.path / "stdout.json").write_text(json.dumps(event))
+
+    assert sched._fence_guard_check(task, observer) == []
+    assert output.read_bytes() == latest
+
+
+def test_codex_explicit_config_write_is_reverted(sched):
+    task = sched.store.task("DM-001")
+    config = sched.store.root / "garden.yaml"
+    before = config.read_bytes()
+    run = sched.runs.new_run(task.id, "local")
+    sched._fence_snapshot(task, run)
+    config.write_text("forged: true\n")
+    event = {"type": "item.completed", "item": {"type": "command_execution",
+             "command": f"printf forged > {config}", "aggregated_output": ""}}
+    (run.path / "stdout.json").write_text(json.dumps(event))
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations and violations[0]["reverted"]
+    assert config.read_bytes() == before
+
+
+def test_codex_file_change_is_explicit_write_evidence(sched):
+    task = sched.store.task("DM-001")
+    config = sched.store.root / "garden.yaml"
+    before = config.read_bytes()
+    run = sched.runs.new_run(task.id, "local")
+    sched._fence_snapshot(task, run)
+    config.write_text("forged: true\n")
+    event = {"type": "item.completed", "item": {"type": "file_change",
+             "changes": [{"path": str(config), "kind": "update"}]}}
+    (run.path / "stdout.json").write_text(json.dumps(event))
+
+    violations = sched._fence_guard_check(task, run)
+
+    assert violations and violations[0]["reverted"]
+    assert config.read_bytes() == before
+
+
+def test_read_command_and_quoted_redirect_character_are_not_write_evidence(sched):
+    target = sched.store.root / "garden.yaml"
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash",
+         "input": {"command": f"sed -n '1,20p' {target}"}}]}},
+        {"type": "item.completed", "item": {"type": "command_execution",
+         "command": f"rg '>' {target}", "aggregated_output": ""}},
+        {"type": "item.completed", "item": {"type": "command_execution",
+         "command": f"echo cp {target}", "aggregated_output": ""}},
+    ]
+    transcript = "\n".join(json.dumps(event) for event in events)
+
+    assert not sched._worker_named(transcript, sched.store.root, "garden.yaml")
+
+
+def test_write_to_path_with_target_as_prefix_is_not_attributed(sched):
+    target = sched.store.root / "garden.yaml"
+    event = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Write",
+             "input": {"file_path": f"{target}.backup"}}]}}
+
+    assert not sched._worker_named(json.dumps(event), sched.store.root, "garden.yaml")
 
 
 def test_legacy_completed_fence_state_is_compacted_under_state_save_lock(sched):
@@ -319,11 +423,12 @@ def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, 
 
 
 def _run_naming(sched, task_id: str, *paths: str):
-    """A fake run whose stdout.json names the given paths, as a real worker's transcript
-    (Edit/Write file_path, Bash commands, final message) would."""
+    """A fake Claude stream run with explicit Write tool evidence for the paths."""
     run = sched.runs.new_run(task_id, "local")
-    result = {"type": "result", "result": "I edited " + " and ".join(paths) + "."}
-    (run.path / "stdout.json").write_text(json.dumps(result))
+    events = [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write", "input": {"file_path": path, "content": "changed"}}
+    ]}} for path in paths]
+    (run.path / "stdout.json").write_text("\n".join(json.dumps(event) for event in events))
     return run
 
 
