@@ -192,7 +192,7 @@ class UpgradeMixin:
         # A pin is an explicit command, not an auto-upgrade.  It is consumed by this
         # controller only after _tick_body has returned and while tick.lock is still held.
         if info and info.get("pinned"):
-            if info.get("status") in {"restart_pending", "installed"}:
+            if info.get("status") in {"failed", "restart_pending", "installed"}:
                 return
             if self.runs.active():
                 return  # Defer the install/restart until workers and checks have drained.
