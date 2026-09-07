@@ -1,0 +1,7 @@
+# Remote transport recovery
+
+Operator reproduced two failing remote lifecycle tests on880c229. Rebase resolution dropped host-owned setup CLI, auxiliary remote routing/product identity and setup-secret stripping. Integration with durable launch states left work preparing; the local dead-process sweep failed queued remote checks because they have no local PID. Restored these paths, excluded finished leases from capacity and return an empty204 response (a real HTTP failure hidden by TestClient).
+
+`tests/test_remote_worker.py::test_remote_lifecycle_over_served_http` starts real Uvicorn TCP HTTP and separate `python -m garden worker --once` processes with independent clone directories. It exercises401/403 authentication/origin rejection, expired lease409, reclaim, work push, check, review approval, persona result, empty204 and rendered host attribution. GitHub is a fixture fake. The worker uses a fake harness; no model or cloud costs. A synthetic setup secret is verified absent from claim payload. This is process/HTTP evidence, not proof of VM isolation or an EC2 canary.
+
+Reproduce serially: `PYTHONPATH=src python -m pytest tests/test_remote_worker.py -q`. Operator tests used disk TMPDIR, CPU100%, MemoryMax1GiB, no swap. The served journey passed in4.89s with108.4MiB peak. `served-remote-events.json` is emitted in the test's retained temporary directory. No production app or task state is used by the test.

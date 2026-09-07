@@ -65,8 +65,10 @@ class CheckRunMixin:
         # for the next reap/poll rather than publishing a duplicate check record.
         if stage != "interaction_replay" and self.review_slots_free() > 0 and self._queued_review_precedes(task):
             self._drain_pending_reviews(self.store.tasks(), rep)
-        runner = self.runner_for(task, "local")
-        run = self._new_local_run(task.id, "check", f"{stage} check")
+        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner = self.runner_for(task, runner_name)
+        run = (self.runs.new_run(task.id, runner_name, mode="check")
+               if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         run.save()
         evidence = self.state.get(task.id).setdefault("required_evidence", {})

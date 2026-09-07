@@ -583,6 +583,8 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
 
 
 def _main() -> int:
+    # Newer controllers supply optional page selection. This capture engine safely renders
+    # all pages when no selection is supplied, preserving compatibility across pinned releases.
     if len(sys.argv) in (3, 4) and sys.argv[1] == "--ui-check":
         pages = json.loads(sys.argv[3]) if len(sys.argv) == 4 else []
         print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]), pages)))

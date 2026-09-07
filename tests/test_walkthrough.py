@@ -471,3 +471,22 @@ def test_capture_redacts_the_home_directory(garden, monkeypatch):
     assert fake_home not in run_html
     assert "~/work/checkout/src/thing.py" in run_html
     assert "paths are redacted" in (out / "index.md").read_text()
+
+
+def test_ui_check_entrypoint_accepts_new_controller_page_argument(monkeypatch, capsys, tmp_path):
+    import json
+
+    import garden.walkthrough as walkthrough
+
+    calls = []
+
+    def capture(path, pages):
+        calls.append((path, pages))
+        return {"status": "pass", "out_dir": str(path)}
+
+    monkeypatch.setattr(walkthrough, "_seeded_ui_capture", capture)
+    for selection, expected in [([], []), (['["*"]'], ["*"])]:
+        monkeypatch.setattr(walkthrough.sys, "argv", ["garden.walkthrough", "--ui-check", str(tmp_path), *selection])
+        assert walkthrough._main() == 0
+        assert json.loads(capsys.readouterr().out) == {"status": "pass", "out_dir": str(tmp_path)}
+        assert calls[-1] == (tmp_path, expected)
