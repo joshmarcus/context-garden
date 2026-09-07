@@ -314,6 +314,22 @@ def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_d
     assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
 
 
+def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a")
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.env_snapshot = {"validation_plan": plan}
+    check.save()
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
+    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "head-a")
+
+    run = sched.dispatch_review(task)
+
+    assert run.env_snapshot["validation_plan"] == plan
+    assert run.env_snapshot["capture_pages"] == ["task"]
+
+
 def test_scalability_claim_in_pr_description_requires_load_evidence():
     required, scalability, _ = interaction_requirement(
         ["docs/design.md"], "Documentation task", "Routine update", "PR title",
