@@ -600,6 +600,52 @@ def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github)
     assert not st.get("automerge_blocked")
 
 
+@pytest.mark.parametrize("terminal", [Status.DONE, Status.CANCELLED, Status.WONT_DO])
+def test_terminal_task_retires_collected_check_without_losing_evidence(sched, terminal):
+    """CG-386: a stale collected continuation cannot reopen a merged or otherwise closed task."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.cost_usd = 1.25
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    sched.state.save()
+
+    sched._transition(task, terminal, "terminal lifecycle regression")
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is False
+    assert sched.store.task(task.id).status == terminal
+    preserved = sched._run_by_id(task, run.run_id)
+    assert preserved is not None
+    assert preserved.result == {"checks": []}
+    assert preserved.cost_usd == 1.25
+
+
+def test_check_collection_discards_legacy_continuation_for_terminal_task(sched):
+    """A task made terminal outside `_transition` is still protected at collection time."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    task.status = Status.DONE
+    sched.store.save(task)
+    sched.state.save()
+
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is True
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.store.task(task.id).status == Status.DONE
+    assert not sched.state.get(task.id).get("needs_human")
+
+
 def test_cancel_refuses_an_already_cancelled_task(sched):
     task = sched.store.task("DM-001")
     sched.cancel(task, "cancelled by hand")
