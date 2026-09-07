@@ -60,7 +60,9 @@ def pressure() -> dict[str, Any]:
     return result
 
 
-def make_garden(root: Path, runs: int = 1549, events: int = 12500) -> None:
+def make_garden(
+    root: Path, *, tasks_count: int, runs: int = 1549, events: int = 12500
+) -> None:
     tasks = root / "demo" / "phase-05" / "tasks"
     tasks.mkdir(parents=True)
     (root / "demo" / "product.md").write_text("# Demo\n")
@@ -78,7 +80,7 @@ def make_garden(root: Path, runs: int = 1549, events: int = 12500) -> None:
             }
         )
     )
-    for number in range(100):
+    for number in range(tasks_count):
         (tasks / f"DM-{number:03d}-task.md").write_text(
             "---\n"
             + yaml.safe_dump(
@@ -96,7 +98,7 @@ def make_garden(root: Path, runs: int = 1549, events: int = 12500) -> None:
             + "---\n\n## Goal\n\nWork.\n"
         )
     for number in range(runs):
-        task = f"DM-{number % 100:03d}"
+        task = f"DM-{number % tasks_count:03d}"
         directory = root / ".garden" / "runs" / task / f"20260101T{number:06d}Z-work"
         directory.mkdir(parents=True)
         (directory / "run.json").write_text(
@@ -122,7 +124,7 @@ def make_garden(root: Path, runs: int = 1549, events: int = 12500) -> None:
                     {
                         "at": f"2026-09-07T03:{number % 60:02d}:{number % 60:02d}+00:00",
                         "kind": "run_finished" if number % 5 == 0 else "transition",
-                        "task": f"DM-{number % 100:03d}",
+                        "task": f"DM-{number % tasks_count:03d}",
                         "mode": "work",
                         "status": "done",
                     }
@@ -133,10 +135,11 @@ def make_garden(root: Path, runs: int = 1549, events: int = 12500) -> None:
 
 def fixture(kind: str) -> None:
     memory = bytearray(32 * 1024 * 1024)
+    duration = float(os.environ.get("CG380_FIXTURE_SECONDS", "6"))
     if kind == "wait":
-        time.sleep(6)
+        time.sleep(duration)
         return
-    stop = time.monotonic() + 6
+    stop = time.monotonic() + duration
     value = 1
     while time.monotonic() < stop:
         for number in range(150_000):
@@ -179,7 +182,14 @@ def run_children(command: list[str], count: int) -> dict[str, Any]:
 
 
 def page_case(
-    source: Path, garden: Path, output: Path, slots: int, samples: int, *, profiled: bool = True
+    source: Path,
+    garden: Path,
+    output: Path,
+    slots: int,
+    samples: int,
+    *,
+    task_count: int,
+    profiled: bool = True,
 ) -> dict[str, Any]:
     log = output / "spans.jsonl"
     env = os.environ.copy()
@@ -212,8 +222,13 @@ def page_case(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    load_env = {**os.environ, "CG380_FIXTURE_SECONDS": "120"}
     loads = [
-        subprocess.Popen([sys.executable, __file__, "--fixture", "session"], start_new_session=True)
+        subprocess.Popen(
+            [sys.executable, __file__, "--fixture", "session"],
+            env=load_env,
+            start_new_session=True,
+        )
         for _ in range(slots)
     ]
     try:
@@ -225,8 +240,8 @@ def page_case(
                 time.sleep(0.1)
         rows = []
         tick_rows = []
-        for period in ("cold", "warm", "expiry"):
-            if period == "expiry":
+        for period in ("expiry_1_cold", "expiry_2", "expiry_3"):
+            if period != "expiry_1_cold":
                 time.sleep(1.1)
             for path in ("/now1", "/inbox", "/config"):
                 for _ in range(samples):
@@ -235,18 +250,17 @@ def page_case(
                     rows.append(
                         {"period": period, "path": path, "elapsed_s": time.perf_counter() - start}
                     )
-            tick_start = time.perf_counter()
-            subprocess.run(
+            tick = subprocess.run(
                 [
                     sys.executable,
-                    "-c",
-                    "from garden.store import Store; from garden.scheduler import Scheduler; from pathlib import Path; import os; s=Scheduler(Store(Path(os.environ['CG380_GARDEN'])), read_only=True); print(s.tick(dispatch=False).duration_s)",
+                    str(Path(__file__).parent / "profile_tick.py"),
                 ],
                 env=env,
                 check=True,
-                stdout=subprocess.DEVNULL,
+                text=True,
+                capture_output=True,
             )
-            tick_rows.append(time.perf_counter() - tick_start)
+            tick_rows.append(json.loads(tick.stdout))
         spans = (
             [
                 json.loads(line)
@@ -257,7 +271,7 @@ def page_case(
             else []
         )
         summary = {}
-        for period in ("cold", "warm", "expiry"):
+        for period in ("expiry_1_cold", "expiry_2", "expiry_3"):
             for path in ("/now1", "/inbox", "/config"):
                 vals = [r["elapsed_s"] for r in rows if r["period"] == period and r["path"] == path]
                 summary[f"{period}:{path}"] = {
@@ -267,6 +281,7 @@ def page_case(
                     "max_s": max(vals),
                 }
         return {
+            "task_count": task_count,
             "slots": slots,
             "server_pid": server.pid,
             "server_cgroup": Path(f"/proc/{server.pid}/cgroup").read_text().strip(),
@@ -274,7 +289,7 @@ def page_case(
             "load_pids": [p.pid for p in loads],
             "rows": rows,
             "summary": summary,
-            "background_tick_wall_s": tick_rows,
+            "background_ticks": tick_rows,
             "spans": spans,
         }
     finally:
@@ -300,15 +315,14 @@ def main() -> None:
     if not args.source or not args.output:
         parser.error("--source and --output required")
     args.output.mkdir(parents=True, exist_ok=True)
-    garden = args.output / "garden"
-    make_garden(garden)
     report: dict[str, Any] = {
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "build": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=args.source, text=True
         ).strip(),
         "python": sys.version,
-        "dataset": {"tasks": 100, "runs": 1549, "events": 12500},
+        "datasets": [],
+        "history_sizes": [100, 1000],
         "caps_and_initial_cgroup": pressure(),
         "commands": {},
         "pages": {},
@@ -332,14 +346,27 @@ def main() -> None:
         ],
         1,
     )
-    for slots in (0, 1, 4):
-        case = args.output / f"pages-{slots}"
-        case.mkdir()
-        report["pages"][str(slots)] = page_case(args.source, garden, case, slots, args.samples)
-    plain = args.output / "pages-0-plain"
+    for task_count in report["history_sizes"]:
+        garden = args.output / f"garden-{task_count}"
+        make_garden(garden, tasks_count=task_count)
+        report["datasets"].append({"tasks": task_count, "runs": 1549, "events": 12500})
+        for slots in (0, 1, 4):
+            key = f"tasks-{task_count}:slots-{slots}"
+            case = args.output / key
+            case.mkdir()
+            report["pages"][key] = page_case(
+                args.source, garden, case, slots, args.samples, task_count=task_count
+            )
+    plain = args.output / "tasks-100:slots-0-plain"
     plain.mkdir()
-    report["pages"]["0_plain"] = page_case(
-        args.source, garden, plain, 0, args.samples, profiled=False
+    report["pages"]["tasks-100:slots-0-plain"] = page_case(
+        args.source,
+        args.output / "garden-100",
+        plain,
+        0,
+        args.samples,
+        task_count=100,
+        profiled=False,
     )
     report["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     report["final_cgroup"] = pressure()
