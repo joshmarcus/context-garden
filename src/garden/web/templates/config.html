@@ -47,13 +47,16 @@
   <h3>Local execution boundary</h3>
   <p class="muted" style="margin:0">
     Host admission: <strong>{{ resource_status.active }}/{{ resource_status.limit }}</strong> ·
-    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong>
+    heavy execution: <strong>{{ resource_status.heavy_running }}/{{ resource_status.heavy_limit }}</strong> authoritative
+    (requested {{ resource_status.requested_heavy_limit }})
     {% if resource_status.heavy_waiting %}({{ resource_status.heavy_waiting }} waiting: heavy-test budget full){% endif %} ·
     cgroup isolation: <strong>{{ resource_status.isolation }}</strong>.
     Available memory: <strong>{{ resource_status.memory_available_mb if resource_status.memory_available_mb is not none else "unknown" }} MiB</strong>
-    {% if resource_status.cgroup_available_mb is not none %}(effective cgroup headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
+    {% if resource_status.cgroup_available_mb is not none %}(effective {{ resource_status.cgroup_boundary }} headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
     temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
   </p>
+  {% if resource_status.heavy_conflict %}<p class="warn" style="margin:8px 0 0">Heavy capacity conflict: {{ resource_status.heavy_conflict }}. Existing authoritative capacity remains enforced.</p>{% endif %}
+  {% if resource_status.cgroup_events %}<p class="muted" style="margin:8px 0 0">Memory events: {% for name, value in resource_status.cgroup_events %}{{ name }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
   {% if resource_status.isolation != "enforced" %}<p class="warn" style="margin:8px 0 0">Local descendants do not have a separately enforced CPU/memory budget ({{ resource_status.isolation }}). Configure a delegated, finite <code>resources.execution_cgroup</code> before relying on service isolation.</p>{% endif %}
 </div>
 
