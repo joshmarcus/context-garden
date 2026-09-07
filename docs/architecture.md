@@ -827,3 +827,9 @@ live work.
 - No model runs in the tick. Waiting is a sleeping Python process.
 
 The fence verifies the authoritative manifest against its saved digest. Missing or invalid trusted metadata fails the run for operator inspection; the worker-writable audit copy is never a restoration authority. References survive manual runs and interrupted finalization so a recovered reap can repeat the check safely.
+
+## Operator environment
+
+The [EC2 environment setup record](ec2-environment-setup.md) documents the phase-05
+AWS identities/network, Tailscale access rules, budget and remaining canary prerequisites.
+It distinguishes verified infrastructure from worker functionality still under review.
