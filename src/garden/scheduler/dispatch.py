@@ -85,6 +85,10 @@ class DispatchMixin:
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
+        # A review uses the same local admission capacity as a worker or a detached
+        # check.  Give queued validation its priority-ordered turn before this ready
+        # queue can fill a slot again.
+        self._drain_pending_reviews(tasks, rep)
         for task, mode, _why in self.dispatch_queue():
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
@@ -110,7 +114,6 @@ class DispatchMixin:
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
-        self._drain_pending_reviews(tasks, rep)
 
     def _audit_stuck(self, rep: TickReport) -> None:
         """Backstop: any non-terminal task with no active run and no dispatchable next

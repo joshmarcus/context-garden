@@ -834,6 +834,9 @@ class ReapMixin:
                 st["pr_number"] = pr.number
                 st["revisions"] = 0
                 st["review_rounds"] = 0
+                st.pop("review_loop_friction", None)
+                st.pop("review_heads", None)
+                st.pop("review_feedback_history", None)
                 st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
                 self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
                 nxt = self._pr_status(task)
