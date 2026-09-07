@@ -527,8 +527,67 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     assert not sched.state.get("DM-001").get("needs_human")
 
 
-def test_unlimited_review_cap_keeps_review_pending_and_records_one_loop_friction_signal(sched):
-    """A null cap continues reviews while the soft threshold stays observable, not blocking."""
+def test_unlimited_review_cap_dispatches_beyond_the_former_limit_under_review_admission(sched, fake_github, monkeypatch):
+    """A null cap keeps the normal work/review/revise lifecycle going past two rounds.
+
+    The third dispatch proves that the unlimited setting is not merely accepted by the
+    config helper: it still goes through the normal one-slot review admission path.
+    """
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 4,
+                                "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> review round 1
+    sched.tick()  # reap review 1 -> revise
+    sched.tick()  # reap revise -> review round 2
+    sched.tick()  # reap review 2 -> revise
+    rep = sched.tick()  # reap revise -> review round 3, beyond the former cap
+
+    assert "DM-001(review)" in rep.dispatched
+    st = sched.state.get("DM-001")
+    assert st["review_rounds"] == 3
+    assert len(sched.review_runs_active()) == 1
+    assert sched.review_slots_free() == 0
+
+
+def test_review_cap_recovery_keeps_actionable_feedback_after_a_scheduler_restart(sched, fake_github, monkeypatch):
+    """`garden review` recovers a capped PR without losing the earlier actionable review."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 1, "friction_after": None,
+                                "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> review round 1
+    sched.tick()  # reap review -> actionable feedback -> revise
+    sched.tick()  # reap revise -> finite cap stop
+
+    task = sched.store.task("DM-001")
+    assert sched.state.get(task.id)["needs_human"]["kind"] == "review_cap"
+    original_feedback = sched.state.get(task.id)["last_review"]["findings"][0]["summary"]
+    assert original_feedback == "missing test"
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+    # Match the CLI's scheduler construction after the cap card has gone stale on disk.
+    recovered = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    task = recovered.store.task("DM-001")
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
+    run = recovered.review_again(task)
+    assert run.mode == "review"
+    assert not recovered.state.get(task.id).get("needs_human")
+    assert recovered.state.get(task.id)["last_review"]["findings"][0]["summary"] == original_feedback
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+    rep = recovered.tick()
+    assert "DM-001 review: approve" in rep.transitions
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+
+def test_unlimited_review_cap_records_one_loop_friction_signal(sched):
+    """A soft threshold remains observable and non-blocking under an unlimited cap."""
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 3}
     task = sched.store.task("DM-001")
     task.pr = "https://github.com/test/demo/pull/71"
@@ -548,6 +607,19 @@ def test_unlimited_review_cap_keeps_review_pending_and_records_one_loop_friction
     assert not st.get("needs_human")
     signals = sched.events.read(task_id=task.id, kinds=["review_loop_friction"])
     assert len(signals) == 1
+
+
+@pytest.mark.parametrize(("state", "feedback", "expected"), [
+    ({"pending_feedback_rebase": True}, "fix it", "mechanical rebase/head change"),
+    ({}, "read the screenshot capture", "stale/missing infrastructure evidence"),
+    ({"pending_feedback_easy": True}, "rewrite the summary", "description-only correction"),
+    ({}, "fix it", "newly discovered defect"),
+    ({"review_feedback_history": ["fix it", "fix it"]}, "fix it", "repeated unaddressed finding"),
+    ({}, "", "lost feedback/state transition"),
+    ({"last_review": {"summary": "recorded"}}, "", "unknown"),
+])
+def test_review_loop_cause_classifies_each_supported_or_unknown_diagnosis(state, feedback, expected):
+    assert Scheduler._review_loop_cause(state, feedback) == expected
 
 
 def test_finite_review_cap_and_invalid_optional_values_are_unambiguous(sched):
