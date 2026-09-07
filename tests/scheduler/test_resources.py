@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
 from pathlib import Path
 
@@ -303,3 +304,142 @@ def test_completed_check_continuation_survives_pressure_until_next_tick(sched, m
     assert sched.reap_check(task, type("Report", (), {})()) is True
     assert handled == [True]
     assert sched.state.get(task.id)["check_run"] == {}
+
+
+def _cache_limited(sched, monkeypatch, tmp_path, *, inactive_file=700 * 1024 * 1024):
+    import garden.scheduler.resources as resources
+
+    group = tmp_path / "execution"
+    group.mkdir()
+    for name, value in (("memory.current", str(900 * 1024 * 1024)),
+                        ("memory.high", str(1800 * 1024 * 1024)),
+                        ("memory.max", str(2048 * 1024 * 1024)),
+                        ("memory.events", "high 0\nmax 0\noom 0\noom_kill 0\n"),
+                        ("memory.stat", f"file {inactive_file}\nshmem {300 * 1024 * 1024}\ninactive_file {inactive_file}\n"),
+                        ("memory.reclaim", ""), ("cgroup.procs", ""), ("cpu.max", "100000 100000")):
+        (group / name).write_text(value)
+    values = {
+        "resources.min_memory_available_mb": 1500,
+        "resources.execution_cgroup": str(group),
+        "resources.reclaim_max_mb": 256,
+        "resources.reclaim_cooldown_seconds": 300,
+        "resources.reclaim_timeout_seconds": 1,
+    }
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 7000)
+    return group, values
+
+
+def test_cache_limited_admission_starts_one_bounded_helper_and_still_stops(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    launches = []
+
+    class Process:
+        pid = 4242
+
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda command, **kwargs: launches.append(command) or Process())
+    monkeypatch.setattr(resources, "_reclaim_pid_alive", lambda pid, token: True)
+
+    with pytest.raises(ResourcePressureError, match="execution cgroup available memory"):
+        sched._new_local_run("DM-001", "work", "work")
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-002", "review", "review")
+
+    assert len(launches) == 1
+    assert launches[0][launches[0].index("--bytes") + 1] == str(256 * 1024 * 1024)
+    state = json.loads((sched.cfg.garden_dir / "resource-reclaim.json").read_text())
+    assert state["memory_stat"]["shmem"] == 300 * 1024 * 1024
+    assert not sched.runs.runs_for("DM-001") and not sched.runs.runs_for("DM-002")
+
+
+@pytest.mark.parametrize("other_gate", ["slot", "temp", "oom", "host"])
+def test_reclaim_is_not_considered_while_an_ordinary_gate_also_blocks(
+        sched, monkeypatch, tmp_path, other_gate):
+    import garden.scheduler.resources as resources
+
+    group, values = _cache_limited(sched, monkeypatch, tmp_path)
+    if other_gate == "slot":
+        values["resources.max_parallel"] = 1
+        sched.runs.new_run("busy", "local", mode="check").save()
+    elif other_gate == "temp":
+        values["resources.min_temp_free_mb"] = 1000
+        monkeypatch.setattr(resources, "_free_mb", lambda path: 10)
+    elif other_gate == "oom":
+        (group / "memory.events").write_text("high 0\nmax 0\noom 1\noom_kill 0\n")
+    else:
+        monkeypatch.setattr(resources, "_memory_available_mb", lambda: 500)
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("reclaim started"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "check", "check")
+
+
+def test_partial_reclaim_requires_fresh_normal_gate_and_cooldown(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, report_path = sched._reclaim_paths()
+    started = resources.time.time() - 2
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": started, "token": "x"}) + "\n")
+    report_path.write_text(json.dumps({"token": "x", "started_at": started, "finished_at": resources.time.time(),
+                                      "status": "complete", "headroom_before_bytes": 900 << 20,
+                                      "headroom_after_bytes": 1200 << 20}) + "\n")
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("cooldown ignored"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "work", "work")
+    assert "900→1200 MiB actual headroom" in sched.resource_status().reclaim
+    observe = status_line(sched.store, sched, resolve(sched.cfg, sched))
+    config = TestClient(create_app(sched.store, watch=False)).get("/config").text
+    assert "last bounded cache reclaim complete (900→1200 MiB actual headroom)" in observe
+    assert "Admission still requires a fresh ordinary headroom check" in config
+
+
+def test_fresh_headroom_under_lock_admits_after_completed_reclaim(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, report_path = sched._reclaim_paths()
+    started = resources.time.time() - 2
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": started, "token": "x"}) + "\n")
+    report_path.write_text(json.dumps({"token": "x", "started_at": started, "finished_at": resources.time.time(),
+                                      "status": "complete", "headroom_before_bytes": 900 << 20,
+                                      "headroom_after_bytes": 1600 << 20}) + "\n")
+    monkeypatch.setattr(resources, "_cgroup_memory_status", lambda path: (1600, {"high": 0, "max": 0, "oom": 0, "oom_kill": 0}))
+
+    run = sched._new_local_run("DM-001", "check", "check")
+    assert run.status == "running"
+
+
+def test_missing_cache_reading_and_unavailable_delegation_preserve_stop(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    (group / "memory.stat").unlink()
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("reclaim started"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "work", "work")
+    assert not (sched.cfg.garden_dir / "resource-reclaim.json").exists()
+
+
+def test_stuck_reclaim_helper_is_killed_and_cooldown_preserves_stop(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, _report_path = sched._reclaim_paths()
+    state_path.write_text(json.dumps({"running": True, "pid": 456, "started_at": resources.time.time() - 10,
+                                      "token": "stuck"}) + "\n")
+    killed = []
+    monkeypatch.setattr(resources, "_reclaim_pid_alive", lambda pid, token: True)
+    monkeypatch.setattr(resources.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("cooldown ignored"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "review", "review")
+    assert killed == [(456, resources.signal.SIGKILL)]
+    result = json.loads(state_path.read_text())["result"]
+    assert result == {"error": "reclaim helper timed out", "status": "error"}
