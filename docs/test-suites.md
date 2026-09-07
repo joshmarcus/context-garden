@@ -43,43 +43,56 @@ python3 scripts/check_ci.py
 
 ## Serial timing comparison
 
-The representative change is a retro document renderer/parser edit. Both measurements ran
-serially on this worker on 2026-09-06. The baseline was commit `c4e6ca3` (before this split)
-and used its former mixed `tests/test_retro.py`; the current measurement uses the extracted
-pure-document suite. Both runs had a fresh `--basetemp`, CPU time limited to 120 seconds,
-address space limited to 1 GiB (`1048576` KiB), and 1,024 open files. This host did not
-expose cgroup CPU or memory limit files, so these identical per-process shell limits are the
-recorded caps. `/usr/bin/time` reports wall time and peak RSS; `du -sk` reports final temp
-use.
+For a retro document renderer/parser change, the baseline must precede the extraction.
+This comparison uses `58e13b99ddaf62b751b01771e5660039a421d46c`, the parent of split commit
+`4cfcc8c`, with its original **34-test** mixed `tests/test_retro.py`. The focused selection
+uses `tests/test_retro_documents.py` at `1f3cbb29270119fc84630e8f8abf00ce4077409b`.
+The remaining 28 lifecycle tests are retained; this measures iteration selection, not a
+reduction in full-suite coverage.
 
-Reproduce the two commands from the repository root (the archive keeps the historical test
-module out of the working tree):
+Both selections ran serially on 2026-09-07 in one systemd user service with CPU quota200%,
+MemoryHigh512MiB, MemoryMax1GiB, swap disabled and TasksMax128. The benchmark verified
+`cpu.max=200000 100000` and `memory.max=1073741824` from its own cgroup. Both used the same
+installed Python interpreter, checkout-specific `PYTHONPATH`, disabled bytecode writes,
+disk-backed temporary directories and fresh equivalent `--basetemp` paths.
+
+`/usr/bin/time` measured process wall time and peak RSS. Temp use is **only** `du -sk` of
+each pytest `--basetemp`, excluding the baseline archive/checkout, logs and auxiliary temp.
+The pure document suite never created that directory, so its pytest-temp allocation is0.
+
+| Selection | Suite | Tests | Elapsed | Peak RSS | Pytest temp |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Before extraction | Historical `tests/test_retro.py` | 34 passed | 6.29s | 67,084KiB | 14,112KiB |
+| Focused document iteration | `tests/test_retro_documents.py` | 6 passed | 0.27s | 54,060KiB | 0KiB |
+
+The complete benchmark service peaked at153.8MiB, with no swap. This is one ordered pair
+on a shared host, not a full-suite speedup claim or a general performance estimate. The
+six-test document selection avoids Git topology; lifecycle checks remain necessary when
+those responsibilities change, and full GitHub CI retains both suites.
+
+The [report](validation/cg354/report.json), test/time logs and original measurement script
+are committed under `docs/validation/cg354/`. Both pytest invocations passed. The original
+report collector then failed because it ran `du` on the absent focused-test temp directory;
+the report was recovered from the retained logs and directories without rerunning tests.
+The reusable collector handles an absent directory as zero allocation.
+
+To repeat the comparison for the current checkout, from the repository root:
 
 ```bash
-run_suite() {
-  local suite=$1 temp=$2
-  ulimit -t 120 -v 1048576 -n 1024
-  /usr/bin/time -f 'elapsed=%e\npeak_rss_kib=%M' -o "$temp/time.txt" \
-    .venv/bin/python -m pytest "$suite" -q --basetemp="$temp/pytest"
-  du -sk "$temp"
-  cat "$temp/time.txt"
-}
-
-baseline=$(mktemp -d /tmp/cg354-retro-before.XXXXXX)
-git archive c4e6ca3 | tar -x -C "$baseline"
-run_suite "$baseline/tests/test_retro.py" "$baseline"
-
-focused=$(mktemp -d /tmp/cg354-retro-documents-after.XXXXXX)
-run_suite tests/test_retro_documents.py "$focused"
+benchmark_root=$(mktemp -d /home/joshua/work/operator-test-tmp/cg354-repeat.XXXXXX)
+benchmark_python="$PWD/.venv/bin/python"
+systemd-run --user --wait --pipe --collect \
+  --property=CPUQuota=200% --property=MemoryHigh=512M \
+  --property=MemoryMax=1G --property=MemorySwapMax=0 \
+  --property=TasksMax=128 --property=RuntimeMaxSec=180 \
+  "$benchmark_python" "$PWD/docs/validation/cg354/reproduce.py" \
+  --repo "$PWD" --output "$benchmark_root/results"
 ```
 
-| Selection | Command | Tests | Elapsed | Peak RSS | Temp use |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Before | `run_suite "$baseline/tests/test_retro.py" "$baseline"` | 28 passed | 3.15 s | 59,952 KiB | 8,232 KiB |
-| After | `run_suite tests/test_retro_documents.py "$focused"` | 6 passed | 0.30 s | 54,064 KiB | 4 KiB |
-
-The focused document loop is about 10 times faster and avoids the temporary Git topology.
-The remaining retro lifecycle suite intentionally still pays for repository/worktree setup:
-those tests validate Git-backed behavior and should not be disguised as unit tests. Full
-suite duration is not repeated locally; it remains a GitHub CI gate, and its fixture Git
-setup now fails promptly rather than waiting indefinitely for an orphaned output holder.
+Use an absolute interpreter path with the development dependencies installed. The measured
+run used `/home/joshua/garden/.venv/bin/python`. `reproduce.py` archives the actual pre-split
+revision outside the measured temp paths, runs `/usr/bin/time -f
+'elapsed=%e\npeak_rss_kib=%M'` around each serial pytest command, measures precisely
+`du -sk <result>/pytest` (or0 if absent), and records revisions, commands, limits, hashes,
+results and the measurement scope in `report.json`. It refuses tracked source/test edits
+that would make the recorded current revision misleading.
