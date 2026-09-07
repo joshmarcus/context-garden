@@ -101,6 +101,8 @@ of the loop touch different files.
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |
 | `runner/manual.py` | the human-driven runner backend |
+| `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py` | scheduler-independent declarative host lifecycle, strict configuration and versioned provider/profile contracts |
+| `hosts/ec2.py`, `hosts/fake.py` | the first infrastructure adapter and the local extension/contract fixture |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `profiles.py` | named operating profiles that combine worker/review concurrency, model tiers, review and retro difficulty, and observation settings |
