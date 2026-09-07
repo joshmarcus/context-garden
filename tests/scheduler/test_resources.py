@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import socket
+import subprocess
+import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -497,7 +501,7 @@ def test_pending_review_attempts_reclaim_before_review_slot_reader_stops_it(sche
 @pytest.mark.skipif(not __import__("os").environ.get("CG385_REAL_REPORT"),
                     reason="CG-385 disposable cgroup evidence only")
 def test_real_disk_cache_reclaim_recovers_normal_tick_admission(sched, monkeypatch, request):
-    """Exercise the real kernel interface only inside the explicitly capped evidence unit."""
+    """Measure partial then successful real reclaim while the disposable web app responds."""
     import os
 
     import garden.scheduler.resources as resources
@@ -533,32 +537,98 @@ def test_real_disk_cache_reclaim_recovers_normal_tick_admission(sched, monkeypat
     before = snapshot()
     print("cg385 cache snapshot", before)
     assert int(before["memory.stat"]["inactive_file"]) >= 256 << 20
-    minimum = int(before["headroom_mb"]) + 128
+    minimum = int(before["headroom_mb"]) + 160
     original_effective = sched.effective
     values = {"resources.execution_cgroup": str(group), "resources.min_memory_available_mb": minimum,
-              "resources.reclaim_max_mb": 256, "resources.reclaim_cooldown_seconds": 0,
+              "resources.reclaim_max_mb": 32, "resources.reclaim_cooldown_seconds": 0,
               "resources.reclaim_timeout_seconds": 5}
     monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, original_effective(key, default)))
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8192)
     monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 8192)
 
-    first = sched.tick()
-    assert not first.dispatched
-    deadline = time.monotonic() + 8
-    report_path = sched._reclaim_paths()[1]
-    while not report_path.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert report_path.exists()
-    reclaim = json.loads(report_path.read_text())
-    assert reclaim["status"] == "complete"
-    after_reclaim = snapshot()
-    assert int(after_reclaim["headroom_mb"]) >= minimum
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    counter = sched.store.root / "served-counts.json"
+    counter.write_text('{"reads": 0, "scans": 0}')
+    server = subprocess.Popen([
+        sys.executable, str(Path(__file__).parents[2] / "docs/validation/cg385/served_app.py"),
+        str(sched.store.root), str(counter), str(port),
+    ])
+    url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            urllib.request.urlopen(url + "/healthz", timeout=1).read()
+            break
+        except Exception:
+            if time.monotonic() >= deadline:
+                server.terminate()
+                raise
+            time.sleep(0.05)
 
-    second = sched.tick()
-    assert any(item.startswith("DM-001(work)") for item in second.dispatched)
-    evidence = {"workload": "real disk-backed page cache and supervised in-process test worker",
-                "synthetic": False, "cgroup": str(group), "minimum_headroom_mb": minimum,
-                "before": before, "reclaim": reclaim, "after_reclaim": after_reclaim,
-                "first_tick": first.dispatched, "second_tick": second.dispatched,
-                "cache_file_bytes": cache_file.stat().st_size}
+    latencies: list[dict[str, object]] = []
+
+    def http_probe(stage: str) -> None:
+        started = time.monotonic()
+        with urllib.request.urlopen(url + "/config", timeout=3) as response:
+            response.read()
+            latencies.append({"stage": stage, "status_code": response.status,
+                              "seconds": time.monotonic() - started})
+
+    def await_report(token: str | None = None) -> dict[str, object]:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            http_probe("helper_running")
+            try:
+                result = json.loads(report_path.read_text())
+            except (OSError, ValueError):
+                result = {}
+            if result and (token is None or result.get("token") != token):
+                return result
+            time.sleep(0.02)
+        raise AssertionError("bounded reclaim helper did not publish its report")
+
+    report_path = sched._reclaim_paths()[1]
+    try:
+        first = sched.tick()
+        assert not first.dispatched
+        partial_reclaim = await_report()
+        assert partial_reclaim["status"] == "complete"
+        after_partial = snapshot()
+        assert int(after_partial["headroom_mb"]) < minimum
+
+        values["resources.reclaim_max_mb"] = 256
+        second = sched.tick()
+        assert not second.dispatched
+        recovered_reclaim = await_report(str(partial_reclaim["token"]))
+        assert recovered_reclaim["status"] == "complete"
+        after_reclaim = snapshot()
+        assert int(after_reclaim["headroom_mb"]) >= minimum
+
+        third = sched.tick()
+        assert any(item.startswith("DM-001(work)") for item in third.dispatched)
+        http_probe("after_admission")
+    finally:
+        server.terminate()
+        server.wait(timeout=5)
+
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    source_tree = subprocess.check_output(["git", "rev-parse", "HEAD:src"], text=True).strip()
+    test_tree = subprocess.check_output(["git", "rev-parse", "HEAD:tests"], text=True).strip()
+    evidence = {
+        "invocation": os.environ.get("CG385_INVOCATION", ""), "source_sha": head,
+        "source_tree": source_tree, "test_tree": test_tree,
+        "workload": "real disk-backed page cache, real bounded kernel reclaim, supervised test worker, and served HTTP requests",
+        "synthetic": False, "cgroup": str(group), "limits": {
+            "memory.high": (group / "memory.high").read_text().strip(),
+            "memory.max": (group / "memory.max").read_text().strip(),
+            "memory.swap.max": (group / "memory.swap.max").read_text().strip(),
+        }, "minimum_headroom_mb": minimum, "before": before,
+        "partial_reclaim": partial_reclaim, "after_partial": after_partial,
+        "recovered_reclaim": recovered_reclaim, "after_reclaim": after_reclaim,
+        "ticks": [first.dispatched, second.dispatched, third.dispatched],
+        "http": {"requests": latencies, "max_seconds": max(item["seconds"] for item in latencies)},
+        "cache_file_bytes": cache_file.stat().st_size,
+    }
     Path(os.environ["CG385_REAL_REPORT"]).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")

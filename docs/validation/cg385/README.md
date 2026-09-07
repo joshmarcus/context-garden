@@ -26,6 +26,11 @@ change a production cap or claim that synthetic requested reclaim bytes are avai
 
 `real-reclaim-report.json` is the separate real disk-cache incident reproduction: a normal
 tick starts the kernel reclaim helper at the configured reserve and a later tick admits one
-supervised task only after measured headroom clears the reserve. `served-interaction-report.json`
-records real HTTP requests against a disposable Uvicorn process at 120 and 1,200 retained runs,
-including three diagnostic failure/recovery cycles and instrumented task-store read/scan counts.
+supervised task only after measured headroom clears the reserve. The opt-in test can write a
+fresh report outside the source tree while probing the disposable web app during a deliberately
+partial reclaim and the subsequent successful reclaim.
+
+`served-interaction-report.json` is only a synthetic diagnostic-rendering and retained-history
+check. It records real HTTP requests against a disposable Uvicorn process, but its manually
+published failure/recovery states are not kernel reclaim attempts, its sleeping process is not
+loaded execution, and its three cycles are not measured cooldown or cache-expiry intervals.
