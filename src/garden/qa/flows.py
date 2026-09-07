@@ -27,6 +27,9 @@ class Client:
         # A flow's deadline must also bound an individual request.  Dispatch and resume
         # actions prepare a worktree before redirecting; on a busy host that can take longer
         # than the old fixed ten-second HTTP timeout even though the whole flow still has time.
+        # A form action can prepare a worktree before it redirects.  Give each request the
+        # same budget as the flow that contains it; a shorter, hidden HTTP timeout makes a
+        # healthy but loaded canary fail before its advertised flow deadline.
         self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=timeout)
         self.timeout = timeout
         self.last_page = "/"
