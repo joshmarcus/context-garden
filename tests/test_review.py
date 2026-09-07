@@ -274,7 +274,9 @@ def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
     parser = validation_plan(["src/garden/criteria.py"], "Parse result markers")
     assert parser["pages"] == []
     assert parser["interaction"] is False
-    assert parser["reasons"] == [{"item": "focused relevant checks", "reason": "no rendered or lifecycle behavior changed"}]
+    assert parser["reasons"] == [{"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"}]
+    assert parser["checks"] == [{"item": "configured pre-PR checks",
+                                  "reason": "parser or brief behavior changed without rendered behavior"}]
 
     page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout")
     assert page["pages"] == ["task"]
@@ -283,6 +285,8 @@ def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
     shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style")
     assert shared["pages"] == ["*"]
     assert any("every consumer" in reason["reason"] for reason in shared["reasons"])
+    assert shared["checks"] == [{"item": "configured pre-PR checks",
+                                  "reason": "changed behavior requires the configured pre-PR checks"}]
 
 
 def test_validation_plan_requires_bounded_inspection_for_unknown_ui_scope():

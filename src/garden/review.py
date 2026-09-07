@@ -120,10 +120,19 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "") ->
         reasons.append({"item": "served interaction", "reason": interaction_reason})
     if scalability:
         reasons.append({"item": "served load evidence", "reason": "acceptance claim includes scalability or performance"})
+    if interaction:
+        check_reason = "changed behavior requires the configured pre-PR checks"
+    elif any(path.startswith("docs/") or path.endswith((".md", ".rst")) for path in changed):
+        check_reason = "documentation changed without rendered behavior"
+    elif any(path.startswith(("src/garden/criteria.py", "src/garden/brief.py")) for path in changed):
+        check_reason = "parser or brief behavior changed without rendered behavior"
+    else:
+        check_reason = "changed code requires focused regression coverage"
+    checks = [{"item": "configured pre-PR checks", "reason": check_reason}]
     if not reasons:
-        reasons.append({"item": "focused relevant checks", "reason": "no rendered or lifecycle behavior changed"})
+        reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
-            "scalability": scalability, "unknown_ui": unknown, "reasons": reasons}
+            "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
