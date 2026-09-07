@@ -250,25 +250,6 @@ def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
     assert restacked == [child.id]
 
 
-def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
-    """An external parent merge shares the normal stacked-child lifecycle."""
-    parent = sched.store.task("DM-001")
-    child = sched.store.task("DM-002")
-    pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
-    pr.state, pr.head_sha = "MERGED", "verified-head"
-    sched.state.get(child.id)["stack_parent"] = parent.id
-    restacked: list[str] = []
-    monkeypatch.setattr(gitops, "fetch", lambda _: None)
-    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
-    monkeypatch.setattr(sched, "_restack", lambda task, _: restacked.append(task.id))
-    sched.dispatch(parent, runner=ManualRunner({}), worktree=False,
-                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
-
-    sched.finish_manual(parent, {"status": "done", "pr": pr.url})
-
-    assert restacked == [child.id]
-
-
 def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
