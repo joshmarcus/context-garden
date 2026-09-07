@@ -423,6 +423,19 @@ def test_default_personas_written(tmp_path):
     assert parse_persona('GARDEN_PERSONA: {"persona": "user", "score": 5, "overall": "x", "findings": []}')["score"] == 5
 
 
+def test_phase_persona_runs_are_keyed_by_phase(sched):
+    from tests.conftest import write
+
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# p2\n\nNext.\n")
+    sched.store.invalidate()
+    first = sched.dispatch_persona_phase(sched.store.phase("demo", "p1"), "security")
+    second = sched.dispatch_persona_phase(sched.store.phase("demo", "p2"), "security")
+
+    assert first.task_id == "_demo-p1"
+    assert second.task_id == "_demo-p2"
+    assert first.path.parent != second.path.parent
+
+
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.tick()

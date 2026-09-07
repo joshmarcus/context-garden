@@ -277,7 +277,7 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
                 "friction": ["short item"], "notes": "...",
-                "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
+                "discovered": [{"kind", "title", "body", "file", "error", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
@@ -315,8 +315,8 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   leaves a criterion undone or declines an improvement, because that changes the promised
   product outcome rather than merely reporting evidence about it.
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
-  a `task` becomes a draft task file, unless its title (normalised) or its body's file and
-  error already match an open task in this phase or the next one, in which case it is noted
+  a `task` becomes a draft task file, unless its title (normalised) or its structured `file`
+  and `error` fields already match an open task in this phase or the next one, in which case it is noted
   on that task ("also found by") instead of filing a near-duplicate, with a
   `discovered_duplicate` event; a `duplicate` (`of`/`duplicates`) or `cancel`
   (`task`) becomes a decision card for a human — Accept cancels the named task with the

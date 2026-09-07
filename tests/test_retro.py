@@ -39,6 +39,26 @@ def test_numbers_section_handles_zero_total():
     assert "%" not in text  # no share line when there is nothing to divide
 
 
+def test_persona_revs_rejects_unsafe_or_escaping_footer_run_ids(sched, tmp_path):
+    """Retro persona report footers are untrusted and cannot select an arbitrary final.md."""
+    phase = sched.store.phase("demo", "p1")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    unsafe = reports_dir / "unsafe.md"
+    unsafe.write_text("_garden persona run bad.run_")
+    escaping = reports_dir / "escaping.md"
+    escaping.write_text("_garden persona run escape_")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "final.md").write_text('GARDEN_PERSONA: {"persona": "security", "score": 10}')
+    phase_runs = sched.runs.dir / "_demo-p1"
+    phase_runs.mkdir(parents=True)
+    (phase_runs / "escape").symlink_to(outside, target_is_directory=True)
+
+    assert sched._persona_revs(phase, {"unsafe": unsafe, "escaping": escaping}) == {}
+
+
 def test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimension():
     text = numbers_section(8.0, 2.0, {
         "by_difficulty": {"easy": {"mean_cost_usd": 1.0, "cost_per_accepted_task": 2.0, "first_pass_rate": 1.0}},

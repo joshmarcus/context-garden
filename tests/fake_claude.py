@@ -490,7 +490,8 @@ def add_discovered_same(call: Call, result: dict) -> None:
     # workers hitting the same bug should file one draft, not three (CG-199).
     result["discovered"] = [
         {"title": "Retry loop spins forever on a dead runner",
-         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."},
+         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load.",
+         "file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"},
     ]
 
 
