@@ -7,8 +7,8 @@ from pathlib import Path
 
 from garden import gitops
 from garden.model import Status
-from garden.review import review_brief
 from garden.preflight import PREFLIGHT_ITEMS
+from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from tests import fake_claude
