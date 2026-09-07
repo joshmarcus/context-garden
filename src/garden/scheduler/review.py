@@ -19,11 +19,11 @@ from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
-    interaction_requirement,
     parse_review,
     review_brief,
     review_is_description_only,
     review_to_markdown,
+    validation_plan,
 )
 from ..runs import Run
 from .report import TickReport
@@ -432,9 +432,35 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
-        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
-            changed, task.title, task.body, pr_title, pr_body,
-        )
+        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head, check_specs=self._pre_pr_specs(task))
+        needs_interaction = bool(plan["interaction"])
+        needs_scalability = bool(plan["scalability"])
+        interaction_reason = next((row["reason"] for row in plan["reasons"]
+                                   if row["item"] == "served interaction"), "non-UI change")
+        capture_paths: list[str] = []
+        capture_pages: list[str] = []
+        check_results: list[dict[str, Any]] = []
+        current_check = None
+        stale_validation_check = False
+        for check_run in reversed(self.runs.runs_for(task.id)):
+            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
+            if check_run.mode == "check" and isinstance(checked_plan, dict):
+                stale_validation_check = stale_validation_check or checked_plan.get("head") != review_head
+            if (check_run.mode == "check" and check_run.status == "done"
+                    and isinstance(checked_plan, dict) and checked_plan.get("head") == review_head):
+                current_check = check_run
+                plan = checked_plan
+                break
+        if current_check is not None:
+            check_results = list((current_check.result or {}).get("checks", []))
+            ui_results = [result for result in check_results if result.get("name") == "ui"]
+            capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
+                             if str(p).endswith(".png")]
+            capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
+        needs_interaction = bool(plan["interaction"])
+        needs_scalability = bool(plan["scalability"])
+        interaction_reason = next((row["reason"] for row in plan["reasons"]
+                                   if row["item"] == "served interaction"), "non-UI change")
         replay = self.state.get(task.id).get("interaction_replay") or {}
         if needs_interaction and replay.get("head") != review_head:
             # The replay is an ordinary detached check, with the same scrubbed
@@ -466,21 +492,6 @@ class ReviewMixin:
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
         run = self._new_local_run(task.id, "review", "review")
-        capture_paths: list[str] = []
-        capture_pages: list[str] = []
-        check_results: list[dict[str, Any]] = []
-        for check_run in reversed(self.runs.runs_for(task.id)):
-            if check_run.mode != "check":
-                continue
-            if not check_results:
-                check_results = list((check_run.result or {}).get("checks", []))
-            ui_results = [result for result in (check_run.result or {}).get("checks", [])
-                          if result.get("name") == "ui"]
-            capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
-                             if str(p).endswith(".png")]
-            capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
-            if capture_paths:
-                break
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
@@ -488,19 +499,23 @@ class ReviewMixin:
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
                             review_head=review_head, interaction_reason=interaction_reason,
                             interaction_manifest=str(replay_manifest) if needs_interaction else "",
-                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight)
+                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
+        required_pages = set(plan["pages"])
+        if "*" in required_pages:
+            required_pages = set(capture_pages)
+        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
+                            "validation_check_current": current_check is not None or (not stale_validation_check and not plan["pages"]),
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
                             "reask_missing_fixes": reask_missing_fixes,
-                            "criteria": criteria_snapshot}
+                            "criteria": criteria_snapshot, "validation_plan": plan}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -619,6 +634,16 @@ class ReviewMixin:
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
             review = enforce_criteria_verdict(parse_review(final))
+            expansions = review.get("scope_expansions") if isinstance(review, dict) else None
+            if isinstance(expansions, list):
+                for expansion in expansions:
+                    if not isinstance(expansion, dict):
+                        continue
+                    item = str(expansion.get("item") or "").strip()
+                    reason = str(expansion.get("reason") or "").strip()
+                    if item and reason:
+                        task.log(f"review validation scope expansion: {item} — {reason}")
+                        self.store.save(task)
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
@@ -626,6 +651,23 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "UI captures not read for: " + ", ".join(missing)})
+            if review and not bool((run.env_snapshot or {}).get("validation_check_current")):
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
+                                                          "summary": "Current-head validation check has not completed",
+                                                          "fix": "Requeue review after the pre-check records this reviewed head; do not reuse older artifacts."})
+            unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
+            mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
+            mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
+                      and isinstance(row.get("consumers"), list) and row.get("consumers")}
+            expanded = {str(row.get("item") or "") for row in (expansions or []) if isinstance(row, dict)
+                        and str(row.get("reason") or "").strip()}
+            unresolved = sorted(path for path in unknown if path not in mapped and path not in expanded)
+            if review and unresolved:
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
+                                                          "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
+                                                          "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),

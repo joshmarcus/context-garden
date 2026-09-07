@@ -13,6 +13,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .criteria import parse_criteria
 from .model import Task, estimate_tokens, goals_text
@@ -331,6 +332,7 @@ def build_brief(
     stack: dict | None = None,
     qa: list[dict] | None = None,
     commits_ahead: list[str] | None = None,
+    validation_plan: dict[str, Any] | None = None,
     criteria_snapshot: list[str] | None = None,
 ) -> Brief:
     cfg = store.config
@@ -449,6 +451,8 @@ def build_brief(
                          + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
+    if validation_plan is not None:
+        sections.append(("validation_plan", "## Validation plan\n\nThis frozen, head-bound plan is shared with the pre-check and reviewer. Keep its acceptance claims and valid current-head evidence; report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
     if qa:
         lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
         for i, item in enumerate(qa, 1):

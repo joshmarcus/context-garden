@@ -47,6 +47,18 @@ INTERACTION_PATHS = (
 
 SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 
+# The walkthrough deliberately has a larger inventory than a normal PR needs.  Keep this
+# mapping here, beside the review policy, so the check runner and reviewer consume one plan.
+_PAGE_MODULES = {
+    "board": ("board", "board-list"), "config": ("config",), "costs": ("costs",),
+    "events": ("events",), "inbox": ("now", "inbox"), "now1": ("now1",),
+    "now2": ("now2",), "phase": ("phase",), "runs": ("runs", "run"),
+    "task": ("task",), "trellis": ("trellis",), "trials": ("trials",),
+}
+_SHARED_UI_PATHS = ("src/garden/web/app.py", "src/garden/web/common.py",
+                    "src/garden/web/templates/base.html", "templates/base.html")
+_SHARED_UI_PREFIXES = ("src/garden/web/static/",)
+
 
 def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
     if not isinstance(value, list) or len(value) < minimum_items:
@@ -74,6 +86,57 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
     else:
         reason = "non-UI change"
     return required, scalability, reason
+
+
+def validation_plan(changed: list[str], *review_context: str, head: str = "",
+                    check_specs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Return the head-bound validation required by this change, not the capture inventory.
+
+    A UI page gets that page's captures.  Shared chrome and styles intentionally fan out to
+    every walkthrough consumer.  Unmapped UI code is an inspection request, which keeps an
+    uncertain diff reviewable without silently exempting it or demanding the whole app.
+    """
+    interaction, scalability, interaction_reason = interaction_requirement(changed, *review_context)
+    pages: set[str] = set()
+    reasons: list[dict[str, str]] = []
+    unknown: list[str] = []
+    shared = False
+    for path in changed:
+        if (path in _SHARED_UI_PATHS or path.startswith(_SHARED_UI_PREFIXES)
+                or path.endswith((".css", ".scss"))):
+            shared = True
+            continue
+        match = re.search(r"(?:pages/|templates/)([a-z0-9_]+)\.(?:py|html)$", path)
+        if match and match.group(1) in _PAGE_MODULES:
+            names = _PAGE_MODULES[match.group(1)]
+            pages.update(names)
+            reasons.append({"item": ", ".join(names), "reason": f"changed page implementation: {path}"})
+        elif path.startswith("src/garden/web/") or "/templates/" in path:
+            unknown.append(path)
+    if shared:
+        pages = {"*"}
+        reasons.append({"item": "all walkthrough pages", "reason": "shared template or stylesheet affects every consumer"})
+    if unknown:
+        reasons.append({"item": "bounded UI inspection", "reason": "map affected consumers for: " + ", ".join(unknown)})
+    if interaction:
+        reasons.append({"item": "served interaction", "reason": interaction_reason})
+    if scalability:
+        reasons.append({"item": "served load evidence", "reason": "acceptance claim includes scalability or performance"})
+    if interaction:
+        check_reason = "changed behavior requires the configured pre-PR checks"
+    elif any(path.startswith("docs/") or path.endswith((".md", ".rst")) for path in changed):
+        check_reason = "documentation changed without rendered behavior"
+    elif any(path.startswith(("src/garden/criteria.py", "src/garden/brief.py")) for path in changed):
+        check_reason = "parser or brief behavior changed without rendered behavior"
+    else:
+        check_reason = "changed code requires focused regression coverage"
+    checks = ([{"item": str(spec.get("name") or "unnamed configured check"), "reason": check_reason}
+               for spec in check_specs] if check_specs is not None
+              else [{"item": "configured pre-PR checks", "reason": check_reason}])
+    if not reasons:
+        reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
+    return {"head": head, "pages": sorted(pages), "interaction": interaction,
+            "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
@@ -294,9 +357,13 @@ Check, in this order:
 7. **Principles.** Tests skipped or weakened, scope widened, history rewritten, new
    dependencies without justification.
 
-When a "Rendered UI captures" section is present, open every listed PNG with the image
-reader and inspect layout, overlap, wrapping and empty states. Name every page inspected in
-`pages_seen`. Omitting a listed page makes the verdict mechanically `request_changes`.
+The Validation plan below is the required evidence for this reviewed head, not the available
+walkthrough inventory. Inspect each planned page and name it in `pages_seen`; do not demand an
+unrelated page merely because a capture exists. Shared templates and styles list every consumer
+deliberately. For bounded UI inspection, inspect the named paths and either map consumers or
+report a `scope_expansions` entry with the changed claim or discovered risk that justifies it.
+New evidence demands likewise need that entry; frozen criteria and current valid evidence remain
+valid, but evidence for another head never does.
 
 When "Running-application interaction required" is present, start the proposed head as a
 served application against a disposable garden and perform the affected journey through its
@@ -337,7 +404,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -366,7 +433,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
-                 pre_flight: Any = None) -> str:
+                 pre_flight: Any = None, plan: dict[str, Any] | None = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -403,6 +470,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if plan:
+        parts.append("## Validation plan\n\n```json\n" + json.dumps(plan, indent=2, sort_keys=True) + "\n```\n")
     if interaction_required or scalability_required:
         parts.append("## Running-application interaction required\n\n"
                      f"Reviewed head: `{review_head}`\n\nReason: {interaction_reason}.\n\n"

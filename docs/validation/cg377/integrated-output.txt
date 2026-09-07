@@ -1,0 +1,6 @@
+Running as unit: operator-cg377-integrated-journey.service; invocation ID: f0e80e513a174334b56a70891b1ca026
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 4.945s
+             CPU time consumed: 2.393s
+                   Memory peak: 87.7M (swap: 0B)
