@@ -98,6 +98,117 @@ def test_review_ladder_defers_when_the_selected_reviewer_harness_is_paused(sched
     assert sched.state.get(task.id)["pending_reviews"] == [{"kind": "review"}]
 
 
+def test_queued_reviews_take_shared_capacity_before_lower_priority_work(sched):
+    """CG-372: a queued critical review claims a released local slot before ready work.
+
+    Reviews, workers and detached checks share ``resources.max_parallel``.  This is
+    deliberately an admission test rather than a reservation: only an eligible queued
+    review starts, and the usual one-slot limits still apply.
+    """
+    from garden.scheduler import TickReport
+
+    critical = sched.store.task("DM-001")
+    critical.priority = 0
+    critical.status = Status.IN_REVIEW
+    sched.store.save(critical)
+    sched.state.get(critical.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    lower = sched.store.task("DM-002")
+    lower.depends_on = []
+    lower.priority = 3
+    sched.store.save(lower)
+
+    sched.cfg.data["max_parallel"] = 1
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == ["DM-001(review)"], rep.errors
+    assert sched.review_slots_free() == 0
+    assert not any(run.task_id == lower.id and run.mode == "work" for run in sched.runs.active())
+    assert not sched.state.get(critical.id).get("pending_reviews")
+
+
+
+def test_queued_critical_review_precedes_a_lower_priority_check(sched):
+    from garden.scheduler import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    critical = sched.store.task("DM-001")
+    critical.priority = 0
+    critical.status = Status.IN_REVIEW
+    sched.store.save(critical)
+    sched.state.get(critical.id)["pending_reviews"] = [{"kind": "review"}]
+    lower = sched.store.task("DM-002")
+    lower.priority = 3
+    sched.store.save(lower)
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    rep = TickReport()
+    with pytest.raises(ResourcePressureError):
+        sched._dispatch_check_run(lower, worktree=sched.worktree_for(lower),
+                                  branch=lower.default_branch(), base="main", specs=[],
+                                  stage="pre_pr", cont={}, rep=rep)
+    assert rep.dispatched == ["DM-001(review)"]
+    assert not sched.state.get(lower.id).get("check_run")
+    assert not any(r.task_id == lower.id and r.mode == "check" for r in sched.runs.active())
+
+def test_queued_reviews_use_task_order_to_break_equal_priority_ties(sched):
+    """Queued reviews are strict by priority and deterministic by task order then id."""
+    from garden.scheduler import TickReport
+
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    for task, order in ((first, 20), (second, 10)):
+        task.priority = 0
+        task.order = order
+        task.status = Status.IN_REVIEW
+        task.depends_on = []
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    sched.cfg.data["review_parallel"] = 1
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == ["DM-002(review)"], rep.errors
+    assert sched.state.get(first.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+
+
+
+def test_queued_review_explanation_matches_equal_priority_drain_order(sched):
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    for task, order in ((first, 10), (second, 20)):
+        task.priority = 0
+        task.order = order
+        task.status = Status.IN_REVIEW
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [{"kind": "review"}]
+    assert sched._queued_review_predecessor(first) is None
+    assert sched._queued_review_predecessor(second).id == first.id
+
+def test_new_equal_priority_review_waits_for_an_established_queue_member(sched):
+    """A task cannot repeatedly reclaim the slot while a band-mate is already queued."""
+    from garden.scheduler import TickReport
+
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    first.priority = second.priority = 0
+    first.status = second.status = Status.IN_REVIEW
+    sched.store.save(first)
+    sched.store.save(second)
+    sched.state.get(second.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(first, [{"kind": "review", "count_round": True}], rep)
+
+    assert rep.dispatched == []
+    assert sched.state.get(first.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert sched.state.get(second.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+
+
 def test_review_brief_and_parse(garden):
     store = Store(garden)
     t = store.task("DM-001")
