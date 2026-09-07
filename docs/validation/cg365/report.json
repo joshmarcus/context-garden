@@ -1,0 +1,35 @@
+{
+  "recorded_at": "2026-09-06T21:17:50-04:00",
+  "scope": "Disposable fixture only; the fixture controller stays outside the execution cgroup.",
+  "command": "unit_name=cg365-validation-$RANDOM; systemd-run --user --unit=\"$unit_name\" --property=Delegate=yes --property=CPUQuota=20% --property=MemoryHigh=96M --property=MemoryMax=128M --collect /bin/sleep 45; cg=$(systemctl --user show \"$unit_name\" -p ControlGroup --value); CG365_EXECUTION_CGROUP=\"/sys/fs/cgroup$cg\" .venv/bin/python -m pytest tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest -q -s; rc=$?; systemctl --user stop \"$unit_name\"; exit $rc",
+  "execution_cgroup": {
+    "cpu.max": "20000 100000",
+    "memory.high": 100663296,
+    "memory.max": 134217728,
+    "verified_supervisor_migration": true
+  },
+  "workload": {
+    "command": "python -m pytest <temporary focused target> -q",
+    "heavy_capacity": 1,
+    "states_observed": ["running", "waiting"],
+    "retained_terminal_runs": 120
+  },
+  "journey_latency_seconds": {
+    "inbox": 0.04851,
+    "now": 0.055798,
+    "task_control": 0.00515,
+    "pause": 0.003123
+  },
+  "execution_measurements": {
+    "memory_current_before": 3780608,
+    "memory_current_after": 12374016,
+    "memory_events_before": {"high": 0, "oom": 0, "oom_kill": 0},
+    "memory_events_after": {"high": 0, "oom": 0, "oom_kill": 0},
+    "temp_free_before": 2238582784,
+    "temp_free_after": 2238574592,
+    "live_supervisor_descendants": 2,
+    "cpu_ticks_before": [1, 0],
+    "cpu_ticks_after": [1, 1]
+  },
+  "result": "1 passed; the transient execution unit was stopped after collection"
+}
