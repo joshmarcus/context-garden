@@ -11,7 +11,7 @@ def test_replay_rejects_wrong_or_uncommitted_source_before_serving(monkeypatch, 
     monkeypatch.setattr(interaction_replay.subprocess, "check_output",
                         lambda command, **kwargs: head if command[1] == "rev-parse" else dirty)
     launched = []
-    monkeypatch.setattr(interaction_replay, "run_qa", lambda *args, **kwargs: launched.append(True))
+    monkeypatch.setattr(interaction_replay, "start", lambda *args, **kwargs: launched.append(True))
     with pytest.raises(SystemExit) as exc:
         interaction_replay.main()
     assert exc.value.code == 2
