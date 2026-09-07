@@ -1869,25 +1869,19 @@ def test_origin_check_resists_dns_rebinding(garden):
 
 def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeypatch):
     """CG-182: a button press and a page render never wait for a scheduler pass. With a slow
-    pre-PR check running, requests finish before that check is allowed to finish. The barrier
-    makes this a lock-ordering test rather than a machine-speed test: actions take a short
-    action-only lock (never the tick's) and GET reads directly."""
+    pre-PR check running, requests finish before that check is allowed to finish. The test also
+    runs the counterfactual shared-lock arrangement, where the same requests stay blocked until
+    the check is released. Barriers make this a lock-ordering test rather than a machine-speed
+    test: actions take a short action-only lock (never the tick's) and GET reads directly."""
     import threading
 
     from tests.conftest import FakeGitHub
 
     store = Store(garden)
-    # A pre-PR check that takes three seconds; the tick starts it as a check run and the
-    # in-process runner runs the `sleep` subprocess (which releases the GIL) inside the pass.
-    store.config.data["checks"] = {"pre_pr": [{"name": "slow", "command": "sleep 3"}], "ci": []}
     app = create_app(store, watch=False, github=FakeGitHub())
     c = TestClient(app)
     hub = app.state.hub
     hub.tick()  # dispatch DM-001's worker (finishes in-process)
-
-    slow_check_started = threading.Event()
-    release_slow_check = threading.Event()
-    tick_finished = threading.Event()
 
     # The real check runner is deliberately replaced with a deterministic slow-check barrier.
     # This keeps the test about whether requests can pass the tick lock, not whether this
@@ -1896,40 +1890,59 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
 
     original_tick_locked = Scheduler._tick_locked
 
-    def fake_slow_check(self, dispatch=None):
-        slow_check_started.set()
-        assert release_slow_check.wait(timeout=10), "test did not release the fake slow check"
-        return original_tick_locked(self, dispatch)
+    def run_probe(shared_action_lock):
+        slow_check_started = threading.Event()
+        release_slow_check = threading.Event()
+        tick_finished = threading.Event()
+        request_started = threading.Event()
+        requests_finished = threading.Event()
+        responses = []
 
-    monkeypatch.setattr(Scheduler, "_tick_locked", fake_slow_check)
-    responses = []
-    requests_finished = threading.Event()
+        def fake_slow_check(self, dispatch=None):
+            slow_check_started.set()
+            assert release_slow_check.wait(timeout=10), "test did not release the fake slow check"
+            return original_tick_locked(self, dispatch)
 
-    def serve_requests():
-        try:
-            responses.extend([
-                c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False),
-                c.get("/"),
-                c.get("/now1"),
-                c.post("/pause", data={"reason": "capacity validation"}, follow_redirects=False),
-            ])
-        finally:
-            requests_finished.set()
+        monkeypatch.setattr(Scheduler, "_tick_locked", fake_slow_check)
+        if shared_action_lock:
+            hub.action_lock = hub.lock
 
-    try:
+        def serve_requests():
+            request_started.set()
+            try:
+                responses.extend([
+                    c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False),
+                    c.get("/"),
+                    c.get("/now1"),
+                ])
+            finally:
+                requests_finished.set()
+
         tick_thread = threading.Thread(target=lambda: (hub.tick(), tick_finished.set()), daemon=True)
         tick_thread.start()
         assert slow_check_started.wait(timeout=10), "tick never entered the fake slow check"
         request_thread = threading.Thread(target=serve_requests, daemon=True)
         request_thread.start()
-        assert requests_finished.wait(timeout=10), "requests waited for the fake slow check"
-        assert [response.status_code for response in responses] == [303, 200, 200, 303]
-        assert not tick_finished.is_set(), "the requests were served only after the tick finished"
-    finally:
+        assert request_started.wait(timeout=10), "requests never started"
+
+        if shared_action_lock:
+            assert not requests_finished.wait(timeout=0.1), "shared-lock requests were not blocked"
+        else:
+            assert requests_finished.wait(timeout=10), "requests waited for the fake slow check"
+            assert [response.status_code for response in responses] == [303, 200, 200]
+            assert not tick_finished.is_set(), "requests were served only after the tick finished"
+
         release_slow_check.set()
+        request_thread.join(timeout=10)
         tick_thread.join(timeout=10)
-    assert tick_finished.is_set(), "the tick did not finish after the fake slow check was released"
-    assert hub.scheduler().is_dispatch_paused()
+        assert not request_thread.is_alive(), "requests did not finish after the fake slow check was released"
+        assert requests_finished.is_set(), "requests did not finish after the fake slow check was released"
+        assert tick_finished.is_set(), "the tick did not finish after the fake slow check was released"
+        assert [response.status_code for response in responses] == [303, 200, 200]
+
+    run_probe(shared_action_lock=False)
+    run_probe(shared_action_lock=True)
+    hub.action_lock = threading.Lock()
 
 
 def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
