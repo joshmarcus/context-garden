@@ -70,8 +70,9 @@ class CheckRunMixin:
             plan = validation_plan(changed, task.title, task.body,
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
                                    head=gitops.head_sha(worktree))
-            needs_captures = any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
-            if (needs_captures or plan["pages"]) and not any(s.get("name") == "ui" for s in specs):
+            # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
+            # request a milestone walkthrough, but cannot turn an unrelated PR into one.
+            if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
                                   "changed": changed, "pages": plan["pages"]}]

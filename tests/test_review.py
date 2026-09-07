@@ -330,6 +330,55 @@ def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypa
     assert run.env_snapshot["capture_pages"] == ["task"]
 
 
+def test_review_omits_artifacts_from_a_stale_head_check(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    stale = sched.runs.new_run(task.id, "local", mode="check")
+    stale.status = "done"
+    stale.env_snapshot = {"validation_plan": validation_plan(["src/garden/web/pages/task.py"], "layout", head="old")}
+    stale.result = {"checks": [{"name": "ui", "pages": ["task"], "captures": ["/tmp/stale.png"]}]}
+    stale.save()
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
+    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "current")
+
+    run = sched.dispatch_review(task)
+
+    assert run.env_snapshot["validation_plan"]["head"] == "current"
+    assert run.env_snapshot["capture_pages"] == []
+    assert run.env_snapshot["validation_check_current"] is False
+    assert "/tmp/stale.png" not in (run.path / "brief.md").read_text()
+
+
+def test_worker_brief_carries_the_frozen_validation_plan(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    monkeypatch.setattr("garden.scheduler.dispatch.gitops.diff_names", lambda *_: ["src/garden/web/pages/task.py"])
+    monkeypatch.setattr("garden.scheduler.dispatch.gitops.head_sha", lambda *_: "head-a")
+
+    run = sched.dispatch(task)
+
+    assert run.env_snapshot["validation_plan"]["head"] == "head-a"
+    assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
+    assert "## Validation plan" in (run.path / "brief.md").read_text()
+
+
+def test_review_rejects_unmapped_unknown_ui_scope_and_accepts_consumer_mapping(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/web/widgets/unmapped.py"])
+    monkeypatch.setattr("garden.scheduler.review.interaction_evidence_gaps", lambda *args, **kwargs: [])
+    for mapping, expected in (([], True), ([{"path": "src/garden/web/widgets/unmapped.py", "consumers": ["task"]}], False)):
+        run = sched.dispatch_review(task)
+        review = {"verdict": "approve", "summary": "looks good", "pages_seen": [], "ui_scope": mapping,
+                  "scope_expansions": [], "criteria": [], "description_ok": True,
+                  "description_feedback": "", "description_rewrite": "", "findings": [], "improvements": []}
+        (run.path / "stdout.json").write_text(json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+        }))
+        sched.reap_review(task, TickReport())
+        result = sched.runs.latest(task.id).result
+        summaries = [finding["summary"] for finding in result["findings"]]
+        assert any("Bounded UI inspection incomplete" in text for text in summaries) is expected
+
+
 def test_scalability_claim_in_pr_description_requires_load_evidence():
     required, scalability, _ = interaction_requirement(
         ["docs/design.md"], "Documentation task", "Routine update", "PR title",

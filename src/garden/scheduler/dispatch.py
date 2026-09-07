@@ -12,6 +12,7 @@ from ..brief import build_brief
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
+from ..review import validation_plan
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
@@ -407,7 +408,9 @@ class DispatchMixin:
                 self.store, task, branch=branch, base=base,
                 hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []))
         else:
-            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+            changed = gitops.diff_names(wt, base) if wt is not None else []
+            plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "")
+            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead, validation_plan=plan)
             text = prompt_override or brief.text
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.start_head = start_head
@@ -421,6 +424,8 @@ class DispatchMixin:
         if wt is not None:
             run.worktree = str(wt)
             run.env_snapshot["worktree_baseline"] = gitops.status_lines(wt)
+            if mode != "rebase":
+                run.env_snapshot["validation_plan"] = plan
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]

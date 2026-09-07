@@ -424,7 +424,9 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     log = log or (lambda _m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     specs = pages_for(store, phase)
-    if pages and "*" not in pages:
+    # ``None`` is the milestone-walkthrough default.  An explicit empty selection is
+    # a scoped PR check with no rendered pages, not an accidental request for all of them.
+    if pages is not None and "*" not in pages:
         specs = [spec for spec in specs if spec.slug in pages]
     fetched = _fetch(store, specs, base_url)
 

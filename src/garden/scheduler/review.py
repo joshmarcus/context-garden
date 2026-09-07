@@ -310,23 +310,23 @@ class ReviewMixin:
         capture_paths: list[str] = []
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
+        current_check = None
+        stale_validation_check = False
         for check_run in reversed(self.runs.runs_for(task.id)):
-            if check_run.mode != "check":
-                continue
-            if not check_results:
-                check_results = list((check_run.result or {}).get("checks", []))
-            ui_results = [result for result in (check_run.result or {}).get("checks", [])
-                          if result.get("name") == "ui"]
+            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
+            if check_run.mode == "check" and isinstance(checked_plan, dict):
+                stale_validation_check = stale_validation_check or checked_plan.get("head") != review_head
+            if (check_run.mode == "check" and check_run.status == "done"
+                    and isinstance(checked_plan, dict) and checked_plan.get("head") == review_head):
+                current_check = check_run
+                plan = checked_plan
+                break
+        if current_check is not None:
+            check_results = list((current_check.result or {}).get("checks", []))
+            ui_results = [result for result in check_results if result.get("name") == "ui"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
-            if capture_paths:
-                break
-        for check_run in reversed(self.runs.runs_for(task.id)):
-            checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
-            if isinstance(checked_plan, dict) and checked_plan.get("head") == review_head:
-                plan = checked_plan
-                break
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
         interaction_reason = next((row["reason"] for row in plan["reasons"]
@@ -349,6 +349,7 @@ class ReviewMixin:
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
+                            "validation_check_current": current_check is not None or not stale_validation_check,
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
@@ -472,6 +473,23 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "UI captures not read for: " + ", ".join(missing)})
+            if review and not bool((run.env_snapshot or {}).get("validation_check_current")):
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
+                                                          "summary": "Current-head validation check has not completed",
+                                                          "fix": "Requeue review after the pre-check records this reviewed head; do not reuse older artifacts."})
+            unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
+            mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
+            mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
+                      and isinstance(row.get("consumers"), list) and row.get("consumers")}
+            expanded = {str(row.get("item") or "") for row in (expansions or []) if isinstance(row, dict)
+                        and str(row.get("reason") or "").strip()}
+            unresolved = sorted(path for path in unknown if path not in mapped and path not in expanded)
+            if review and unresolved:
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
+                                                          "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
+                                                          "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
