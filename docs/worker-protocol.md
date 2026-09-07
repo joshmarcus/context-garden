@@ -159,7 +159,7 @@ Before anything is started, the scheduler settles every choice a worker might ot
 have had to make:
 
 - **Runner**: the task's `runner:`, else the product's, else the garden's (`local`,
-  `ssh` or `manual`).
+  `ssh`, `remote` or `manual`).
 - **Harness and model**: the task's `harness:`, else the product's, else the garden's;
   the model is the task's explicit `model:` or the harness's map from the task's
   `difficulty` (`easy`, `medium`, `hard`) to a model name.
