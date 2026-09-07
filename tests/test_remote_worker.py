@@ -297,8 +297,17 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
             other.status = Status.CANCELLED
             store.save(other)
     scheduler = Scheduler(store, github=fake_github)
-    server = uvicorn.Server(uvicorn.Config(create_app(store, watch=False, host="127.0.0.1"),
-                                          log_level="error"))
+    application = create_app(store, watch=False, host="127.0.0.1")
+    http_events = []
+
+    @application.middleware("http")
+    async def trace_http(request, call_next):
+        response = await call_next(request)
+        http_events.append({"method": request.method, "path": request.url.path,
+                            "status": response.status_code})
+        return response
+
+    server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     url = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -328,13 +337,13 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
                    {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
-            def worker(mode):
+            def worker(mode, task_id="DM-001"):
                 result = subprocess.run([sys.executable, "-m", "garden", "worker", "--garden", url,
                                          "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
                                          "--harness", "claude", "--once"], env=env, cwd=tmp_path,
                                         capture_output=True, text=True, timeout=30)
                 assert result.returncode == 0, result.stderr
-                latest = scheduler.runs.latest("DM-001")
+                latest = scheduler.runs.latest(task_id)
                 assert latest.mode == mode and latest.process_finished()
                 events.append({"mode": mode, "run": latest.run_id, "host": latest.host})
             worker("work")
@@ -351,9 +360,17 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
             worker("persona")
             scheduler.tick()
             assert scheduler.state.get("DM-001").get("persona_reviews")
+            phase_run = scheduler.dispatch_persona_phase(store.product("demo").phases[0], "user")
+            assert phase_run.runner == "remote"
+            worker("persona", phase_run.task_id)
+            scheduler.tick()
+            assert scheduler.runs.latest(phase_run.task_id).status == "done"
             assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
             assert "@build-1" in client.get(f"/runs/DM-001/{run.run_id}").text
-            (tmp_path / "served-remote-events.json").write_text(json.dumps(events, indent=2))
+            (tmp_path / "served-remote-events.json").write_text(json.dumps({
+                "runs": events, "http": http_events, "transport": "real TCP HTTP",
+                "worker_command": "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
+            }, indent=2))
     finally:
         server.should_exit = True
         thread.join(timeout=10)
