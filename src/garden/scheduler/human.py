@@ -523,14 +523,6 @@ class HumanMixin:
         """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
         from ..runner.manual import ManualRunner
 
-        def refuse(reason: str) -> None:
-            run.completion_attempts.append({"at": now_iso(), "status": "refused", "reason": reason,
-                                            "cost_usd": None})
-            run.save()
-            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
-                             cost_usd=None, supervised=True)
-            raise RuntimeError(reason)
-
         url = str(result.get("pr") or run.external_pr or task.pr or "")
         match = re.search(r"/pull/(\d+)", url)
         pr_number = int(match.group(1)) if match else None

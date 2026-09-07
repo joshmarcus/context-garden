@@ -179,8 +179,6 @@ def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_gi
     assert failed.completion_attempts[-1]["pr_number"] == pr.number
     event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
     assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
-
-
 @pytest.mark.parametrize("error_type", [GitHubError, KeyError])
 def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
     task = sched.store.task("DM-001")
