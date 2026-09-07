@@ -62,9 +62,11 @@ flowchart LR
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
  different brief.
 - The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
-  claims a leased run over HTTPS, clones the product, uses host-owned credentials, pushes,
-  streams its transcript, and posts its result and usage. Work, reviews, checks, personas,
-  and comparisons use the same run records; an expired lease returns to the queue.
+  claims a leased run over HTTPS, clones the product with host-owned git credentials, renews
+  its lease from before clone through setup, execution and staging push, pushes work to a
+  lease-specific staging ref, streams its transcript, and posts its result and usage. Work,
+  reviews, checks, personas, and comparisons use the same run records; an expired lease
+  returns to the queue.
 - **Maintenance pause** is the installation boundary. `garden pause` only blocks new
   dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
   requests a whole-scheduler freeze and the next transaction acknowledges quiescence without

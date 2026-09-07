@@ -41,8 +41,12 @@ staging ref, so an expired worker that finishes cloning, setup, checks, or execu
 only update its abandoned ref; it cannot overwrite the task branch. Browser origin checking still
 applies; only a correctly token-authenticated runs API request bypasses it. Claim responses
 contain no token or environment value. Repository URL user-info, query strings, and fragments
-are stripped, and configured harness arguments are not transported because they may contain
-inline credentials. Git and harness credentials belong to the host.
+are stripped. Of SCP-style remotes, only the conventional `git@host:path` form is accepted;
+other user identities and malformed URL-like remotes fail closed. Configured harness arguments
+are not transported because they may contain inline credentials. The scheduler's
+`setup.command` is executable configuration and is not transported for the same reason; use
+`garden worker --setup-command ...` for host-owned setup. Git, setup, and harness credentials
+belong to the host.
 
 ```yaml
 runner: remote

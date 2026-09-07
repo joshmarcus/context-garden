@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -109,6 +112,47 @@ def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch
     assert "harness-secret" not in str(payload)
 
 
+@pytest.mark.parametrize("remote", [
+    "oauth2:secret@example.test:team/repo.git",
+    "deploy@example.test:team/repo.git",
+    "https://user:secret@example.test:bad/repo.git",
+])
+def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch, remote):
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    original_git = __import__("garden.gitops", fromlist=["git"]).git
+
+    def unsafe_remote(*args, **kwargs):
+        if args == ("remote", "get-url", "origin"):
+            return remote
+        return original_git(*args, **kwargs)
+
+    monkeypatch.setattr("garden.web.pages.api.gitops.git", unsafe_remote)
+    response = client.post("/api/runs/claim", json={"host": "build-1"},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 409
+    assert "secret" not in response.text
+
+
+def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    original_git = __import__("garden.gitops", fromlist=["git"]).git
+
+    def safe_remote(*args, **kwargs):
+        if args == ("remote", "get-url", "origin"):
+            return "git@example.test:team/repo.git"
+        return original_git(*args, **kwargs)
+
+    monkeypatch.setattr("garden.web.pages.api.gitops.git", safe_remote)
+    response = client.post("/api/runs/claim", json={"host": "build-1"},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["repo"] == "git@example.test:team/repo.git"
+
+
 def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
@@ -161,3 +205,51 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert modes["check"].result["checks"][0]["status"] == "pass"
     assert modes["review"].status == "done"
     assert "@build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
+
+
+def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
+    client, store = remote_client(garden, monkeypatch)
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["workers"]["lease_seconds"] = 1
+    config["checks"]["pre_pr"][0]["command"] = (
+        "sleep 2 && test \"$GARDEN_BRANCH\" = garden/dm-001-first-task"
+    )
+    config_path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    client = TestClient(create_app(store, watch=False, host="testserver"))
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.tick()
+    auth = {"Authorization": "Bearer secret-token"}
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            return response.status_code, response.json()
+
+    def execute_while_asserting_not_reclaimed(payload, *, setup_command=""):
+        errors = []
+
+        def target():
+            try:
+                execute_claim(payload, tmp_path / "long-running-host", PostingClient(),
+                              setup_command=setup_command)
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=target)
+        worker.start()
+        time.sleep(1.25)
+        competing = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
+        assert competing.status_code == 204
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert not errors
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    work_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    execute_while_asserting_not_reclaimed(work_claim, setup_command="sleep 2")
+    scheduler.tick()
+    check_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).json()
+    assert check_claim["mode"] == "check"
+    execute_while_asserting_not_reclaimed(check_claim)

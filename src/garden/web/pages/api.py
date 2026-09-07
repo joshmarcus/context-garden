@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -54,15 +55,28 @@ def register(app: FastAPI, site: Site) -> None:
         return run
 
     def credential_free_repo_url(value: str) -> str:
-        """Return a clone URL with scheduler-side URL credentials removed."""
+        """Return a clone URL without credentials; reject ambiguous git URL syntax."""
         if "://" not in value:
+            # The only user-bearing SCP form we expose is git's conventional, inert
+            # transport identity. Other identities can encode passwords (for example
+            # oauth2:secret@host:path), and malformed URL-like values fail closed.
+            if re.fullmatch(r"git@[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
+                return value
+            if "@" in value or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
+                raise HTTPException(409, "repository remote is not a safe clone URL")
             return value
         parts = urlsplit(value)
+        if parts.scheme not in {"http", "https", "ssh"} or not parts.hostname:
+            raise HTTPException(409, "repository remote is not a safe clone URL")
         host = parts.hostname or ""
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
-        if parts.port:
-            host = f"{host}:{parts.port}"
+        try:
+            port = parts.port
+        except ValueError:
+            raise HTTPException(409, "repository remote is not a safe clone URL") from None
+        if port:
+            host = f"{host}:{port}"
         return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
     @app.get("/api/tasks")
@@ -164,6 +178,7 @@ def register(app: FastAPI, site: Site) -> None:
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
                     "lease_token": run.lease_token,
+                    "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
