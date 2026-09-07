@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import site
 import socket
@@ -369,10 +370,11 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
     source = tmp_path / "tool-source"
     remote = tmp_path / "tool-remote.git"
     checkout = Path(__file__).resolve().parents[1]
-    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(checkout), str(source)], check=True)
+    shutil.copytree(checkout, source, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
-    subprocess.run(["git", "remote", "set-url", "origin", str(remote)], cwd=source, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
 
