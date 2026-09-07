@@ -911,6 +911,10 @@ class ReviewMixin:
             return True
         st["last_review"] = review
         st["last_review_run"] = run.run_id
+        # Inbox ownership is tied to the exact revision an automated reviewer inspected.
+        # Keep this separately from GitHub's latest head so a subsequent push cannot inherit
+        # an old approval.
+        st["last_review_head"] = str((run.env_snapshot or {}).get("review_head") or "")
         verdict = str(review.get("verdict", ""))
         criteria_met, criteria_total = criteria_counts(review.get("criteria"))
         self.events.emit("review", task.id, run=run.run_id, verdict=verdict, summary=str(review.get("summary", "")),
