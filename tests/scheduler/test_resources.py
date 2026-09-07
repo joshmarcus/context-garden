@@ -47,6 +47,25 @@ def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sch
     assert sched.local_slots_free() == 1
 
 
+def test_worker_admission_keeps_worker_count_separate_from_shared_host_limit(sched):
+    """Checks and edits are absent from max_parallel occupancy, but still reserve host capacity."""
+    _set_resource_limit(sched, "max_parallel", 2)
+    check = sched.runs.new_run("DM-001", "local", mode="check")
+    check.save()
+    edit = sched.runs.new_run("DM-002", "local", mode="edit")
+    edit.save()
+
+    assert len(sched.worker_runs_active()) == 0
+    assert sched.slots_free() == 2
+    assert sched.local_slots_free() == 0
+
+    task = sched.store.task("DM-001")
+    with pytest.raises(ResourcePressureError, match="local execution limit reached"):
+        sched.dispatch(task)
+    assert len(sched.worker_runs_active()) == 0
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
 def test_concurrent_launchers_atomically_claim_the_last_host_slot(sched):
     _set_resource_limit(sched, "max_parallel", 1)
     context = multiprocessing.get_context("fork")
