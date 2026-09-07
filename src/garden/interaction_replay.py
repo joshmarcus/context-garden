@@ -51,19 +51,19 @@ def main() -> int:
 
     def request(method: str, path: str, *, state: str = "", data: dict[str, str] | None = None) -> httpx.Response:
         response = client.request(method, path, data=data, headers={"referer": box.base_url + "/"})
-        journal.append({"at": time.time(), "method": method, "url": box.base_url + path,
+        journal.append({"at": time.time(), "kind": "http_request", "method": method, "url": box.base_url + path,
                         "status_code": response.status_code, "state": state})
         return response
 
-    def status(task_id: str) -> str:
-        response = request("GET", "/api/tasks")
+    def status(task_id: str, *, state: str = "") -> str:
+        response = request("GET", "/api/tasks", state=state)
         response.raise_for_status()
         return next(task["status"] for task in response.json() if task["id"] == task_id)
 
     def wait_for(task_id: str, wanted: str, state: str) -> None:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            if status(task_id) == wanted:
+            if status(task_id, state=state) == wanted:
                 return
             tick = request("POST", "/tick", state=state)
             if tick.status_code != 303:
@@ -91,6 +91,12 @@ def main() -> int:
             raise RuntimeError("escape dispatch was refused")
         wait_for("DM-002", "failed", "failure")
         state_times["failure"] = time.time()
+        # This is the actual served failure observation: a failed task cannot be dispatched
+        # again until the person takes the retry action below.
+        failed_dispatch = request("POST", "/tasks/DM-002/dispatch", state="failure")
+        if failed_dispatch.status_code < 400:
+            raise RuntimeError("failed task accepted another dispatch")
+        failed_dispatch_request = journal[-1]
         if request("POST", "/tasks/DM-002/retry", state="recovery").status_code != 303:
             raise RuntimeError("retry was refused")
         second = next((box.garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
@@ -101,27 +107,32 @@ def main() -> int:
         state_times["recovery"] = time.time()
 
         # Empty state: both tasks are reaped, with no active run or fence attention remaining.
-        if status("DM-001") != "in_review" or status("DM-002") != "in_review":
+        if status("DM-001", state="empty") != "in_review" or status("DM-002", state="empty") != "in_review":
             raise RuntimeError("clean state retained a failed or active task")
         state_times["empty"] = time.time()
+
+        def event_for(record: dict[str, Any], state: str, outcome: str, observed: str) -> dict[str, Any]:
+            """Turn a recorded request into evidence without inventing an interaction."""
+            return {**record, "state": state, "outcome": outcome, "observed": observed}
+
+        affected_request = next(item for item in reversed(journal)
+                                if item["state"] == "affected" and item["method"] == "GET")
+        recovery_request = next(item for item in reversed(journal)
+                                if item["state"] == "recovery" and item["method"] == "POST")
+        empty_request = next(item for item in reversed(journal)
+                             if item["state"] == "empty" and item["method"] == "GET")
         events = [
-            {"state": "affected", "kind": "http_request", "outcome": "success",
-             "method": "POST", "url": box.base_url + "/tick", "status_code": 303,
-             "observed": "operator spec commit survived and DM-001 reaped to review", "at": state_times["affected"]},
-            {"state": "failure", "kind": "browser_action", "outcome": "failure",
-             "action": "observe fence failure", "target": "/tasks/DM-002",
-             "observed": "DM-002 fence failure was recorded from its transcript redirect", "at": state_times["failure"]},
-            {"state": "recovery", "kind": "http_request", "outcome": "success",
-             "method": "POST", "url": box.base_url + "/tasks/DM-002/retry", "status_code": 303,
-             "observed": "clean retry reaped DM-002 to review", "at": state_times["recovery"]},
-            {"state": "empty", "kind": "http_request", "outcome": "empty",
-             "method": "GET", "url": box.base_url + "/api/tasks", "status_code": 200,
-             "observed": "no active or fenced task remains after both reaps", "at": state_times["empty"]},
+            event_for(affected_request, "affected", "success",
+                      "operator spec commit survived and DM-001 reaped to review"),
+            event_for(failed_dispatch_request, "failure", "failure",
+                      "DM-002 fence failure blocked a second dispatch after its transcript redirect"),
+            event_for(recovery_request, "recovery", "success", "clean retry reaped DM-002 to review"),
+            event_for(empty_request, "empty", "empty", "no active or fenced task remains after both reaps"),
         ]
         states = {
-            "affected": {"status": "pass", "action": "dispatch → operator git commit → reap", "observed": events[0]["observed"]},
-            "failure": {"status": "pass", "action": "transcript-proven redirect → reap", "observed": events[1]["observed"]},
-            "recovery": {"status": "pass", "action": "retry → clean dispatch → reap", "observed": events[2]["observed"]},
+            "affected": {"status": "pass", "action": "GET /api/tasks after operator commit and reap", "observed": events[0]["observed"]},
+            "failure": {"status": "pass", "action": "POST /tasks/DM-002/dispatch after fenced reap", "observed": events[1]["observed"]},
+            "recovery": {"status": "pass", "action": "POST /tasks/DM-002/retry then reap", "observed": events[2]["observed"]},
             "empty": {"status": "pass", "action": "GET /api/tasks", "observed": events[3]["observed"]},
         }
     finally:
@@ -146,8 +157,8 @@ def main() -> int:
         "flows": flows,
         "states": states,
         "events": events,
-        "artifacts": [str(args.out / "result.json"), str(args.out / "tick-log.json"),
-                      str(args.out / "pages")],
+        # The manifest is the sole artifact this replay actually creates.
+        "artifacts": [str(args.out / "interaction-manifest.json")],
     }
     (args.out / "interaction-manifest.json").write_text(json.dumps(manifest, indent=2))
     return 0
