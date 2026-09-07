@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import py_compile
 import re
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,11 @@ back before review; include a stated reason rather than silently skipping an ite
 _CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
 
 
+def _is_ui_path(path: str) -> bool:
+    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
+            or path.endswith((".css", ".scss")))
+
+
 def preflight_section() -> str:
     return PREFLIGHT_RULES.format(items="\n".join(f"- {item}" for item in PREFLIGHT_ITEMS))
 
@@ -50,14 +54,17 @@ def missing_preflight(value: Any) -> list[str]:
 def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_description: bool,
                        ui_changed: bool, captures: list[str]) -> list[dict[str, Any]]:
     """Checks that never need a reviewer or model, one concise failure each."""
-    results: list[dict[str, Any]] = []
     try:
         from . import gitops
 
-        diff = gitops.diff(worktree, base)
-        names = gitops.diff_names(worktree, base)
-    except Exception:  # noqa: BLE001 - a normal check error is clearer than a scheduler crash
-        diff, names = "", []
+        ref = gitops.base_ref(worktree, base)
+        diff = gitops.git("diff", f"{ref}...HEAD", cwd=worktree)
+        names = [name.strip() for name in gitops.git("diff", "--name-only", f"{ref}...HEAD", cwd=worktree).splitlines()
+                 if name.strip()]
+    except gitops.GitError as exc:
+        return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {exc}")]
+
+    results: list[dict[str, Any]] = []
     if _CONFLICT.search(diff):
         results.append(_fail("conflict markers", "diff contains unresolved conflict markers"))
     else:
@@ -72,11 +79,12 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
         if not path.is_file():
             continue
         try:
-            py_compile.compile(str(path), doraise=True)
-        except (OSError, py_compile.PyCompileError) as exc:
+            compile(path.read_text(), str(path), "exec")
+        except (OSError, UnicodeDecodeError, SyntaxError) as exc:
             syntax_error = str(exc).splitlines()[-1]
             break
     results.append(_fail("syntax", f"Python syntax error: {syntax_error}") if syntax_error else _pass("syntax"))
+    ui_changed = ui_changed or any(_is_ui_path(name) for name in names)
     pngs = [p for p in captures if p.endswith(".png")]
     if ui_changed and not pngs:
         results.append(_fail("UI captures", "UI files changed but this run produced no PNG captures"))

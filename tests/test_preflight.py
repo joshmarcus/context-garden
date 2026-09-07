@@ -22,8 +22,10 @@ def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
     (worktree / "bad.py").write_text("def broken(:\n")
     from garden import gitops
 
-    monkeypatch.setattr(gitops, "diff", lambda *_args: "+<<<<<<< ours\n+=======\n+>>>>>>> theirs\n")
-    monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["bad.py", "src/garden/web/page.html"])
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: (
+        "+<<<<<<< ours\n+=======\n+>>>>>>> theirs\n" if "--name-only" not in args else "bad.py\nsrc/garden/web/page.html\n"
+    ))
     results = mechanical_results(worktree, "main", "", require_description=True, ui_changed=True, captures=[])
     failed = {row["name"] for row in results if row["status"] == "fail"}
     assert failed == {"conflict markers", "syntax", "UI captures", "PR description"}
@@ -35,8 +37,8 @@ def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
     (worktree / "good.py").write_text("VALUE = 1\n")
     from garden import gitops
 
-    monkeypatch.setattr(gitops, "diff", lambda *_args: "+VALUE = 1\n")
-    monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["good.py"])
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+VALUE = 1\n" if "--name-only" not in args else "good.py\n")
     results = mechanical_results(worktree, "main", "A useful description", require_description=True,
                                 ui_changed=False, captures=[])
     assert {row["status"] for row in results} == {"pass"}
@@ -47,11 +49,66 @@ def test_mechanical_preflight_ignores_deleted_python_modules(garden, monkeypatch
     worktree.mkdir()
     from garden import gitops
 
-    monkeypatch.setattr(gitops, "diff", lambda *_args: "-def old(:\n")
-    monkeypatch.setattr(gitops, "diff_names", lambda *_args: ["removed.py"])
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "-def old(:\n" if "--name-only" not in args else "removed.py\n")
     results = mechanical_results(worktree, "main", "Description", require_description=True,
                                 ui_changed=False, captures=[])
     assert {row["status"] for row in results} == {"pass"}
+
+
+def test_mechanical_preflight_fails_closed_when_git_inspection_fails(garden, monkeypatch):
+    worktree = garden / "uninspectable"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    calls = 0
+
+    def inspect(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise gitops.GitError("could not list changed paths")
+        return "+VALUE = 1\n"
+
+    monkeypatch.setattr(gitops, "git", inspect)
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+
+    assert results == [{"name": "mechanical pre-flight", "status": "fail",
+                        "summary": "could not inspect candidate diff: could not list changed paths", "details": ""}]
+
+
+def test_mechanical_preflight_syntax_check_does_not_write_bytecode(garden, monkeypatch):
+    worktree = garden / "no-bytecode"
+    worktree.mkdir()
+    (worktree / "good.py").write_text("VALUE = 1\n")
+    before = {path.relative_to(worktree) for path in worktree.rglob("*")}
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+VALUE = 1\n" if "--name-only" not in args else "good.py\n")
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+
+    assert {row["status"] for row in results} == {"pass"}
+    assert {path.relative_to(worktree) for path in worktree.rglob("*")} == before
+
+
+def test_mechanical_preflight_finds_ui_changes_from_inspected_paths(garden, monkeypatch):
+    worktree = garden / "ui-change"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+body {}\n" if "--name-only" not in args else "static/site.css\n")
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+
+    assert next(row for row in results if row["name"] == "UI captures")["status"] == "fail"
 
 
 def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
