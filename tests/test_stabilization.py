@@ -108,6 +108,19 @@ def test_failed_independent_project_evidence_still_blocks(garden):
     assert "independent_project: FAIL" in missing
 
 
+def test_fixture_evidence_does_not_bypass_recovery_gate(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    record_passes(phase)
+    record_outcome(phase, "recovery_exercises", "FAIL", command="recover fixture",
+                   observed="restart exercise failed", artifacts=["artifacts/recovery.json"],
+                   evidence_type="interaction", build_sha="build-a")
+
+    ok, missing = gate(phase, build_sha="build-a")
+    assert not ok
+    assert "recovery_exercises: FAIL" in missing
+
+
 def test_recorder_counts_repairs_resets_window_and_measures_resources(garden):
     phase = protected_phase(garden)
     start(phase, "build-a")
