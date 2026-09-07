@@ -202,9 +202,10 @@ configuration options; SSH remains available for a host you provision yourself.
 
 ## Operate and recover
 
-Start with `garden observe --profile quiet`, then open the relevant Inbox card or task
-page. The Board and Trellis show state and dependencies; Runs and Timeline show evidence
-and history; Costs and Config show spend and effective settings. `garden tui` provides a
+Start with `garden observe --profile quiet`, then open the relevant **Inbox** card or task
+page. The **Board** and **Trellis** show state and dependencies; **Runs** and **Timeline**
+show evidence and history; **Costs** and **Config** show spend and effective settings.
+The **Herbarium** holds closed phases. `garden tui` provides a
 terminal Inbox and task list. Use a task's current state and PR status before acting:
 
 | Situation | Next action |
