@@ -505,7 +505,14 @@ def rebase_brief(
                 parts.append(candidate)
         hunks_text = "\n".join(parts)
     elif files:
-        hunks_text = "\nConflicting files: " + ", ".join(f"`{f}`" for f in files) + "\n"
+        parts = []
+        for path in files:
+            artifact_path = _conflict_artifact_locations(artifacts.get(path, {}))
+            if artifact_path:
+                parts.append(_rebase_hunk_summary(path, 0, artifact_path))
+            else:
+                parts.append(f"\n### {path}\n\nConflict hunk unavailable; re-run the rebase to inspect it.\n")
+        hunks_text = "".join(parts)
     else:
         hunks_text = "\n(The conflicting hunks were not captured; run the rebase to see them.)\n"
     return REBASE_BRIEF.format(

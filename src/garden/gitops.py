@@ -443,7 +443,7 @@ def sync_to_origin_head(worktree: Path, branch: str, backup_ref: str) -> list[st
     return subjects
 
 
-def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
+def sync_remote_branch(worktree: Path, branch: str, *, artifact_dir: Path | None = None) -> tuple[bool, list[str]]:
     """Before a rebase round, fold in commits that exist only on `origin/<branch>`.
 
     A rebase round rewrites the branch in the worktree and force-pushes it. If the remote
@@ -451,6 +451,7 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
     the force-push would discard them. Rebasing the worktree's local commits onto
     `origin/<branch>` first keeps them. Returns (ok, conflicted files); on conflict the
     rebase is aborted so the worktree is left clean and the round resolves it like any other.
+    When ``artifact_dir`` is given, the unmerged index stages survive the abort there.
     """
     fetch(worktree)
     if not remote_url(worktree):
@@ -466,6 +467,8 @@ def sync_remote_branch(worktree: Path, branch: str) -> tuple[bool, list[str]]:
         return True, []
     except GitError:
         files = [ln.strip() for ln in git("diff", "--name-only", "--diff-filter=U", cwd=worktree, check=False).splitlines() if ln.strip()]
+        if artifact_dir is not None:
+            capture_conflict_artifacts(worktree, files, artifact_dir)
         git("rebase", "--abort", cwd=worktree, check=False)
         return False, files
 
@@ -540,7 +543,7 @@ def sync_and_rebase(worktree: Path, branch: str, base: str, *, artifact_dir: Pat
     (ok, conflicted files, {path: contents with markers}); on a conflict at either step the
     rebase is aborted so the worktree is left clean, and the hunks (empty for a sync conflict)
     carry the textual conflict for a rebase brief."""
-    ok, files = sync_remote_branch(worktree, branch)
+    ok, files = sync_remote_branch(worktree, branch, artifact_dir=artifact_dir)
     if not ok:
         return False, files, {}
     return rebase_onto_capture(worktree, base_ref(worktree, base), artifact_dir=artifact_dir)
