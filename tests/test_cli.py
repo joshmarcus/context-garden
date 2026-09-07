@@ -163,6 +163,26 @@ def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
     assert r.exit_code == 0 and "DM-001 -> ready" in r.output
 
 
+def test_retry_and_set_status_record_selected_actor(garden):
+    from garden.events import EventLog
+
+    retry = run(garden, "retry", "DM-001", "--actor", "delegated_operator")
+    assert retry.exit_code == 0, retry.output
+    status = run(garden, "set-status", "DM-002", "ready", "--actor", "delegated_operator")
+    assert status.exit_code == 0, status.output
+
+    actions = [event for event in EventLog(garden / ".garden" / "events.jsonl").read()
+               if event["kind"] in {"retry", "set_status"}]
+    assert [(event["kind"], event["actor"]) for event in actions] == [
+        ("retry", "delegated_operator"),
+        ("set_status", "delegated_operator"),
+    ]
+
+    bad = run(garden, "retry", "DM-001", "--actor", "not-an-actor")
+    assert bad.exit_code == 1
+    assert "actor must be one of" in bad.output
+
+
 def test_new_task_and_approve(garden):
     from garden.store import Store
     from tests.conftest import complete_brief

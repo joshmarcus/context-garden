@@ -13,6 +13,7 @@ from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler
 from garden.stabilization import RECOVERY_EXERCISES, gate, intervene, record_outcome, sample, start
 from garden.store import Store
+from garden.web.app import create_app
 
 
 def protected_phase(garden):
@@ -204,6 +205,33 @@ def test_event_log_delegated_actions_and_automated_merge_preserve_passing_window
         ("operator_repair", "delegated_operator"),
         ("mark_done", "automated_scheduler"),
     ]
+
+
+def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
+    from fastapi.testclient import TestClient
+
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data_path.write_text(json.dumps(data))
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    for i in range(10):
+        events.emit("transition", f"DM-{i:03}", phase=phase.key, to="done", at="2026-09-06T01:00:00+00:00")
+
+    app = create_app(Store(garden), watch=False, host="testserver")
+    response = TestClient(app).post(
+        "/tasks/DM-001/retry", data={"actor": "delegated_operator"},
+        headers={"Origin": "http://testserver"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    sample(phase, events, at="2026-09-06T04:00:00+00:00")
+    record_passes(phase)
+
+    assert gate(phase, build_sha="build-a") == (True, [])
+    actions = json.loads(data_path.read_text())["interventions"]
+    assert [(a["kind"], a["actor"]) for a in actions] == [("retry", "delegated_operator")]
 
 
 def test_unknown_nonoperative_event_log_entries_do_not_block_a_passing_window(garden):
