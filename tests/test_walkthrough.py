@@ -4,6 +4,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from garden.cli import app
@@ -90,19 +91,23 @@ def test_ui_path_detection():
 
 
 def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
-    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: "")
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
 
     def screenshots(_url, specs, out, _log):
         for spec in specs:
             for width in VIEWPORTS:
                 for scheme in COLOR_SCHEMES:
                     (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
-        return {spec.slug for spec in specs}, ""
+        evidence = [{"page": spec.slug, "action": "navigate", "viewport": width,
+                     "color_scheme": scheme, "clientWidth": width, "scrollWidth": width}
+                    for spec in specs for width in VIEWPORTS for scheme in COLOR_SCHEMES]
+        return {spec.slug for spec in specs}, None, evidence
 
     monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
     result = _seeded_ui_capture(tmp_path / "ui")
     assert result["status"] == "pass"
     assert "1280/390" in result["summary"]
+    assert len(result["interaction_evidence"]) == len(result["pages"]) * len(VIEWPORTS) * len(COLOR_SCHEMES)
     assert (tmp_path / "ui" / "now.html").exists()
     assert (tmp_path / "ui" / "board.html").exists()
     assert (tmp_path / "ui" / "task.html").exists()
@@ -113,12 +118,43 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
 
 
 def test_ui_check_rejects_html_only_output_as_infrastructure_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: "Chromium would not launch: libnss3.so is missing")
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
+        "ready": False, "kind": "missing_libraries", "diagnostic": "libnss3.so is missing"})
     result = _seeded_ui_capture(tmp_path / "ui")
     assert result["status"] == "fail"
     assert result["failure_kind"] == "infrastructure"
+    assert result["browser_failure_kind"] == "missing_libraries"
     assert "0/" in result["summary"]
     assert not any(path.endswith(".png") for path in result["captures"])
+
+
+@pytest.mark.parametrize("kind", [
+    "missing_playwright", "missing_executable", "missing_libraries", "launch_failure",
+])
+def test_ui_check_preserves_structured_browser_failure_kind(kind, tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
+        "ready": False, "kind": kind, "diagnostic": f"{kind} diagnostic"})
+    result = _seeded_ui_capture(tmp_path / kind)
+    assert result["status"] == "fail"
+    assert result["failure_kind"] == "infrastructure"
+    assert result["browser_failure_kind"] == kind
+
+
+def test_ui_check_rejects_pngs_without_executed_interaction_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        return {spec.slug for spec in specs}, None, []
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui")
+    assert result["status"] == "fail"
+    assert result["failure_kind"] == "product"
+    assert "interaction/viewport evidence is incomplete" in result["summary"]
 
 
 def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch):
@@ -161,7 +197,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
     monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **_kwargs: (
         calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")))
-    assert _prepare_browser() == ""
+    assert _prepare_browser() is None
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 

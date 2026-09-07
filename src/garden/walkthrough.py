@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from .browser import browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
 from .store import Store
@@ -60,6 +61,8 @@ class WalkthroughResult:
     pages: list[PageResult] = field(default_factory=list)
     screenshots: bool = False
     browser_note: str = ""
+    browser_failure_kind: str = ""
+    interaction_evidence: list[dict[str, object]] = field(default_factory=list)
     include_stderr: bool = False
 
 
@@ -230,14 +233,15 @@ VIEWPORTS = (1280, 390)
 COLOR_SCHEMES = ("light", "dark")
 
 
-def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], str]:
+def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
     """Render each page to a full-page PNG with Playwright's Chromium. Returns the set of
     slugs that got a screenshot and a note explaining any that did not."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return set(), "Playwright is not installed; capture contains HTML and text only."
+        return set(), browser_failure("missing_playwright"), []
     shot: set[str] = set()
+    evidence: list[dict[str, object]] = []
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -248,7 +252,10 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                         page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
                         try:
                             page.goto(base_url.rstrip("/") + s.url, wait_until="networkidle", timeout=30000)
+                            viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
                             page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
+                            evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
+                                             "color_scheme": scheme, **viewport})
                         except Exception as e:  # noqa: BLE001 - one bad page should not sink the rest
                             complete = False
                             log(f"  screenshot {s.slug} at {width}/{scheme} failed: {e}")
@@ -258,11 +265,12 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                     shot.add(s.slug)
             browser.close()
     except Exception as e:  # noqa: BLE001 - a browser that will not launch (missing system libs)
-        return shot, f"Chromium would not launch after automatic preparation ({e}); install its system libraries."
-    return shot, ""
+        kind, _action = classify_browser_failure(str(e))
+        return shot, browser_failure(kind, str(e)), evidence
+    return shot, None, evidence
 
 
-def _prepare_browser() -> str:
+def _prepare_browser() -> dict[str, object] | None:
     """Install Playwright's Chromium when its package is present but the browser is not.
 
     The browser is machine-local rather than a wheel payload. Both walkthroughs and PR UI
@@ -271,21 +279,25 @@ def _prepare_browser() -> str:
     """
     try:
         from playwright.sync_api import sync_playwright
-    except ImportError:
-        return "Playwright is not installed; capture will contain HTML and text only."
+    except ImportError as exc:
+        return browser_failure("missing_playwright", str(exc))
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             browser.close()
-        return ""
-    except Exception:  # noqa: BLE001 - a missing executable is the expected first-run case
+        return None
+    except Exception as exc:  # noqa: BLE001 - a missing executable is the expected first-run case
+        kind, _action = classify_browser_failure(str(exc))
+        if kind != "missing_executable":
+            return browser_failure(kind, str(exc))
         proc = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True, text=True, timeout=300, check=False,
         )
         if proc.returncode:
-            return (proc.stderr or proc.stdout or "Chromium installation failed").strip()[-1000:]
-        return ""
+            detail = (proc.stderr or proc.stdout or "Chromium installation failed").strip()[-1000:]
+            return browser_failure("missing_executable", detail)
+        return None
 
 
 def _serve(store: Store) -> tuple[str, Callable[[], None]]:
@@ -334,24 +346,28 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     fetched = _fetch(store, specs, base_url)
 
     shot: set[str] = set()
-    browser_note = ""
+    failure: dict[str, object] | None = None
+    interaction_evidence: list[dict[str, object]] = []
     if screenshots:
-        browser_note = _prepare_browser()
-        if not browser_note:
+        failure = _prepare_browser()
+        if not failure:
             if base_url:
-                shot, browser_note = _screenshot(base_url, specs, out_dir, log)
+                shot, failure, interaction_evidence = _screenshot(base_url, specs, out_dir, log)
             else:
                 # Playwright drives a real browser, so it needs the app on a port, not a
                 # test client: run it in a background thread just for the screenshots.
                 url, stop = _serve(store)
                 try:
-                    shot, browser_note = _screenshot(url, specs, out_dir, log)
+                    shot, failure, interaction_evidence = _screenshot(url, specs, out_dir, log)
                 finally:
                     stop()
-        if browser_note:
-            log(browser_note)
+        if failure:
+            log(str(failure.get("diagnostic") or ""))
 
-    result = WalkthroughResult(out_dir=out_dir, screenshots=bool(shot), browser_note=browser_note,
+    result = WalkthroughResult(out_dir=out_dir, screenshots=bool(shot),
+                               browser_note=str((failure or {}).get("diagnostic") or ""),
+                               browser_failure_kind=str((failure or {}).get("kind") or ""),
+                               interaction_evidence=interaction_evidence,
                                include_stderr=include_stderr)
     home = str(Path.home())
     for s in specs:
@@ -422,17 +438,21 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
     expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
     pngs = [path for path in captures if path.endswith(".png")]
-    complete = result.screenshots and len(pngs) == expected
+    complete_pngs = result.screenshots and len(pngs) == expected
+    evidence_complete = len(result.interaction_evidence) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not complete:
+    if not complete_pngs:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
-    infrastructure = any(marker in (result.browser_note or "").lower() for marker in (
-        "not installed", "would not launch", "installation failed", "shared librar"))
-    return {"status": "pass" if complete else "fail", "summary": summary,
-            "failure_kind": "infrastructure" if not complete and infrastructure else
-                            ("product" if not complete else ""),
-            "details": result.browser_note or ("missing screenshot files" if not complete else ""),
-            "captures": captures, "pages": [p.spec.slug for p in result.pages]}
+    elif not evidence_complete:
+        summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
+    passed = complete_pngs and evidence_complete
+    return {"status": "pass" if passed else "fail", "summary": summary,
+            "failure_kind": "infrastructure" if result.browser_failure_kind else
+                            ("product" if not passed else ""),
+            "browser_failure_kind": result.browser_failure_kind,
+            "details": result.browser_note or ("missing screenshot files or interaction evidence" if not passed else ""),
+            "captures": captures, "interaction_evidence": result.interaction_evidence,
+            "pages": [p.spec.slug for p in result.pages]}
 
 
 def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, object]:

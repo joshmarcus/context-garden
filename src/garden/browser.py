@@ -22,11 +22,24 @@ def classify_browser_failure(detail: str) -> tuple[str, str]:
     return "launch_failure", "Chromium was found but could not launch; inspect sandbox permissions and the child-process diagnostic."
 
 
+def browser_failure(kind: str, detail: str = "") -> dict[str, str | bool]:
+    """Build the structured failure shared by readiness and capture execution."""
+    actions = {
+        "missing_playwright": "Playwright is not installed; install the product's browser-check dependencies in its prepared environment.",
+        "missing_executable": "Chromium is not installed; install the configured Playwright Chromium browser without changing host privileges.",
+        "missing_libraries": "Chromium cannot load its shared libraries; provide the runtime libraries in the capture environment (for example through an unprivileged library directory and worker_env.pass), without granting privileges.",
+        "launch_failure": "Chromium was found but could not launch; inspect sandbox permissions and the child-process diagnostic.",
+    }
+    action = actions.get(kind, actions["launch_failure"])
+    return {"ready": False, "kind": kind,
+            "diagnostic": action + (f" Launch detail: {detail}" if detail else "")}
+
+
 def _probe_child() -> dict[str, str | bool]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        return {"ready": False, "kind": "missing_executable", "diagnostic": f"Playwright is not installed: {exc}"}
+        return browser_failure("missing_playwright", str(exc))
     try:
         with sync_playwright() as playwright:
             executable = playwright.chromium.executable_path
@@ -34,8 +47,8 @@ def _probe_child() -> dict[str, str | bool]:
             browser.close()
         return {"ready": True, "kind": "ready", "diagnostic": f"launched {executable}"}
     except Exception as exc:  # noqa: BLE001 - Playwright exposes launch failures as several types
-        kind, action = classify_browser_failure(str(exc))
-        return {"ready": False, "kind": kind, "diagnostic": f"{action} Launch detail: {exc}"}
+        kind, _action = classify_browser_failure(str(exc))
+        return browser_failure(kind, str(exc))
 
 
 def probe_browser_runtime(config: dict[str, Any], *, setup: dict[str, Any] | None = None,
@@ -53,7 +66,7 @@ def probe_browser_runtime(config: dict[str, Any], *, setup: dict[str, Any] | Non
             proc = subprocess.run(command, env=env, cwd=str(worktree) if worktree else None,
                                   capture_output=True, text=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired:
-            return {"ready": False, "kind": "launch_failure", "diagnostic": f"Chromium launch timed out after {timeout}s."}
+            return browser_failure("launch_failure", f"Chromium launch timed out after {timeout}s.")
         try:
             return json.loads(proc.stdout.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):

@@ -51,10 +51,11 @@ continues without consuming an attempt or starting a worker/base-probe run. Chan
 relevant environment or `worker_env.pass` invalidate the cache immediately, and a successful
 retry admits the preserved task through its normal dispatch path.
 
-The diagnostic distinguishes an absent browser executable, missing shared libraries, a
-service-versus-child environment mismatch, and a sandbox/launch failure. In an unprivileged
-environment, install runtime files in a user-owned location and expose only the necessary
-variable (commonly `LD_LIBRARY_PATH`) with `worker_env.pass`, or use product `setup.env`.
+The diagnostic distinguishes missing Playwright setup, an absent configured browser
+executable, missing shared libraries, a service-versus-child environment mismatch, and a
+sandbox/launch failure. Install Playwright in the product's prepared check environment; in
+an unprivileged environment, install browser/runtime files in a user-owned location and
+expose only the necessary variable (commonly `LD_LIBRARY_PATH`) with `worker_env.pass`, or use product `setup.env`.
 There is no universal library path, and the garden never installs host packages or grants
 privileges. If Config shows `worker_env.pass` as held by an in-flight fence, accept the reload
 through the supported Config action before expecting the probe to see it.
