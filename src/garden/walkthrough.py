@@ -123,7 +123,7 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
         first = next((p for p in sorted(design_root.rglob("*")) if p.is_file()), None)
         if first:
             rel = first.relative_to(design_root).as_posix()
-            specs.append(PageSpec("design", f"/design/{rel}", "Design",
+            specs.append(PageSpec("design", f"/design/{rel}?product={phase.product}", "Design",
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
