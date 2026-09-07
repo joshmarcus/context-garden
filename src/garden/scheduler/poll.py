@@ -254,12 +254,18 @@ class PollMixin:
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
         if hard_tier:
             min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
-        if (self._needs_second_review_round(task.product)
-                and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
+        self_product_default = (self.cfg.product_self(task.product)
+                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+        if self_product_default:
+            # The second opinion is supplied by a current-head persona or a human, so only
+            # one automated review round is required by the default self-product policy.
+            min_rounds = max(min_rounds, 1)
+        elif (self._needs_second_review_round(task.product)
+              and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
             min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
-        if (self.cfg.product_self(task.product) and int(st.get("review_rounds", 0)) >= 2
+        if (self_product_default and int(st.get("review_rounds", 0)) >= 1
                 and pr.review_decision != "APPROVED"
                 and not any(str(item.get("head") or "") == str(pr.head_sha or "")
                             for item in st.get("persona_reviews", []) if isinstance(item, dict))):

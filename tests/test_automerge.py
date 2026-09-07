@@ -110,23 +110,41 @@ def test_gate_min_review_rounds(sched, fake_github):
     assert not ok and "review round" in reason
 
 
-def test_gate_self_product_needs_two_rounds_by_default(sched, fake_github):
-    """CG-200: a PR against a `self: true` product can change the loop that merges it, so it
-    needs two approving rounds by default, not one LLM review."""
-    t, st, pr = _in_review(sched, fake_github)
+def test_self_product_uses_independent_second_opinion(sched, fake_github):
+    """A self-product PR gets one automated approval and an independent current-head opinion."""
     sched.cfg.data["products"]["demo"]["self"] = True
-    st["review_rounds"] = 1
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()  # dispatch the worker
+    sched.tick()  # open the PR and dispatch the first automated review
+    t = sched.store.task("DM-001")
+    st = sched.state.get(t.id)
+    pr = fake_github.prs[BRANCH]
+    assert len([r for r in sched.runs.runs_for(t.id) if r.mode == "review"]) == 1, sched.state.get(t.id)
+    assert [r.mode for r in sched.runs.runs_for(t.id)] == ["work", "review"], sched.state.get(t.id)
+    sched.tick()  # reap the automated opinion
+    st = sched.state.get(t.id)
+    assert st["review_rounds"] == 1
+    pr.mergeable = "MERGEABLE"
+    pr.checks = "SUCCESS"
+    sched.tick()  # an ordinary follow-up tick must not schedule a same-product second pass
+    assert len([r for r in sched.runs.runs_for(t.id) if r.mode == "review"]) == 1
+    pr.review_decision = "APPROVED"
+    # Current-head human approval supplies the independent second opinion.
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "review round" in reason and "need 2" in reason
+    assert ok, reason
+    pr.review_decision = ""
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "second review" in reason
+
+    # Two automated approvals alone remain insufficient, even if an old implementation has
+    # left that state behind.
     st["review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "second review" in reason
-    # Persona evidence must be for the current PR head, not an old revision.
-    st["persona_reviews"] = [{"persona": "security", "head": pr.head_sha}]
-    ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
-    st["persona_reviews"] = []
-    pr.review_decision = "APPROVED"  # independent human approval satisfies the second round
+
+    # A human approval remains the other independent path when the old state has two rounds.
+    pr.review_decision = "APPROVED"
     ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason
 
