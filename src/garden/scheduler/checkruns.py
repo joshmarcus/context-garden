@@ -182,12 +182,55 @@ class CheckRunMixin:
         self.state.save()
         return f"stale check metadata cleared; restored {status.value}"
 
+    def _retire_terminal_check(self, task: Task) -> bool:
+        """Retire a check continuation that can no longer affect a terminal task.
+
+        A collected run is evidence and remains untouched.  A genuinely live detached
+        process is stopped before its record is closed; a synthetic or otherwise
+        unidentifiable process keeps its ownership pointer until it can be proved dead.
+        """
+        st = self.state.get(task.id)
+        info = dict(st.get("check_run") or {})
+        run_id = str(info.get("run_id") or "")
+        if not run_id:
+            return False
+        run = self._run_by_id(task, run_id)
+        if run is not None and run.status == "running" and not run.process_finished():
+            if not run.stop():
+                return False
+            run.status = "cancelled"
+            run.finished_at = now_iso()
+            run.error = "task reached terminal status"
+            run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="check",
+                             status="cancelled", cost_usd=run.cost_usd, usage=run.usage,
+                             error=run.error)
+        elif run is not None and run.status == "running":
+            results = self._collect_check_results(run)
+            run.exit_code = run.read_exit_code()
+            run.finished_at = now_iso()
+            run.cost_usd = 0.0
+            run.result = {"checks": results}
+            run.status = "done"
+            run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="check",
+                             status="done", cost_usd=0.0, usage={})
+            for result in results:
+                self.events.emit("check", task.id, stage=_EVENT_STAGE.get(str(info.get("stage") or "pre_pr"), "pre_pr"),
+                                 name=result.get("name"), status=result.get("status"),
+                                 summary=result.get("summary", ""))
+        st.pop("check_run", None)
+        self.state.save()
+        return True
+
     def reap_check(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
         info = dict(st.get("check_run") or {})
         run_id = info.get("run_id")
         if not run_id:
             return False
+        if task.status.terminal:
+            return self._retire_terminal_check(task)
         run = self._run_by_id(task, run_id)
         if run is None:
             st["check_run"] = {}
@@ -359,6 +402,10 @@ class CheckRunMixin:
         self.events.emit("needs_human", task.id, stop_kind="check_did_not_run", reason=note, run=run.run_id)
         self.state.save()
         self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)
+        current = self.state.get(task.id).get("check_run") or {}
+        if current.get("run_id") == run.run_id:
+            self.state.get(task.id).pop("check_run", None)
+            self.state.save()
         rep.transitions.append(f"{task.id} -> {'in_review' if task.pr else 'changes_requested'} (check needs human)")
 
     @staticmethod
