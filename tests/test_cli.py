@@ -1,5 +1,6 @@
 import json
 import subprocess
+import re
 
 import pytest
 import yaml
@@ -91,7 +92,7 @@ def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):
     state.save()
     running = run(garden, "inbox")
     assert "inbox zero" in running.output
-    assert "automated review running" in running.output.replace("\n", " ")
+    assert "automated review running" in re.sub(r"\s+", " ", running.output)
 
     st.pop("review_run")
     state.save()
@@ -128,7 +129,7 @@ def test_cli_and_web_inbox_show_the_scheduler_review_wait_reason(garden):
         state.save()
         cli = run(garden, "inbox")
         web = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox")
-        cli_text = cli.output.replace("\n", " ")
+        cli_text = re.sub(r"\s+", " ", cli.output)
         assert cli.exit_code == 0, cli.output
         assert "inbox zero" in cli.output
         assert expected in cli_text
