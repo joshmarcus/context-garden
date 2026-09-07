@@ -148,7 +148,7 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     total: dict[str, Any] | None = None
     session = path.stem
     model = ""
-    snapshot_models: dict[str, int] = {}
+    turn_models: dict[str, int] = {}
     first = last = ""
     turns = 0
     for event in events:
@@ -156,7 +156,15 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
         if event.get("type") == "session_meta":
             session = str(payload.get("id") or session)
         if event.get("type") == "turn_context":
+            # A turn can publish several cumulative token snapshots.  The context
+            # event is its boundary, so it alone owns turn/model attribution.
             model = str(payload.get("model") or model)
+            turns += 1
+            if model:
+                turn_models[model] = turn_models.get(model, 0) + 1
+            timestamp = str(event.get("timestamp") or "")
+            first = first or timestamp
+            last = timestamp or last
         if event.get("type") != "event_msg" or payload.get("type") != "token_count":
             continue
         info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
@@ -164,12 +172,6 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(usage, dict):
             continue
         total = usage
-        turns += 1
-        if model:
-            snapshot_models[model] = snapshot_models.get(model, 0) + 1
-        timestamp = str(event.get("timestamp") or "")
-        first = first or timestamp
-        last = timestamp or last
     if total is None:
         return {"at": now_iso(), "harness": "codex", "session": session,
                 "first_turn": "", "last_turn": "", "turns": 0, "models": {}, "tokens": None,
@@ -183,7 +185,7 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
               "cache_write": int(total.get("cache_write_input_tokens", 0) or 0)}
     return {"at": now_iso(), "harness": "codex", "session": session,
             "first_turn": first, "last_turn": last, "turns": turns,
-            "models": snapshot_models, "tokens": tokens,
+            "models": turn_models, "tokens": tokens,
             "list_price_usd": None, "price_status": "unavailable", "usage_status": "available",
             "avg_context": int(tokens["cache_read"] / max(1, turns))}
 

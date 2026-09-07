@@ -63,14 +63,22 @@ def test_record_from_codex_transcript_uses_latest_cumulative_usage_without_doubl
             "type": "token_count", "info": {"total_token_usage": {
                 "input_tokens": 2_000, "cached_input_tokens": 900, "output_tokens": 120,
                 "reasoning_output_tokens": 30, "cache_write_input_tokens": 20, "total_tokens": 2_120}}}},
+        {"timestamp": "2026-09-06T10:03:00Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-terra"}},
+        {"timestamp": "2026-09-06T10:04:00Z", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 3_000, "cached_input_tokens": 1_000, "output_tokens": 180,
+                "reasoning_output_tokens": 50, "cache_write_input_tokens": 30, "total_tokens": 3_180}}}},
     ]) + "\n")
     rec = ops.record_from_transcript(path)
     assert rec["harness"] == "codex"
     assert rec["session"] == "codex-operator"
     assert rec["turns"] == 2
-    assert rec["models"] == {"gpt-5.6-sol": 2}
-    assert rec["tokens"] == {"input": 1_100, "cache_read": 900, "cache_write": 20, "output": 120}
-    assert rec["tokens"]["input"] + rec["tokens"]["cache_read"] + rec["tokens"]["output"] == 2_120
+    assert rec["models"] == {"gpt-5.6-sol": 1, "gpt-5.6-terra": 1}
+    assert rec["tokens"] == {"input": 2_000, "cache_read": 1_000, "cache_write": 30, "output": 180}
+    assert rec["tokens"]["input"] + rec["tokens"]["cache_read"] + rec["tokens"]["output"] == 3_180
+    assert rec["first_turn"] == "2026-09-06T10:00:30Z"
+    assert rec["last_turn"] == "2026-09-06T10:03:00Z"
     assert rec["list_price_usd"] is None
     assert rec["price_status"] == "unavailable"
     assert rec["usage_status"] == "available"
