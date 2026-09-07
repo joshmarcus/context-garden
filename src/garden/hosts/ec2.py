@@ -80,6 +80,10 @@ class EC2Provider:
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
+        if not declaration.pool.profile.image.startswith("ami-"):
+            raise ValueError("ec2 profile image must be a pinned AMI id")
+        if any(char.isspace() for char in declaration.pool.profile.bootstrap_version):
+            raise ValueError("ec2 bootstrap_version must be one pinned version token")
         required = {"instance_type", "subnet_id", "security_group_ids", "instance_profile_arn"}
         missing = sorted(required - options.keys())
         if missing:

@@ -17,6 +17,7 @@ class FakeProvider:
     def __init__(self, *, hourly_usd: float = 0.10):
         self.hourly_usd = hourly_usd
         self.hosts: dict[str, HostFacts] = {}
+        self.ownership: dict[str, tuple[str, str]] = {}
         self.provision_calls = 0
         self.destroy_calls: list[tuple[str, bool]] = []
         self.delay_next_response = False
@@ -30,8 +31,11 @@ class FakeProvider:
         return self.hourly_usd
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
-        prefix = f"{pool}-"
-        return [h for h in self.hosts.values() if h.host_id.startswith(prefix)]
+        return [
+            host
+            for provider_id, host in self.hosts.items()
+            if self.ownership.get(provider_id) == (owner, pool)
+        ]
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         existing = next(
@@ -49,6 +53,7 @@ class FakeProvider:
             declaration.pool.profile.bootstrap_version,
         )
         self.hosts[host.provider_id] = host
+        self.ownership[host.provider_id] = (declaration.pool.owner, declaration.pool.name)
         if self.delay_next_response:
             self.delay_next_response = False
             raise ProvisioningUncertain("provider response timed out after accepting request")

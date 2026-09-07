@@ -214,6 +214,17 @@ def test_provider_and_profile_options_are_namespaced_and_validated(tmp_path):
     with pytest.raises(ValueError, match="HTTPS"):
         lifecycle.plan(replace(pool(), profile=replace(profile(), endpoint="http://insecure")))
 
+    ec2 = EC2Provider(StubEC2())
+    ec2_pool = replace(
+        pool(provider="ec2"),
+        profile=replace(profile(), image="ubuntu-latest"),
+        provider_options={"hourly_usd": 0.1},
+    )
+    with pytest.raises(ValueError, match="pinned AMI"):
+        HostLifecycle({"ec2": ec2}, JsonStateStore(tmp_path / "ec2.json")).provision(
+            replace(ec2_pool, enabled=True)
+        )
+
 
 def test_declarative_contract_rejects_unknown_fields():
     value = {
