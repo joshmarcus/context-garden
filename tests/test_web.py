@@ -1955,7 +1955,7 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
 
 
 def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
-    """One bounded real workload runs and another visibly waits during the control journey."""
+    """A bounded CPU/memory workload runs while a second validation waits."""
     import json
 
     from garden.harness import Harness
@@ -1971,7 +1971,24 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             finished_at="2026-01-01T00:01:00+00:00").save()
 
     target = tmp_path / "test_control_capacity.py"
-    target.write_text("import time\n\ndef test_real_workload():\n    time.sleep(0.75)\n")
+    ready = tmp_path / "workload-ready"
+    target.write_text(
+        "import hashlib\nimport os\nimport time\nfrom pathlib import Path\n\n"
+        "def test_real_workload():\n"
+        "    Path(os.environ['CG365_WORKLOAD_READY']).write_text(str(os.getpid()))\n"
+        "    payload = bytearray(24 * 1024 * 1024)\n"
+        "    deadline = time.monotonic() + 2.5\n"
+        "    rounds = 0\n"
+        "    warm_deadline = time.monotonic() + 0.25\n"
+        "    while time.monotonic() < warm_deadline:\n"
+        "        hashlib.sha256(payload).digest()\n"
+        "    while time.monotonic() < deadline:\n"
+        "        for offset in range(0, len(payload), 4096):\n"
+        "            payload[offset] = (payload[offset] + rounds) % 251\n"
+        "        hashlib.sha256(payload).digest()\n"
+        "        rounds += 1\n"
+        "    assert rounds > 1\n"
+    )
     harness = Harness("focused-pytest", {"command": [sys.executable, "-m", "pytest", str(target), "-q"]})
     runner = LocalRunner({"timeout_minutes": 1}, harness)
     launched = []
@@ -1984,6 +2001,7 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
                                             "XDG_RUNTIME_DIR": str(tmp_path),
                                             "GARDEN_HEAVY_EXECUTION": "1",
+                                            "CG365_WORKLOAD_READY": str(ready),
                                             "GARDEN_EXECUTION_CGROUP": os.environ.get("CG365_EXECUTION_CGROUP", "")})
         launched.append(run)
 
@@ -1996,6 +2014,10 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             break
         time.sleep(0.01)
     assert states == {"running", "waiting"}
+    ready_deadline = time.monotonic() + 3
+    while not ready.exists() and time.monotonic() < ready_deadline:
+        time.sleep(0.01)
+    assert ready.exists(), "the admitted pytest workload never began executing"
     if os.environ.get("CG365_EXECUTION_CGROUP"):
         isolation = [json.loads((run.path / "isolation.json").read_text()) for run in launched]
         assert all(status["enforced"] for status in isolation)
@@ -2011,11 +2033,20 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             events = {name: int(parsed.get(name, 0)) for name in event_names}
         memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
         temp = os.statvfs(tmp_path)
-        descendants = {run.pid: Path(f"/proc/{run.pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
-                       for run in launched if run.pid and Path(f"/proc/{run.pid}/cmdline").exists()}
-        cpu = {pid: Path(f"/proc/{pid}/stat").read_text().split()[13:15] for pid in descendants}
+        pids = (cgroup / "cgroup.procs").read_text().split() if cgroup and (cgroup / "cgroup.procs").exists() else []
+        descendants = {
+            int(pid): Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+            for pid in pids if Path(f"/proc/{pid}/cmdline").exists()
+        }
+        cpu_stat = dict(line.split() for line in (cgroup / "cpu.stat").read_text().splitlines()) \
+            if cgroup and (cgroup / "cpu.stat").exists() else {}
+        psi = {
+            name: (cgroup / f"{name}.pressure").read_text().splitlines()
+            for name in ("cpu", "memory") if cgroup and (cgroup / f"{name}.pressure").exists()
+        }
         return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
-                "descendants": descendants, "cpu_ticks": cpu}
+                "cgroup.procs": sorted(descendants), "descendants": descendants,
+                "cpu.stat": cpu_stat, "pressure": psi}
 
     before = pressure()
     app = create_app(Store(garden), watch=False, host="testserver")
@@ -2044,6 +2075,11 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
     # the page requests are served; hard failures must remain unchanged.
     assert after["events"]["oom"] == before["events"]["oom"]
     assert after["events"]["oom_kill"] == before["events"]["oom_kill"]
+    assert any(str(target) in command for command in before["descendants"].values())
+    assert any(str(target) in command for command in after["descendants"].values())
+    assert int(after["cpu.stat"].get("usage_usec", 0)) > int(before["cpu.stat"].get("usage_usec", 0))
+    if configured_cgroup:
+        assert after["events"] == before["events"]
     for run in launched:
         os.waitpid(run.pid, 0)
         assert run.read_exit_code() == 0

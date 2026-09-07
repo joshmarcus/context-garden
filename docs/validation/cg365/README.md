@@ -11,7 +11,11 @@ service nor increases host limits. It is safe to repeat on a host with systemd u
 and cgroup v2. The test refuses the configured exercise unless each supervisor records
 verified cgroup migration.
 
-The 2026-09-06 run used a 20% CPU quota, `MemoryHigh=96MiB`, and `MemoryMax=128MiB`.
-The web/control requests all completed below two seconds, the waiting validation was
-observed, and `memory.events` reported no new `high`, `oom`, or `oom_kill` event. The
-temporary unit was stopped after the test.
+The 2026-09-07 run used a 20% CPU quota, `MemoryHigh=96MiB`, and `MemoryMax=128MiB`.
+Its temporary pytest target allocated 24 MiB and repeatedly touched and hashed that
+memory for 2.5 seconds. It wrote a ready marker only after CPU work had begun; the
+journey sampled the execution cgroup while that test was still present, alongside the
+waiting second validation. The raw cgroup process list, `cpu.stat`, CPU/memory PSI,
+memory events, memory use, temporary-space readings, and request latencies are retained
+in `report.json`. No new `high`, `oom`, or `oom_kill` event occurred. The temporary unit
+was stopped after the test.
