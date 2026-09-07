@@ -159,7 +159,8 @@ class ReviewMixin:
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
-                self.log(f"{task.id}: review deferred while a worker or validation check is in flight")
+                reason = "a validation check is in flight" if st.get("check_run") else "a worker run is in flight"
+                self.log(f"{task.id}: review deferred while {reason}")
             return
         st.pop("reviews_deferred_for_worker", None)
         # A review requested while an earlier queued review is eligible waits for the
