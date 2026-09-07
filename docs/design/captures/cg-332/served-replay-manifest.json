@@ -1,6 +1,6 @@
 {
   "schema": "cg-332.served-replay.v1",
-  "reviewed_head": "ab37132f6cb6b0b9c00dec65afc6c3cb767d9872",
+  "reviewed_head": "a819521b7c4e8be68b562741a235c6044bd261ee",
   "fixture": "disposable served garden with a ready task parked by a claude quota stop",
   "captures": [
     "task-1280-light.png",
