@@ -1,6 +1,7 @@
 """A worker's wont_do / no_change is a decision for the person, not a failure (CG-100)."""
 
 import os
+import time
 
 from garden.github import Feedback
 from garden.inbox import build_inbox
@@ -148,10 +149,12 @@ def test_accept_no_change_without_pr_keeps_detached_check_out_of_inbox(sched, fa
     # collected before asserting the final status.  In-process tests usually finish
     # in one tick, but the lifecycle contract is eventual and must not depend on that
     # scheduling detail.
-    for _ in range(3):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
         if not sched.state.get(task.id).get("check_run"):
             break
         sched.tick()
+        time.sleep(0.01)
     assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
