@@ -5,6 +5,11 @@ the findings into the normal revise loop."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import re
+from pathlib import Path
 from typing import Any
 
 from .brief import _parse_marked_json, build_brief
@@ -15,6 +20,244 @@ from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
+INTERACTION_PATHS = (
+    "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
+    "src/garden/checks.py", "src/garden/gitops.py",
+    "src/garden/github.py", "src/garden/harness.py", "src/garden/inbox.py",
+    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py",
+    "src/garden/now2.py", "src/garden/now2_stream.py", "src/garden/onboard.py",
+    "src/garden/model.py", "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
+    "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runner/",
+    "src/garden/runs.py", "src/garden/scheduler/__init__.py", "src/garden/scheduler/aux.py",
+    "src/garden/scheduler/browser.py", "src/garden/scheduler/budget.py",
+    "src/garden/scheduler/checkruns.py", "src/garden/scheduler/discovered.py",
+    "src/garden/scheduler/dispatch.py", "src/garden/scheduler/edits.py",
+    "src/garden/scheduler/fence.py", "src/garden/scheduler/human.py",
+    "src/garden/scheduler/kickoff.py", "src/garden/scheduler/persona.py",
+    "src/garden/scheduler/poll.py", "src/garden/scheduler/queue.py",
+    "src/garden/scheduler/quota.py", "src/garden/scheduler/reap.py",
+    "src/garden/scheduler/rebase.py", "src/garden/scheduler/resources.py",
+    "src/garden/scheduler/retro.py", "src/garden/scheduler/review.py",
+    "src/garden/scheduler/selection.py", "src/garden/scheduler/snapshot.py",
+    "src/garden/scheduler/state.py", "src/garden/scheduler/trials.py",
+    "src/garden/scheduler/upgrades.py", "src/garden/stabilization.py",
+    "src/garden/tui/", "src/garden/upgrade.py", "src/garden/walkthrough.py",
+    "src/garden/web/",
+)
+
+SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
+
+
+def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
+    if not isinstance(value, list) or len(value) < minimum_items:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item)
+           for item in value):
+        return None
+    return value
+
+
+def interaction_requirement(changed: list[str], *review_context: str) -> tuple[bool, bool, str]:
+    """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
+    affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
+    context = "\n".join(review_context)
+    explicitly_required = bool(re.search(r"\binteraction[-_ ]evidence\s*:\s*required\b", context, re.I))
+    required = bool(affected) or explicitly_required
+    scalability = bool(re.search(
+        r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
+        context, re.I,
+    ))
+    if affected:
+        reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6])
+    elif explicitly_required:
+        reason = "change metadata requires interaction evidence"
+    else:
+        reason = "non-UI change"
+    return required, scalability, reason
+
+
+def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
+                              expected_head: str, replay_manifest: Path | None = None,
+                              replay_nonce: str = "", replay_digest: str = "") -> list[str]:
+    """Return mechanical blockers in a reviewer's claimed running-app evidence."""
+    if not required and not scalability:
+        return []
+    row = review.get("interaction")
+    if not isinstance(row, dict):
+        return ["running-application interaction evidence was not reported"]
+    gaps: list[str] = []
+    if required and (replay_manifest is not None or replay_nonce):
+        gaps.extend(_replay_manifest_gaps(replay_manifest, expected_head, replay_nonce, replay_digest))
+    if row.get("head") != expected_head:
+        gaps.append("interaction evidence is stale or not tied to the reviewed head")
+    if row.get("environment") != "disposable":
+        gaps.append("interaction was not performed in a disposable garden")
+    command = row.get("command")
+    if not isinstance(command, str) or not command.strip() or command.strip() in {"true", ":"}:
+        gaps.append("interaction command was not reported")
+    states = row.get("states") if isinstance(row.get("states"), dict) else {}
+    for state in ("affected", "empty", "failure_recovery"):
+        evidence = states.get(state) if isinstance(states.get(state), dict) else {}
+        actions = evidence.get("actions")
+        observed = evidence.get("observed")
+        if (evidence.get("status") != "pass"
+                or not isinstance(actions, list) or not actions
+                or any(not isinstance(action, str) or not action.strip() for action in actions)
+                or not isinstance(observed, str) or not observed.strip()):
+            gaps.append(f"{state.replace('_', '/')} interaction is missing or failed")
+    events = row.get("events")
+    gaps.extend(_interaction_event_gaps(events))
+    artifacts = row.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or any(not isinstance(path, str) for path in artifacts):
+        gaps.append("interaction artifact paths were not reported")
+    elif any(not Path(path).exists() for path in artifacts):
+        gaps.append("one or more interaction artifacts do not exist")
+    else:
+        records = []
+        for artifact in artifacts:
+            path = Path(artifact)
+            if path.suffix.lower() != ".json":
+                continue
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (isinstance(record, dict) and record.get("head") == expected_head
+                    and record.get("states") == states and record.get("events") == events):
+                records.append(record)
+        if not records:
+            gaps.append("a structured interaction artifact tied to the reviewed head, actions, and observations was not reported")
+    if not isinstance(row.get("automated_checks"), list):
+        gaps.append("automated checks were not distinguished from real interaction")
+    if not isinstance(row.get("unverified"), list):
+        gaps.append("unverified requirements were not stated")
+    elif row.get("unverified"):
+        gaps.append("interaction requirements remain unverified")
+    if scalability:
+        load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
+        if not isinstance(load.get("served_app"), str) or not load["served_app"].startswith(("http://", "https://")):
+            gaps.append("scalability served_app must be a served HTTP URL")
+        sizes = _numbers(load.get("history_sizes"), minimum_items=2)
+        if sizes is None or any(size < 0 for size in sizes) or sizes != sorted(set(sizes)):
+            gaps.append("scalability history_sizes must contain at least two distinct increasing numeric sizes")
+        intervals = load.get("cache_expiry_intervals")
+        if isinstance(intervals, bool) or not isinstance(intervals, int) or intervals < 2:
+            gaps.append("scalability cache_expiry_intervals must be an integer of at least two")
+        processes = load.get("executing_processes")
+        if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
+            gaps.append("scalability executing_processes must be a positive integer")
+        latencies = _numbers(load.get("latencies"), minimum_items=2)
+        if latencies is None or any(latency < 0 for latency in latencies):
+            gaps.append("scalability latencies must contain at least two non-negative numeric samples")
+        counts = load.get("read_scan_counts")
+        if not isinstance(counts, dict) or any(
+            isinstance(counts.get(name), bool) or not isinstance(counts.get(name), (int, float))
+            or not math.isfinite(counts[name]) or counts[name] < 0 for name in ("reads", "scans")
+        ):
+            gaps.append("scalability read_scan_counts must contain non-negative numeric reads and scans")
+        if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
+            gaps.append("scalability load_kind must be controlled or real_model_harnesses")
+    return gaps
+
+
+def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str) -> list[str]:
+    """Validate evidence produced by the scheduler, outside the reviewer's process."""
+    try:
+        raw = path.read_bytes() if path else b""
+        record = json.loads(raw) if raw else None
+    except (OSError, json.JSONDecodeError):
+        record = None
+    if not isinstance(record, dict):
+        return ["scheduler-produced interaction replay manifest is missing or unreadable"]
+    if not digest or hashlib.sha256(raw).hexdigest() != digest:
+        return ["scheduler-produced interaction replay manifest changed after execution"]
+    if (record.get("producer") != "garden.scheduler.interaction-replay/v1"
+            or record.get("head") != expected_head or not nonce or record.get("nonce") != nonce):
+        return ["scheduler-produced interaction replay provenance does not match this review"]
+    if record.get("environment") != "disposable" or record.get("status") != "pass":
+        return ["scheduler-produced disposable interaction replay did not pass"]
+    if not all(isinstance(record.get(name), str) and record[name] for name in ("started_at", "finished_at")):
+        return ["scheduler-produced interaction replay timestamps are incomplete"]
+    flows = record.get("flows")
+    if not isinstance(flows, list) or not flows or any(
+        not isinstance(flow, dict) or flow.get("ok") is not True
+        or not isinstance(flow.get("requests"), list) or not flow["requests"]
+        for flow in flows
+    ):
+        return ["scheduler-produced interaction replay lacks successful request/response flows"]
+    if any(not isinstance(event.get("at"), (int, float)) or not event.get("url")
+           or not isinstance(event.get("status_code"), int)
+           for flow in flows for event in flow["requests"] if isinstance(event, dict)) \
+            or any(not isinstance(event, dict) for flow in flows for event in flow["requests"]):
+        return ["scheduler-produced interaction replay request/response transcript is incomplete"]
+    states = record.get("states")
+    if not isinstance(states, dict) or any(
+        not isinstance(states.get(state), dict) or states[state].get("status") != "pass"
+        or not states[state].get("action") or not states[state].get("observed")
+        for state in ("affected", "empty", "failure", "recovery")
+    ):
+        return ["scheduler-produced replay does not prove affected, empty, failure, and recovery outcomes"]
+    events = record.get("events")
+    event_states = [event.get("state") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    event_times = [event.get("at") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    if (event_states != ["affected", "failure", "recovery", "empty"]
+            or any(not isinstance(at, (int, float)) for at in event_times)
+            or event_times != sorted(event_times)):
+        return ["scheduler-produced replay outcomes are not a complete chronological transcript"]
+    return []
+
+
+def _interaction_event_gaps(events: Any) -> list[str]:
+    """Validate replayable request/browser events rather than screenshot descriptions."""
+    if not isinstance(events, list) or not events:
+        return ["performed HTTP/browser interaction events were not reported"]
+    covered: set[str] = set()
+    failure_index: int | None = None
+    recovery_index: int | None = None
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            return ["interaction events must be structured request or browser-action records"]
+        state = event.get("state")
+        kind = event.get("kind")
+        observed = event.get("observed")
+        if state not in {"affected", "empty", "failure", "recovery"}:
+            return ["each interaction event must name an affected, empty, failure, or recovery phase"]
+        outcome = event.get("outcome")
+        expected_outcome = {"affected": "success", "empty": "empty", "failure": "failure",
+                            "recovery": "success"}[state]
+        if outcome != expected_outcome:
+            return [f"{state} interaction event must record outcome {expected_outcome}"]
+        if not isinstance(observed, str) or not observed.strip():
+            return ["each interaction event must record its resulting observation"]
+        if kind == "http_request":
+            method, url, status = event.get("method"), event.get("url"), event.get("status_code")
+            if (method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+                    or not isinstance(url, str) or not url.startswith(("http://", "https://"))
+                    or isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599):
+                return ["HTTP interaction events require a method, served URL, and response status"]
+            if state == "failure" and status < 400:
+                return ["failure HTTP event must record an unsuccessful response"]
+            if state == "recovery" and status >= 400:
+                return ["recovery HTTP event must record a successful response"]
+        elif kind == "browser_action":
+            action, target = event.get("action"), event.get("target")
+            if (not isinstance(action, str) or not action.strip()
+                    or not isinstance(target, str) or not target.strip()
+                    or re.search(r"\b(screenshot|image|png|jpe?g|gif|webp)\b", action, re.I)):
+                return ["browser interaction events require a non-image action and target"]
+        else:
+            return ["interaction events must be served HTTP requests or browser actions"]
+        covered.add(state)
+        if state == "failure" and failure_index is None:
+            failure_index = index
+        elif state == "recovery" and recovery_index is None:
+            recovery_index = index
+    if {"affected", "empty", "failure", "recovery"} - covered:
+        return ["performed interaction events do not cover affected, empty, failure, and recovery phases"]
+    if failure_index is None or recovery_index is None or failure_index >= recovery_index:
+        return ["a failure event must be followed chronologically by a successful recovery event"]
+    return []
+
 REVIEW_RULES = """\
 ## Your job
 
@@ -22,7 +265,8 @@ You are the automated first reviewer for the pull request described below. The h
 reviewer reads your comment before looking at the code, so be precise and terse. You are
 in a git worktree of the PR branch (`{branch}`, based on `{base}`); the diff is included
 below when it fits, otherwise run `git diff {base}...HEAD`. You may run the project's
-checks if they are fast. Do NOT modify any file and do NOT commit.
+checks if they are fast. Do NOT modify tracked worktree files and do NOT commit. Running-app
+evidence may write artifacts only into its disposable garden or a temporary directory.
 
 Check, in this order:
 
@@ -54,6 +298,27 @@ When a "Rendered UI captures" section is present, open every listed PNG with the
 reader and inspect layout, overlap, wrapping and empty states. Name every page inspected in
 `pages_seen`. Omitting a listed page makes the verdict mechanically `request_changes`.
 
+When "Running-application interaction required" is present, start the proposed head as a
+served application against a disposable garden and perform the affected journey through its
+HTTP/browser surface. Cover the user objective, an empty state, and a relevant failure followed
+by recovery. Record actions and their observed consequences; screenshots and test-client
+assertions are supporting artifacts, not performed interaction. Treat no_change reconciliation
+and attention prompts as user outcomes when they are affected. Never use the live operator
+garden. Report the exact command, artifact paths, separately named automated checks, and every
+unverified requirement. Use the reviewed full SHA supplied below as `interaction.head`.
+
+For a scalability claim, additionally use a served disposable app with representative and larger
+histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
+latency samples/distribution, and read/scan counts. State whether load is controlled or uses real
+model harnesses; controlled load must not be described as a real harness run.
+
+Report `interaction.events` as a chronological sequence with explicit `state` phases: `affected`,
+`empty`, `failure`, and `recovery`. Each event includes `outcome`: `success` for affected/recovery,
+`empty` for empty, and `failure` for failure. A served HTTP event also contains `kind: http_request`,
+`method`, `url`, `status_code`, and `observed`; failure HTTP status is unsuccessful and recovery is
+successful. A browser event also contains `kind: browser_action`, `action`, `target`, and `observed`.
+Screenshot/image operations are not actions. Preserve the same events in the structured artifact.
+
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
 
@@ -72,7 +337,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or page that proves the assessment>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<page slug>"], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -98,7 +363,9 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
-                 reask_missing_fixes: bool = False, criteria_snapshot: list[str] | None = None,
+                 reask_missing_fixes: bool = False, interaction_required: bool = False,
+                 scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
+                 interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
@@ -136,6 +403,12 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if interaction_required or scalability_required:
+        parts.append("## Running-application interaction required\n\n"
+                     f"Reviewed head: `{review_head}`\n\nReason: {interaction_reason}.\n\n"
+                     + (f"The scheduler independently replayed the disposable app; inspect its "
+                        f"request/response manifest at `{interaction_manifest}`.\n\n" if interaction_manifest else "")
+                     + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
     if checks:
         parts.append("## Pre-review checks\n\n" + "\n".join(
             f"- **{c.get('name', 'check')}**: {c.get('status', 'unknown')}"

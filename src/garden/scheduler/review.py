@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
+import shlex
+import sys
+from pathlib import Path
 from typing import Any
 
 from .. import gitops
@@ -13,6 +18,8 @@ from ..notify import notify
 from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
+    interaction_evidence_gaps,
+    interaction_requirement,
     parse_review,
     review_brief,
     review_is_description_only,
@@ -148,11 +155,12 @@ class ReviewMixin:
         # its record would sit beside the worker run and could be mistaken for the task's own run,
         # sending a running task back to ready (CG-177). Defer the whole batch — `_drain_pending_reviews`
         # picks it up once the worker finishes — and log it once per deferral episode.
-        if self._worker_holding_reviews(task) is not None:
+        if self._worker_holding_reviews(task) is not None or st.get("check_run"):
             self._queue_pending_reviews(st, wanted)
             if not st.get("reviews_deferred_for_worker"):
                 st["reviews_deferred_for_worker"] = True
-                self.log(f"{task.id}: review deferred while a worker run is in flight")
+                reason = "a validation check is in flight" if st.get("check_run") else "a worker run is in flight"
+                self.log(f"{task.id}: review deferred while {reason}")
             return
         st.pop("reviews_deferred_for_worker", None)
         # A review requested while an earlier queued review is eligible waits for the
@@ -179,8 +187,11 @@ class ReviewMixin:
             try:
                 if kind == "review":
                     run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
-                    rep.dispatched.append(f"{task.id}(review)")
-                    self.log(f"{task.id}: review run {run.run_id} started")
+                    if run.mode == "review":
+                        rep.dispatched.append(f"{task.id}(review)")
+                        self.log(f"{task.id}: review run {run.run_id} started")
+                    else:
+                        rep.dispatched.append(f"{task.id}(check:interaction_replay)")
                 else:
                     self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
                     if item.get("required"):
@@ -240,6 +251,8 @@ class ReviewMixin:
             if run.no_process:
                 return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
             return "worker", f"waits for its {run.mode} run to finish"
+        if self.state.get(task.id).get("check_run"):
+            return "check", "waits for its validation check to finish"
         harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
         if self.is_harness_paused(harness):
             return "harness", f"{harness} harness paused"
@@ -306,6 +319,8 @@ class ReviewMixin:
     def _queued_review_can_start(self, task: Task) -> bool:
         """Whether one of a queued task's items can use a newly free review slot."""
         st = self.state.get(task.id)
+        if st.get("check_run"):
+            return False
         required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
                              if item["kind"] == "persona"}
         evidence = st.get("required_evidence") or {}
@@ -385,6 +400,8 @@ class ReviewMixin:
         branch = task.branch or task.default_branch()
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
+        review_head = gitops.head_sha(wt)
+        changed = gitops.diff_names(wt, base)
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
@@ -415,6 +432,40 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
+        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
+            changed, task.title, task.body, pr_title, pr_body,
+        )
+        replay = self.state.get(task.id).get("interaction_replay") or {}
+        if needs_interaction and replay.get("head") != review_head:
+            # The replay is an ordinary detached check, with the same scrubbed
+            # environment, heavy-work lease and resource limits as other validation.
+            # A later tick collects its digest before the reviewer process can start.
+            self._queue_pending_reviews(self.state.get(task.id), [
+                {"kind": "review", "count_round": count_round}])
+            current = self.state.get(task.id).get("check_run") or {}
+            if current.get("run_id"):
+                existing = self._run_by_id(task, current["run_id"])
+                if existing is not None:
+                    return existing
+            nonce = secrets.token_urlsafe(24)
+            out = self.cfg.garden_dir / "interaction-replays" / task.id / nonce
+            command = shlex.join([
+                "env", f"PYTHONPATH={wt / 'src'}", sys.executable,
+                "-m", "garden.interaction_replay", "--out", str(out),
+                "--head", review_head, "--nonce", nonce,
+            ])
+            return self._dispatch_check_run(
+                task, worktree=wt, branch=branch, base=base,
+                specs=[{"name": "interaction replay", "command": command}],
+                stage="interaction_replay", extra={"timeout": 180},
+                cont={"head": review_head, "nonce": nonce,
+                      "manifest": str(out / "interaction-manifest.json"),
+                      "worktree": str(wt), "branch": branch, "base": base}, rep=TickReport(),
+            )
+        replay_nonce = str(replay.get("nonce") or "") if needs_interaction else ""
+        replay_manifest = Path(str(replay.get("manifest") or "."))
+        replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
+        run = self._new_local_run(task.id, "review", "review")
         capture_paths: list[str] = []
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
@@ -434,14 +485,20 @@ class ReviewMixin:
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
                             checks=check_results, reask_missing_fixes=reask_missing_fixes,
+                            interaction_required=needs_interaction, scalability_required=needs_scalability,
+                            review_head=review_head, interaction_reason=interaction_reason,
+                            interaction_manifest=str(replay_manifest) if needs_interaction else "",
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight)
-        run = self._new_local_run(task.id, "review", "review")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
-                            "review_head": gitops.head_sha(wt),
+                            "review_head": review_head, "interaction_required": needs_interaction,
+                            "scalability_required": needs_scalability,
+                            "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
+                            "interaction_replay_nonce": replay_nonce,
+                            "interaction_replay_digest": replay_digest,
                             "reask_missing_fixes": reask_missing_fixes,
                             "criteria": criteria_snapshot}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
@@ -470,6 +527,21 @@ class ReviewMixin:
         self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
         self.state.save()
         return run
+
+    def _after_interaction_replay_check(self, task: Task, run: Run,
+                                        results: list[dict[str, Any]], cont: dict[str, Any],
+                                        rep: TickReport) -> None:
+        """Record completed replay provenance before admitting any model reviewer."""
+        path = Path(str(cont["manifest"]))
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = ""
+        self.state.get(task.id)["interaction_replay"] = {
+            "head": cont["head"], "nonce": cont["nonce"], "manifest": str(path),
+            "digest": digest, "run_id": run.run_id,
+        }
+        self.state.save()
 
     def review_again(self, task: Task) -> Run:
         """The person asked for one more automated review after the cap stopped it: raise
@@ -554,6 +626,21 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "UI captures not read for: " + ", ".join(missing)})
+            gaps = interaction_evidence_gaps(
+                review, required=bool((run.env_snapshot or {}).get("interaction_required")),
+                scalability=bool((run.env_snapshot or {}).get("scalability_required")),
+                expected_head=str((run.env_snapshot or {}).get("review_head") or ""),
+                replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
+                replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
+                replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
+            ) if review else []
+            if gaps:
+                review["verdict"] = "request_changes"
+                review.setdefault("findings", []).append({
+                    "severity": "blocking", "file": "", "line": None,
+                    "summary": "Running-app evidence incomplete: " + "; ".join(gaps),
+                    "fix": "Replay the affected flow on the reviewed head in a disposable served app and report the required interaction fields.",
+                })
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
