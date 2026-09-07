@@ -54,9 +54,15 @@ def test_persona_revs_rejects_unsafe_or_escaping_footer_run_ids(sched, tmp_path)
     (outside / "final.md").write_text('GARDEN_PERSONA: {"persona": "security", "score": 10}')
     phase_runs = sched.runs.dir / "_demo-p1"
     phase_runs.mkdir(parents=True)
+    unsafe_run = phase_runs / "bad.run"
+    unsafe_run.mkdir()
+    (unsafe_run / "final.md").write_text(
+        'GARDEN_PERSONA: {"persona": "security", "score": 10}'
+    )
     (phase_runs / "escape").symlink_to(outside, target_is_directory=True)
 
-    assert sched._persona_revs(phase, {"unsafe": unsafe, "escaping": escaping}) == {}
+    assert sched._persona_revs(phase, {"unsafe": unsafe}) == {}
+    assert sched._persona_revs(phase, {"escaping": escaping}) == {}
 
 
 def test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimension():
