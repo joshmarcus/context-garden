@@ -45,6 +45,10 @@ class PollMixin:
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
+        # A configured CI analyser implies that a rollup is expected.  An absent rollup is
+        # an operator prerequisite, not an owner review decision; leave unconfigured CI
+        # alone so repositories that do not publish checks keep their normal review flow.
+        st["ci_missing"] = bool(self.cfg.get("checks.ci", []) and not pr.checks)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":

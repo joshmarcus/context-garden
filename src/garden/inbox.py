@@ -403,6 +403,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Open PR", "kind": "link", "href": t.pr},
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
+            if st.get("ci_missing"):
+                add("operator", t, "CI has not reported a status for this PR head", [
+                    {"label": "Open PR", "kind": "link", "href": t.pr,
+                     "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
+                ], kind="ci_missing", kind_title="CI status missing",
+                    kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
+                    reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
+                continue
             if st.get("review_run"):
                 why = "review queued"
             else:
@@ -456,13 +464,6 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             ], kind="infrastructure_hold", kind_title="Capture runtime unavailable",
                 kind_blurb="No worker attempt was consumed; this is an operator environment repair, not a product decision.",
                 reason=str(hold["diagnostic"]), evidence=[])
-        if t.pr and t.status.pr_pending and not st.get("checks"):
-            add("operator", t, "CI has not reported a status for this PR head", [
-                {"label": "Open PR", "kind": "link", "href": t.pr,
-                 "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
-            ], kind="ci_missing", kind_title="CI status missing",
-                kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
-                reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
 
     up = getattr(sched, "upgrade_available", lambda: None)()
     if up:

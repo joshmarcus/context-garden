@@ -116,11 +116,15 @@ def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sche
     sched.store.save(task)
     st = sched.state.get(task.id)
     st["infrastructure_hold"] = {"kind": "missing_libraries", "diagnostic": "install libnss3"}
-    st["checks"] = ""
+    st["ci_missing"] = True
 
     cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
-    assert {card["kind"] for card in cards if card["group"] == "operator"} == {"infrastructure_hold", "ci_missing"}
+    assert [card["kind"] for card in cards if card["group"] == "operator"] == ["ci_missing"]
     assert not any(needs_you(card) for card in cards if card["group"] == "operator")
+
+    st["ci_missing"] = False
+    cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
+    assert [card["kind"] for card in cards if card["group"] == "operator"] == ["infrastructure_hold"]
 
 
 # ---- CG-142: a done or cancelled task is terminal; no action reopens it -----
