@@ -93,6 +93,16 @@ def test_run_check_signalled_json_output_is_not_a_pass(tmp_path):
     assert "SIGTERM" in killed["summary"]
 
 
+def test_signalled_check_keeps_the_complete_diagnostic(tmp_path):
+    command = "printf 'Traceback (most recent call last):\\n'; " \
+              "i=0; while [ $i -lt 60 ]; do printf '  File \"frame.py\", line %s\\n' $i; i=$((i+1)); done; " \
+              "printf 'RuntimeError: first-frame\\nRuntimeError: last-frame\\n'; kill -TERM $$"
+    result = run_check({"name": "tests", "command": command}, {}, cwd=tmp_path)
+    assert result["status"] == "error"
+    assert 'File "frame.py", line 0' in result["details"]
+    assert "RuntimeError: last-frame" in result["details"]
+
+
 def test_check_failure_card_keeps_full_diagnostic(garden):
     """A retry that also cannot finish leaves its traceback in the human-facing evidence."""
     store = Store(garden)
