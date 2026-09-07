@@ -127,9 +127,6 @@ def garden(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)
-    # a second clone standing in for a remote host's checkout (ssh runner tests)
-    subprocess.run(["git", "clone", "-q", str(remote), str(tmp_path / "remote-clone")], check=True)
-
     root.mkdir()
     (root / "garden.yaml").write_text(yaml.safe_dump({
         "name": "test",
@@ -187,6 +184,23 @@ def garden(tmp_path: Path) -> Path:
         Do the second thing.
         """)
     return root
+
+
+@pytest.fixture(autouse=True)
+def _remote_clone_for_ssh_tests(request: pytest.FixtureRequest) -> None:
+    """Create the remote-host checkout only for tests that execute the SSH runner.
+
+    Most tests need the product repository and its bare origin for ordinary worker and
+    Git behavior, but do not use the second clone that represents an SSH host.  The
+    marker keeps that topology available to the integration cases without paying for it
+    in every garden fixture.
+    """
+    if request.node.get_closest_marker("needs_remote_clone") is None:
+        return
+    garden = request.getfixturevalue("garden")
+    remote = garden.parent / "remote.git"
+    clone = garden.parent / "remote-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
 
 
 class FakeGitHub:
