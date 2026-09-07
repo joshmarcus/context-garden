@@ -44,6 +44,27 @@ automated review is dispatched, and their state is shown on the task page. Faile
 checks enter the normal mechanical changes-requested path with their diagnostic in the
 revise brief.
 
+Before dispatching a task that explicitly requires captures, the scheduler performs one
+bounded Chromium launch in the product check's final scrubbed child environment. A failed
+probe holds only capture-dependent tasks and is cached for five minutes; unrelated work
+continues without consuming an attempt or starting a worker/base-probe run. Changes to the
+relevant environment or `worker_env.pass` invalidate the cache immediately, and a successful
+retry admits the preserved task through its normal dispatch path.
+
+The diagnostic distinguishes missing Playwright setup, an absent configured browser
+executable, missing shared libraries, a service-versus-child environment mismatch, and a
+sandbox/launch failure. Install Playwright in the product's prepared check environment; in
+an unprivileged environment, install browser/runtime files in a user-owned location and
+expose only the necessary variable (commonly `LD_LIBRARY_PATH`) with `worker_env.pass`, or use product `setup.env`.
+There is no universal library path, and the garden never installs host packages or grants
+privileges. If Config shows `worker_env.pass` as held by an in-flight fence, accept the reload
+through the supported Config action before expecting the probe to see it.
+
+Browser readiness is infrastructure evidence only. It is not application acceptance: the
+current PR head must still produce every expected PNG and provide executed interaction and
+viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
+they are retained as diagnostics, never presented as successful captures.
+
 ## The sequence
 
 ```mermaid

@@ -96,6 +96,8 @@ class DispatchMixin:
                 continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
+            if self.capture_required(task) and not self.browser_ready_for(task):
+                continue  # infrastructure hold: no worker run or task attempt is consumed
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")

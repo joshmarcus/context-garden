@@ -222,6 +222,10 @@ DEFAULTS: dict[str, Any] = {
                                   # Codex's auth.json are copied into a fresh private directory
                                   # per dispatch; custom variables pass through unchanged.
     },
+    "browser_readiness": {
+        "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
+        "retry_seconds": 300,    # retry an unchanged failed environment at most this often
+    },
     "web": {
         "trusted_origins": [],    # origins besides the server's own loopback host whose POSTs
                                   # `garden serve` accepts, e.g. [https://garden.internal] behind a
