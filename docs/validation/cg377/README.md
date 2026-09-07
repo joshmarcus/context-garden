@@ -1,3 +1,9 @@
+Final integrated source 8d82306f8fe2b4f9eebdff89f949082f6baa63e7: 158 focused review/preflight/replay/walkthrough tests passed,
+one browser-dependent case skipped (280.8MiB peak/noSwap). The real served disposable app
+passed all nine flows and 104 HTTP requests. integrated-manifest.json and integrated-output.txt
+retain the evidence; the following commit changes documentation/artifacts only. CG376-linked
+friction was recorded through record_friction in the operating garden and committed asd0017d0.
+
 # CG377 scoped validation / CG376 friction evidence
 
 The integration with CG323 and CG339 uses the same explicit head-bound plan in worker
