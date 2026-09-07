@@ -105,6 +105,26 @@ def test_retro_questions_reuse_an_answered_card_across_runs(tmp_path, fake_githu
     assert sched.pending_decisions() == []
 
 
+def test_retro_question_deduplication_is_scoped_to_the_phase(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    _write(root / "gdn" / "p2" / "goals.md", "# p2\n\nClose the phase.\n")
+    sched = Scheduler(Store(root), github=fake_github, log=print)
+    first_phase = sched.store.phase("gdn", "p1")
+    second_phase = sched.store.phase("gdn", "p2")
+
+    first = sched._file_question(first_phase, {"question": "Which rollout should the next phase use?"}, 0,
+                                 "retro-one", source="retro:gdn/p1")
+    sched.answer_question(first["decision_id"], "gradual")
+    second = sched._file_question(second_phase, {"question": "Which rollout should next phase use"}, 0,
+                                  "retro-two", source="retro:gdn/p2")
+
+    assert second["decision_id"] != first["decision_id"]
+    assert "duplicate" not in second
+    assert {d["phase"] for d in sched.pending_decisions()} == {"gdn/p2"}
+
+
 def test_features_section_renders_rank_ids_and_skips():
     filed = [
         {"title": "New thing", "task_id": "GD-003", "status": "draft", "difficulty": "medium",

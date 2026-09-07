@@ -101,6 +101,7 @@ class KickoffMixin:
             key = normalize_question(question)
             for decision in self.state.get("_decisions").values():
                 if (isinstance(decision, dict) and decision.get("kind") == "question"
+                        and decision.get("phase") == phase.key
                         and decision.get("source", "").startswith("retro:")
                         and normalize_question(str(decision.get("question") or "")) == key):
                     return {"question": question, "context": str(item.get("context") or "").strip(),
@@ -109,6 +110,7 @@ class KickoffMixin:
                             "duplicate": True}
             for decision in self.state.get("_decision_history").get("questions") or []:
                 if (isinstance(decision, dict) and decision.get("kind") == "question"
+                        and decision.get("phase") == phase.key
                         and decision.get("source", "").startswith("retro:")
                         and normalize_question(str(decision.get("question") or "")) == key):
                     return {"question": question, "context": str(item.get("context") or "").strip(),
