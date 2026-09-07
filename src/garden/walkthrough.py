@@ -179,10 +179,10 @@ class _TextParser(HTMLParser):
     _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
                              "meta", "param", "source", "track", "wbr"})
 
-    def __init__(self, hidden_selectors: set[str] | None = None) -> None:
+    def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self._hidden_selectors = hidden_selectors or set()
+        self._hidden_selectors = hidden_selectors or []
         self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
         self._hidden_depth = 0
         self._ignored_depth = 0
@@ -238,28 +238,58 @@ class _TextParser(HTMLParser):
         return True
 
     @staticmethod
-    def _selector_components(selector: str) -> list[str] | None:
-        """Split descendant/child selectors without splitting inside [] or ()."""
-        components: list[str] = []
-        start = 0
+    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+        """Split selectors, retaining whether each component requires a direct parent."""
+        components: list[tuple[str, str | None]] = []
+        buffer: list[str] = []
         brackets = parentheses = 0
-        for index, char in enumerate(selector):
+        pending: str | None = None
+        whitespace = False
+
+        def add_component() -> bool:
+            nonlocal pending, whitespace
+            component = "".join(buffer).strip()
+            if not component:
+                return True
+            relation = pending
+            if relation is None and components and whitespace:
+                relation = " "
+            components.append((component, relation))
+            buffer.clear()
+            pending = None
+            whitespace = False
+            return True
+
+        for char in selector:
             if char == "[":
                 brackets += 1
             elif char == "]":
                 brackets -= 1
+                if brackets < 0:
+                    return None
             elif char == "(":
                 parentheses += 1
             elif char == ")":
                 parentheses -= 1
-            elif not brackets and not parentheses and (char.isspace() or char == ">"):
-                if selector[start:index].strip():
-                    components.append(selector[start:index].strip())
-                start = index + 1
-        if brackets or parentheses:
+                if parentheses < 0:
+                    return None
+            if brackets or parentheses:
+                buffer.append(char)
+            elif char.isspace():
+                add_component()
+                whitespace = True
+            elif char == ">":
+                add_component()
+                if not components or pending == ">":
+                    return None
+                pending = ">"
+            else:
+                if not buffer and whitespace and components and pending is None:
+                    pending = " "
+                buffer.append(char)
+                whitespace = False
+        if brackets or parentheses or not add_component() or pending:
             return None
-        if selector[start:].strip():
-            components.append(selector[start:].strip())
         return components
 
     def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
@@ -268,25 +298,37 @@ class _TextParser(HTMLParser):
         # A selector's final component identifies the element; checking its ancestors
         # as well handles the descendant selectors used by the web templates without
         # needing a CSS dependency in the walkthrough tool.
-        for selector in self._hidden_selectors:
+        hidden: bool | None = None
+        winning_rule: tuple[bool, int] | None = None
+        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
             components = self._selector_components(selector.strip())
             if not components:
                 continue
-            if not components or not self._matches_simple_selector(tag, attrs, components[-1]):
+            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
                 continue
             ancestors = self._elements
             index = len(ancestors) - 1
             matched = True
-            for component in reversed(components[:-1]):
-                while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
-                    index -= 1
-                if index < 0:
-                    matched = False
-                    break
+            for component_index in range(len(components) - 1, 0, -1):
+                relation = components[component_index][1]
+                component = components[component_index - 1][0]
+                if relation == ">":
+                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                        matched = False
+                        break
+                else:
+                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                        index -= 1
+                    if index < 0:
+                        matched = False
+                        break
                 index -= 1
             if matched:
-                return True
-        return False
+                rule_order = (important, rule_index)
+                if winning_rule is None or rule_order >= winning_rule:
+                    winning_rule = rule_order
+                    hidden = is_none
+        return bool(hidden)
 
     def _is_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
         values = {name.lower(): value for name, value in attrs}
@@ -361,12 +403,19 @@ def _redact_home(text: str, home: str) -> str:
 
 def html_to_text(page: str) -> str:
     """Render visible element text, excluding hidden subtrees and all attributes."""
-    hidden_selectors: set[str] = set()
+    hidden_selectors: list[tuple[str, bool, bool]] = []
     for css in re.findall(r"<style\b[^>]*>(.*?)</style\s*>", page, re.I | re.S):
         css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
         for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
-            if re.search(r"display\s*:\s*none(?:\s*!important)?", declarations, re.I):
-                hidden_selectors.update(part.strip() for part in selectors.split(",") if part.strip())
+            display = re.search(r"display\s*:\s*([\w-]+)(\s*!important)?", declarations, re.I)
+            if display:
+                is_none = display.group(1).lower() == "none"
+                important = bool(display.group(2))
+                hidden_selectors.extend(
+                    (part.strip(), is_none, important)
+                    for part in selectors.split(",")
+                    if part.strip()
+                )
     parser = _TextParser(hidden_selectors)
     parser.feed(page)
     parser.close()

@@ -276,6 +276,22 @@ def test_html_to_text_does_not_overmatch_unsupported_or_nested_selectors():
     assert "Visible details" in txt
 
 
+def test_html_to_text_respects_child_selector_combinators():
+    txt = html_to_text(
+        '<style>.outer > .target { display:none }</style>'
+        '<div class="outer"><div class="intermediate"><p class="target">Visible text</p></div></div>'
+    )
+    assert "Visible text" in txt
+
+
+def test_html_to_text_applies_later_display_rule():
+    txt = html_to_text(
+        '<style>.panel { display:none } .panel { display:block }</style>'
+        '<div class="panel">Restored text</div>'
+    )
+    assert "Restored text" in txt
+
+
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")
