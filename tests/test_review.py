@@ -105,6 +105,117 @@ def test_review_ladder_defers_when_the_selected_reviewer_harness_is_paused(sched
     assert sched.state.get(task.id)["pending_reviews"] == [{"kind": "review"}]
 
 
+def test_queued_reviews_take_shared_capacity_before_lower_priority_work(sched):
+    """CG-372: a queued critical review claims a released local slot before ready work.
+
+    Reviews, workers and detached checks share ``resources.max_parallel``.  This is
+    deliberately an admission test rather than a reservation: only an eligible queued
+    review starts, and the usual one-slot limits still apply.
+    """
+    from garden.scheduler import TickReport
+
+    critical = sched.store.task("DM-001")
+    critical.priority = 0
+    critical.status = Status.IN_REVIEW
+    sched.store.save(critical)
+    sched.state.get(critical.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    lower = sched.store.task("DM-002")
+    lower.depends_on = []
+    lower.priority = 3
+    sched.store.save(lower)
+
+    sched.cfg.data["max_parallel"] = 1
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == ["DM-001(review)"], rep.errors
+    assert sched.review_slots_free() == 0
+    assert not any(run.task_id == lower.id and run.mode == "work" for run in sched.runs.active())
+    assert not sched.state.get(critical.id).get("pending_reviews")
+
+
+
+def test_queued_critical_review_precedes_a_lower_priority_check(sched):
+    from garden.scheduler import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    critical = sched.store.task("DM-001")
+    critical.priority = 0
+    critical.status = Status.IN_REVIEW
+    sched.store.save(critical)
+    sched.state.get(critical.id)["pending_reviews"] = [{"kind": "review"}]
+    lower = sched.store.task("DM-002")
+    lower.priority = 3
+    sched.store.save(lower)
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    rep = TickReport()
+    with pytest.raises(ResourcePressureError):
+        sched._dispatch_check_run(lower, worktree=sched.worktree_for(lower),
+                                  branch=lower.default_branch(), base="main", specs=[],
+                                  stage="pre_pr", cont={}, rep=rep)
+    assert rep.dispatched == ["DM-001(review)"]
+    assert not sched.state.get(lower.id).get("check_run")
+    assert not any(r.task_id == lower.id and r.mode == "check" for r in sched.runs.active())
+
+def test_queued_reviews_use_task_order_to_break_equal_priority_ties(sched):
+    """Queued reviews are strict by priority and deterministic by task order then id."""
+    from garden.scheduler import TickReport
+
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    for task, order in ((first, 20), (second, 10)):
+        task.priority = 0
+        task.order = order
+        task.status = Status.IN_REVIEW
+        task.depends_on = []
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    sched.cfg.data["review_parallel"] = 1
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == ["DM-002(review)"], rep.errors
+    assert sched.state.get(first.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+
+
+
+def test_queued_review_explanation_matches_equal_priority_drain_order(sched):
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    for task, order in ((first, 10), (second, 20)):
+        task.priority = 0
+        task.order = order
+        task.status = Status.IN_REVIEW
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [{"kind": "review"}]
+    assert sched._queued_review_predecessor(first) is None
+    assert sched._queued_review_predecessor(second).id == first.id
+
+def test_new_equal_priority_review_waits_for_an_established_queue_member(sched):
+    """A task cannot repeatedly reclaim the slot while a band-mate is already queued."""
+    from garden.scheduler import TickReport
+
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    first.priority = second.priority = 0
+    first.status = second.status = Status.IN_REVIEW
+    sched.store.save(first)
+    sched.store.save(second)
+    sched.state.get(second.id)["pending_reviews"] = [{"kind": "review", "count_round": True}]
+
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(first, [{"kind": "review", "count_round": True}], rep)
+
+    assert rep.dispatched == []
+    assert sched.state.get(first.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert sched.state.get(second.id)["pending_reviews"] == [{"kind": "review", "count_round": True}]
+
+
 def test_review_brief_and_parse(garden):
     store = Store(garden)
     t = store.task("DM-001")
@@ -870,6 +981,112 @@ def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round
     rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
     assert "DM-001 review: approve" in rep.transitions
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_unlimited_review_cap_dispatches_beyond_the_former_limit_under_review_admission(sched, fake_github, monkeypatch):
+    """A null cap keeps the normal work/review/revise lifecycle going past two rounds.
+
+    The third dispatch proves that the unlimited setting is not merely accepted by the
+    config helper: it still goes through the normal one-slot review admission path.
+    """
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 4,
+                                "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> review round 1
+    sched.tick()  # reap review 1 -> revise
+    sched.tick()  # reap revise -> review round 2
+    sched.tick()  # reap review 2 -> revise
+    rep = sched.tick()  # reap revise -> review round 3, beyond the former cap
+
+    assert "DM-001(review)" in rep.dispatched
+    st = sched.state.get("DM-001")
+    assert st["review_rounds"] == 3
+    assert len(sched.review_runs_active()) == 1
+    assert sched.review_slots_free() == 0
+
+
+def test_review_cap_recovery_keeps_actionable_feedback_after_a_scheduler_restart(sched, fake_github, monkeypatch):
+    """`garden review` recovers a capped PR without losing the earlier actionable review."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 1, "friction_after": None,
+                                "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> review round 1
+    sched.tick()  # reap review -> actionable feedback -> revise
+    sched.tick()  # reap revise -> finite cap stop
+
+    task = sched.store.task("DM-001")
+    assert sched.state.get(task.id)["needs_human"]["kind"] == "review_cap"
+    original_feedback = sched.state.get(task.id)["last_review"]["findings"][0]["summary"]
+    assert original_feedback == "missing test"
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+    # Match the CLI's scheduler construction after the cap card has gone stale on disk.
+    recovered = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    task = recovered.store.task("DM-001")
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
+    run = recovered.review_again(task)
+    assert run.mode == "review"
+    assert not recovered.state.get(task.id).get("needs_human")
+    assert recovered.state.get(task.id)["last_review"]["findings"][0]["summary"] == original_feedback
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+    rep = recovered.tick()
+    assert "DM-001 review: approve" in rep.transitions
+    assert any(original_feedback in comment for comment in fake_github.comments)
+
+
+def test_unlimited_review_cap_records_one_loop_friction_signal(sched):
+    """A soft threshold remains observable and non-blocking under an unlimited cap."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 3}
+    task = sched.store.task("DM-001")
+    task.pr = "https://github.com/test/demo/pull/71"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update(review_rounds=3, review_heads=["head-a", "head-b"],
+              pending_feedback="- **reviewer**: add the missing assertion")
+
+    assert sched._review_round_pending(st)
+    sched._record_review_loop_friction(task, st)
+    sched._record_review_loop_friction(task, st)
+
+    friction = (sched.store.phase("demo", "p1").path / "docs" / "friction.md").read_text()
+    assert friction.count("Review loop: 3 rounds") == 1
+    assert "head-a, head-b" in friction
+    assert "newly discovered defect" in friction
+    assert not st.get("needs_human")
+    signals = sched.events.read(task_id=task.id, kinds=["review_loop_friction"])
+    assert len(signals) == 1
+
+
+@pytest.mark.parametrize(("state", "feedback", "expected"), [
+    ({"pending_feedback_rebase": True}, "fix it", "mechanical rebase/head change"),
+    ({}, "read the screenshot capture", "stale/missing infrastructure evidence"),
+    ({"pending_feedback_easy": True}, "rewrite the summary", "description-only correction"),
+    ({}, "fix it", "newly discovered defect"),
+    ({"review_feedback_history": ["fix it", "fix it"]}, "fix it", "repeated unaddressed finding"),
+    ({}, "", "lost feedback/state transition"),
+    ({"last_review": {"summary": "recorded"}}, "", "unknown"),
+])
+def test_review_loop_cause_classifies_each_supported_or_unknown_diagnosis(state, feedback, expected):
+    assert Scheduler._review_loop_cause(state, feedback) == expected
+
+
+def test_finite_review_cap_and_invalid_optional_values_are_unambiguous(sched):
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "friction_after": None}
+    st = sched.state.get("DM-001")
+    st["review_rounds"] = 2
+    assert not sched._review_round_pending(st)
+
+    sched.cfg.data["review"]["max_rounds"] = 0
+    with pytest.raises(ValueError, match="null or a positive integer"):
+        sched.cfg.review_max_rounds()
 
 
 def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(sched, fake_github):
