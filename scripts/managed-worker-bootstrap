@@ -78,6 +78,14 @@ def main():
     # Block IMDS (both address families) before starting unprivileged workload code.
     command("iptables", "-I", "OUTPUT", "-d", "169.254.169.254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
     command("ip6tables", "-I", "OUTPUT", "-d", "fd00:ec2::254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
+    firewall = Path("/usr/local/bin/garden-worker-firewall")
+    firewall.write_text("#!/bin/sh\nset -eu\n"
+        + "iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT\n"
+        + "ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT\n")
+    firewall.chmod(0o700)
+    Path("/etc/systemd/system/garden-worker-firewall.service").write_text(
+        "[Unit]\nBefore=garden-worker.service\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/bin/garden-worker-firewall\nRemainAfterExit=yes\n")
     token = fetch_imds("api/token", token=True)
     secret["provider_id"] = fetch_imds("meta-data/instance-id", token=token)
     secret["work_dir"] = "/var/lib/garden-worker/work"
@@ -97,6 +105,7 @@ def main():
     os.chown(gitconfig, uid, pwd.getpwnam("garden-worker").pw_gid)
     gitconfig.chmod(0o400)
     Path("/etc/systemd/system/garden-worker.service").write_text(
+        "[Unit]\nRequires=garden-worker-firewall.service\nAfter=garden-worker-firewall.service network-online.target\n"
         "[Service]\nUser=garden-worker\nGroup=garden-worker\n"
         "Environment=HOME=/var/lib/garden-worker\nEnvironment=PATH=/opt/garden-worker/bin:/usr/local/bin:/usr/bin:/bin\n"
         "ExecStart=/opt/garden-worker/bin/python -m garden.managed_worker --config /etc/garden-worker.json\n"
