@@ -102,6 +102,17 @@ class HostLifecycle:
         operation = self._operation_id(pool, slot)
         return HostDeclaration(host_id=f"{pool.name}-{slot}", operation_id=operation, pool=pool)
 
+    def _available_slots(self, pool: PoolDeclaration, hosts: list[HostFacts]) -> list[int]:
+        """Return the lowest stable slots not occupied by discovered hosts."""
+        occupied_operations = {host.operation_id for host in hosts}
+        available: list[int] = []
+        slot = 0
+        while len(available) < pool.desired:
+            if self._operation_id(pool, slot) not in occupied_operations:
+                available.append(slot)
+            slot += 1
+        return available
+
     def plan(self, pool: PoolDeclaration) -> HostPlan:
         self.validate(pool)
         provider = self._provider(pool)
@@ -143,7 +154,8 @@ class HostLifecycle:
         events: list[HostEvent] = []
         failures: list[HostFacts] = []
         retirements: list[HostFacts] = []
-        for slot in range(len(active), pool.desired):
+        slots = self._available_slots(pool, active)[: max(0, pool.desired - len(active))]
+        for slot in slots:
             declaration = self._declaration(pool, slot)
             self.policy.authorize("provision", declaration)
             # Discover by the stable operation tag immediately before launch. This closes

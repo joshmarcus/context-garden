@@ -78,6 +78,24 @@ def test_duplicate_delayed_request_and_controller_restart_do_not_duplicate_host(
     assert "provisioning_uncertain" in state_path.read_text()
 
 
+def test_reconcile_replaces_a_missing_lower_slot_without_reusing_an_occupied_operation(tmp_path):
+    provider = FakeProvider()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "state.json"))
+    enabled = pool(enabled=True, desired=2, maximum=2)
+    initial = lifecycle.reconcile(enabled)
+    slot_one = next(host for host in initial if host.host_id == "workers-1")
+    slot_zero = next(host for host in initial if host.host_id == "workers-0")
+    del provider.hosts[slot_zero.provider_id]
+    del provider.ownership[slot_zero.provider_id]
+
+    reconciled = lifecycle.reconcile(enabled)
+
+    assert {host.host_id for host in reconciled} == {"workers-0", "workers-1"}
+    assert len({host.operation_id for host in reconciled}) == 2
+    assert slot_one.operation_id in {host.operation_id for host in reconciled}
+    assert provider.provision_calls == 3
+
+
 def test_bootstrap_failure_is_explicit_and_cleans_up_owned_host(tmp_path):
     provider = FakeProvider()
     lifecycle = HostLifecycle(
