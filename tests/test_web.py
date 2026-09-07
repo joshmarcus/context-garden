@@ -1618,6 +1618,17 @@ def test_pause_resume_web(garden):
     assert "Pause dispatch" in config_page
 
 
+def test_maintenance_pause_web_and_api(garden):
+    c = client(garden)
+    r = c.post("/maintenance/pause", data={"reason": "restart"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert c.get("/api/maintenance").json()["requested"]
+    assert "Maintenance is" in c.get("/config").text
+    r = c.post("/maintenance/resume", follow_redirects=False)
+    assert r.status_code == 303
+    assert not c.get("/api/maintenance").json()["requested"]
+
+
 def test_max_parallel_override_from_config_page(garden):
     c = client(garden)
     config_page = c.get("/config").text

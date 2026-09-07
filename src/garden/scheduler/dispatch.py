@@ -315,6 +315,7 @@ class DispatchMixin:
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
                   reserved_run: Run | None = None) -> Run:
+        self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
         runner = runner or self.runner_for(task)

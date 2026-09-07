@@ -113,6 +113,42 @@ def unpause():
     console.print("[green]dispatch resumed[/green]")
 
 
+@app.command("maintenance-pause", rich_help_panel=PANEL_LOOP)
+def maintenance_pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason to record")):
+    """Request a full scheduler freeze for reinstall or restart.
+
+    This differs from ``pause``: ordinary pause blocks new dispatch only, while
+    maintenance pause also stops result collection after the current pass reaches a
+    transaction boundary.  Run ``garden maintenance-status`` to see quiescence.
+    """
+    store = _store()
+    sched = _scheduler(store)
+    sched.request_maintenance_pause(by="cli", reason=reason)
+    console.print("[yellow]maintenance pause requested; wait for maintenance-status to report quiesced[/yellow]")
+
+
+@app.command("maintenance-resume", rich_help_panel=PANEL_LOOP)
+def maintenance_resume():
+    """Explicitly resume collection and scheduling after maintenance."""
+    store = _store()
+    _scheduler(store).resume_maintenance(by="cli")
+    console.print("[green]maintenance resumed[/green]")
+
+
+@app.command("maintenance-status", rich_help_panel=PANEL_LOOP)
+def maintenance_status():
+    """Show quiescence and concrete runtime-dependent reinstall blockers."""
+    store = _store()
+    status = _scheduler(store).maintenance_readiness()
+    state = "quiesced" if status["quiesced"] else "requested" if status["requested"] else "running"
+    console.print(f"maintenance: {state}")
+    for run in status["live"]:
+        console.print(f"blocker {run['task']}/{run['run']} ({run['mode']}, {run['state']}): {run['blocker']}")
+    if status["finished_uncollected"]:
+        console.print("finished but uncollected (safe to reinstall): " + ", ".join(status["finished_uncollected"]))
+    console.print("reinstall ready" if status["ready"] else "reinstall not ready")
+
+
 @app.command(rich_help_panel=PANEL_DECIDE)
 def resume(task_id: str = typer.Argument(..., help="The task to clear")):
     """Clear a task's needs-human stop without starting a run: it goes back where it was.
