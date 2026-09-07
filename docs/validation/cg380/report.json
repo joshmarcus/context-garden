@@ -1,0 +1,5451 @@
+{
+  "build": "37f659fab4480efe1c29c07ac996b6f0a2899c1b",
+  "caps_and_initial_cgroup": {
+    "cpu.max": "400000 100000",
+    "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=103\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=103",
+    "cpu.stat": "usage_usec 319366\nuser_usec 115770\nsystem_usec 203596\nnr_periods 4\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+    "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "memory.current": "35995648",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+    "memory.high": "805306368",
+    "memory.max": "1073741824",
+    "memory.peak": "36618240",
+    "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "memory.stat": "anon 14594048\nfile 15671296\nkernel 5369856\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 576\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 8151040\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14561280\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5052944\nslab_unreclaimable 78680\nslab 5131624\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 4837\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+    "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+    "pids.max": "128",
+    "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+    "self_pid": 108617,
+    "temp_free_bytes": 2000801792
+  },
+  "commands": {
+    "session:1": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=2023\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=2023",
+        "cpu.stat": "usage_usec 2098618\nuser_usec 1876649\nsystem_usec 221969\nnr_periods 65\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "35823616",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "84119552",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5259264\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 576\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5059496\nslab_unreclaimable 63984\nslab 5123480\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 16998\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=103\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=103",
+        "cpu.stat": "usage_usec 319366\nuser_usec 115770\nsystem_usec 203596\nnr_periods 4\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "35995648",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "36618240",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5378048\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 576\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 8151040\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14561280\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5052944\nslab_unreclaimable 82376\nslab 5135320\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 4839\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "/home/joshua/work/worktrees/CG-380/docs/validation/cg380/reproduce.py",
+        "--fixture",
+        "session"
+      ],
+      "count": 1,
+      "descendant_maxrss_kib": 59216,
+      "descendant_system_cpu_s": 0.016278,
+      "descendant_user_cpu_s": 1.757604,
+      "elapsed_s": 6.1323778060032055,
+      "exit_codes": [
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108619
+        }
+      ]
+    },
+    "session:4": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=4481\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=4481",
+        "cpu.stat": "usage_usec 9443748\nuser_usec 9079912\nsystem_usec 363836\nnr_periods 126\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "36433920",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "229756928",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5337088\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 1440\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 737280\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5067632\nslab_unreclaimable 109608\nslab 5177240\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 65634\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=2023\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=2023",
+        "cpu.stat": "usage_usec 2100894\nuser_usec 1878925\nsystem_usec 221969\nnr_periods 65\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "35823616",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "84119552",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5263360\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 576\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5059496\nslab_unreclaimable 67680\nslab 5127176\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 16998\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "/home/joshua/work/worktrees/CG-380/docs/validation/cg380/reproduce.py",
+        "--fixture",
+        "session"
+      ],
+      "count": 4,
+      "descendant_maxrss_kib": 59348,
+      "descendant_system_cpu_s": 0.139498,
+      "descendant_user_cpu_s": 7.193988,
+      "elapsed_s": 6.144847691000905,
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108745
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108746
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108747
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108748
+        }
+      ]
+    },
+    "setup:1": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=11046\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=11046",
+        "cpu.stat": "usage_usec 10030479\nuser_usec 9481906\nsystem_usec 548573\nnr_periods 187\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=32\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=32",
+        "memory.current": "36155392",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "230117376",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14598144\nfile 15671296\nkernel 5267456\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14594048\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5062608\nslab_unreclaimable 65008\nslab 5127616\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 128718\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=10950\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=10950",
+        "cpu.stat": "usage_usec 9985645\nuser_usec 9437115\nsystem_usec 548529\nnr_periods 186\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=32\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=32",
+        "memory.current": "36331520",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "230117376",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14598144\nfile 15671296\nkernel 5345280\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 1440\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14594048\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5068032\nslab_unreclaimable 119624\nslab 5187656\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 126457\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "-m",
+        "compileall",
+        "-q",
+        "/home/joshua/work/worktrees/CG-380/src"
+      ],
+      "count": 1,
+      "descendant_maxrss_kib": 59348,
+      "descendant_system_cpu_s": 0.0,
+      "descendant_user_cpu_s": 0.040334000000001424,
+      "elapsed_s": 0.06486866399063729,
+      "exit_codes": [
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108882
+        }
+      ]
+    },
+    "validation:1": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=11177\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=11177",
+        "cpu.stat": "usage_usec 10521428\nuser_usec 9912883\nsystem_usec 608545\nnr_periods 192\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=32\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=32",
+        "memory.current": "37113856",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "230117376",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14598144\nfile 16175104\nkernel 5431296\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 262144\nfile_mapped 0\nfile_dirty 217088\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14778368\nactive_anon 81920\ninactive_file 8368128\nactive_file 7544832\nunevictable 0\nslab_reclaimable 5142016\nslab_unreclaimable 156272\nslab 5298288\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 147482\npgmajfault 0\npgrefill 0\npgactivate 141\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000539648
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=11046\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=11046",
+        "cpu.stat": "usage_usec 10030479\nuser_usec 9481906\nsystem_usec 548573\nnr_periods 187\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=32\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=32",
+        "memory.current": "36155392",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "230117376",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14598144\nfile 15671296\nkernel 5271552\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14594048\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5062608\nslab_unreclaimable 72736\nslab 5135344\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 128718\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "-m",
+        "pytest",
+        "/home/joshua/work/worktrees/CG-380/tests/scheduler/test_resources.py::test_effective_memory_uses_tighter_cgroup_headroom",
+        "-q"
+      ],
+      "count": 1,
+      "descendant_maxrss_kib": 74732,
+      "descendant_system_cpu_s": 0.05229400000000001,
+      "descendant_user_cpu_s": 0.42979399999999934,
+      "elapsed_s": 0.5154073960002279,
+      "exit_codes": [
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108883
+        }
+      ]
+    },
+    "wait:1": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=7949\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=7949",
+        "cpu.stat": "usage_usec 9542819\nuser_usec 9162707\nsystem_usec 380112\nnr_periods 156\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "36081664",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "229756928",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5271552\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 737280\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5059496\nslab_unreclaimable 67952\nslab 5127448\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 77792\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=4481\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=4481",
+        "cpu.stat": "usage_usec 9444813\nuser_usec 9080977\nsystem_usec 363836\nnr_periods 126\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "36433920",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "229756928",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5341184\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 1440\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 737280\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5067632\nslab_unreclaimable 113304\nslab 5180936\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 65634\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "/home/joshua/work/worktrees/CG-380/docs/validation/cg380/reproduce.py",
+        "--fixture",
+        "wait"
+      ],
+      "count": 1,
+      "descendant_maxrss_kib": 59348,
+      "descendant_system_cpu_s": 0.016314999999999996,
+      "descendant_user_cpu_s": 0.06526099999999957,
+      "elapsed_s": 6.10301039199112,
+      "exit_codes": [
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108839
+        }
+      ]
+    },
+    "wait:4": {
+      "cgroup_after": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=10950\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=10950",
+        "cpu.stat": "usage_usec 9985645\nuser_usec 9437115\nsystem_usec 548529\nnr_periods 186\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=32\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=32",
+        "memory.current": "36331520",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "230117376",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14598144\nfile 15671296\nkernel 5341184\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 1440\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14594048\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5068032\nslab_unreclaimable 115928\nslab 5183960\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 126457\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "cgroup_before": {
+        "cpu.max": "400000 100000",
+        "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=7949\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=7949",
+        "cpu.stat": "usage_usec 9542819\nuser_usec 9162707\nsystem_usec 380112\nnr_periods 156\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+        "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.current": "36081664",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "memory.high": "805306368",
+        "memory.max": "1073741824",
+        "memory.peak": "229756928",
+        "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "memory.stat": "anon 14594048\nfile 15671296\nkernel 5275648\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 0\nfile_mapped 0\nfile_dirty 737280\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 14589952\nactive_anon 4096\ninactive_file 8151040\nactive_file 7520256\nunevictable 0\nslab_reclaimable 5059496\nslab_unreclaimable 71648\nslab 5131144\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 77792\npgmajfault 0\npgrefill 0\npgactivate 130\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+        "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "pids.max": "128",
+        "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+        "self_pid": 108617,
+        "temp_free_bytes": 2000801792
+      },
+      "command": [
+        "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+        "/home/joshua/work/worktrees/CG-380/docs/validation/cg380/reproduce.py",
+        "--fixture",
+        "wait"
+      ],
+      "count": 4,
+      "descendant_maxrss_kib": 59348,
+      "descendant_system_cpu_s": 0.15723499999999996,
+      "descendant_user_cpu_s": 0.264996,
+      "elapsed_s": 6.157636971009197,
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "identities": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108850
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108851
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108852
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+          "pid": 108853
+        }
+      ]
+    }
+  },
+  "dataset": {
+    "events": 12500,
+    "runs": 1549,
+    "tasks": 100
+  },
+  "final_cgroup": {
+    "cpu.max": "400000 100000",
+    "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=17834\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=17833",
+    "cpu.stat": "usage_usec 49051583\nuser_usec 47130660\nsystem_usec 1920923\nnr_periods 535\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+    "io.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=34\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=34",
+    "memory.current": "39030784",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+    "memory.high": "805306368",
+    "memory.max": "1073741824",
+    "memory.peak": "348356608",
+    "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "memory.stat": "anon 16138240\nfile 16297984\nkernel 6057984\nkernel_stack 0\npagetables 98304\nsec_pagetables 0\npercpu 864\nsock 0\nvmalloc 0\nshmem 262144\nfile_mapped 0\nfile_dirty 77824\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 16318464\nactive_anon 81920\ninactive_file 331776\nactive_file 15704064\nunevictable 0\nslab_reclaimable 5475088\nslab_unreclaimable 193288\nslab 5668376\nworkingset_refault_anon 0\nworkingset_refault_file 0\nworkingset_activate_anon 0\nworkingset_activate_file 0\nworkingset_restore_anon 0\nworkingset_restore_file 0\nworkingset_nodereclaim 0\npgscan 0\npgsteal 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgfault 547949\npgmajfault 0\npgrefill 0\npgactivate 2141\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+    "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+    "pids.max": "128",
+    "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+    "self_pid": 108617,
+    "temp_free_bytes": 2000539648
+  },
+  "finished_at": "2026-09-07T12:46:41Z",
+  "pages": {
+    "0": {
+      "background_tick_wall_s": [
+        0.24166356900241226,
+        0.24048844499338884,
+        0.239448167005321
+      ],
+      "load_pids": [],
+      "profiled": true,
+      "rows": [
+        {
+          "elapsed_s": 0.22567585900833365,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1221161569992546,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12283134598692413,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11621354399539996,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12429438899562228,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12509829700866248,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1177638810040662,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.13702369999373332,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.17255051400570665,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12340352000319399,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1183080020127818,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12319432500225957,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.13098383801116142,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12526739299937617,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.05050677100371104,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.03968573300517164,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04019580599560868,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04023965999658685,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04040953800722491,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.03978045099938754,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.039784870998119004,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.16762168599234428,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12913479100097902,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11517452899715863,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11411039500671905,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12086440400162246,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12294498400297016,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11830287499469705,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11929389300348703,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.18078278299071826,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12844818699522875,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11717247699561995,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11938749300315976,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11933102700277232,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11806480900850147,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04367060500953812,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.0460995800094679,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04134592800983228,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04053721200034488,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.0408157320052851,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.040236461005406454,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.03980042799958028,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1777716299984604,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12536491999344435,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11661193799227476,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11728022500756197,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1256329080060823,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11692212599155027,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12377068999921903,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11938995899981819,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1642597040045075,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12589849800860975,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11684899601095822,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11729178400128148,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11474814001121558,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11951478199625853,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04593401699094102,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.047775734987226315,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.041971312995883636,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04087129000981804,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.03958831100317184,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.039766927002347074,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04081385700555984,
+          "path": "/config",
+          "period": "expiry"
+        }
+      ],
+      "server_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+      "server_pid": 108908,
+      "slots": 0,
+      "spans": [
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.22464925099999994,
+          "spans": {
+            "event_read_parse_s": 0.017360329991788603,
+            "process_resource_inspection_s": 0.000435232010204345,
+            "render_s": 0.06127067199849989,
+            "run_index_s": 0.03980242605030071,
+            "task_product_scan_s": 0.050225917002535425
+          },
+          "wall_s": 0.22464176299399696
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12114818599999999,
+          "spans": {
+            "event_read_parse_s": 0.016707711009075865,
+            "process_resource_inspection_s": 0.00036004801222588867,
+            "render_s": 0.000515695006470196,
+            "run_index_s": 2.2925989469513297e-05,
+            "task_product_scan_s": 0.0511564689950319
+          },
+          "wall_s": 0.12114973799907602
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12194100099999994,
+          "spans": {
+            "event_read_parse_s": 0.023461146993213333,
+            "process_resource_inspection_s": 0.00040549000550527126,
+            "render_s": 0.0005048830062150955,
+            "run_index_s": 2.239597961306572e-05,
+            "task_product_scan_s": 0.050064005015883595
+          },
+          "wall_s": 0.12195068500295747
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11532651100000002,
+          "spans": {
+            "event_read_parse_s": 0.016372244004742242,
+            "process_resource_inspection_s": 0.00035496499913278967,
+            "render_s": 0.0005765470123151317,
+            "run_index_s": 2.1904997993260622e-05,
+            "task_product_scan_s": 0.049980707990471274
+          },
+          "wall_s": 0.11529075299040414
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12353202400000007,
+          "spans": {
+            "event_read_parse_s": 0.017234936996828765,
+            "process_resource_inspection_s": 0.0005432280013337731,
+            "render_s": 0.0005228020017966628,
+            "run_index_s": 2.440098614897579e-05,
+            "task_product_scan_s": 0.053291671007173136
+          },
+          "wall_s": 0.1234561089950148
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12436351199999995,
+          "spans": {
+            "event_read_parse_s": 0.023064218999934383,
+            "process_resource_inspection_s": 0.00035689798824023455,
+            "render_s": 0.0004801479954039678,
+            "run_index_s": 2.3178989067673683e-05,
+            "task_product_scan_s": 0.0515970889973687
+          },
+          "wall_s": 0.1242917799972929
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11691441899999999,
+          "spans": {
+            "event_read_parse_s": 0.014451985000050627,
+            "process_resource_inspection_s": 0.00035159300023224205,
+            "render_s": 0.0005351439904188737,
+            "run_index_s": 2.277101157233119e-05,
+            "task_product_scan_s": 0.052827559993602335
+          },
+          "wall_s": 0.11686345598718617
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.13604779700000003,
+          "spans": {
+            "event_read_parse_s": 0.01396579499123618,
+            "process_resource_inspection_s": 0.0003615339956013486,
+            "render_s": 0.024976549990242347,
+            "run_index_s": 9.786017471924424e-06,
+            "task_product_scan_s": 0.05049681400123518
+          },
+          "wall_s": 0.13604145600402262
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.17162939899999996,
+          "spans": {
+            "event_read_parse_s": 0.016005206998670474,
+            "process_resource_inspection_s": 0.000401044002501294,
+            "render_s": 0.0035007870028493926,
+            "run_index_s": 0.051274583020131104,
+            "task_product_scan_s": 0.0520502249855781
+          },
+          "wall_s": 0.17159720200288575
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1223600789999999,
+          "spans": {
+            "event_read_parse_s": 0.014816724011325277,
+            "process_resource_inspection_s": 0.00035789801040664315,
+            "render_s": 0.003263837003032677,
+            "run_index_s": 1.0626012226566672e-05,
+            "task_product_scan_s": 0.05149228198570199
+          },
+          "wall_s": 0.12234838200674858
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11726602200000014,
+          "spans": {
+            "event_read_parse_s": 0.014476333002676256,
+            "process_resource_inspection_s": 0.000364966006600298,
+            "render_s": 0.003955089006922208,
+            "run_index_s": 9.419993148185313e-06,
+            "task_product_scan_s": 0.050564064003992826
+          },
+          "wall_s": 0.11722771299537271
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12209574999999995,
+          "spans": {
+            "event_read_parse_s": 0.015034473006380722,
+            "process_resource_inspection_s": 0.00034678299562074244,
+            "render_s": 0.00384686300822068,
+            "run_index_s": 9.06699278857559e-06,
+            "task_product_scan_s": 0.054673286009347066
+          },
+          "wall_s": 0.1221364170050947
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.13003019400000015,
+          "spans": {
+            "event_read_parse_s": 0.016030744009185582,
+            "process_resource_inspection_s": 0.000389683002140373,
+            "render_s": 0.003425948991207406,
+            "run_index_s": 1.0897027095779777e-05,
+            "task_product_scan_s": 0.061420981015544385
+          },
+          "wall_s": 0.12996209599077702
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12424000899999976,
+          "spans": {
+            "event_read_parse_s": 0.015394286994705908,
+            "process_resource_inspection_s": 0.0003550200053723529,
+            "render_s": 0.0033289459970546886,
+            "run_index_s": 1.022400101646781e-05,
+            "task_product_scan_s": 0.05157416599104181
+          },
+          "wall_s": 0.12423292599851266
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.049622197999999784,
+          "spans": {
+            "process_resource_inspection_s": 0.00034252200566697866,
+            "render_s": 0.009843592008110136,
+            "run_index_s": 9.052979294210672e-06,
+            "task_product_scan_s": 0.025446614003158174
+          },
+          "wall_s": 0.04965336300665513
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03891768299999976,
+          "spans": {
+            "process_resource_inspection_s": 0.00033012600033544004,
+            "render_s": 0.00032759300665929914,
+            "run_index_s": 8.113012881949544e-06,
+            "task_product_scan_s": 0.025033639001776464
+          },
+          "wall_s": 0.0389078770094784
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.039444678999999816,
+          "spans": {
+            "process_resource_inspection_s": 0.00047042599180713296,
+            "render_s": 0.000273587997071445,
+            "run_index_s": 1.2035001418553293e-05,
+            "task_product_scan_s": 0.025366244997712784
+          },
+          "wall_s": 0.039432352990843356
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03942448700000023,
+          "spans": {
+            "process_resource_inspection_s": 0.00033805400016717613,
+            "render_s": 0.0002950890047941357,
+            "run_index_s": 1.318000431638211e-05,
+            "task_product_scan_s": 0.025368672999320552
+          },
+          "wall_s": 0.039426057002856396
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03954246599999989,
+          "spans": {
+            "process_resource_inspection_s": 0.00033523001184221357,
+            "render_s": 0.000277678991551511,
+            "run_index_s": 8.347982657141984e-06,
+            "task_product_scan_s": 0.025509954008157365
+          },
+          "wall_s": 0.03957385900139343
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03903910600000016,
+          "spans": {
+            "process_resource_inspection_s": 0.0003338899987284094,
+            "render_s": 0.0002873359917430207,
+            "run_index_s": 8.035014616325498e-06,
+            "task_product_scan_s": 0.02512239699717611
+          },
+          "wall_s": 0.039030296000419185
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.039066459000000275,
+          "spans": {
+            "process_resource_inspection_s": 0.00033518300915602595,
+            "render_s": 0.0002736390015343204,
+            "run_index_s": 9.193987352773547e-06,
+            "task_product_scan_s": 0.025058952000108548
+          },
+          "wall_s": 0.03905509700416587
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.16655307100000005,
+          "spans": {
+            "event_read_parse_s": 0.015020392995211296,
+            "process_resource_inspection_s": 0.00034724299621302634,
+            "render_s": 0.00045663199853152037,
+            "run_index_s": 0.04985294901416637,
+            "task_product_scan_s": 0.05106504799914546
+          },
+          "wall_s": 0.16646619599487167
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.128274008,
+          "spans": {
+            "event_read_parse_s": 0.017127419996540993,
+            "process_resource_inspection_s": 0.0003422430017963052,
+            "render_s": 0.0004997680080123246,
+            "run_index_s": 2.4653025320731103e-05,
+            "task_product_scan_s": 0.05152750101115089
+          },
+          "wall_s": 0.12826975699863397
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11421926999999998,
+          "spans": {
+            "event_read_parse_s": 0.014605797987314872,
+            "process_resource_inspection_s": 0.00038897100603207946,
+            "render_s": 0.0005037289956817403,
+            "run_index_s": 2.274801954627037e-05,
+            "task_product_scan_s": 0.05076390301110223
+          },
+          "wall_s": 0.11421547799545806
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11317168399999966,
+          "spans": {
+            "event_read_parse_s": 0.014396252008737065,
+            "process_resource_inspection_s": 0.0003584520018193871,
+            "render_s": 0.0005225100030656904,
+            "run_index_s": 2.1072992240078747e-05,
+            "task_product_scan_s": 0.04936310699849855
+          },
+          "wall_s": 0.1132095909997588
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12004274499999967,
+          "spans": {
+            "event_read_parse_s": 0.01635317801265046,
+            "process_resource_inspection_s": 0.00034491899714339525,
+            "render_s": 0.00046984199434518814,
+            "run_index_s": 2.1589003154076636e-05,
+            "task_product_scan_s": 0.050207192020025104
+          },
+          "wall_s": 0.12000437200185843
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12213070399999992,
+          "spans": {
+            "event_read_parse_s": 0.020774427001015283,
+            "process_resource_inspection_s": 0.0005267409869702533,
+            "render_s": 0.0004930340073769912,
+            "run_index_s": 2.302798384334892e-05,
+            "task_product_scan_s": 0.05216180499701295
+          },
+          "wall_s": 0.12201980699319392
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11751036000000026,
+          "spans": {
+            "event_read_parse_s": 0.014273690001573414,
+            "process_resource_inspection_s": 0.000376027004676871,
+            "render_s": 0.00048008999146986753,
+            "run_index_s": 2.4017004761844873e-05,
+            "task_product_scan_s": 0.05303585599176586
+          },
+          "wall_s": 0.11747376499988604
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11828531200000025,
+          "spans": {
+            "event_read_parse_s": 0.014382581008248962,
+            "process_resource_inspection_s": 0.00037099099426995963,
+            "render_s": 0.003709131997311488,
+            "run_index_s": 1.0371979442425072e-05,
+            "task_product_scan_s": 0.05145919101778418
+          },
+          "wall_s": 0.11824475300090853
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1798136979999998,
+          "spans": {
+            "event_read_parse_s": 0.01636768899334129,
+            "process_resource_inspection_s": 0.00037989599513821304,
+            "render_s": 0.003302344004623592,
+            "run_index_s": 0.05078017299820203,
+            "task_product_scan_s": 0.05339063001156319
+          },
+          "wall_s": 0.17981784100993536
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12725289099999992,
+          "spans": {
+            "event_read_parse_s": 0.021193491003941745,
+            "process_resource_inspection_s": 0.0003630479914136231,
+            "render_s": 0.0033895689994096756,
+            "run_index_s": 1.1272000847384334e-05,
+            "task_product_scan_s": 0.05109767300018575
+          },
+          "wall_s": 0.1272498850012198
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11617707,
+          "spans": {
+            "event_read_parse_s": 0.014756326010683551,
+            "process_resource_inspection_s": 0.00033843799610622227,
+            "render_s": 0.0034184300020569935,
+            "run_index_s": 9.942014003172517e-06,
+            "task_product_scan_s": 0.05098124699725304
+          },
+          "wall_s": 0.11610287299845368
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1182842260000001,
+          "spans": {
+            "event_read_parse_s": 0.015236121995258145,
+            "process_resource_inspection_s": 0.00041446999239269644,
+            "render_s": 0.003376068008947186,
+            "run_index_s": 1.1018011718988419e-05,
+            "task_product_scan_s": 0.05170183000154793
+          },
+          "wall_s": 0.11837642300815787
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11833489400000019,
+          "spans": {
+            "event_read_parse_s": 0.014808030988206156,
+            "process_resource_inspection_s": 0.00036049399932380766,
+            "render_s": 0.003473228993243538,
+            "run_index_s": 1.0591946193017066e-05,
+            "task_product_scan_s": 0.05105216598894913
+          },
+          "wall_s": 0.11828071900526993
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11714722700000024,
+          "spans": {
+            "event_read_parse_s": 0.014621051988797262,
+            "process_resource_inspection_s": 0.00035450099676381797,
+            "render_s": 0.003422449008212425,
+            "run_index_s": 1.0102958185598254e-05,
+            "task_product_scan_s": 0.05164341001363937
+          },
+          "wall_s": 0.11710900100297295
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04277544800000044,
+          "spans": {
+            "process_resource_inspection_s": 0.0003373950021341443,
+            "render_s": 0.000326071007293649,
+            "run_index_s": 8.353017619810998e-06,
+            "task_product_scan_s": 0.025934215998859145
+          },
+          "wall_s": 0.04275499100913294
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04520084899999954,
+          "spans": {
+            "process_resource_inspection_s": 0.0003487579961074516,
+            "render_s": 0.0003014310059370473,
+            "run_index_s": 8.897011866793036e-06,
+            "task_product_scan_s": 0.025048944997251965
+          },
+          "wall_s": 0.04522480499872472
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04046023399999932,
+          "spans": {
+            "process_resource_inspection_s": 0.0003619070048443973,
+            "render_s": 0.00029562501003965735,
+            "run_index_s": 1.1443000403232872e-05,
+            "task_product_scan_s": 0.026272982999216765
+          },
+          "wall_s": 0.040477154005202465
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03965893699999956,
+          "spans": {
+            "process_resource_inspection_s": 0.00036492300569079816,
+            "render_s": 0.0002850360033335164,
+            "run_index_s": 2.3047978174872696e-05,
+            "task_product_scan_s": 0.025554943989845924
+          },
+          "wall_s": 0.03968708199681714
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04002889000000032,
+          "spans": {
+            "process_resource_inspection_s": 0.00035643100272864103,
+            "render_s": 0.0003082939947489649,
+            "run_index_s": 8.795992471277714e-06,
+            "task_product_scan_s": 0.025552438004524447
+          },
+          "wall_s": 0.04003095900407061
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03949647399999989,
+          "spans": {
+            "process_resource_inspection_s": 0.0003415139944991097,
+            "render_s": 0.0002879140083678067,
+            "run_index_s": 8.31299985293299e-06,
+            "task_product_scan_s": 0.025690790003864095
+          },
+          "wall_s": 0.039485008994233795
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03899897799999952,
+          "spans": {
+            "process_resource_inspection_s": 0.0003390900092199445,
+            "render_s": 0.0002922839921666309,
+            "run_index_s": 8.17899126559496e-06,
+            "task_product_scan_s": 0.02497185299580451
+          },
+          "wall_s": 0.03899020599783398
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.17437380000000058,
+          "spans": {
+            "event_read_parse_s": 0.014476536991423927,
+            "process_resource_inspection_s": 0.00038477100315503776,
+            "render_s": 0.00045732699800282717,
+            "run_index_s": 0.0496487310010707,
+            "task_product_scan_s": 0.05725095501111355
+          },
+          "wall_s": 0.1741935559984995
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12454989999999988,
+          "spans": {
+            "event_read_parse_s": 0.01734274800401181,
+            "process_resource_inspection_s": 0.0003514520067255944,
+            "render_s": 0.00047443101357202977,
+            "run_index_s": 2.559603308327496e-05,
+            "task_product_scan_s": 0.051225823001004755
+          },
+          "wall_s": 0.12451366800814867
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11574138900000008,
+          "spans": {
+            "event_read_parse_s": 0.014422230000491254,
+            "process_resource_inspection_s": 0.0003438499988988042,
+            "render_s": 0.0005032530025346205,
+            "run_index_s": 2.2597028873860836e-05,
+            "task_product_scan_s": 0.05182065500412136
+          },
+          "wall_s": 0.115730182005791
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11615846999999935,
+          "spans": {
+            "event_read_parse_s": 0.014524444006383419,
+            "process_resource_inspection_s": 0.00034691099426709116,
+            "render_s": 0.00048071600031107664,
+            "run_index_s": 2.196701825596392e-05,
+            "task_product_scan_s": 0.05096085098921321
+          },
+          "wall_s": 0.1161362730053952
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12465378599999966,
+          "spans": {
+            "event_read_parse_s": 0.014938409993192181,
+            "process_resource_inspection_s": 0.00039507501060143113,
+            "render_s": 0.00046974899305496365,
+            "run_index_s": 2.2629988961853087e-05,
+            "task_product_scan_s": 0.050496523996116593
+          },
+          "wall_s": 0.12466980300087016
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11575338899999998,
+          "spans": {
+            "event_read_parse_s": 0.014291890998720191,
+            "process_resource_inspection_s": 0.00034964199585374445,
+            "render_s": 0.0005113759980304167,
+            "run_index_s": 2.341798972338438e-05,
+            "task_product_scan_s": 0.05191296599514317
+          },
+          "wall_s": 0.11580096499528736
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12289916100000031,
+          "spans": {
+            "event_read_parse_s": 0.02097222900192719,
+            "process_resource_inspection_s": 0.00037859899748582393,
+            "render_s": 0.0004754639958264306,
+            "run_index_s": 2.6170018827542663e-05,
+            "task_product_scan_s": 0.05054694300633855
+          },
+          "wall_s": 0.1228776390053099
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11846458599999998,
+          "spans": {
+            "event_read_parse_s": 0.01506041300308425,
+            "process_resource_inspection_s": 0.0003655769978649914,
+            "render_s": 0.005351696992875077,
+            "run_index_s": 1.0417992598377168e-05,
+            "task_product_scan_s": 0.05262712300464045
+          },
+          "wall_s": 0.11843927500012796
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.16330443299999953,
+          "spans": {
+            "event_read_parse_s": 0.014401923996047117,
+            "process_resource_inspection_s": 0.0004148760053794831,
+            "render_s": 0.0033112639939645305,
+            "run_index_s": 0.04917097203724552,
+            "task_product_scan_s": 0.051225679999333806
+          },
+          "wall_s": 0.16326134999690112
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1248562849999999,
+          "spans": {
+            "event_read_parse_s": 0.024203993001719937,
+            "process_resource_inspection_s": 0.0003462049935478717,
+            "render_s": 0.00335540299420245,
+            "run_index_s": 9.266994311474264e-06,
+            "task_product_scan_s": 0.051278162995004095
+          },
+          "wall_s": 0.12483607999456581
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11571706799999948,
+          "spans": {
+            "event_read_parse_s": 0.01476445198932197,
+            "process_resource_inspection_s": 0.0003474950062809512,
+            "render_s": 0.0033592379913898185,
+            "run_index_s": 1.0703006410039961e-05,
+            "task_product_scan_s": 0.051467683995724656
+          },
+          "wall_s": 0.11567378698964603
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11645293000000034,
+          "spans": {
+            "event_read_parse_s": 0.01468030401156284,
+            "process_resource_inspection_s": 0.00040809701022226363,
+            "render_s": 0.0035212630027672276,
+            "run_index_s": 1.0621995897963643e-05,
+            "task_product_scan_s": 0.051450749990181066
+          },
+          "wall_s": 0.11632965999888256
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11384915399999951,
+          "spans": {
+            "event_read_parse_s": 0.014425132001633756,
+            "process_resource_inspection_s": 0.00035744099295698106,
+            "render_s": 0.0033466869936091825,
+            "run_index_s": 9.65400249697268e-06,
+            "task_product_scan_s": 0.050488917011534795
+          },
+          "wall_s": 0.11381116799020674
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11849572399999975,
+          "spans": {
+            "event_read_parse_s": 0.014455957993050106,
+            "process_resource_inspection_s": 0.0003548160020727664,
+            "render_s": 0.003444766000029631,
+            "run_index_s": 9.62299236562103e-06,
+            "task_product_scan_s": 0.054985897993901744
+          },
+          "wall_s": 0.11847715600742958
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04497719599999961,
+          "spans": {
+            "process_resource_inspection_s": 0.0003685489937197417,
+            "render_s": 0.0003201340005034581,
+            "run_index_s": 2.5627974537201226e-05,
+            "task_product_scan_s": 0.025920011001289822
+          },
+          "wall_s": 0.044967264009756036
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.046945732000000184,
+          "spans": {
+            "process_resource_inspection_s": 0.00041560699173714966,
+            "render_s": 0.0002903679996961728,
+            "run_index_s": 1.0984993423335254e-05,
+            "task_product_scan_s": 0.026389349994133227
+          },
+          "wall_s": 0.04696248800610192
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04101405699999994,
+          "spans": {
+            "process_resource_inspection_s": 0.000374868992366828,
+            "render_s": 0.0002987039915751666,
+            "run_index_s": 1.1011012247763574e-05,
+            "task_product_scan_s": 0.025755149996257387
+          },
+          "wall_s": 0.04100324600585736
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03997198199999996,
+          "spans": {
+            "process_resource_inspection_s": 0.0005573039961745963,
+            "render_s": 0.0002719670010264963,
+            "run_index_s": 9.303985279984772e-06,
+            "task_product_scan_s": 0.025982896011555567
+          },
+          "wall_s": 0.0400193079985911
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.038718234000000074,
+          "spans": {
+            "process_resource_inspection_s": 0.0003587219980545342,
+            "render_s": 0.0003230199945392087,
+            "run_index_s": 8.622999303042889e-06,
+            "task_product_scan_s": 0.024483860994223505
+          },
+          "wall_s": 0.03874752500269096
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.038979136000000025,
+          "spans": {
+            "process_resource_inspection_s": 0.0003683219983940944,
+            "render_s": 0.00030477700056508183,
+            "run_index_s": 8.621980668976903e-06,
+            "task_product_scan_s": 0.02521439900738187
+          },
+          "wall_s": 0.038971189002040774
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03999549200000008,
+          "spans": {
+            "process_resource_inspection_s": 0.00045735100866295397,
+            "render_s": 0.00028023500635754317,
+            "run_index_s": 9.76797309704125e-06,
+            "task_product_scan_s": 0.02592862800520379
+          },
+          "wall_s": 0.03996630900655873
+        }
+      ],
+      "summary": {
+        "cold:/config": {
+          "max_s": 0.05050677100371104,
+          "n": 7,
+          "p50_s": 0.04019580599560868,
+          "p95_s": 0.05050677100371104
+        },
+        "cold:/inbox": {
+          "max_s": 0.17255051400570665,
+          "n": 7,
+          "p50_s": 0.12526739299937617,
+          "p95_s": 0.17255051400570665
+        },
+        "cold:/now1": {
+          "max_s": 0.22567585900833365,
+          "n": 7,
+          "p50_s": 0.12283134598692413,
+          "p95_s": 0.22567585900833365
+        },
+        "expiry:/config": {
+          "max_s": 0.047775734987226315,
+          "n": 7,
+          "p50_s": 0.04087129000981804,
+          "p95_s": 0.047775734987226315
+        },
+        "expiry:/inbox": {
+          "max_s": 0.1642597040045075,
+          "n": 7,
+          "p50_s": 0.11938995899981819,
+          "p95_s": 0.1642597040045075
+        },
+        "expiry:/now1": {
+          "max_s": 0.1777716299984604,
+          "n": 7,
+          "p50_s": 0.12377068999921903,
+          "p95_s": 0.1777716299984604
+        },
+        "warm:/config": {
+          "max_s": 0.0460995800094679,
+          "n": 7,
+          "p50_s": 0.0408157320052851,
+          "p95_s": 0.0460995800094679
+        },
+        "warm:/inbox": {
+          "max_s": 0.18078278299071826,
+          "n": 7,
+          "p50_s": 0.11933102700277232,
+          "p95_s": 0.18078278299071826
+        },
+        "warm:/now1": {
+          "max_s": 0.16762168599234428,
+          "n": 7,
+          "p50_s": 0.12086440400162246,
+          "p95_s": 0.16762168599234428
+        }
+      }
+    },
+    "0_plain": {
+      "background_tick_wall_s": [
+        0.23535992699908093,
+        0.2375417750008637,
+        0.25121157900139224
+      ],
+      "load_pids": [],
+      "profiled": false,
+      "rows": [
+        {
+          "elapsed_s": 0.2450446099974215,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12233270099386573,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12476694000361022,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12047043799248058,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1283808809967013,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11870682198787108,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11680025499663316,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.15267298200342339,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.16801695099275094,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12381280500267167,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11634980299277231,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11660620399925392,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11481189799087588,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11741936700127553,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.05095425099716522,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04223469999851659,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.045745110997813754,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04008224100107327,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04541247501038015,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.0400074310018681,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04112777499540243,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.16720178799005225,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12685322199831717,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11709689498820808,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11621360100980382,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1183561919897329,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.13346185299451463,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1183627120044548,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11566418899747077,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.16775366599904373,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12548135500401258,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11660263099474832,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11901182700239588,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11540014299680479,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12242779700318351,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.049097326991613954,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04145189200062305,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.03994801400403958,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.040155517010134645,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04029694000200834,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.040504916993086226,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04035817401017994,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.17703149300359655,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12545346899423748,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11868821299867705,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11922986998979468,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12649073101056274,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11807992099784315,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11657155299326405,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11803830199642107,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.17385605299205054,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1229765239986591,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12271480901108589,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11546923199784942,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11642100301105529,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12434487701102626,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.040167208993807435,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.0398037629929604,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.0401393369975267,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04430997199960984,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04223541999817826,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04208656901028007,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04401305899955332,
+          "path": "/config",
+          "period": "expiry"
+        }
+      ],
+      "server_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+      "server_pid": 109034,
+      "slots": 0,
+      "spans": [],
+      "summary": {
+        "cold:/config": {
+          "max_s": 0.05095425099716522,
+          "n": 7,
+          "p50_s": 0.04223469999851659,
+          "p95_s": 0.05095425099716522
+        },
+        "cold:/inbox": {
+          "max_s": 0.16801695099275094,
+          "n": 7,
+          "p50_s": 0.11741936700127553,
+          "p95_s": 0.16801695099275094
+        },
+        "cold:/now1": {
+          "max_s": 0.2450446099974215,
+          "n": 7,
+          "p50_s": 0.12233270099386573,
+          "p95_s": 0.2450446099974215
+        },
+        "expiry:/config": {
+          "max_s": 0.04430997199960984,
+          "n": 7,
+          "p50_s": 0.04208656901028007,
+          "p95_s": 0.04430997199960984
+        },
+        "expiry:/inbox": {
+          "max_s": 0.17385605299205054,
+          "n": 7,
+          "p50_s": 0.12271480901108589,
+          "p95_s": 0.17385605299205054
+        },
+        "expiry:/now1": {
+          "max_s": 0.17703149300359655,
+          "n": 7,
+          "p50_s": 0.11922986998979468,
+          "p95_s": 0.17703149300359655
+        },
+        "warm:/config": {
+          "max_s": 0.049097326991613954,
+          "n": 7,
+          "p50_s": 0.04035817401017994,
+          "p95_s": 0.049097326991613954
+        },
+        "warm:/inbox": {
+          "max_s": 0.16775366599904373,
+          "n": 7,
+          "p50_s": 0.11901182700239588,
+          "p95_s": 0.16775366599904373
+        },
+        "warm:/now1": {
+          "max_s": 0.16720178799005225,
+          "n": 7,
+          "p50_s": 0.1183627120044548,
+          "p95_s": 0.16720178799005225
+        }
+      }
+    },
+    "1": {
+      "background_tick_wall_s": [
+        0.24890574500022922,
+        0.26814049200038426,
+        0.2502766249963315
+      ],
+      "load_pids": [
+        108966
+      ],
+      "profiled": true,
+      "rows": [
+        {
+          "elapsed_s": 0.22186484299891163,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11884840799029917,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1250251650053542,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11508680800034199,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11741629100288264,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12171466399740893,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12055836599029135,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.13631108700064942,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.16853163699852303,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1214343580068089,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11533868200785946,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11747939999622758,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11581289500463754,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12546186499821488,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04994498999440111,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.043827369998325594,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04276418199879117,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04025843398994766,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.0398766610014718,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04080985300242901,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04019947600318119,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.16679080200265162,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1259861459984677,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12310598099429626,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12038085999665782,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12282298799254932,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12149789200339,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12032665500009898,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.14173395599937066,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.18947502599621657,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11920581800222863,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11818665999453515,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12728332800907083,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11865127000783104,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.144753735003178,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.048604376992443576,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.052917460998287424,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04518373099563178,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04993661300977692,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.0488883289945079,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04840473701187875,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04623752999759745,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.17464809899684042,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12521068498608656,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11662641300063115,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11846207700727973,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12778384299599566,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11751904799893964,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11658924999937881,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1227791349956533,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.17342371999984607,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1263802720059175,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11782625601335894,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11448123599984683,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1145943589945091,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1173573680134723,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.043527522997464985,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04781017400091514,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.039735430997097865,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.03977377898991108,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.046663127999636345,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.044181046992889605,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.040763737008091994,
+          "path": "/config",
+          "period": "expiry"
+        }
+      ],
+      "server_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+      "server_pid": 108965,
+      "slots": 1,
+      "spans": [
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.22086140099999996,
+          "spans": {
+            "event_read_parse_s": 0.018031890998827294,
+            "process_resource_inspection_s": 0.0004309659998398274,
+            "render_s": 0.06107276299735531,
+            "run_index_s": 0.035705085028894246,
+            "task_product_scan_s": 0.049563306994969025
+          },
+          "wall_s": 0.2209231550077675
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11798279199999995,
+          "spans": {
+            "event_read_parse_s": 0.016424065004684962,
+            "process_resource_inspection_s": 0.00037193500611465424,
+            "render_s": 0.0005175200058147311,
+            "run_index_s": 2.279301406815648e-05,
+            "task_product_scan_s": 0.05035190899798181
+          },
+          "wall_s": 0.11796796901035123
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12412154200000003,
+          "spans": {
+            "event_read_parse_s": 0.023247635006555356,
+            "process_resource_inspection_s": 0.00037313000939320773,
+            "render_s": 0.0006723080005031079,
+            "run_index_s": 2.2626991267316043e-05,
+            "task_product_scan_s": 0.05227712901250925
+          },
+          "wall_s": 0.12412535799376201
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11411928400000004,
+          "spans": {
+            "event_read_parse_s": 0.015255356003763154,
+            "process_resource_inspection_s": 0.00035149599716532975,
+            "render_s": 0.0005877740040887147,
+            "run_index_s": 2.222800685558468e-05,
+            "task_product_scan_s": 0.05093429499538615
+          },
+          "wall_s": 0.11409020599967334
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11657631200000007,
+          "spans": {
+            "event_read_parse_s": 0.01538354299555067,
+            "process_resource_inspection_s": 0.00038171799678821117,
+            "render_s": 0.00046347800525836647,
+            "run_index_s": 2.3860004148446023e-05,
+            "task_product_scan_s": 0.05005088400503155
+          },
+          "wall_s": 0.11654312499740627
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12088104199999994,
+          "spans": {
+            "event_read_parse_s": 0.022652217987342738,
+            "process_resource_inspection_s": 0.0003480829909676686,
+            "render_s": 0.00047401701158378273,
+            "run_index_s": 2.2380991140380502e-05,
+            "task_product_scan_s": 0.05048715001612436
+          },
+          "wall_s": 0.12087295300443657
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11967167600000006,
+          "spans": {
+            "event_read_parse_s": 0.014070171004277654,
+            "process_resource_inspection_s": 0.00038705200131516904,
+            "render_s": 0.0004755059926537797,
+            "run_index_s": 2.2741005523130298e-05,
+            "task_product_scan_s": 0.05402731298818253
+          },
+          "wall_s": 0.11955026499344967
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.13510310699999994,
+          "spans": {
+            "event_read_parse_s": 0.014149391994578764,
+            "process_resource_inspection_s": 0.00038296599814202636,
+            "render_s": 0.02448428400384728,
+            "run_index_s": 1.2027026969008148e-05,
+            "task_product_scan_s": 0.050067639007465914
+          },
+          "wall_s": 0.13516813800379168
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1675024420000002,
+          "spans": {
+            "event_read_parse_s": 0.016406174006988294,
+            "process_resource_inspection_s": 0.0003822130092885345,
+            "render_s": 0.0035166979942005128,
+            "run_index_s": 0.049940297001739964,
+            "task_product_scan_s": 0.04980440199142322
+          },
+          "wall_s": 0.16751766300876625
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12050176400000012,
+          "spans": {
+            "event_read_parse_s": 0.0148321919987211,
+            "process_resource_inspection_s": 0.00035458400088828057,
+            "render_s": 0.0034312770003452897,
+            "run_index_s": 1.0257019312120974e-05,
+            "task_product_scan_s": 0.051162766001652926
+          },
+          "wall_s": 0.12044733999937307
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11436175199999998,
+          "spans": {
+            "event_read_parse_s": 0.014682225999422371,
+            "process_resource_inspection_s": 0.0003680380032164976,
+            "render_s": 0.0033436400117352605,
+            "run_index_s": 4.4854998122900724e-05,
+            "task_product_scan_s": 0.049939702003030106
+          },
+          "wall_s": 0.11435170700133312
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11654347099999995,
+          "spans": {
+            "event_read_parse_s": 0.014576998000848107,
+            "process_resource_inspection_s": 0.0003851360088447109,
+            "render_s": 0.0034432750107953325,
+            "run_index_s": 9.940995369106531e-06,
+            "task_product_scan_s": 0.04991486899962183
+          },
+          "wall_s": 0.11654987299698405
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11475710599999989,
+          "spans": {
+            "event_read_parse_s": 0.015187194003374316,
+            "process_resource_inspection_s": 0.0003971169935539365,
+            "render_s": 0.0034358419943600893,
+            "run_index_s": 1.0365998605266213e-05,
+            "task_product_scan_s": 0.05077882600016892
+          },
+          "wall_s": 0.11474134199670516
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12431699000000007,
+          "spans": {
+            "event_read_parse_s": 0.015462233990547247,
+            "process_resource_inspection_s": 0.000348431000020355,
+            "render_s": 0.0034343360021011904,
+            "run_index_s": 8.321978384628892e-06,
+            "task_product_scan_s": 0.05135638199863024
+          },
+          "wall_s": 0.12429761199746281
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04901272300000015,
+          "spans": {
+            "process_resource_inspection_s": 0.00037602199881803244,
+            "render_s": 0.00956592900911346,
+            "run_index_s": 9.087001672014594e-06,
+            "task_product_scan_s": 0.02517399900534656
+          },
+          "wall_s": 0.0490713239996694
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04254445699999998,
+          "spans": {
+            "process_resource_inspection_s": 0.00036864099092781544,
+            "render_s": 0.0004346970090409741,
+            "run_index_s": 9.516981663182378e-06,
+            "task_product_scan_s": 0.02643295199959539
+          },
+          "wall_s": 0.04253541700018104
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04183657299999988,
+          "spans": {
+            "process_resource_inspection_s": 0.00044332200195640326,
+            "render_s": 0.0003127210075035691,
+            "run_index_s": 1.0018979082815349e-05,
+            "task_product_scan_s": 0.0272990240046056
+          },
+          "wall_s": 0.041798417005338706
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.039346717000000364,
+          "spans": {
+            "process_resource_inspection_s": 0.00038817900349386036,
+            "render_s": 0.0002910589973907918,
+            "run_index_s": 8.2320038927719e-06,
+            "task_product_scan_s": 0.025294064995250665
+          },
+          "wall_s": 0.03938196299714036
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03891812399999983,
+          "spans": {
+            "process_resource_inspection_s": 0.0005142070003785193,
+            "render_s": 0.00030451000202447176,
+            "run_index_s": 9.45200736168772e-06,
+            "task_product_scan_s": 0.02490214600402396
+          },
+          "wall_s": 0.03892857600294519
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03993971300000032,
+          "spans": {
+            "process_resource_inspection_s": 0.00036941299913451076,
+            "render_s": 0.0002920240076491609,
+            "run_index_s": 9.983981726691127e-06,
+            "task_product_scan_s": 0.025109567999606952
+          },
+          "wall_s": 0.039970740996068344
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03938494400000003,
+          "spans": {
+            "process_resource_inspection_s": 0.00034399899595882744,
+            "render_s": 0.0002829529985319823,
+            "run_index_s": 8.656978025101125e-06,
+            "task_product_scan_s": 0.025545999000314623
+          },
+          "wall_s": 0.0394162410084391
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1656757210000004,
+          "spans": {
+            "event_read_parse_s": 0.014533702007611282,
+            "process_resource_inspection_s": 0.00037002700264565647,
+            "render_s": 0.0006731670000590384,
+            "run_index_s": 0.04987055300443899,
+            "task_product_scan_s": 0.05090258098789491
+          },
+          "wall_s": 0.16562952399544884
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1251385140000001,
+          "spans": {
+            "event_read_parse_s": 0.015135396999539807,
+            "process_resource_inspection_s": 0.00036284199450165033,
+            "render_s": 0.00047847500536590815,
+            "run_index_s": 2.60820088442415e-05,
+            "task_product_scan_s": 0.052107329000136815
+          },
+          "wall_s": 0.1251215369993588
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12224202800000006,
+          "spans": {
+            "event_read_parse_s": 0.014414612989639863,
+            "process_resource_inspection_s": 0.00038077100180089474,
+            "render_s": 0.0005216950085014105,
+            "run_index_s": 2.711899287533015e-05,
+            "task_product_scan_s": 0.053561845008516684
+          },
+          "wall_s": 0.12219684399315156
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1195470270000003,
+          "spans": {
+            "event_read_parse_s": 0.014970225995057262,
+            "process_resource_inspection_s": 0.00047782300680410117,
+            "render_s": 0.0005655120039591566,
+            "run_index_s": 2.4551001843065023e-05,
+            "task_product_scan_s": 0.05327454301004764
+          },
+          "wall_s": 0.11949438700685278
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12190831800000002,
+          "spans": {
+            "event_read_parse_s": 0.016134949008119293,
+            "process_resource_inspection_s": 0.00037529499968513846,
+            "render_s": 0.0005616340058622882,
+            "run_index_s": 2.51320016104728e-05,
+            "task_product_scan_s": 0.051810062999720685
+          },
+          "wall_s": 0.12187220000487287
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12060105900000018,
+          "spans": {
+            "event_read_parse_s": 0.020855288006714545,
+            "process_resource_inspection_s": 0.00035263600875623524,
+            "render_s": 0.00047172000631690025,
+            "run_index_s": 2.211201353929937e-05,
+            "task_product_scan_s": 0.05042865099676419
+          },
+          "wall_s": 0.12064884399296716
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11931406599999983,
+          "spans": {
+            "event_read_parse_s": 0.01444510200235527,
+            "process_resource_inspection_s": 0.00038848401163704693,
+            "render_s": 0.0005474170029629022,
+            "run_index_s": 2.7807967853732407e-05,
+            "task_product_scan_s": 0.05345550400670618
+          },
+          "wall_s": 0.11928192700725049
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1376140330000002,
+          "spans": {
+            "event_read_parse_s": 0.015243558009387925,
+            "process_resource_inspection_s": 0.0004319849977036938,
+            "render_s": 0.0035850249987561256,
+            "run_index_s": 1.2168020475655794e-05,
+            "task_product_scan_s": 0.05742845400527585
+          },
+          "wall_s": 0.1405905699939467
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.18831804200000013,
+          "spans": {
+            "event_read_parse_s": 0.017223995993845165,
+            "process_resource_inspection_s": 0.0004355260025477037,
+            "render_s": 0.00344987100106664,
+            "run_index_s": 0.05406189903442282,
+            "task_product_scan_s": 0.057542218011803925
+          },
+          "wall_s": 0.18839255700004287
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11807513000000025,
+          "spans": {
+            "event_read_parse_s": 0.016147528993315063,
+            "process_resource_inspection_s": 0.00035182399733457714,
+            "render_s": 0.003374533000169322,
+            "run_index_s": 9.11002280190587e-06,
+            "task_product_scan_s": 0.05130594600632321
+          },
+          "wall_s": 0.11820894500124268
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11707537699999992,
+          "spans": {
+            "event_read_parse_s": 0.014574538989108987,
+            "process_resource_inspection_s": 0.0004831590049434453,
+            "render_s": 0.003368409990798682,
+            "run_index_s": 1.0032003046944737e-05,
+            "task_product_scan_s": 0.05237295800179709
+          },
+          "wall_s": 0.11700457299593836
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12619256699999992,
+          "spans": {
+            "event_read_parse_s": 0.014609039993956685,
+            "process_resource_inspection_s": 0.0003648280107881874,
+            "render_s": 0.003576267001335509,
+            "run_index_s": 1.0725983884185553e-05,
+            "task_product_scan_s": 0.05126625100092497
+          },
+          "wall_s": 0.12619964098848868
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11757199200000024,
+          "spans": {
+            "event_read_parse_s": 0.015903430001344532,
+            "process_resource_inspection_s": 0.0004477280017454177,
+            "render_s": 0.0035276109992992133,
+            "run_index_s": 1.0660995030775666e-05,
+            "task_product_scan_s": 0.05064962900360115
+          },
+          "wall_s": 0.11756484101351816
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.14373014599999934,
+          "spans": {
+            "event_read_parse_s": 0.014703769993502647,
+            "process_resource_inspection_s": 0.00042552099330350757,
+            "render_s": 0.003826892003417015,
+            "run_index_s": 1.2516014976426959e-05,
+            "task_product_scan_s": 0.057350417017005384
+          },
+          "wall_s": 0.14371898699027952
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.047575711000000354,
+          "spans": {
+            "process_resource_inspection_s": 0.0004256730026099831,
+            "render_s": 0.0003677720087580383,
+            "run_index_s": 1.3164011761546135e-05,
+            "task_product_scan_s": 0.028928138010087423
+          },
+          "wall_s": 0.04756365100911353
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.051994890999999654,
+          "spans": {
+            "process_resource_inspection_s": 0.0004171820037299767,
+            "render_s": 0.0003653129970189184,
+            "run_index_s": 1.3966011465527117e-05,
+            "task_product_scan_s": 0.029143804000341333
+          },
+          "wall_s": 0.05199702299432829
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04415724700000023,
+          "spans": {
+            "process_resource_inspection_s": 0.0004170569882262498,
+            "render_s": 0.00036117699346505105,
+            "run_index_s": 1.2603006325662136e-05,
+            "task_product_scan_s": 0.0272353309992468
+          },
+          "wall_s": 0.04419246700126678
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04888891299999987,
+          "spans": {
+            "process_resource_inspection_s": 0.0004559740045806393,
+            "render_s": 0.00038695099647156894,
+            "run_index_s": 1.215201336890459e-05,
+            "task_product_scan_s": 0.03132324399484787
+          },
+          "wall_s": 0.04883625100774225
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04791938999999967,
+          "spans": {
+            "process_resource_inspection_s": 0.0004510769940679893,
+            "render_s": 0.00048321000940632075,
+            "run_index_s": 1.3098004274070263e-05,
+            "task_product_scan_s": 0.03045873400697019
+          },
+          "wall_s": 0.04790878700441681
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04754256299999948,
+          "spans": {
+            "process_resource_inspection_s": 0.00039672700222581625,
+            "render_s": 0.00036199099849909544,
+            "run_index_s": 1.2743999832309783e-05,
+            "task_product_scan_s": 0.030245416011894122
+          },
+          "wall_s": 0.047492589001194574
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.045313877999999974,
+          "spans": {
+            "process_resource_inspection_s": 0.0004188100137980655,
+            "render_s": 0.00035382599162403494,
+            "run_index_s": 1.2692995369434357e-05,
+            "task_product_scan_s": 0.029089047005982138
+          },
+          "wall_s": 0.04531532101100311
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.17367456100000034,
+          "spans": {
+            "event_read_parse_s": 0.01515538700914476,
+            "process_resource_inspection_s": 0.0004331480013206601,
+            "render_s": 0.0004819169989787042,
+            "run_index_s": 0.05356319202110171,
+            "task_product_scan_s": 0.05286004499066621
+          },
+          "wall_s": 0.17359797400422394
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1242979489999998,
+          "spans": {
+            "event_read_parse_s": 0.017216569001902826,
+            "process_resource_inspection_s": 0.00036440401163417846,
+            "render_s": 0.00047103999531827867,
+            "run_index_s": 2.4995009880512953e-05,
+            "task_product_scan_s": 0.05132270300236996
+          },
+          "wall_s": 0.12423090499942191
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1156891179999997,
+          "spans": {
+            "event_read_parse_s": 0.014575483990483917,
+            "process_resource_inspection_s": 0.00035053999454248697,
+            "render_s": 0.000474971006042324,
+            "run_index_s": 2.3223008611239493e-05,
+            "task_product_scan_s": 0.050542721000965685
+          },
+          "wall_s": 0.11564837899641134
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11762198399999946,
+          "spans": {
+            "event_read_parse_s": 0.014640859997598454,
+            "process_resource_inspection_s": 0.0003943399933632463,
+            "render_s": 0.0004984709958080202,
+            "run_index_s": 2.216099528595805e-05,
+            "task_product_scan_s": 0.05092015398258809
+          },
+          "wall_s": 0.11766007899132092
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12690965899999984,
+          "spans": {
+            "event_read_parse_s": 0.015315347001887858,
+            "process_resource_inspection_s": 0.00036089499189984053,
+            "render_s": 0.000503012997796759,
+            "run_index_s": 2.600002335384488e-05,
+            "task_product_scan_s": 0.05053679599950556
+          },
+          "wall_s": 0.12690248699800577
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11662334800000007,
+          "spans": {
+            "event_read_parse_s": 0.015204826995613985,
+            "process_resource_inspection_s": 0.00037573200825136155,
+            "render_s": 0.00048238399904221296,
+            "run_index_s": 2.3443979443982244e-05,
+            "task_product_scan_s": 0.051607861008960754
+          },
+          "wall_s": 0.11662579099356662
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11556524000000046,
+          "spans": {
+            "event_read_parse_s": 0.014460753998719156,
+            "process_resource_inspection_s": 0.00034608799614943564,
+            "render_s": 0.0005089120095362887,
+            "run_index_s": 2.378197677899152e-05,
+            "task_product_scan_s": 0.05122582802141551
+          },
+          "wall_s": 0.11555862000386696
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12186731300000009,
+          "spans": {
+            "event_read_parse_s": 0.014545860991347581,
+            "process_resource_inspection_s": 0.00046192800800781697,
+            "render_s": 0.005391665996285155,
+            "run_index_s": 1.4778997865505517e-05,
+            "task_product_scan_s": 0.05534833999990951
+          },
+          "wall_s": 0.12183446899871342
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.17240568999999972,
+          "spans": {
+            "event_read_parse_s": 0.014650494995294139,
+            "process_resource_inspection_s": 0.0004964589898008853,
+            "render_s": 0.003908694998244755,
+            "run_index_s": 0.05064274501637556,
+            "task_product_scan_s": 0.053912455012323335
+          },
+          "wall_s": 0.1723595820076298
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12542314800000032,
+          "spans": {
+            "event_read_parse_s": 0.02417781000258401,
+            "process_resource_inspection_s": 0.0003506139910314232,
+            "render_s": 0.0033859579998534173,
+            "run_index_s": 9.66301013249904e-06,
+            "task_product_scan_s": 0.05230229000153486
+          },
+          "wall_s": 0.12541060899093281
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1168970749999998,
+          "spans": {
+            "event_read_parse_s": 0.01448800100479275,
+            "process_resource_inspection_s": 0.0003531539987307042,
+            "render_s": 0.003290432010544464,
+            "run_index_s": 9.775976650416851e-06,
+            "task_product_scan_s": 0.05288824399758596
+          },
+          "wall_s": 0.11684026599687058
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1135029740000002,
+          "spans": {
+            "event_read_parse_s": 0.014549938001437113,
+            "process_resource_inspection_s": 0.00035693999961949885,
+            "render_s": 0.003487134992610663,
+            "run_index_s": 1.126098504755646e-05,
+            "task_product_scan_s": 0.049611990005359985
+          },
+          "wall_s": 0.11353250399406534
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11355231999999926,
+          "spans": {
+            "event_read_parse_s": 0.014505126004223712,
+            "process_resource_inspection_s": 0.00043306600127834827,
+            "render_s": 0.003301532007753849,
+            "run_index_s": 4.199598333798349e-05,
+            "task_product_scan_s": 0.050135402008891106
+          },
+          "wall_s": 0.11348953300330322
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11641842700000016,
+          "spans": {
+            "event_read_parse_s": 0.014260333991842344,
+            "process_resource_inspection_s": 0.00034828699426725507,
+            "render_s": 0.003442360000917688,
+            "run_index_s": 1.016500755213201e-05,
+            "task_product_scan_s": 0.05161171501094941
+          },
+          "wall_s": 0.11641158000566065
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04231896399999968,
+          "spans": {
+            "process_resource_inspection_s": 0.00033869000617414713,
+            "render_s": 0.00031701300758868456,
+            "run_index_s": 8.08498589321971e-06,
+            "task_product_scan_s": 0.02559185000427533
+          },
+          "wall_s": 0.04227838599763345
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.0469952720000002,
+          "spans": {
+            "process_resource_inspection_s": 0.0004307919880375266,
+            "render_s": 0.0003041620075237006,
+            "run_index_s": 1.1230018571950495e-05,
+            "task_product_scan_s": 0.02669157099444419
+          },
+          "wall_s": 0.046984915010398254
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.038988218000000074,
+          "spans": {
+            "process_resource_inspection_s": 0.00033541099401190877,
+            "render_s": 0.0002993200032506138,
+            "run_index_s": 8.840012014843524e-06,
+            "task_product_scan_s": 0.024881895005819388
+          },
+          "wall_s": 0.038978682991000824
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03882292700000001,
+          "spans": {
+            "process_resource_inspection_s": 0.0003273050097050145,
+            "render_s": 0.0002702140045585111,
+            "run_index_s": 7.807000656612217e-06,
+            "task_product_scan_s": 0.025315653008874506
+          },
+          "wall_s": 0.03881801800162066
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04573506300000041,
+          "spans": {
+            "process_resource_inspection_s": 0.0003528259985614568,
+            "render_s": 0.0003492350078886375,
+            "run_index_s": 1.0258008842356503e-05,
+            "task_product_scan_s": 0.027330664001055993
+          },
+          "wall_s": 0.0457254670036491
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04339819700000014,
+          "spans": {
+            "process_resource_inspection_s": 0.0003874200046993792,
+            "render_s": 0.0003508259978843853,
+            "run_index_s": 1.050200080499053e-05,
+            "task_product_scan_s": 0.027228781997109763
+          },
+          "wall_s": 0.04334955499507487
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03986904799999991,
+          "spans": {
+            "process_resource_inspection_s": 0.0003524799976730719,
+            "render_s": 0.00028593098977580667,
+            "run_index_s": 8.4209896158427e-06,
+            "task_product_scan_s": 0.02566284200293012
+          },
+          "wall_s": 0.039898137998534366
+        }
+      ],
+      "summary": {
+        "cold:/config": {
+          "max_s": 0.04994498999440111,
+          "n": 7,
+          "p50_s": 0.04080985300242901,
+          "p95_s": 0.04994498999440111
+        },
+        "cold:/inbox": {
+          "max_s": 0.16853163699852303,
+          "n": 7,
+          "p50_s": 0.1214343580068089,
+          "p95_s": 0.16853163699852303
+        },
+        "cold:/now1": {
+          "max_s": 0.22186484299891163,
+          "n": 7,
+          "p50_s": 0.12055836599029135,
+          "p95_s": 0.22186484299891163
+        },
+        "expiry:/config": {
+          "max_s": 0.04781017400091514,
+          "n": 7,
+          "p50_s": 0.043527522997464985,
+          "p95_s": 0.04781017400091514
+        },
+        "expiry:/inbox": {
+          "max_s": 0.17342371999984607,
+          "n": 7,
+          "p50_s": 0.11782625601335894,
+          "p95_s": 0.17342371999984607
+        },
+        "expiry:/now1": {
+          "max_s": 0.17464809899684042,
+          "n": 7,
+          "p50_s": 0.11846207700727973,
+          "p95_s": 0.17464809899684042
+        },
+        "warm:/config": {
+          "max_s": 0.052917460998287424,
+          "n": 7,
+          "p50_s": 0.048604376992443576,
+          "p95_s": 0.052917460998287424
+        },
+        "warm:/inbox": {
+          "max_s": 0.18947502599621657,
+          "n": 7,
+          "p50_s": 0.12728332800907083,
+          "p95_s": 0.18947502599621657
+        },
+        "warm:/now1": {
+          "max_s": 0.16679080200265162,
+          "n": 7,
+          "p50_s": 0.12282298799254932,
+          "p95_s": 0.16679080200265162
+        }
+      }
+    },
+    "4": {
+      "background_tick_wall_s": [
+        0.25555932300630957,
+        0.26327556499745697,
+        0.23673464098828845
+      ],
+      "load_pids": [
+        109014,
+        109015,
+        109016,
+        109017
+      ],
+      "profiled": true,
+      "rows": [
+        {
+          "elapsed_s": 0.23914300299657043,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1219361199910054,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1345563700015191,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11922569500165991,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11784759000875056,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1278025960054947,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11886430899903644,
+          "path": "/now1",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.15111081799841486,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.17294428299646825,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12416471599135548,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11743831400235649,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.1166911140026059,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.11521568700845819,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.12927395600127056,
+          "path": "/inbox",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.050943841008120216,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04493209200154524,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04691595099575352,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04428854200523347,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04228937999869231,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04068028699839488,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.04047960799653083,
+          "path": "/config",
+          "period": "cold"
+        },
+        {
+          "elapsed_s": 0.17243552100262605,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12721691200567875,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11786357400706038,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1184053790057078,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.13322600099490955,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1247176210017642,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11600217700470239,
+          "path": "/now1",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12064794800244272,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.17675592200248502,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1180171690066345,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.1173416389938211,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12296465100371279,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.12667443600366823,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.11757781200867612,
+          "path": "/inbox",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.0430387870001141,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04970700299600139,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.045484750997275114,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.044193941008416004,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04488881900033448,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.04423825500998646,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.045533696000347845,
+          "path": "/config",
+          "period": "warm"
+        },
+        {
+          "elapsed_s": 0.18256520399881992,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12384767200273927,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11643322199233808,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.11689133598702028,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12651820099563338,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1164108560042223,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12271891300042626,
+          "path": "/now1",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12016923401097301,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1804121080058394,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.13703298899054062,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.13452615001006052,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.14143830000830349,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.12274504199740477,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.1329776529892115,
+          "path": "/inbox",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04737914500583429,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.050813358000596054,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04123867800808512,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04078699600358959,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04327646500314586,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04950524101150222,
+          "path": "/config",
+          "period": "expiry"
+        },
+        {
+          "elapsed_s": 0.04337904400017578,
+          "path": "/config",
+          "period": "expiry"
+        }
+      ],
+      "server_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r95b611dc92ab4d779082bc926c9a32e9.service",
+      "server_pid": 109013,
+      "slots": 4,
+      "spans": [
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.23826481699999996,
+          "spans": {
+            "event_read_parse_s": 0.023072572992532514,
+            "process_resource_inspection_s": 0.0008836259949021041,
+            "render_s": 0.06431860399607103,
+            "run_index_s": 0.037850542008527555,
+            "task_product_scan_s": 0.052094359998591244
+          },
+          "wall_s": 0.23828778600727674
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12104612299999995,
+          "spans": {
+            "event_read_parse_s": 0.016493036004249007,
+            "process_resource_inspection_s": 0.0003673550090752542,
+            "render_s": 0.0005073009961051866,
+            "run_index_s": 2.304500958416611e-05,
+            "task_product_scan_s": 0.05165614001452923
+          },
+          "wall_s": 0.12103051399753895
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.13363193500000003,
+          "spans": {
+            "event_read_parse_s": 0.025366059999214485,
+            "process_resource_inspection_s": 0.0003861879959004,
+            "render_s": 0.0005150139913894236,
+            "run_index_s": 2.8739988920278847e-05,
+            "task_product_scan_s": 0.054442705994006246
+          },
+          "wall_s": 0.13364750800246838
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11845508299999996,
+          "spans": {
+            "event_read_parse_s": 0.016090364995761774,
+            "process_resource_inspection_s": 0.00034293999487999827,
+            "render_s": 0.0005016400100430474,
+            "run_index_s": 2.2714011720381677e-05,
+            "task_product_scan_s": 0.052692998986458406
+          },
+          "wall_s": 0.11804293299792334
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11693080599999983,
+          "spans": {
+            "event_read_parse_s": 0.015494913008296862,
+            "process_resource_inspection_s": 0.00040192199230659753,
+            "render_s": 0.0005161119916010648,
+            "run_index_s": 2.11750011658296e-05,
+            "task_product_scan_s": 0.050472090995754115
+          },
+          "wall_s": 0.11686651999480091
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1266453230000002,
+          "spans": {
+            "event_read_parse_s": 0.02404784699319862,
+            "process_resource_inspection_s": 0.00035031000152230263,
+            "render_s": 0.0006242870003916323,
+            "run_index_s": 2.1649000700563192e-05,
+            "task_product_scan_s": 0.05244219399173744
+          },
+          "wall_s": 0.12660673199570738
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11783391800000009,
+          "spans": {
+            "event_read_parse_s": 0.014992463999078609,
+            "process_resource_inspection_s": 0.0003584160003811121,
+            "render_s": 0.0005219090089667588,
+            "run_index_s": 2.0797975594177842e-05,
+            "task_product_scan_s": 0.05232504601008259
+          },
+          "wall_s": 0.11788384399551433
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.14972004500000002,
+          "spans": {
+            "event_read_parse_s": 0.015287097994587384,
+            "process_resource_inspection_s": 0.0004968729917891324,
+            "render_s": 0.027233836997766048,
+            "run_index_s": 1.2400982086546719e-05,
+            "task_product_scan_s": 0.05807426600949839
+          },
+          "wall_s": 0.14973249500326347
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.17176454900000016,
+          "spans": {
+            "event_read_parse_s": 0.016520078002940863,
+            "process_resource_inspection_s": 0.0004267109907232225,
+            "render_s": 0.0036212429986335337,
+            "run_index_s": 0.05109594401437789,
+            "task_product_scan_s": 0.053248338008415885
+          },
+          "wall_s": 0.17178051399241667
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12283273500000003,
+          "spans": {
+            "event_read_parse_s": 0.014684138004668057,
+            "process_resource_inspection_s": 0.00041028199484571815,
+            "render_s": 0.0033817130024544895,
+            "run_index_s": 9.914016118273139e-06,
+            "task_product_scan_s": 0.05159663701488171
+          },
+          "wall_s": 0.12286191000021063
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11628120399999986,
+          "spans": {
+            "event_read_parse_s": 0.015043471998069435,
+            "process_resource_inspection_s": 0.0003421339933993295,
+            "render_s": 0.0034147359983762726,
+            "run_index_s": 9.468014468438923e-06,
+            "task_product_scan_s": 0.051695601985557005
+          },
+          "wall_s": 0.11634301100275479
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11566078700000015,
+          "spans": {
+            "event_read_parse_s": 0.014428114998736419,
+            "process_resource_inspection_s": 0.00040203800017479807,
+            "render_s": 0.003385240997886285,
+            "run_index_s": 1.0494026355445385e-05,
+            "task_product_scan_s": 0.0518859000003431
+          },
+          "wall_s": 0.11567137599922717
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11414938000000019,
+          "spans": {
+            "event_read_parse_s": 0.01473248700494878,
+            "process_resource_inspection_s": 0.0003588459949241951,
+            "render_s": 0.0034303639986319467,
+            "run_index_s": 9.94295987766236e-06,
+            "task_product_scan_s": 0.05083226900023874
+          },
+          "wall_s": 0.11422743400908075
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12837618799999984,
+          "spans": {
+            "event_read_parse_s": 0.016091266996227205,
+            "process_resource_inspection_s": 0.0006164480000734329,
+            "render_s": 0.0033275250025326386,
+            "run_index_s": 1.022400101646781e-05,
+            "task_product_scan_s": 0.05388371199660469
+          },
+          "wall_s": 0.1282615660020383
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.050034885000000084,
+          "spans": {
+            "process_resource_inspection_s": 0.0003326419973745942,
+            "render_s": 0.009706349010230042,
+            "run_index_s": 8.672999683767557e-06,
+            "task_product_scan_s": 0.02606773299339693
+          },
+          "wall_s": 0.05007069400744513
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04395182699999989,
+          "spans": {
+            "process_resource_inspection_s": 0.0003417550033191219,
+            "render_s": 0.00034509500255808234,
+            "run_index_s": 9.232026059180498e-06,
+            "task_product_scan_s": 0.02673640099237673
+          },
+          "wall_s": 0.04400259400426876
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04603892999999992,
+          "spans": {
+            "process_resource_inspection_s": 0.00042128701170440763,
+            "render_s": 0.00031582800147589296,
+            "run_index_s": 1.0383970220573246e-05,
+            "task_product_scan_s": 0.030217559993616305
+          },
+          "wall_s": 0.04602808599884156
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.043436240999999765,
+          "spans": {
+            "process_resource_inspection_s": 0.00038595999649260193,
+            "render_s": 0.000299106992315501,
+            "run_index_s": 1.2365009752102196e-05,
+            "task_product_scan_s": 0.027863441995577887
+          },
+          "wall_s": 0.04342847400403116
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04120507799999995,
+          "spans": {
+            "process_resource_inspection_s": 0.0003377119865035638,
+            "render_s": 0.0002755449968390167,
+            "run_index_s": 9.78900061454624e-06,
+            "task_product_scan_s": 0.026502929002163
+          },
+          "wall_s": 0.04123308199632447
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.039643480000000064,
+          "spans": {
+            "process_resource_inspection_s": 0.00041908500134013593,
+            "render_s": 0.0003791859926423058,
+            "run_index_s": 5.4471034673042595e-05,
+            "task_product_scan_s": 0.025205388010363095
+          },
+          "wall_s": 0.03962544100068044
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03954919999999973,
+          "spans": {
+            "process_resource_inspection_s": 0.0003678939974633977,
+            "render_s": 0.00033460000122431666,
+            "run_index_s": 9.123003110289574e-06,
+            "task_product_scan_s": 0.025562802999047562
+          },
+          "wall_s": 0.03961811700719409
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.17118849199999975,
+          "spans": {
+            "event_read_parse_s": 0.014718325008288957,
+            "process_resource_inspection_s": 0.00035989000753033906,
+            "render_s": 0.0006635250028921291,
+            "run_index_s": 0.04935668203688692,
+            "task_product_scan_s": 0.05443113201181404
+          },
+          "wall_s": 0.17112126099527813
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12624432399999996,
+          "spans": {
+            "event_read_parse_s": 0.01585801300825551,
+            "process_resource_inspection_s": 0.0003844559978460893,
+            "render_s": 0.0005002429970772937,
+            "run_index_s": 2.3362008505500853e-05,
+            "task_product_scan_s": 0.05125095600669738
+          },
+          "wall_s": 0.12627335100842174
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11679262899999987,
+          "spans": {
+            "event_read_parse_s": 0.0146196499990765,
+            "process_resource_inspection_s": 0.0004106219857931137,
+            "render_s": 0.0004653309879358858,
+            "run_index_s": 2.2681037080474198e-05,
+            "task_product_scan_s": 0.052512977010337636
+          },
+          "wall_s": 0.11683896799513604
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1174443329999999,
+          "spans": {
+            "event_read_parse_s": 0.01481185200100299,
+            "process_resource_inspection_s": 0.00035203801235184073,
+            "render_s": 0.0006190679996507242,
+            "run_index_s": 2.851401222869754e-05,
+            "task_product_scan_s": 0.05179045000113547
+          },
+          "wall_s": 0.11747573099273723
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.1322446180000001,
+          "spans": {
+            "event_read_parse_s": 0.017499407011200674,
+            "process_resource_inspection_s": 0.00036817700311075896,
+            "render_s": 0.0005120770074427128,
+            "run_index_s": 2.5003973860293627e-05,
+            "task_product_scan_s": 0.059578229003818706
+          },
+          "wall_s": 0.13215038800262846
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12380534399999998,
+          "spans": {
+            "event_read_parse_s": 0.020338517002528533,
+            "process_resource_inspection_s": 0.000375295989215374,
+            "render_s": 0.0004859500040765852,
+            "run_index_s": 2.3295011487789452e-05,
+            "task_product_scan_s": 0.05087020499922801
+          },
+          "wall_s": 0.12380827798915561
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11498423899999999,
+          "spans": {
+            "event_read_parse_s": 0.01454626901249867,
+            "process_resource_inspection_s": 0.0003521089965943247,
+            "render_s": 0.0004879689950030297,
+            "run_index_s": 2.081296406686306e-05,
+            "task_product_scan_s": 0.05085787799907848
+          },
+          "wall_s": 0.11503313700086437
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11962960500000008,
+          "spans": {
+            "event_read_parse_s": 0.014812215013080277,
+            "process_resource_inspection_s": 0.0003459209983702749,
+            "render_s": 0.0033585700002731755,
+            "run_index_s": 1.0259987902827561e-05,
+            "task_product_scan_s": 0.053250716999173164
+          },
+          "wall_s": 0.11965755600249395
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.17561819699999992,
+          "spans": {
+            "event_read_parse_s": 0.015423329998156987,
+            "process_resource_inspection_s": 0.0003830740024568513,
+            "render_s": 0.0034480120084481314,
+            "run_index_s": 0.05052926800271962,
+            "task_product_scan_s": 0.05219565598235931
+          },
+          "wall_s": 0.17563018499640748
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1165893979999999,
+          "spans": {
+            "event_read_parse_s": 0.014400910004042089,
+            "process_resource_inspection_s": 0.000417018003645353,
+            "render_s": 0.003408531003515236,
+            "run_index_s": 1.0176023351959884e-05,
+            "task_product_scan_s": 0.0523233900021296
+          },
+          "wall_s": 0.11657852699863724
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11628775400000047,
+          "spans": {
+            "event_read_parse_s": 0.014892806997522712,
+            "process_resource_inspection_s": 0.00043990199628751725,
+            "render_s": 0.0034780939895426854,
+            "run_index_s": 2.0628984202630818e-05,
+            "task_product_scan_s": 0.0519093159964541
+          },
+          "wall_s": 0.11632093199295923
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1219333529999993,
+          "spans": {
+            "event_read_parse_s": 0.014913962004357018,
+            "process_resource_inspection_s": 0.00036802100657951087,
+            "render_s": 0.0037642469978891313,
+            "run_index_s": 9.926967322826385e-06,
+            "task_product_scan_s": 0.05240882599900942
+          },
+          "wall_s": 0.12184306500421371
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1256103839999998,
+          "spans": {
+            "event_read_parse_s": 0.015442137999343686,
+            "process_resource_inspection_s": 0.0003612729924498126,
+            "render_s": 0.0034427399950800464,
+            "run_index_s": 9.240975487045944e-06,
+            "task_product_scan_s": 0.057914716002414934
+          },
+          "wall_s": 0.1255549439956667
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1164307520000003,
+          "spans": {
+            "event_read_parse_s": 0.014712325995787978,
+            "process_resource_inspection_s": 0.00035401599598117173,
+            "render_s": 0.0034376629919279367,
+            "run_index_s": 1.2014992535114288e-05,
+            "task_product_scan_s": 0.051477947999956086
+          },
+          "wall_s": 0.11647258400626015
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04215079600000049,
+          "spans": {
+            "process_resource_inspection_s": 0.00032869500864762813,
+            "render_s": 0.00036977199488319457,
+            "run_index_s": 8.973031071946025e-06,
+            "task_product_scan_s": 0.0257602010096889
+          },
+          "wall_s": 0.04218441901321057
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.048849714000000155,
+          "spans": {
+            "process_resource_inspection_s": 0.0003870469954563305,
+            "render_s": 0.0003333390050102025,
+            "run_index_s": 1.1058975360356271e-05,
+            "task_product_scan_s": 0.027085904992418364
+          },
+          "wall_s": 0.04885910100711044
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04457578299999998,
+          "spans": {
+            "process_resource_inspection_s": 0.00041019001218955964,
+            "render_s": 0.00035891198785975575,
+            "run_index_s": 1.1380994692444801e-05,
+            "task_product_scan_s": 0.028829133007093333
+          },
+          "wall_s": 0.044588061995455064
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04316396300000047,
+          "spans": {
+            "process_resource_inspection_s": 0.0003934359992854297,
+            "render_s": 0.0003464420005911961,
+            "run_index_s": 9.65702929534018e-06,
+            "task_product_scan_s": 0.027472393005155027
+          },
+          "wall_s": 0.04317039700981695
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04391415600000048,
+          "spans": {
+            "process_resource_inspection_s": 0.0004856849991483614,
+            "render_s": 0.00033266100217588246,
+            "run_index_s": 1.2447024346329272e-05,
+            "task_product_scan_s": 0.02818615899013821
+          },
+          "wall_s": 0.04395390200079419
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04343105600000019,
+          "spans": {
+            "process_resource_inspection_s": 0.00040853901009541005,
+            "render_s": 0.00034497500746510923,
+            "run_index_s": 1.121599052567035e-05,
+            "task_product_scan_s": 0.0277456480107503
+          },
+          "wall_s": 0.04335063599864952
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04463691600000086,
+          "spans": {
+            "process_resource_inspection_s": 0.0005086930032121018,
+            "render_s": 0.00035709999792743474,
+            "run_index_s": 1.360502210445702e-05,
+            "task_product_scan_s": 0.02712457999587059
+          },
+          "wall_s": 0.0446257089934079
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.17841427799999998,
+          "spans": {
+            "event_read_parse_s": 0.014238540010410361,
+            "process_resource_inspection_s": 0.00037895599962212145,
+            "render_s": 0.0005203949986025691,
+            "run_index_s": 0.05133315300918184,
+            "task_product_scan_s": 0.057635307995951734
+          },
+          "wall_s": 0.17840974598948378
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.123111572,
+          "spans": {
+            "event_read_parse_s": 0.01693877301295288,
+            "process_resource_inspection_s": 0.00038614201184827834,
+            "render_s": 0.0005025420105084777,
+            "run_index_s": 2.238598244730383e-05,
+            "task_product_scan_s": 0.05024006300664041
+          },
+          "wall_s": 0.12295623699901626
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11565470299999969,
+          "spans": {
+            "event_read_parse_s": 0.014436561003094539,
+            "process_resource_inspection_s": 0.0004312050004955381,
+            "render_s": 0.000500715002999641,
+            "run_index_s": 2.138901618309319e-05,
+            "task_product_scan_s": 0.0510309649980627
+          },
+          "wall_s": 0.11557992600137368
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11600038999999995,
+          "spans": {
+            "event_read_parse_s": 0.01439121899602469,
+            "process_resource_inspection_s": 0.0004875330050708726,
+            "render_s": 0.0004537069908110425,
+            "run_index_s": 6.0861013480462134e-05,
+            "task_product_scan_s": 0.050826239996240474
+          },
+          "wall_s": 0.11602313499315642
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12561549200000055,
+          "spans": {
+            "event_read_parse_s": 0.014912845013896003,
+            "process_resource_inspection_s": 0.00035426799149718136,
+            "render_s": 0.00047722100862301886,
+            "run_index_s": 2.3782995413057506e-05,
+            "task_product_scan_s": 0.050389712007017806
+          },
+          "wall_s": 0.1257109779980965
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.11565561499999966,
+          "spans": {
+            "event_read_parse_s": 0.014821282995399088,
+            "process_resource_inspection_s": 0.0003414509992580861,
+            "render_s": 0.0004705539904534817,
+            "run_index_s": 2.2442996851168573e-05,
+            "task_product_scan_s": 0.0515628180000931
+          },
+          "wall_s": 0.11561107599118259
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 11,
+            "task_product_scan_s": 2
+          },
+          "path": "/now1",
+          "process_cpu_s": 0.12181365899999985,
+          "spans": {
+            "event_read_parse_s": 0.01530137300142087,
+            "process_resource_inspection_s": 0.00035592699714470655,
+            "render_s": 0.0005589580105151981,
+            "run_index_s": 2.797003253363073e-05,
+            "task_product_scan_s": 0.052889846003381535
+          },
+          "wall_s": 0.12178796798980329
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.11913989299999983,
+          "spans": {
+            "event_read_parse_s": 0.014503594997222535,
+            "process_resource_inspection_s": 0.0004949860012857243,
+            "render_s": 0.005658829992171377,
+            "run_index_s": 1.1061012628488243e-05,
+            "task_product_scan_s": 0.0529545150056947
+          },
+          "wall_s": 0.11910577799426392
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.17937272999999987,
+          "spans": {
+            "event_read_parse_s": 0.014645406001363881,
+            "process_resource_inspection_s": 0.0004477749898796901,
+            "render_s": 0.0037609989958582446,
+            "run_index_s": 0.05334846999903675,
+            "task_product_scan_s": 0.05529782500525471
+          },
+          "wall_s": 0.17933946699486114
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.1360237919999996,
+          "spans": {
+            "event_read_parse_s": 0.02342626400059089,
+            "process_resource_inspection_s": 0.0003850579960271716,
+            "render_s": 0.0038783169875387102,
+            "run_index_s": 1.2945980415679514e-05,
+            "task_product_scan_s": 0.0549888009991264
+          },
+          "wall_s": 0.13596286800748203
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.13342169399999992,
+          "spans": {
+            "event_read_parse_s": 0.016006290999939665,
+            "process_resource_inspection_s": 0.0004478699993342161,
+            "render_s": 0.0038232219958445057,
+            "run_index_s": 1.3718003174290061e-05,
+            "task_product_scan_s": 0.05891880000126548
+          },
+          "wall_s": 0.13335459800146054
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.14046377799999998,
+          "spans": {
+            "event_read_parse_s": 0.018261548000737093,
+            "process_resource_inspection_s": 0.0003982190100941807,
+            "render_s": 0.003772672003833577,
+            "run_index_s": 1.1332012945786119e-05,
+            "task_product_scan_s": 0.059090145005029626
+          },
+          "wall_s": 0.14042400100152008
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.12169449499999985,
+          "spans": {
+            "event_read_parse_s": 0.015821804001461715,
+            "process_resource_inspection_s": 0.00035048299469053745,
+            "render_s": 0.0034451470128260553,
+            "run_index_s": 9.073031833395362e-06,
+            "task_product_scan_s": 0.05291257900535129
+          },
+          "wall_s": 0.12168747700343374
+        },
+        {
+          "counts": {
+            "event_read_parse_s": 1,
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 2
+          },
+          "path": "/inbox",
+          "process_cpu_s": 0.13186961599999947,
+          "spans": {
+            "event_read_parse_s": 0.014520351003739052,
+            "process_resource_inspection_s": 0.0004734499962069094,
+            "render_s": 0.004071360002853908,
+            "run_index_s": 1.3071985449641943e-05,
+            "task_product_scan_s": 0.055306979003944434
+          },
+          "wall_s": 0.13183522199688014
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.046347085999999926,
+          "spans": {
+            "process_resource_inspection_s": 0.000426022001192905,
+            "render_s": 0.00035090799792669713,
+            "run_index_s": 1.2941993190906942e-05,
+            "task_product_scan_s": 0.027538609007024206
+          },
+          "wall_s": 0.04634447600983549
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04983642700000068,
+          "spans": {
+            "process_resource_inspection_s": 0.0004377900040708482,
+            "render_s": 0.00032642899896018207,
+            "run_index_s": 1.1782016372308135e-05,
+            "task_product_scan_s": 0.02841257699765265
+          },
+          "wall_s": 0.04981803700502496
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04024524700000054,
+          "spans": {
+            "process_resource_inspection_s": 0.0003930609964299947,
+            "render_s": 0.00030400100513361394,
+            "run_index_s": 1.108198193833232e-05,
+            "task_product_scan_s": 0.025520132010569796
+          },
+          "wall_s": 0.04029880400048569
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.03985909200000037,
+          "spans": {
+            "process_resource_inspection_s": 0.0003420069988351315,
+            "render_s": 0.00028212700271978974,
+            "run_index_s": 9.283045073971152e-06,
+            "task_product_scan_s": 0.02586486299696844
+          },
+          "wall_s": 0.0398474109970266
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.042406055999999914,
+          "spans": {
+            "process_resource_inspection_s": 0.0006425929896067828,
+            "render_s": 0.0003032389940926805,
+            "run_index_s": 1.2517004506662488e-05,
+            "task_product_scan_s": 0.024795085002551787
+          },
+          "wall_s": 0.04240313199989032
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.048682192000000235,
+          "spans": {
+            "process_resource_inspection_s": 0.00036833100602962077,
+            "render_s": 0.00032173799991142005,
+            "run_index_s": 9.43899794947356e-06,
+            "task_product_scan_s": 0.030029284011106938
+          },
+          "wall_s": 0.04867633599496912
+        },
+        {
+          "counts": {
+            "process_resource_inspection_s": 1,
+            "render_s": 1,
+            "run_index_s": 8,
+            "task_product_scan_s": 1
+          },
+          "path": "/config",
+          "process_cpu_s": 0.04251359600000004,
+          "spans": {
+            "process_resource_inspection_s": 0.0004236980021232739,
+            "render_s": 0.00043127899698447436,
+            "run_index_s": 1.4591016224585474e-05,
+            "task_product_scan_s": 0.026822471001651138
+          },
+          "wall_s": 0.04247393399418797
+        }
+      ],
+      "summary": {
+        "cold:/config": {
+          "max_s": 0.050943841008120216,
+          "n": 7,
+          "p50_s": 0.04428854200523347,
+          "p95_s": 0.050943841008120216
+        },
+        "cold:/inbox": {
+          "max_s": 0.17294428299646825,
+          "n": 7,
+          "p50_s": 0.12416471599135548,
+          "p95_s": 0.17294428299646825
+        },
+        "cold:/now1": {
+          "max_s": 0.23914300299657043,
+          "n": 7,
+          "p50_s": 0.1219361199910054,
+          "p95_s": 0.23914300299657043
+        },
+        "expiry:/config": {
+          "max_s": 0.050813358000596054,
+          "n": 7,
+          "p50_s": 0.04337904400017578,
+          "p95_s": 0.050813358000596054
+        },
+        "expiry:/inbox": {
+          "max_s": 0.1804121080058394,
+          "n": 7,
+          "p50_s": 0.13452615001006052,
+          "p95_s": 0.1804121080058394
+        },
+        "expiry:/now1": {
+          "max_s": 0.18256520399881992,
+          "n": 7,
+          "p50_s": 0.12271891300042626,
+          "p95_s": 0.18256520399881992
+        },
+        "warm:/config": {
+          "max_s": 0.04970700299600139,
+          "n": 7,
+          "p50_s": 0.04488881900033448,
+          "p95_s": 0.04970700299600139
+        },
+        "warm:/inbox": {
+          "max_s": 0.17675592200248502,
+          "n": 7,
+          "p50_s": 0.12064794800244272,
+          "p95_s": 0.17675592200248502
+        },
+        "warm:/now1": {
+          "max_s": 0.17243552100262605,
+          "n": 7,
+          "p50_s": 0.1247176210017642,
+          "p95_s": 0.17243552100262605
+        }
+      }
+    }
+  },
+  "python": "3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]",
+  "started_at": "2026-09-07T12:45:40Z",
+  "temp_kib": 14708
+}
