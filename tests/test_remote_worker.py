@@ -8,7 +8,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from garden.remote_worker import execute_claim
+from garden.remote_worker import doctor_worker, execute_claim
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -36,6 +36,28 @@ def queued_run(store):
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
+
+
+def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):
+    monkeypatch.setattr("garden.remote_worker.shutil.which", lambda name: f"/bin/{name}")
+
+    class Probe:
+        returncode = 1
+
+    monkeypatch.setattr("garden.remote_worker.subprocess.run", lambda *args, **kwargs: Probe())
+
+    assert doctor_worker("", "https://example.test/team/repo.git", ["claude"]) == [
+        "worker bearer token is missing",
+        "git cannot read 'https://example.test/team/repo.git'",
+    ]
+
+    monkeypatch.setattr(
+        "garden.remote_worker.shutil.which",
+        lambda name: None if name == "claude" else f"/bin/{name}",
+    )
+    assert doctor_worker("token", "", ["claude"]) == [
+        "harness 'claude' is not on PATH",
+    ]
 
 
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])
