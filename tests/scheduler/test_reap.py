@@ -494,7 +494,10 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     task.pr = "https://example.test/acme/widget/pull/7"
     sched.store.save(task)
     wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), task.default_branch(), "main")
-    specs = [{"name": "unit", "command": "kill -TERM $$"}]
+    specs = [{"name": "unit", "command": (
+        "printf 'Traceback (most recent call last):\\n  File \\\"check.py\\\", line 7\\n"
+        "RuntimeError: contention\\n' >&2; kill -TERM $$"
+    )}]
     cont = sched._pre_pr_cont(None, wt, task.default_branch(), "main", "")
     sched._dispatch_check_run(task, worktree=wt, branch=task.default_branch(), base="main", specs=specs,
                               stage="merge_rebase", cont=cont, rep=TickReport())
@@ -511,6 +514,8 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert task.status == Status.IN_REVIEW
     assert stop["kind"] == "check_did_not_run" and "check did not run" in stop["reason"]
     assert "SIGTERM" in stop["reason"]
+    assert "Traceback (most recent call last):" in stop["reason"]
+    assert "RuntimeError: contention" in stop["reason"]
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 

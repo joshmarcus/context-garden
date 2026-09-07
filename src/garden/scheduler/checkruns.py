@@ -231,7 +231,8 @@ class CheckRunMixin:
         for result in results:
             summary = str(result.get("summary") or "")
             if "check did not finish" in summary or "check run produced no results" in summary:
-                return summary
+                details = str(result.get("details") or "").strip()
+                return f"{summary}\n\n{details}".strip() if details else summary
         return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:
