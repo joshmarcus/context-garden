@@ -181,6 +181,20 @@ def test_stream_observes_transcript_and_ledger_without_domain_event(garden):
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text('{}\n')
     assert versions(s.root, s.config.garden_dir) != before
+
+
+def test_stream_observes_configured_product_ledger(garden):
+    from garden.now2_stream import versions
+
+    s = Store(garden)
+    s.config.data["products"]["demo"]["provides_tool"] = True
+    before = versions(s.root, s.config.garden_dir, s.config,
+                      s.root / "demo")
+    ledger = s.root / "demo" / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text('{}\n')
+    assert versions(s.root, s.config.garden_dir, s.config,
+                    s.root / "demo") != before
     run = RunStore(s.config.garden_dir).new_run('DM-001', 'local')
     before = versions(s.root, s.config.garden_dir)
     (run.path / 'stdout.json').write_text('new output\n')

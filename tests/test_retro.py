@@ -338,7 +338,7 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
 
 
 def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_github, monkeypatch):
-    """CG-223: docs/operator-spend.jsonl in the live garden feeds the retro's own '## Numbers'
+    """CG-223: the product's docs/operator-spend.jsonl feeds the retro's own '## Numbers'
     section, so the operator's spend and its share of the phase's total are quoted, not
     guessed at — no run_finished events exist for this phase's tasks here, so the whole
     total is the operator's."""
@@ -347,8 +347,8 @@ def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_gith
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     repo = _garden_repo(tmp_path)
     root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
-    (root / "docs").mkdir(parents=True, exist_ok=True)
-    with (root / "docs" / "operator-spend.jsonl").open("w") as f:
+    (root / "gdn" / "docs").mkdir(parents=True, exist_ok=True)
+    with (root / "gdn" / "docs" / "operator-spend.jsonl").open("w") as f:
         f.write(json.dumps({"at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "list_price_usd": 3.5}) + "\n")
     store = Store(root)
     sched = Scheduler(store, github=fake_github, log=print)
@@ -395,6 +395,28 @@ def test_retro_document_uses_configured_operator_ledger_and_reports_turns(tmp_pa
     assert not rep.errors, rep.errors
     retro_md = (store.config.worktree_path("_retro-gdn-p1") / "gdn" / "p1" / "docs" / "retro.md").read_text()
     assert "$3.50" in retro_md and "7 turns" in retro_md and "100%" in retro_md
+
+
+def test_retro_default_operator_ledger_is_product_relative(tmp_path, fake_github, monkeypatch):
+    import json
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    ledger = root / "gdn" / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "turns": 4,
+        "list_price_usd": 3.5,
+    }) + "\n")
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "A friction item.")
+    sched.start_retro(store.phase("gdn", "p1"), ["designer"], skip_personas=True)
+    assert not sched.tick().errors
+    retro_md = (store.config.worktree_path("_retro-gdn-p1") / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "$3.50" in retro_md and "4 turns" in retro_md
 
 
 def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, fake_github, monkeypatch):

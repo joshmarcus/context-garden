@@ -143,3 +143,12 @@ def test_session_rows_uses_latest_heartbeat_and_counts_compactions():
 
 def test_default_path_is_under_docs():
     assert ops.default_path(Path("/x")) == Path("/x/docs/operator-spend.jsonl")
+
+
+def test_total_turns_is_windowed_from_cumulative_heartbeats():
+    records = [
+        {"at": "2026-01-01T00:00:00+00:00", "session": "a", "turns": 5},
+        {"at": "2026-01-02T00:00:00+00:00", "session": "a", "turns": 9},
+        {"at": "2026-01-03T00:00:00+00:00", "session": "a", "turns": 12},
+    ]
+    assert ops.total_turns(records, since="2026-01-02T00:00:00+00:00") == 7
