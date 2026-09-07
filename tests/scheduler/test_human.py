@@ -233,8 +233,6 @@ def test_external_merged_pr_completes_without_rechecks_after_final_base_verifica
     assert not any(r.mode == "review" for r in sched.runs.runs_for(task.id))
     with pytest.raises(RuntimeError, match="no active run to finish"):
         sched.finish_manual(sched.store.task(task.id), {"status": "done", "pr": pr.url})
-
-
 def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
     """An external parent merge shares the normal stacked-child lifecycle."""
     parent = sched.store.task("DM-001")
