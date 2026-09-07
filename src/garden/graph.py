@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 
 from .model import Status, Task, dispatch_sort_key
@@ -9,6 +10,19 @@ from .model import Status, Task, dispatch_sort_key
 
 class GraphError(Exception):
     pass
+
+
+def dependency_after(task: Task, dep_id: str, tasks: dict[str, Task]) -> str:
+    """Return the rule for one edge: explicit rule, otherwise merge for document work."""
+    explicit = task.dependency_after.get(dep_id)
+    if explicit:
+        return explicit
+    dep = tasks.get(dep_id)
+    if dep and (dep.kind.lower() in {"design", "spec", "document"} or
+                re.search(r"\b(design|spec|document)(?:ation)?\b", dep.title, re.I) or
+                re.search(r"^##\s+(?:design|spec|documentation?)\b", dep.body, re.I | re.M)):
+        return "merge"
+    return "stack"
 
 
 def validate(tasks: dict[str, Task]) -> list[str]:
@@ -63,7 +77,7 @@ def blockers(task: Task, tasks: dict[str, Task], stack: bool = False) -> list[st
             if dep is None:
                 out.append(d)
             continue
-        if stack and stackable(dep):
+        if stack and dependency_after(task, d, tasks) == "stack" and stackable(dep):
             continue
         out.append(d)
     return out
@@ -71,7 +85,8 @@ def blockers(task: Task, tasks: dict[str, Task], stack: bool = False) -> list[st
 
 def stack_parents(task: Task, tasks: dict[str, Task]) -> list[Task]:
     """Open-PR dependencies this task would stack on (in dependency order)."""
-    return [tasks[d] for d in task.depends_on if d in tasks and tasks[d].status != Status.DONE and stackable(tasks[d])]
+    return [tasks[d] for d in task.depends_on if d in tasks and tasks[d].status != Status.DONE
+            and dependency_after(task, d, tasks) == "stack" and stackable(tasks[d])]
 
 
 def is_blocked(task: Task, tasks: dict[str, Task], stack: bool = False) -> bool:
@@ -177,7 +192,8 @@ def mermaid(tasks: dict[str, Task], direction: str = "LR", visible: set[str] | N
             continue
         for d in t.depends_on:
             if d in tasks and d in vis:
-                lines.append(f"  {_mid(d)} --> {_mid(t.id)}")
+                label = "|after merge|" if dependency_after(t, d, tasks) == "merge" else ""
+                lines.append(f"  {_mid(d)} -->{label} {_mid(t.id)}")
         if t.discovered_from in tasks and t.discovered_from in vis:
             lines.append(f"  {_mid(t.discovered_from)} -.->|discovered| {_mid(t.id)}")
     return "\n".join(lines)
@@ -285,9 +301,11 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
         hidden_deps = [d for d in t.depends_on if d in tasks and d not in vis]
+        merge_deps = [d for d in t.depends_on if dependency_after(t, d, tasks) == "merge"]
+        rule_note = f" — after merge: {', '.join(merge_deps)}" if merge_deps else ""
         dep_note = f" — depends on hidden: {', '.join(hidden_deps)}" if hidden_deps else ""
         parts.append(
-            f'<a href="{link_prefix}{tid}"><g><title>{tid}: {title} — {st.replace("_", " ")} ({stage_word(st)}){_esc(dep_note)}</title>'
+            f'<a href="{link_prefix}{tid}"><g><title>{tid}: {title} — {st.replace("_", " ")} ({stage_word(st)}){_esc(dep_note + rule_note)}</title>'
             f'<circle class="halo" cx="{x:.0f}" cy="{y:.0f}" r="19"/>'
             f'<use href="#{STAGE.get(st, "st-seed")}" transform="translate({x - 15:.0f} {y - 15:.0f}) scale(1.25)"/>'
             f'<text class="nid" x="{x:.0f}" y="{y + 36:.0f}" text-anchor="middle">{tid}</text>'

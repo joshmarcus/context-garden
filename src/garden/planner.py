@@ -36,7 +36,7 @@ Rules:
 - Do not include tasks that already exist (see existing task list). You may depend on existing ids.
 - `difficulty` picks the model tier: "easy" (mechanical, well-specified, small blast radius), "medium" (typical feature work), "hard" (design judgment, cross-cutting, subtle correctness). Be honest; it controls cost.
 - Output ONLY a JSON array (no prose, no fences) of objects with keys:
-  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard"), depends_on (list of ids or titles from this batch), reading (list of paths), body (markdown string).
+  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard), kind (optional: design|spec|document), depends_on (list of ids or titles, or {id, after: stack|merge}), reading (list of paths), body (markdown string).
   When additional guidance supplies a provenance value, also return it unchanged in the
   optional `discovered_from` key.
   Reference batch-internal dependencies by exact title; they are resolved to ids on import.
@@ -139,13 +139,33 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("title"):
             raise ValueError(f"bad task item: {item!r}")
         out.append(item)
+    _validate_dependency_rules(out)
     return out
+
+
+def _validate_dependency_rules(items: list[dict[str, Any]]) -> None:
+    """Reject dependency rules before a planner result can create any task files."""
+    for item in items:
+        raw_deps = item.get("depends_on") or []
+        if not isinstance(raw_deps, list):
+            raise ValueError(f"depends_on must be a list for task {item.get('title')!r}")
+        for raw_dep in raw_deps:
+            if isinstance(raw_dep, str):
+                continue
+            if not isinstance(raw_dep, dict) or set(raw_dep) not in ({"id"}, {"id", "after"}):
+                raise ValueError(f"malformed depends_on entry {raw_dep!r}")
+            dep_id = raw_dep.get("id")
+            if not isinstance(dep_id, str) or not dep_id.strip():
+                raise ValueError(f"depends_on entry has a missing or non-string id: {raw_dep!r}")
+            if "after" in raw_dep and raw_dep["after"] not in ("stack", "merge"):
+                raise ValueError(f"invalid dependency rule {raw_dep['after']!r}")
 
 
 def import_plan(
     store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None, reopen: bool = False
 ) -> list[Task]:
     """Create task files; resolve batch-internal dependencies by title."""
+    _validate_dependency_rules(items)
     ph = store.phase(product, phase)
     if ph.closed:
         if not reopen:
@@ -178,6 +198,7 @@ def import_plan(
             status="draft",
             difficulty=str(item.get("difficulty") or "medium"),
         )
+        t.kind = str(item.get("kind") or "")
         title_to_id[title.lower()] = t.id
         pending.append((t, item))
         created.append(t)
@@ -185,14 +206,18 @@ def import_plan(
     all_ids = {t.id for t in store.tasks().values()}
     for t, item in pending:
         deps = []
-        for d in item.get("depends_on") or []:
-            d = str(d).strip()
-            if d in all_ids:
-                deps.append(d)
-            elif d.lower() in title_to_id:
-                deps.append(title_to_id[d.lower()])
-            elif d.lower() in existing_titles:
-                deps.append(existing_titles[d.lower()])
+        for raw_d in item.get("depends_on") or []:
+            rule = ""
+            if isinstance(raw_d, dict):
+                d = raw_d["id"].strip()
+                rule = raw_d.get("after", "")
+            else:
+                d = raw_d.strip()
+            resolved = d if d in all_ids else title_to_id.get(d.lower(), existing_titles.get(d.lower()))
+            if resolved:
+                deps.append(resolved)
+                if rule:
+                    t.dependency_after[resolved] = rule
             else:
                 t.log(f"planner referenced unknown dependency {d!r}; dropped")
         t.depends_on = deps

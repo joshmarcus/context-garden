@@ -129,6 +129,8 @@ class Task:
     product: str = ""
     phase: str = ""
     depends_on: list[str] = field(default_factory=list)
+    dependency_after: dict[str, str] = field(default_factory=dict)  # explicit id -> stack|merge
+    kind: str = ""
     priority: int = 3  # 1 = highest
     order: int | None = None  # rank within a priority band; absent means "by id"
     estimate: str = ""  # S / M / L, informational
@@ -152,6 +154,21 @@ class Task:
     body: str = ""
 
     def __post_init__(self) -> None:
+        normalized: list[str] = []
+        for item in self.depends_on:
+            if isinstance(item, str):
+                normalized.append(item)
+                continue
+            if isinstance(item, dict) and set(item) <= {"id", "after"} and isinstance(item.get("id"), str):
+                after = item.get("after", "")
+                if after not in ("", "stack", "merge"):
+                    raise ValueError(f"invalid dependency rule {after!r}")
+                normalized.append(item["id"])
+                if after:
+                    self.dependency_after[item["id"]] = after
+                continue
+            raise ValueError(f"malformed depends_on entry {item!r}")
+        self.depends_on = normalized
         # Snapshot of the frontmatter, body and path this task was last loaded from (or last
         # saved to). Not stored on disk and not a dataclass field: `Store.save` uses it to
         # 3-way-merge a write onto the current on-disk file, so a concurrent tick and action
@@ -178,6 +195,7 @@ class Task:
         "product",
         "phase",
         "depends_on",
+        "kind",
         "priority",
         "order",
         "estimate",
@@ -210,6 +228,23 @@ class Task:
         except ValueError as e:
             raise ValueError(f"{path}: unknown status {status_raw!r}") from e
         extra = {k: v for k, v in data.items() if k not in cls.KNOWN}
+        raw_deps = data.get("depends_on") or []
+        if not isinstance(raw_deps, list):
+            raise ValueError(f"{path}: depends_on must be a list of ids or mappings")
+        deps: list[str] = []
+        dependency_after: dict[str, str] = {}
+        for item in raw_deps:
+            if isinstance(item, str):
+                dep_id, after = item, ""
+            elif isinstance(item, dict) and set(item) <= {"id", "after"} and isinstance(item.get("id"), str):
+                dep_id, after = item["id"], item.get("after", "")
+            else:
+                raise ValueError(f"{path}: malformed depends_on entry {item!r}")
+            if after not in ("", "stack", "merge"):
+                raise ValueError(f"{path}: depends_on entry {dep_id!r} has invalid after {after!r}")
+            deps.append(dep_id)
+            if after:
+                dependency_after[dep_id] = after
         task = cls(
             path=path,
             id=str(data["id"]),
@@ -217,7 +252,9 @@ class Task:
             status=status,
             product=str(data.get("product") or product),
             phase=str(data.get("phase") or phase),
-            depends_on=[str(d) for d in (data.get("depends_on") or [])],
+            depends_on=deps,
+            dependency_after=dependency_after,
+            kind=str(data.get("kind") or ""),
             priority=int(data.get("priority", 3)),
             order=(int(data["order"]) if data.get("order") is not None else None),
             estimate=str(data.get("estimate") or ""),
@@ -250,7 +287,11 @@ class Task:
             "status": self.status.value,
             "product": self.product,
             "phase": self.phase,
-            "depends_on": list(self.depends_on),
+            "depends_on": [
+                ({"id": dep, "after": self.dependency_after[dep]} if dep in self.dependency_after else dep)
+                for dep in self.depends_on
+            ],
+            **({"kind": self.kind} if self.kind else {}),
             "priority": self.priority,
         }
         if self.order is not None:
