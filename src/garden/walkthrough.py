@@ -477,7 +477,16 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
         store = Store(garden_root)
-        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
+        logs: list[str] = []
+        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
+                         log=logs.append)
+    expected = {
+        f"{page.spec.slug}-{width}-{scheme}.png"
+        for page in result.pages
+        for width in VIEWPORTS
+        for scheme in COLOR_SCHEMES
+    }
+    missing = sorted(name for name in expected if not (out_dir / name).is_file())
     captures = [str(p) for p in sorted(out_dir.iterdir())
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
     expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
@@ -485,16 +494,19 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not complete_pngs:
+    details = "\n".join(filter(None, [result.browser_note, *logs]))
+    if not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
+        if missing:
+            details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and evidence_complete
+    passed = complete_pngs and not missing and evidence_complete
     return {"status": "pass" if passed else "fail", "summary": summary,
             "failure_kind": "infrastructure" if result.browser_failure_kind else
                             ("product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
-            "details": result.browser_note or ("missing screenshot files or interaction evidence" if not passed else ""),
+            "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
             "pages": [p.spec.slug for p in result.pages]}
 

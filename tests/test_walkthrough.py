@@ -184,6 +184,34 @@ def test_ui_check_rejects_pngs_without_executed_interaction_evidence(tmp_path, m
     assert "interaction/viewport evidence is incomplete" in result["summary"]
 
 
+def test_ui_check_fails_when_browser_cannot_capture(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
+        "ready": False, "kind": "launch_failure", "diagnostic": "Chromium unavailable"})
+
+    result = _seeded_ui_capture(tmp_path / "ui")
+
+    assert result["status"] == "fail"
+    assert "Chromium unavailable" in result["details"]
+
+
+def test_ui_check_fails_when_a_color_capture_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    if not (spec.slug == "now" and scheme == "dark"):
+                        (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        return {spec.slug for spec in specs}, None, []
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui")
+
+    assert result["status"] == "fail"
+    assert "now-1280-dark.png" in result["details"]
+
+
 def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch):
     worktree = tmp_path / "proposed"
     (worktree / "src").mkdir(parents=True)
