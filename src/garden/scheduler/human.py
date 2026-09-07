@@ -165,6 +165,12 @@ class HumanMixin:
         note_txt = f" ({note.strip()})" if note.strip() else ""
         task.log(f"no-change accepted by the person{note_txt}; resuming the round without a new work run")
         self.store.save(task)
+        # The decision card is represented by WAITING_HUMAN, but accepting it hands the
+        # unchanged branch back to the normal PR/review pipeline. Move out of the human stop
+        # before that pipeline can dispatch a detached check; otherwise a check continuation
+        # can preserve the waiting status and leave an Inbox question card with no question.
+        if task.pr and task.status == Status.WAITING_HUMAN:
+            self._transition(task, self._pr_status(task), "no-change accepted; returning the PR to the review loop")
         if worktree.exists():
             try:
                 self._preserve_dirty_worktree(task, run, worktree)
