@@ -489,7 +489,7 @@ def rebase_brief(
         parts: list[str] = []
         goal = _truncate_utf8(task.body.strip(), REBASE_BRIEF_MAX_BYTES // 4)
         for path, content in hunks.items():
-            artifact_path = str(artifacts.get(path, {}).get("path") or "")
+            artifact_path = _conflict_artifact_locations(artifacts.get(path, {}))
             content_bytes = len(content.encode("utf-8", "replace"))
             if content_bytes > REBASE_INLINE_HUNK_MAX_BYTES:
                 parts.append(_rebase_hunk_summary(path, content_bytes, artifact_path))
@@ -527,9 +527,17 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
     return encoded[:max_bytes - len(marker.encode())].decode("utf-8", "ignore") + marker
 
 
+def _conflict_artifact_locations(artifact: dict[str, object]) -> str:
+    stages = artifact.get("stages")
+    if not isinstance(stages, list):
+        return ""
+    paths = [str(stage.get("path")) for stage in stages if isinstance(stage, dict) and stage.get("path")]
+    return ", ".join(paths)
+
+
 def _rebase_hunk_summary(path: str, size: int, artifact_path: str) -> str:
-    location = f" Preserved conflict artifact: `{artifact_path}`." if artifact_path else ""
-    return (f"\n### {path}\n\nGenerated conflict omitted from this prompt ({size:,} bytes)."
+    location = f" Preserved Git-stage artifacts: `{artifact_path}`." if artifact_path else ""
+    return (f"\n### {path}\n\nLarge conflict omitted from this prompt ({size:,} bytes)."
             f" Re-run the rebase to inspect Git's conflict stages.{location}\n")
 
 

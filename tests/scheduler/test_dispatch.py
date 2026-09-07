@@ -174,27 +174,74 @@ def test_oversized_prompt_is_rejected_before_the_runner_starts(sched, monkeypatc
     assert not started
 
 
-def test_large_rebase_conflict_uses_artifact_and_starts_one_bounded_recovery(sched):
-    """A generated conflict over the harness limit is recoverable without a retry/card."""
+def test_large_invalid_utf8_rebase_conflict_recovers_once_and_preserves_stages(sched, monkeypatch):
+    """A real oversized invalid-UTF-8 conflict recovers unattended, retaining Git's exact stages."""
+    from garden import gitops
+    from tests.conftest import git
+
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
     task.pr = "https://example.test/pull/1"
+    task.branch = task.default_branch()
     sched.store.save(task)
     path = "docs/design/snapshot.json"
-    conflict = "<<<<<<< HEAD\n" + ("generated-data\n" * 80_000) + "=======\nbase\n>>>>>>> main\n"
+    repo = sched.repo_for(task)
+    wt = sched.worktree_for(task)
 
-    sched._dispatch_rebase_agent(task, "main", [path], {path: conflict}, TickReport(), "fixture")
+    # Invalid UTF-8 proves the artifacts come from Git's index stages, not a decoded worktree
+    # rendering, while the large generated payload forces the bounded-summary path.
+    original = b"original\xff\n"
+    main_blob = b"main\xff\n" + b"m" * (1024 * 1024 + 128)
+    branch_blob = b"branch\xfe\n" + b"b" * (1024 * 1024 + 256)
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(original)
+    git("add", path, cwd=repo)
+    git("commit", "-q", "-m", "add generated snapshot", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+
+    gitops.prepare_worktree(repo, wt, task.branch, "main")
+    (wt / path).write_bytes(branch_blob)
+    git("add", path, cwd=wt)
+    git("commit", "-q", "-m", "branch snapshot", cwd=wt)
+    git("push", "-q", "-u", "origin", task.branch, cwd=wt)
+
+    target.write_bytes(main_blob)
+    git("add", path, cwd=repo)
+    git("commit", "-q", "-m", "main snapshot", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+
+    outcome = sched._rebase_and_record(task, "main", wt=wt)
+    assert outcome.status == "conflict"
+    assert outcome.files == [path]
+    # Make the actual rebase dispatch salvage a dirty worktree before the resolving agent runs.
+    (wt / "leftover.txt").write_text("preserve me\n")
+    sched._dispatch_rebase_agent(task, "main", outcome.files, outcome.hunks, outcome.artifacts,
+                                 TickReport(), "fixture")
     state = sched.state.get(task.id)
     artifact = state["rebase_artifacts"][path]
-    assert Path(artifact["path"]).read_text() == conflict
+    stages = {entry["stage"]: entry for entry in artifact["stages"]}
+    assert Path(stages[1]["path"]).read_bytes() == original
+    # During a rebase Git's stage 2 is the onto/base side and stage 3 is the rebased commit.
+    assert Path(stages[2]["path"]).read_bytes() == main_blob
+    assert Path(stages[3]["path"]).read_bytes() == branch_blob
+    assert all(len(entry["sha256"]) == 64 for entry in stages.values())
 
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "rebase-resolve")
     run = sched.dispatch(task, mode="rebase")
     brief = (run.path / "brief.md").read_text()
     assert len(brief.encode("utf-8")) <= MAX_SERIALIZED_PROMPT_BYTES
-    assert "Generated conflict omitted from this prompt" in brief
-    assert artifact["path"] in brief
-    assert "generated-data" not in brief
+    assert "Large conflict omitted from this prompt" in brief
+    assert str(stages[2]["path"]) in brief
+    assert "b" * 128 not in brief
+    assert state["stashes"][-1]["sha"] and state["stashes"][-1]["reason"] == "pre-dispatch"
+
+    sched.tick()  # reap the one resolving agent
+    sched.tick()  # continue through the ordinary post-rebase poll/dispatch path
+    agent_runs = [item for item in sched.runs.runs_for(task.id) if item.mode == "rebase"]
+    assert len(agent_runs) == 1
     assert not state.get("rebase_run_retries") and not state.get("needs_human")
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
 def test_redispatched_work_brief_lists_prior_commits(sched):

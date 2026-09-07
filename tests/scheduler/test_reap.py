@@ -353,7 +353,7 @@ def test_stale_base_rebase_conflict_does_not_count_toward_revision_cap(sched, fa
     _seed_base_guard(sched, "still-bad")  # base moves, but stays red
 
     # the mechanical rebase onto the moved base never applies cleanly
-    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto: (False, ["sentinel.txt"], {}))
+    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda worktree, onto, **_kwargs: (False, ["sentinel.txt"], {}))
 
     for i in range(3):
         # each cycle reaps the running round, runs the pre-PR check and base probe as detached
