@@ -23,3 +23,9 @@ systemd-run --user --wait --pipe --collect --unit=operator-cg385-validation \
 
 This validation creates only disposable pytest fixtures. It does not delete production cache,
 change a production cap or claim that synthetic requested reclaim bytes are available memory.
+
+`real-reclaim-report.json` is the separate real disk-cache incident reproduction: a normal
+tick starts the kernel reclaim helper at the configured reserve and a later tick admits one
+supervised task only after measured headroom clears the reserve. `served-interaction-report.json`
+records real HTTP requests against a disposable Uvicorn process at 120 and 1,200 retained runs,
+including three diagnostic failure/recovery cycles and instrumented task-store read/scan counts.

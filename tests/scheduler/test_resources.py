@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -491,3 +492,73 @@ def test_pending_review_attempts_reclaim_before_review_slot_reader_stops_it(sche
     sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
 
     assert attempts == ["review"]
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("CG385_REAL_REPORT"),
+                    reason="CG-385 disposable cgroup evidence only")
+def test_real_disk_cache_reclaim_recovers_normal_tick_admission(sched, monkeypatch, request):
+    """Exercise the real kernel interface only inside the explicitly capped evidence unit."""
+    import os
+
+    import garden.scheduler.resources as resources
+
+    relative = next(line.split("::", 1)[1] for line in Path("/proc/self/cgroup").read_text().splitlines()
+                    if line.startswith("0::"))
+    group = Path("/sys/fs/cgroup") / relative.lstrip("/")
+    cache_file = Path.cwd() / ".cg385-real-disk-cache.bin"
+    cache_file.unlink(missing_ok=True)
+    request.addfinalizer(lambda: cache_file.unlink(missing_ok=True))
+    block = b"x" * (1024 * 1024)
+    with cache_file.open("wb") as stream:
+        for _ in range(600):
+            stream.write(block)
+        os.fsync(stream.fileno())
+    with cache_file.open("rb") as stream:
+        while stream.readinto(bytearray(1024 * 1024)):
+            pass
+    # Brief anonymous pressure ages the disk pages onto inactive_file without deleting
+    # them; the subsequent bounded memory.reclaim is the operation under test.
+    pressure_pages = bytearray(192 * 1024 * 1024)
+    for offset in range(0, len(pressure_pages), 4096):
+        pressure_pages[offset] = 1
+    del pressure_pages
+
+    def snapshot() -> dict[str, object]:
+        status, events = resources._cgroup_memory_status(group)
+        stat = resources._memory_stat(group) or {}
+        return {"headroom_mb": status, "memory.current": int((group / "memory.current").read_text()),
+                "memory.peak": int((group / "memory.peak").read_text()), "memory.stat": stat,
+                "events": events, "memory.pressure": (group / "memory.pressure").read_text().splitlines()}
+
+    before = snapshot()
+    print("cg385 cache snapshot", before)
+    assert int(before["memory.stat"]["inactive_file"]) >= 256 << 20
+    minimum = int(before["headroom_mb"]) + 128
+    original_effective = sched.effective
+    values = {"resources.execution_cgroup": str(group), "resources.min_memory_available_mb": minimum,
+              "resources.reclaim_max_mb": 256, "resources.reclaim_cooldown_seconds": 0,
+              "resources.reclaim_timeout_seconds": 5}
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, original_effective(key, default)))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8192)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 8192)
+
+    first = sched.tick()
+    assert not first.dispatched
+    deadline = time.monotonic() + 8
+    report_path = sched._reclaim_paths()[1]
+    while not report_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert report_path.exists()
+    reclaim = json.loads(report_path.read_text())
+    assert reclaim["status"] == "complete"
+    after_reclaim = snapshot()
+    assert int(after_reclaim["headroom_mb"]) >= minimum
+
+    second = sched.tick()
+    assert any(item.startswith("DM-001(work)") for item in second.dispatched)
+    evidence = {"workload": "real disk-backed page cache and supervised in-process test worker",
+                "synthetic": False, "cgroup": str(group), "minimum_headroom_mb": minimum,
+                "before": before, "reclaim": reclaim, "after_reclaim": after_reclaim,
+                "first_tick": first.dispatched, "second_tick": second.dispatched,
+                "cache_file_bytes": cache_file.stat().st_size}
+    Path(os.environ["CG385_REAL_REPORT"]).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
