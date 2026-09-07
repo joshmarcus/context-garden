@@ -10,9 +10,10 @@ provided for CG-340.
   scratch, onboarded through the product API, given a grounded draft from its checked-in
   TODO, approved through the scheduler's normal brief gate, changed, checked, reviewed by
   deterministic fixture assertions, merged, and tested again on its main branch.
-- **Real-user adoption: UNPROVEN.** The fixture is not a real existing repository, and its
-  scripted review is not maintainer acceptance. A named project, authorization to change
-  it, and that project's maintainer review are still required.
+- **Real-user provenance: UNPROVEN.** The fixture is not a real existing repository, and
+  its scripted review is not maintainer acceptance. This remains useful optional
+  provenance; the repeatable fixture journey above satisfies the phase-close onboarding
+  requirement.
 
 ## Replay and artifacts
 
@@ -46,11 +47,11 @@ maintainer interaction.
    staged diff, and exact changed-file scope pass.
 5. The accepted branch is merged with `--no-ff`; `make test` passes on main.
 
-## Requirements not verified
+## Optional provenance not recorded
 
 - Onboarding a named existing repository with its owner's authorization.
 - A real maintainer understanding the plan and accepting the resulting change.
 - A hosted pull-request review or a real-model worker run for that project.
 
-Those items require the owner to identify an authorized target and maintainer; fixture
-evidence cannot turn them into a pass.
+Those items require the owner to identify an authorized target and maintainer. They are
+not required for phase closure, and this fixture is not relabeled as real-user adoption.

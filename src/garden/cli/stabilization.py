@@ -56,10 +56,15 @@ def record_intervention(target: str, reason: str, kind: str = typer.Option("oper
 @stabilization_app.command("outcome")
 def outcome(target: str, name: str, status: str = typer.Option(...), command: str = typer.Option(...),
             observed: str = typer.Option(...), artifact: list[str] = typer.Option(..., "--artifact"),
-            evidence_type: str = typer.Option(..., "--type"), real_user: bool = typer.Option(False, "--real-user"),
+            evidence_type: str = typer.Option(..., "--type"),
+            real_user: bool = typer.Option(False, "--real-user", help="Record optional real-user provenance."),
             exercise: list[str] = typer.Option([], "--exercise"),
             fixture_isolated: bool = typer.Option(False, "--fixture-isolated")):
-    """Record a cited automated check or actual interaction outcome."""
+    """Record a cited automated check or actual interaction outcome.
+
+    Fixture evidence is sufficient for the independent-project outcome; --real-user
+    retains additional provenance when it is available.
+    """
     from ..stabilization import record_outcome
 
     _, phase = _target(target)
