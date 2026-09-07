@@ -892,7 +892,7 @@ class ReapMixin:
             st["rebase_run_retries"] = retries + 1
             st["rebase_pending"] = True
             st["rebase_retry_files"] = list(st.get("rebase_files", []))
-            note = f"rebase run {run.run_id} did not finish: {reason}; will retry"
+            note = f"rebase conflict run {run.run_id} did not finish: {reason}; will retry"
             task.log(note)
             self.store.save(task)
             self.events.emit("rebase_retry", task.id, run=run.run_id, cause=reason, retry=retries + 1)
@@ -902,7 +902,7 @@ class ReapMixin:
             return
         files = list(st.get("rebase_files", [])) or list(st.get("rebase_retry_files", []))
         conflict = ", ".join(str(p) for p in files if p) or "the rebase conflict"
-        note = f"rebase run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
+        note = f"rebase conflict run {run.run_id} did not finish: {reason}; retry also failed; needs human to resolve {conflict}"
         self._set_needs_human(task, "rebase_failed", note, run=run.run_id, cause=reason,
                               files=files)
         st.pop("rebase_pending", None)
