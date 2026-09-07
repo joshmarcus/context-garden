@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 
 import pytest
@@ -238,8 +239,17 @@ def test_behavior_owning_surfaces_require_interaction_evidence(path):
 
 
 @pytest.mark.parametrize("path", [
+    "src/garden/model.py", "src/garden/checkrun.py", "src/garden/checks.py",
+])
+def test_status_and_check_recovery_surfaces_require_interaction_evidence(path):
+    required, scalability, reason = interaction_requirement([path], "Lifecycle behavior")
+    assert required and not scalability
+    assert path in reason
+
+
+@pytest.mark.parametrize("path", [
     "src/garden/brief.py", "src/garden/criteria.py", "src/garden/events.py",
-    "src/garden/model.py", "src/garden/validation.py", "src/garden/charts.py",
+    "src/garden/validation.py", "src/garden/charts.py",
     "src/garden/scheduler/report.py",
 ])
 def test_offline_and_formatting_modules_keep_proportionate_validation(path):
@@ -248,7 +258,7 @@ def test_offline_and_formatting_modules_keep_proportionate_validation(path):
 
 def test_explicit_change_metadata_can_require_interaction_evidence():
     required, scalability, reason = interaction_requirement(
-        ["src/garden/model.py"], "Interaction-evidence: required",
+        ["src/garden/brief.py"], "Interaction-evidence: required",
     )
     assert required and not scalability
     assert reason == "change metadata requires interaction evidence"
@@ -271,6 +281,7 @@ def test_scalability_claim_in_pr_description_requires_load_evidence():
 def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
     sched, fake_github, monkeypatch, path,
 ):
+    monkeypatch.setattr("garden.scheduler.review.produce_interaction_replay", lambda *args: None)
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: [path])
     task = sched.store.task("DM-001")
     run = sched.dispatch_review(task)
@@ -286,6 +297,7 @@ def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
 
 
 def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.produce_interaction_replay", lambda *args: None)
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
     task = sched.store.task("DM-001")
     run = sched.dispatch_review(task)
@@ -325,6 +337,40 @@ def interaction_events() -> list[dict[str, object]]:
             ("recovery", "success", 200, "request succeeded after retry"),
         )
     ]
+
+
+def test_scheduler_manifest_proves_independent_head_bound_execution(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "producer": "garden.scheduler.interaction-replay/v1", "head": "head-a",
+        "nonce": "issued-by-scheduler", "started_at": "2026-09-07T10:00:00+00:00",
+        "finished_at": "2026-09-07T10:00:01+00:00", "status": "pass",
+        "environment": "disposable", "flows": [{
+            "name": "affected flow", "ok": True,
+            "requests": [{"at": 1.0, "method": "POST", "url": "http://127.0.0.1/action",
+                          "status_code": 303}],
+        }], "states": {state: {"status": "pass", "action": state, "observed": "observed"}
+                        for state in ("affected", "empty", "failure", "recovery")},
+        "events": [{"state": state, "action": state, "observed": "observed", "at": at}
+                   for at, state in enumerate(("affected", "failure", "recovery", "empty"), 1)],
+    }))
+    assert interaction_evidence_gaps(
+        {}, required=True, scalability=False, expected_head="head-a",
+        replay_manifest=manifest, replay_nonce="wrong",
+    )[0] == "running-application interaction evidence was not reported"
+    review = {"interaction": {}}
+    gaps = interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+        replay_manifest=manifest, replay_nonce="wrong",
+        replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    )
+    assert any("provenance" in gap for gap in gaps)
+    gaps = interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+        replay_manifest=manifest, replay_nonce="issued-by-scheduler",
+        replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    )
+    assert not any("scheduler-produced" in gap for gap in gaps)
 
 
 def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):

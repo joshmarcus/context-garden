@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import secrets
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 from .. import gitops
@@ -22,6 +28,22 @@ from ..review import (
 )
 from ..runs import Run
 from .report import TickReport
+
+
+def produce_interaction_replay(worktree: Any, out: Any, head: str, nonce: str) -> None:
+    """Run the reviewed checkout's controlled journey outside the reviewer process."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(worktree / "src")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "garden.interaction_replay", "--out", str(out),
+             "--head", head, "--nonce", nonce],
+            cwd=worktree, env=env, check=False, timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # Missing evidence is a mechanical request-changes verdict. A replay infrastructure
+        # failure must not strand the review queue or crash the scheduler tick.
+        return
 
 
 class ReviewMixin:
@@ -277,6 +299,12 @@ class ReviewMixin:
         needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
             changed, task.title, task.body, pr_title, pr_body,
         )
+        run = self._new_local_run(task.id, "review", "review")
+        replay_nonce = secrets.token_urlsafe(24) if needs_interaction else ""
+        replay_manifest = run.path / "interaction-replay" / "interaction-manifest.json"
+        if needs_interaction:
+            produce_interaction_replay(wt, replay_manifest.parent, review_head, replay_nonce)
+        replay_digest = hashlib.sha256(replay_manifest.read_bytes()).hexdigest() if replay_manifest.exists() else ""
         capture_paths: list[str] = []
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
@@ -297,8 +325,8 @@ class ReviewMixin:
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
                             checks=check_results, reask_missing_fixes=reask_missing_fixes,
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
-                            review_head=review_head, interaction_reason=interaction_reason)
-        run = self._new_local_run(task.id, "review", "review")
+                            review_head=review_head, interaction_reason=interaction_reason,
+                            interaction_manifest=str(replay_manifest) if needs_interaction else "")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
@@ -306,6 +334,9 @@ class ReviewMixin:
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(set(capture_pages)),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
+                            "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
+                            "interaction_replay_nonce": replay_nonce,
+                            "interaction_replay_digest": replay_digest,
                             "reask_missing_fixes": reask_missing_fixes}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
@@ -420,6 +451,9 @@ class ReviewMixin:
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
                 expected_head=str((run.env_snapshot or {}).get("review_head") or ""),
+                replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
+                replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
+                replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
             ) if review else []
             if gaps:
                 review["verdict"] = "request_changes"

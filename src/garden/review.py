@@ -5,6 +5,7 @@ the findings into the normal revise loop."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -19,11 +20,12 @@ from .store import Store
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
 INTERACTION_PATHS = (
-    "src/garden/browser.py", "src/garden/canary.py", "src/garden/gitops.py",
+    "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
+    "src/garden/checks.py", "src/garden/gitops.py",
     "src/garden/github.py", "src/garden/harness.py", "src/garden/inbox.py",
     "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py",
     "src/garden/now2.py", "src/garden/now2_stream.py", "src/garden/onboard.py",
-    "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
+    "src/garden/model.py", "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
     "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runner/",
     "src/garden/runs.py", "src/garden/scheduler/__init__.py", "src/garden/scheduler/aux.py",
     "src/garden/scheduler/browser.py", "src/garden/scheduler/budget.py",
@@ -74,7 +76,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
-                              expected_head: str) -> list[str]:
+                              expected_head: str, replay_manifest: Path | None = None,
+                              replay_nonce: str = "", replay_digest: str = "") -> list[str]:
     """Return mechanical blockers in a reviewer's claimed running-app evidence."""
     if not required and not scalability:
         return []
@@ -82,6 +85,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     if not isinstance(row, dict):
         return ["running-application interaction evidence was not reported"]
     gaps: list[str] = []
+    if required and (replay_manifest is not None or replay_nonce):
+        gaps.extend(_replay_manifest_gaps(replay_manifest, expected_head, replay_nonce, replay_digest))
     if row.get("head") != expected_head:
         gaps.append("interaction evidence is stale or not tied to the reviewed head")
     if row.get("environment") != "disposable":
@@ -152,6 +157,53 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
             gaps.append("scalability load_kind must be controlled or real_model_harnesses")
     return gaps
+
+
+def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str) -> list[str]:
+    """Validate evidence produced by the scheduler, outside the reviewer's process."""
+    try:
+        raw = path.read_bytes() if path else b""
+        record = json.loads(raw) if raw else None
+    except (OSError, json.JSONDecodeError):
+        record = None
+    if not isinstance(record, dict):
+        return ["scheduler-produced interaction replay manifest is missing or unreadable"]
+    if not digest or hashlib.sha256(raw).hexdigest() != digest:
+        return ["scheduler-produced interaction replay manifest changed after execution"]
+    if (record.get("producer") != "garden.scheduler.interaction-replay/v1"
+            or record.get("head") != expected_head or not nonce or record.get("nonce") != nonce):
+        return ["scheduler-produced interaction replay provenance does not match this review"]
+    if record.get("environment") != "disposable" or record.get("status") != "pass":
+        return ["scheduler-produced disposable interaction replay did not pass"]
+    if not all(isinstance(record.get(name), str) and record[name] for name in ("started_at", "finished_at")):
+        return ["scheduler-produced interaction replay timestamps are incomplete"]
+    flows = record.get("flows")
+    if not isinstance(flows, list) or not flows or any(
+        not isinstance(flow, dict) or flow.get("ok") is not True
+        or not isinstance(flow.get("requests"), list) or not flow["requests"]
+        for flow in flows
+    ):
+        return ["scheduler-produced interaction replay lacks successful request/response flows"]
+    if any(not isinstance(event.get("at"), (int, float)) or not event.get("url")
+           or not isinstance(event.get("status_code"), int)
+           for flow in flows for event in flow["requests"] if isinstance(event, dict)) \
+            or any(not isinstance(event, dict) for flow in flows for event in flow["requests"]):
+        return ["scheduler-produced interaction replay request/response transcript is incomplete"]
+    states = record.get("states")
+    if not isinstance(states, dict) or any(
+        not isinstance(states.get(state), dict) or states[state].get("status") != "pass"
+        or not states[state].get("action") or not states[state].get("observed")
+        for state in ("affected", "empty", "failure", "recovery")
+    ):
+        return ["scheduler-produced replay does not prove affected, empty, failure, and recovery outcomes"]
+    events = record.get("events")
+    event_states = [event.get("state") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    event_times = [event.get("at") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    if (event_states != ["affected", "failure", "recovery", "empty"]
+            or any(not isinstance(at, (int, float)) for at in event_times)
+            or event_times != sorted(event_times)):
+        return ["scheduler-produced replay outcomes are not a complete chronological transcript"]
+    return []
 
 
 def _interaction_event_gaps(events: Any) -> list[str]:
@@ -309,7 +361,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
-                 scalability_required: bool = False, review_head: str = "", interaction_reason: str = "") -> str:
+                 scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
+                 interaction_manifest: str = "") -> str:
     task_brief = build_brief(store, task, include_rules=False)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
                   if isinstance(a, dict) and isinstance(a.get("index"), int)}
@@ -338,6 +391,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if interaction_required or scalability_required:
         parts.append("## Running-application interaction required\n\n"
                      f"Reviewed head: `{review_head}`\n\nReason: {interaction_reason}.\n\n"
+                     + (f"The scheduler independently replayed the disposable app; inspect its "
+                        f"request/response manifest at `{interaction_manifest}`.\n\n" if interaction_manifest else "")
                      + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
     if checks:
         parts.append("## Pre-review checks\n\n" + "\n".join(
