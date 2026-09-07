@@ -87,6 +87,8 @@ def test_orphan_sweep_closes_pidless_worker_records_of_terminal_tasks(sched):
     sched.store.save(task)
     for mode in ("work", "revise", "resume", "trial"):
         run = sched.runs.new_run("DM-001", "local", mode=mode)
+        run.worktree = str(sched.worktree_for(task))
+        run.save()
         rep = TickReport()
         sched.reap_orphaned(rep)
         assert any(f"{run.run_id} closed (orphaned)" in t for t in rep.transitions), mode

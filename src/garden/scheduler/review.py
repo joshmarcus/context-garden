@@ -612,7 +612,9 @@ class ReviewMixin:
 
         Verdict runs are moot once their task has moved on. Worker-mode records otherwise
         remain their task's reaper's responsibility, except a terminal task cannot have a
-        live pid-less worker; that record has no process which could ever report an outcome.
+        live pid-less worker that was launched into a worktree; that record has no process
+        which could ever report an outcome. A reservation not yet bound to a worktree stays
+        active, because the dispatcher may still be completing its launch transaction.
         Usage and cost are recorded; nothing is posted, since the task is no longer where the
         run left it.
         """
@@ -623,7 +625,8 @@ class ReviewMixin:
             # A terminal task cannot own an active pid-less record.  This is distinct from a
             # live worker which happens to have no verdict yet: without a pid there is no
             # process to reap, so leaving the record active permanently consumes a slot.
-            ghost = bool(task and task.status.terminal and run.pid is None and not run.process_finished())
+            ghost = bool(task and task.status.terminal and run.worktree and run.pid is None
+                          and not run.process_finished())
             if run.runner == "manual":
                 continue
             if not ghost and run.run_id in aux_run_ids:
