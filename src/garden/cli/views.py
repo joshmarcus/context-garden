@@ -113,7 +113,8 @@ def status(
         at = str(entry.get("at") or "")
         reason = str(entry.get("reason") or "")
         console.print(f"[yellow]harness {name} paused (at {at[11:16]}){f': {reason}' if reason else ''}[/yellow]")
-        parked = [t.id for t in tasks.values() if sched.state.get(t.id).get("harness_hold") == name]
+        parked = [t.id for t in tasks.values()
+                  if t.status == Status.READY and sched.state.get(t.id).get("harness_hold") == name]
         if parked:
             console.print(f"[yellow]waiting for {name} to resume: {', '.join(parked)}[/yellow]")
     from ..gitops import is_repo, uncommitted_task_files
