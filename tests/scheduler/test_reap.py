@@ -192,7 +192,7 @@ def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
 
 
 def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):
-    """Saved runs from before the rubric retain their ordinary retry behaviour."""
+    """Saved runs from before the rubric retain missing-result commit salvage."""
     sched.cfg.data["stack"] = False
     sched.tick()
     run = sched.runs.latest("DM-001")
@@ -203,8 +203,8 @@ def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched)
     report = sched.tick()
 
     assert "DM-001 -> changes_requested (checks)" not in report.transitions
-    assert "DM-001 -> ready (retry)" in report.transitions
-    assert sched.runs.latest("DM-001").run_id != run.run_id
+    assert "DM-001 -> in_review" in report.transitions[0]
+    assert sched.runs.latest("DM-001").run_id == run.run_id
 
 
 def _run_fake_claude(cwd, task_id, run_id, when):
@@ -453,6 +453,9 @@ def test_missing_result_with_commits_is_reaped_and_sent_to_review(sched, fake_gi
 def test_statusless_result_with_commits_is_reaped(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "statusless")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     sched.tick()
     task = sched.store.task("DM-001")
     assert task.status == Status.IN_REVIEW
@@ -464,6 +467,9 @@ def test_statusless_result_with_commits_is_reaped(sched, fake_github, monkeypatc
 def test_missing_result_without_commits_retries(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult-nocommit")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     rep = sched.tick()
     assert "DM-001 -> ready (retry)" in rep.transitions
 
@@ -476,6 +482,8 @@ def test_missing_result_revise_pushes_with_lease_and_keeps_revision_count(sched,
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.dispatch(sched.store.task("DM-001"), mode="revise")
     run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     assert run.start_head
     real_push = gitops.push
     leases: list[str] = []

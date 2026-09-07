@@ -271,8 +271,43 @@ class ReapMixin:
         # streak; ordinary worker failures are handled by the normal attempt cap below.
         self.state.get(task.id).pop("consecutive_env_errors", None)
         self.state.save()
-
+        if run.exit_code not in (0, None) and not result:
+            run.status = "failed"
+            run.save()
+            self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
+            return
         status = str(result.get("status", "")).lower()
+        # New briefs make the pre-flight result part of the worker contract.  Do this
+        # before missing-result salvage can synthesize a summary and send the branch
+        # directly to review.  Publish any committed work first, so the revise worker
+        # builds on it instead of dispatch's normal sync shelving it on a backup branch.
+        if not status and bool((run.env_snapshot or {}).get("requires_preflight")):
+            base = run.base or self.base_for(task)
+            branch = run.branch or task.branch or task.default_branch()
+            if not runner.remote and worktree.exists():
+                try:
+                    if gitops.commits_ahead(worktree, base):
+                        gitops.push(worktree, branch, base=base, lease=run.start_head)
+                        task.branch = branch
+                        self.store.save(task)
+                except gitops.GitError as exc:
+                    run.status = "failed"
+                    run.error = f"could not preserve commits before pre-flight revise: {exc}"
+                    run.save()
+                    self._retry_or_fail(task, run, rep, run.error)
+                    return
+            run.status = "failed"
+            run.error = "missing review pre-flight: result block and review pre-flight checklist"
+            run.save()
+            criteria = list((run.env_snapshot or {}).get("criteria") or [])
+            criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
+            failed = [{"name": "review pre-flight", "status": "fail",
+                       "summary": "missing items: result block and review pre-flight checklist",
+                       "details": ""}]
+            self._start_check_revise(task, failed, rep, cost,
+                                     feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
+                                     + criteria_note)
+            return
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
         # commits before treating the missing protocol marker as a failed attempt.  A reported
@@ -296,24 +331,9 @@ class ReapMixin:
                 result = {"summary": summary}
                 run.result = result
                 run.save()
-        if run.exit_code not in (0, None) and not result:
-            run.status = "failed"
-            run.save()
-            self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
-            return
         if not result:
             run.status = "failed"
             run.save()
-            if bool((run.env_snapshot or {}).get("requires_preflight")):
-                criteria = list((run.env_snapshot or {}).get("criteria") or [])
-                criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
-                failed = [{"name": "review pre-flight", "status": "fail",
-                           "summary": "missing items: result block and review pre-flight checklist",
-                           "details": ""}]
-                self._start_check_revise(task, failed, rep, cost,
-                                         feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
-                                         + criteria_note)
-                return
             self._retry_or_fail(task, run, rep, f"no GARDEN_RESULT in worker output ({run.error[:200] or 'see final.md'})")
             return
         if status == "blocked":
@@ -383,7 +403,7 @@ class ReapMixin:
         self._file_discovered(task, run, result)
 
         missing = missing_preflight(result.get("pre_flight"))
-        if missing:
+        if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
             run.status = "failed"
             run.error = "missing review pre-flight: " + ", ".join(missing)
             run.save()
