@@ -19,3 +19,16 @@ waiting second validation. The raw cgroup process list, `cpu.stat`, CPU/memory P
 memory events, memory use, temporary-space readings, and request latencies are retained
 in `report.json`. No new `high`, `oom`, or `oom_kill` event occurred. The temporary unit
 was stopped after the test.
+
+## Current-head surface validation
+
+On 2026-09-07, the current integrated head was served from a disposable fixture
+controller outside a transient delegated execution cgroup (`CPUQuota=20%`,
+`MemoryHigh=96MiB`, `MemoryMax=128MiB`). The fresh captures show the rail and
+Configuration page agreeing on `0/1 authoritative (requested 1)` before a
+supervisor is active. They label the finite, writable execution cgroup
+`available`, rather than claiming it is already enforced; the bounded workload
+exercise above verifies the active supervisor transition to `enforced`.
+
+- `rail-1280-light.png` — Inbox rail capacity summary.
+- `config-1280-dark.png` — Configuration capacity and cgroup detail.
