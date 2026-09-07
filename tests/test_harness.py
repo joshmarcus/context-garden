@@ -3,9 +3,12 @@ from pathlib import Path
 
 import pytest
 
+from garden.brief import parse_result
 from garden.harness import Harness
 from garden.personas import parse_persona
+from garden.review import parse_review
 from garden.runs import Run
+from garden.suggestions import parse_edit
 
 
 def test_claude_command_and_models():
@@ -145,6 +148,35 @@ def test_parse_claude_stream_json():
     assert out["usage"]["input_tokens"] == 10
     assert out["cost_usd"] == 0.01
     assert out["session_id"] == "s1"
+
+
+@pytest.mark.parametrize("prefix", [
+    "GARDEN_RESULT: ",
+    "**GARDEN_RESULT:** ",
+    "`GARDEN_RESULT:` ",
+])
+def test_parse_result_accepts_markdown_wrapped_marker(prefix):
+    assert parse_result(f"work\n{prefix}{{\"status\": \"done\"}}") == {"status": "done"}
+
+
+def test_parse_result_accepts_multiline_json_and_exact_cg242_message():
+    message = """I fixed the issue and committed the change.
+
+**GARDEN_RESULT:** {
+  "status": "done",
+  "summary": "The parser now accepts the worker's final message."
+}"""
+    assert parse_result(message) == {
+        "status": "done",
+        "summary": "The parser now accepts the worker's final message.",
+    }
+
+
+def test_marker_prose_is_ignored_and_other_parsers_accept_same_shapes():
+    assert parse_result("The worker mentioned GARDEN_RESULT: {\"status\": \"done\"}") == {}
+    assert parse_review("`GARDEN_REVIEW:` {\n  \"verdict\": \"approve\"\n}") == {"verdict": "approve"}
+    assert parse_persona("**GARDEN_PERSONA:** {\n  \"findings\": []\n}") == {"findings": []}
+    assert parse_edit("```GARDEN_EDIT: {\n  \"body\": \"updated\"\n}\n```") == {"body": "updated"}
 
 
 def test_parse_claude_stream_json_error():

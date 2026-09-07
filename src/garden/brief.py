@@ -8,6 +8,7 @@ Workers are told not to go exploring the garden; if something is missing, the ta
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -518,27 +519,32 @@ def phase_fixed_tokens(store: Store, tasks: list[Task]) -> int:
 
 
 def parse_result(output_text: str, marker: str = RESULT_MARKER) -> dict:
-    """Find the trailing GARDEN_RESULT line (or another `marker` line, e.g. `GARDEN_QA:`)
-    in a worker's final message."""
-    import json
+    """Find the trailing marker object in a worker's final message."""
+    return _parse_marked_json(output_text, marker)
 
-    for line in reversed(output_text.splitlines()):
-        line = line.strip()
-        if line.startswith(marker):
-            payload = line[len(marker) :].strip()
-            try:
-                data = json.loads(payload)
-                if isinstance(data, dict):
-                    return data
-            except json.JSONDecodeError:
-                pass
-            # tolerate a fenced or trailing-junk line by taking the outermost braces
-            s, e = payload.find("{"), payload.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    data = json.loads(payload[s : e + 1])
-                    if isinstance(data, dict):
-                        return data
-                except json.JSONDecodeError:
-                    pass
+
+def _parse_marked_json(text: str, marker: str) -> dict:
+    """Parse a marker at the start of a line, allowing markdown decoration and wrapping.
+
+    The object may continue on following lines. Leading emphasis/code characters are
+    accepted only before the marker, so prose that mentions a marker is not interpreted.
+    """
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index].strip()
+        normalized = line.lstrip("*_`").strip()
+        if not normalized.startswith(marker):
+            continue
+        payload = normalized[len(marker):].lstrip("*_`").strip()
+        if index + 1 < len(lines):
+            payload += "\n" + "\n".join(lines[index + 1:])
+        start = payload.find("{")
+        if start == -1:
+            continue
+        try:
+            data, _ = json.JSONDecoder().raw_decode(payload[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
     return {}

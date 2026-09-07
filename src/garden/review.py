@@ -5,10 +5,9 @@ the findings into the normal revise loop."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from .brief import build_brief
+from .brief import _parse_marked_json, build_brief
 from .criteria import parse_criteria, reconcile
 from .model import Task
 from .store import Store
@@ -144,18 +143,9 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
 
 
 def parse_review(text: str) -> dict[str, Any]:
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line.startswith(REVIEW_MARKER):
-            payload = line[len(REVIEW_MARKER):].strip()
-            s, e = payload.find("{"), payload.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    data = json.loads(payload[s : e + 1])
-                    if isinstance(data, dict) and "verdict" in data:
-                        return data
-                except json.JSONDecodeError:
-                    continue
+    data = _parse_marked_json(text, REVIEW_MARKER)
+    if "verdict" in data:
+        return data
     return {}
 
 

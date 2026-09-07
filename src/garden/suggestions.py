@@ -13,11 +13,11 @@ stay testable offline like the rest of the model layer.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from .brief import _parse_marked_json
 from .model import Task, estimate_tokens
 from .store import Store
 
@@ -207,18 +207,9 @@ def edit_brief(store: Store, task: Task, suggestions: list[Suggestion]) -> str:
 
 def parse_edit(text: str) -> dict[str, Any]:
     """Find the trailing GARDEN_EDIT line and return the revised-body object, or {}."""
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line.startswith(EDIT_MARKER):
-            payload = line[len(EDIT_MARKER):].strip()
-            s, e = payload.find("{"), payload.rfind("}")
-            if s != -1 and e > s:
-                try:
-                    data = json.loads(payload[s : e + 1])
-                    if isinstance(data, dict) and str(data.get("body") or "").strip():
-                        return data
-                except json.JSONDecodeError:
-                    continue
+    data = _parse_marked_json(text, EDIT_MARKER)
+    if str(data.get("body") or "").strip():
+        return data
     return {}
 
 
