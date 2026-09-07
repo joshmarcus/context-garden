@@ -99,21 +99,46 @@ def test_narrow_frame_uses_a_390px_content_viewport():
     class Page:
         def __init__(self):
             self.wrapper = ""
-            self.script = ""
+            self.scripts = []
 
         def set_content(self, wrapper, **_kwargs):
             self.wrapper = wrapper
 
-        def evaluate(self, script):
-            self.script = script
-            return {"clientWidth": 390, "scrollWidth": 390}
+        def frame(self, **_kwargs):
+            return self
+
+        def locator(self, _selector):
+            return self
+
+        def evaluate(self, script, *_args):
+            self.scripts.append(script)
+            if "scrollHeight" in script:
+                return {"clientWidth": 390, "scrollWidth": 390, "scrollHeight": 5400}
+            return None
 
     page = Page()
     measurements = _narrow_frame(page, "http://localhost:8765/inbox")
 
     assert 'src="http://localhost:8765/inbox"' in page.wrapper
     assert 'width:390px;height:5400px;border:0' in page.wrapper
-    assert "clientWidth" in page.script and "scrollWidth" in page.script
+    assert any("clientWidth" in script and "scrollWidth" in script for script in page.scripts)
+    assert measurements == {"clientWidth": 390, "scrollWidth": 390}
+
+
+def test_narrow_frame_executes_measurement_in_chromium():
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - local hosts may lack system libraries
+            pytest.skip(f"Chromium unavailable in this environment: {exc}")
+        page = browser.new_page(viewport={"width": NARROW_OUTER_WIDTH, "height": 900})
+        measurements = _narrow_frame(
+            page,
+            "data:text/html,<html><body style='margin:0;width:390px'>fixture</body></html>",
+        )
+        browser.close()
+
     assert measurements == {"clientWidth": 390, "scrollWidth": 390}
 
 

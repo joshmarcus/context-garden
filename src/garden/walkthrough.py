@@ -244,20 +244,24 @@ def _narrow_frame(page: object, url: str) -> object:
                f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
                "</body></html>")
     page.set_content(wrapper, wait_until="networkidle", timeout=30000)
-    measurements = page.evaluate(
+    frame = page.frame(url=url)
+    if frame is None:
+        raise RuntimeError(f"narrow frame did not load {url}")
+    measured = frame.evaluate(
         """() => {
-            const frame = document.querySelector('iframe');
-            const doc = frame.contentDocument;
-            const width = doc.documentElement.clientWidth;
-            const scrollWidth = doc.documentElement.scrollWidth;
+            const width = document.documentElement.clientWidth;
+            const scrollWidth = document.documentElement.scrollWidth;
             if (width !== 390 || scrollWidth !== 390) {
                 throw new Error(`narrow frame measured clientWidth ${width}, scrollWidth ${scrollWidth}`);
             }
-            frame.style.height = `${Math.max(5400, doc.documentElement.scrollHeight)}px`;
-            return {clientWidth: width, scrollWidth};
+            return {clientWidth: width, scrollWidth, scrollHeight: document.documentElement.scrollHeight};
         }"""
     )
-    return measurements
+    page.locator("iframe").evaluate(
+        "(iframe, height) => { iframe.style.height = `${Math.max(5400, height)}px`; }",
+        measured["scrollHeight"],
+    )
+    return {"clientWidth": measured["clientWidth"], "scrollWidth": measured["scrollWidth"]}
 
 
 def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
