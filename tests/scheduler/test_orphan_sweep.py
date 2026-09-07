@@ -79,16 +79,30 @@ def test_orphan_sweep_leaves_verdict_runs_of_tasks_still_in_review(sched):
         assert still.status == "running", mode
 
 
-def test_orphan_sweep_never_touches_work_runs(sched):
-    """Even for a task that has moved on, the sweep never closes a work/resume/trial
-    run: those belong to the task's own reap path."""
+def test_orphan_sweep_closes_pidless_worker_records_of_terminal_tasks(sched):
+    """CG-316: a terminal task's pid-less worker record cannot ever be reaped normally.
+    It is closed as a failed orphan instead of retaining a worker slot forever."""
     task = sched.store.task("DM-001")
     task.status = Status.DONE
     sched.store.save(task)
     for mode in ("work", "revise", "resume", "trial"):
-        run = stub_finished_run(sched, "DM-001", mode)
+        run = sched.runs.new_run("DM-001", "local", mode=mode)
         rep = TickReport()
         sched.reap_orphaned(rep)
-        assert not any("orphaned" in t for t in rep.transitions), mode
+        assert any(f"{run.run_id} closed (orphaned)" in t for t in rep.transitions), mode
         still = next(r for r in sched.runs.runs_for("DM-001") if r.run_id == run.run_id)
-        assert still.status == "running", mode
+        assert still.status == "failed" and "closed by orphan sweep" in still.error, mode
+
+
+def test_orphan_sweep_leaves_pidful_worker_records_of_terminal_tasks(sched):
+    """A record that still owns a process remains the normal reaper's responsibility."""
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.pid = 12345
+    run.save()
+    rep = TickReport()
+    sched.reap_orphaned(rep)
+    assert not any("orphaned" in transition for transition in rep.transitions)
+    assert sched.runs.latest("DM-001").status == "running"

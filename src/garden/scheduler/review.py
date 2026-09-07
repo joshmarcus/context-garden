@@ -608,29 +608,37 @@ class ReviewMixin:
         return pr_state in ("CLOSED", "MERGED")
 
     def reap_orphaned(self, rep: TickReport) -> None:
-        """Close a verdict-bearing run (review, persona, compare) still marked `running`
-        whose task has moved on before the tick that would have read its verdict: merged,
-        closed, failed or otherwise past the point where the verdict can be applied, so
-        `state[task].review_run` (or the aux pointer) no longer leads a reap to it. Only
-        these modes are swept — a task's own work/revise/resume/trial run is always reaped
-        by its task, so one that merely finishes between its task's reap and this sweep in
-        the same tick (the CG-098 case) is left for the next tick's reap, not swept out from
-        under it. Usage and cost are recorded; nothing is posted, since the task is no longer
-        where this run left it."""
-        aux_run_ids = {e["run_id"] for e in self._aux_list()}
+        """Close a moot verdict run, or a terminal task's pid-less ghost record.
+
+        Verdict runs are moot once their task has moved on. Worker-mode records otherwise
+        remain their task's reaper's responsibility, except a terminal task cannot have a
+        live pid-less worker; that record has no process which could ever report an outcome.
+        Usage and cost are recorded; nothing is posted, since the task is no longer where the
+        run left it.
+        """
+        aux_run_ids = {entry["run_id"] for entry in self._aux_list()}
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual" or run.run_id in aux_run_ids:
-                continue
-            if run.mode not in ("review", "persona", "compare"):
-                continue
             task = tasks.get(run.task_id)
-            if not self._verdict_is_moot(task):
+            # A terminal task cannot own an active pid-less record.  This is distinct from a
+            # live worker which happens to have no verdict yet: without a pid there is no
+            # process to reap, so leaving the record active permanently consumes a slot.
+            ghost = bool(task and task.status.terminal and run.pid is None and not run.process_finished())
+            if run.runner == "manual":
+                continue
+            if not ghost and run.run_id in aux_run_ids:
+                continue
+            if not ghost and run.mode not in ("review", "persona", "compare"):
+                continue
+            if not ghost and not self._verdict_is_moot(task):
                 continue
             runner = self.runner_for(task or Task(path=self.store.root, id=run.task_id, title=""), run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            if not ghost and not self._finished_or_timed_out(run, runner):
                 continue
-            if run.status != "timeout":
+            if ghost:
+                run.finished_at = now_iso()
+                run.status = "failed"
+            elif run.status != "timeout":
                 run.exit_code = run.read_exit_code()
                 run.finished_at = now_iso()
                 collected = runner.collect(run)
