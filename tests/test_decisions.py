@@ -114,6 +114,40 @@ def test_accept_revise_no_change_queues_review_without_waiting_question(sched, f
                    for item in build_inbox(sched.store, sched))
 
 
+def test_accept_no_change_without_pr_keeps_detached_check_out_of_inbox(sched, fake_github, monkeypatch):
+    """An accepted no-change on a pre-PR revise round is pipeline work while its check runs,
+    not an unanswered human stop."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change_decision")
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
+    fake_github.available = False
+    sched.tick()
+    sched.tick()  # reap initial work and start its detached pre-PR check
+    sched.tick()  # initial check passes; branch has no PR
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW and not task.pr
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- revise the branch"
+    sched._transition(task, Status.CHANGES_REQUESTED, "test: queue a revise round")
+    assert sched.state.get(task.id)["pending_feedback"]
+    assert [(candidate.id, mode) for candidate, mode, _ in sched.dispatch_queue()] == [(task.id, "revise")]
+    sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+    sched.tick()  # reap revise no_change -> waiting_human decision
+    assert sched.store.task(task.id).status == Status.WAITING_HUMAN
+
+    sched.accept_decision(sched.store.task(task.id), note="the branch is already correct")
+
+    task = sched.store.task(task.id)
+    assert task.status == Status.CHANGES_REQUESTED
+    assert sched.state.get(task.id).get("check_run")
+    inbox = build_inbox(sched.store, sched)
+    assert not any(item["task"] == task.id and "no question" in item["why"].lower()
+                   for item in inbox)
+    assert not any(item["task"] == task.id and item.get("group") == "question" for item in inbox)
+
+    sched.tick()  # reap the detached pre-PR check; no PR still means in_review
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
 def test_real_scope_disagreement_is_a_product_decision(sched):
     result = {"status": "no_change", "verified": [
         {"criterion": "Keep the old API", "not_done": True, "reason": "That would break compatibility"}
