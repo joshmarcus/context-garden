@@ -264,6 +264,18 @@ def test_html_to_text_omits_stylesheet_hidden_panels():
     assert "Visible" in txt
 
 
+def test_html_to_text_does_not_overmatch_unsupported_or_nested_selectors():
+    txt = html_to_text(
+        '<style>[hidden] { display:none } details:not([open]) > summary { display:none }</style>'
+        '<p>Visible sibling</p><div hidden>Hidden attribute</div>'
+        '<details open><summary>Visible summary</summary><p>Visible details</p></details>'
+    )
+    assert "Hidden attribute" not in txt
+    assert "Visible sibling" in txt
+    assert "Visible summary" in txt
+    assert "Visible details" in txt
+
+
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")

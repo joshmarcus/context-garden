@@ -191,16 +191,76 @@ class _TextParser(HTMLParser):
 
     @staticmethod
     def _matches_simple_selector(tag: str, attrs: list[tuple[str, str | None]], selector: str) -> bool:
-        """Match the simple tag/class/id selectors used by the app's stylesheets."""
-        selector = re.sub(r":(?:not\([^)]*\)|[-\w]+(?:\([^)]*\))?)", "", selector)
-        tag_name = re.match(r"^[a-z][\w-]*|^\*", selector, re.I)
-        if tag_name and tag_name.group(0) not in ("*", tag):
-            return False
+        """Match the small, explicit selector subset used by the app's stylesheets.
+
+        Returning false for syntax we do not understand is important here: this is a
+        conservative visibility filter, not a CSS engine.  A false negative leaves text
+        in a capture for review; a false positive can erase unrelated visible content.
+        """
         values = {name.lower(): value or "" for name, value in attrs}
         classes = set(values.get("class", "").split())
-        if any(values.get("id") != ident for ident in re.findall(r"#([\w-]+)", selector)):
-            return False
-        return all(ident in classes for ident in re.findall(r"\.([\w-]+)", selector))
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
+        if tag_name:
+            if tag_name.group(0).lower() not in ("*", tag.lower()):
+                return False
+            index += len(tag_name.group(0))
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match or values.get("id") != match.group(0)[1:]:
+                    return False
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match or match.group(0)[1:] not in classes:
+                    return False
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return False
+                name = match.group(1).lower()
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                if name not in values or (expected is not None and values[name] != expected):
+                    return False
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return False
+                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
+                    return False
+                index = end + 1
+            else:
+                return False
+        return True
+
+    @staticmethod
+    def _selector_components(selector: str) -> list[str] | None:
+        """Split descendant/child selectors without splitting inside [] or ()."""
+        components: list[str] = []
+        start = 0
+        brackets = parentheses = 0
+        for index, char in enumerate(selector):
+            if char == "[":
+                brackets += 1
+            elif char == "]":
+                brackets -= 1
+            elif char == "(":
+                parentheses += 1
+            elif char == ")":
+                parentheses -= 1
+            elif not brackets and not parentheses and (char.isspace() or char == ">"):
+                if selector[start:index].strip():
+                    components.append(selector[start:index].strip())
+                start = index + 1
+        if brackets or parentheses:
+            return None
+        if selector[start:].strip():
+            components.append(selector[start:].strip())
+        return components
 
     def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
         if not self._hidden_selectors:
@@ -209,7 +269,9 @@ class _TextParser(HTMLParser):
         # as well handles the descendant selectors used by the web templates without
         # needing a CSS dependency in the walkthrough tool.
         for selector in self._hidden_selectors:
-            components = [part for part in re.split(r"\s+|>", selector.strip()) if part]
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
             if not components or not self._matches_simple_selector(tag, attrs, components[-1]):
                 continue
             ancestors = self._elements
