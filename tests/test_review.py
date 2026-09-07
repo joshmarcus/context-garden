@@ -227,6 +227,15 @@ def test_review_and_phase_close_implementations_require_interaction_evidence(pat
     assert required and not scalability
 
 
+@pytest.mark.parametrize("path", [
+    "src/garden/browser.py", "src/garden/criteria.py", "src/garden/events.py",
+    "src/garden/profiles.py", "src/garden/validation.py",
+])
+def test_package_changes_are_interaction_affecting_unless_explicitly_excluded(path):
+    required, _, _ = interaction_requirement([path], "Behavior change")
+    assert required
+
+
 def test_scalability_claim_in_pr_description_requires_load_evidence():
     required, scalability, _ = interaction_requirement(
         ["docs/design.md"], "Documentation task", "Routine update", "PR title",
@@ -292,10 +301,15 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
         name: {"status": "pass", "actions": [f"POST /{name}"], "observed": "state changed"}
         for name in ("affected", "empty", "failure_recovery")
     }
-    artifact.write_text(json.dumps({"head": "head-a", "states": states}))
+    events = [
+        {"kind": "http_request", "state": name, "method": "POST",
+         "url": f"http://127.0.0.1:8765/{name}", "status_code": 200, "observed": "state changed"}
+        for name in states
+    ]
+    artifact.write_text(json.dumps({"head": "head-a", "states": states, "events": events}))
     review = {"interaction": {
         "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
-        "states": states, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
+        "states": states, "events": events, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
         "unverified": [],
     }}
     assert interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a") == []
@@ -309,16 +323,45 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
     assert any("remain unverified" in gap for gap in gaps)
 
 
+@pytest.mark.parametrize("action", ["echo screenshot-only", "opened screenshot.png"])
+def test_screenshot_only_placeholders_are_not_performed_interaction(tmp_path, action):
+    states = {
+        name: {"status": "pass", "actions": [action], "observed": "opened screenshot.png"}
+        for name in ("affected", "empty", "failure_recovery")
+    }
+    events = [
+        {"kind": "browser_action", "state": name, "action": action,
+         "target": "screenshot.png", "observed": "opened screenshot.png"}
+        for name in states
+    ]
+    artifact = tmp_path / "journey.json"
+    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
+    review = {"interaction": {
+        "head": "h", "environment": "disposable", "command": action,
+        "states": states, "events": events, "artifacts": [str(artifact)],
+        "automated_checks": [], "unverified": [],
+    }}
+
+    gaps = interaction_evidence_gaps(review, required=True, scalability=False, expected_head="h")
+
+    assert any("non-image action" in gap for gap in gaps)
+
+
 def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp_path):
     artifact = tmp_path / "latencies.json"
     states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
               for name in ("affected", "empty", "failure_recovery")}
-    artifact.write_text(json.dumps({"head": "h", "states": states}))
+    events = [
+        {"kind": "http_request", "state": name, "method": "GET",
+         "url": f"http://localhost:8783/{name}", "status_code": 200, "observed": "ok"}
+        for name in states
+    ]
+    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
     required, scalability, _ = interaction_requirement([], "Keep p95 latency bounded after cache expiry")
     assert not required and scalability
     review = {"interaction": {
         "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": states,
+        "states": states, "events": events,
         "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
         "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
                         "cache_expiry_intervals": 3, "executing_processes": 2,
@@ -350,10 +393,15 @@ def test_scalability_evidence_rejects_malformed_boundaries(tmp_path, field, valu
     artifact = tmp_path / "latencies.json"
     states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
               for name in ("affected", "empty", "failure_recovery")}
-    artifact.write_text(json.dumps({"head": "h", "states": states}))
+    events = [
+        {"kind": "http_request", "state": name, "method": "GET",
+         "url": f"http://localhost:8783/{name}", "status_code": 200, "observed": "ok"}
+        for name in states
+    ]
+    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
     interaction = {
         "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": states,
+        "states": states, "events": events,
         "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
         "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
                         "cache_expiry_intervals": 3, "executing_processes": 2,

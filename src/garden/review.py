@@ -18,13 +18,10 @@ from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
-INTERACTION_PATHS = (
-    "src/garden/web/", "src/garden/tui/", "src/garden/cli/", "src/garden/scheduler/", "src/garden/qa/",
-    "src/garden/runner/", "src/garden/brief.py", "src/garden/checkrun.py", "src/garden/checks.py",
-    "src/garden/config.py", "src/garden/gitops.py", "src/garden/github.py", "src/garden/harness.py",
-    "src/garden/inbox.py", "src/garden/kickoff.py", "src/garden/model.py", "src/garden/notify.py",
-    "src/garden/outcomes.py", "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runs.py",
-    "src/garden/stabilization.py", "src/garden/store.py", "src/garden/walkthrough.py",
+NON_INTERACTION_PATHS = (
+    "src/garden/charts.py", "src/garden/costs.py", "src/garden/friction.py", "src/garden/graph.py",
+    "src/garden/operator_spend.py", "src/garden/personas.py", "src/garden/plants.py",
+    "src/garden/suggestions.py", "src/garden/trials.py",
 )
 
 SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
@@ -41,7 +38,8 @@ def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
 
 def interaction_requirement(changed: list[str], *review_context: str) -> tuple[bool, bool, str]:
     """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
-    affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
+    affected = [path for path in changed
+                if path.startswith("src/garden/") and not path.startswith(NON_INTERACTION_PATHS)]
     required = bool(affected)
     scalability = bool(re.search(
         r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
@@ -77,6 +75,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
                 or any(not isinstance(action, str) or not action.strip() for action in actions)
                 or not isinstance(observed, str) or not observed.strip()):
             gaps.append(f"{state.replace('_', '/')} interaction is missing or failed")
+    events = row.get("events")
+    gaps.extend(_interaction_event_gaps(events))
     artifacts = row.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or any(not isinstance(path, str) for path in artifacts):
         gaps.append("interaction artifact paths were not reported")
@@ -92,7 +92,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
                 record = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
-            if isinstance(record, dict) and record.get("head") == expected_head and record.get("states") == states:
+            if (isinstance(record, dict) and record.get("head") == expected_head
+                    and record.get("states") == states and record.get("events") == events):
                 records.append(record)
         if not records:
             gaps.append("a structured interaction artifact tied to the reviewed head, actions, and observations was not reported")
@@ -127,6 +128,41 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
             gaps.append("scalability load_kind must be controlled or real_model_harnesses")
     return gaps
+
+
+def _interaction_event_gaps(events: Any) -> list[str]:
+    """Validate replayable request/browser events rather than screenshot descriptions."""
+    if not isinstance(events, list) or not events:
+        return ["performed HTTP/browser interaction events were not reported"]
+    covered: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            return ["interaction events must be structured request or browser-action records"]
+        state = event.get("state")
+        kind = event.get("kind")
+        observed = event.get("observed")
+        if state not in {"affected", "empty", "failure_recovery"}:
+            return ["each interaction event must name an affected, empty, or failure/recovery state"]
+        if not isinstance(observed, str) or not observed.strip():
+            return ["each interaction event must record its resulting observation"]
+        if kind == "http_request":
+            method, url, status = event.get("method"), event.get("url"), event.get("status_code")
+            if (method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+                    or not isinstance(url, str) or not url.startswith(("http://", "https://"))
+                    or isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599):
+                return ["HTTP interaction events require a method, served URL, and response status"]
+        elif kind == "browser_action":
+            action, target = event.get("action"), event.get("target")
+            if (not isinstance(action, str) or not action.strip()
+                    or not isinstance(target, str) or not target.strip()
+                    or re.search(r"\b(screenshot|image|png|jpe?g|gif|webp)\b", action, re.I)):
+                return ["browser interaction events require a non-image action and target"]
+        else:
+            return ["interaction events must be served HTTP requests or browser actions"]
+        covered.add(state)
+    if {"affected", "empty", "failure_recovery"} - covered:
+        return ["performed interaction events do not cover every required state"]
+    return []
 
 REVIEW_RULES = """\
 ## Your job
@@ -179,6 +215,11 @@ For a scalability claim, additionally use a served disposable app with represent
 histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
 latency samples/distribution, and read/scan counts. State whether load is controlled or uses real
 model harnesses; controlled load must not be described as a real harness run.
+
+Report `interaction.events` as a chronological sequence covering every required state. A served
+HTTP event contains `kind: http_request`, `state`, `method`, `url`, `status_code`, and `observed`.
+A browser event contains `kind: browser_action`, `state`, `action`, `target`, and `observed`.
+Screenshot/image operations are not actions. Preserve the same events in the structured artifact.
 
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.

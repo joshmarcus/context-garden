@@ -69,8 +69,10 @@ or QA journeys as interaction-affecting. Their automated reviewer must serve the
 against a disposable garden and report the command, performed actions, observed consequences,
 and artifact paths for the affected journey, an empty state, and a relevant failure/recovery
 state. This structured JSON interaction record names the reviewed SHA, repeats the performed
-actions and observations, and lists automated checks separately. A screenshot, generic file, or
-image-only artifact by itself is capture evidence, not interaction evidence; missing,
+actions and observations, and includes a per-state sequence of served HTTP requests (method, URL,
+response status and observed result) or browser actions (action, target and observed result).
+It lists automated checks separately. A screenshot, generic file, or image-only artifact by
+itself is capture evidence, not interaction evidence; missing,
 failed, stale-head, live-garden, or partly unverified interaction evidence mechanically changes
 an approval to changes requested. Reviews of performance or scalability claims additionally
 record representative and larger histories, repeated cache-expiry intervals, executing bounded
