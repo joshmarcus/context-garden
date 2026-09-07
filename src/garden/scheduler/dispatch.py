@@ -200,7 +200,7 @@ class DispatchMixin:
             if cleared:
                 rep.transitions.append(f"{t.id}: swept stale {', '.join(cleared)} (terminal)")
 
-    def _stash_dirty_worktree(self, task: Task, wt_path: Path) -> None:
+    def _stash_dirty_worktree(self, task: Task, wt_path: Path, run: Run) -> None:
         """A killed worker can leave uncommitted edits in its worktree; a fresh dispatch that
         reused it would then fail to reconcile the branch onto its base (`git merge --ff-only`
         refuses to overwrite local changes). Stash the edits under a named stash so the branch
@@ -211,7 +211,8 @@ class DispatchMixin:
         try:
             if not gitops.has_uncommitted_changes(wt_path):
                 return
-            name = f"garden:{task.id}:{now_iso()}"
+            files = gitops.status_lines(wt_path)
+            name = f"garden:{task.id}:{run.run_id}:pre-dispatch"
             sha = gitops.stash_all(wt_path, name)
         except gitops.GitError as e:
             self.log(f"{task.id}: could not stash the worktree's leftover changes: {e}")
@@ -220,11 +221,15 @@ class DispatchMixin:
             return
         st = self.state.get(task.id)
         stashes = list(st.get("stashes") or [])
-        stashes.append({"name": name, "sha": sha, "at": now_iso()})
+        artifact = {"name": name, "sha": sha, "at": now_iso(), "run": run.run_id,
+                    "reason": "pre-dispatch", "files": files,
+                    "restore": f"git stash apply {sha}"}
+        stashes.append(artifact)
         st["stashes"] = stashes
-        self.events.emit("stashed", task.id, sha=sha, name=name)
+        run.recovery_artifacts.append(artifact)
+        self.events.emit("stashed", task.id, sha=sha, name=name, run=run.run_id, reason="pre-dispatch")
         task.log(f"stashed leftover changes from a prior run before redispatch: `git stash apply {sha}` "
-                 f"in {wt_path} to recover them ({name})")
+                 f"in {wt_path} to recover them ({name}, run {run.run_id})")
         self.store.save(task)
         self.log(f"{task.id}: stashed a dirty worktree before dispatch ({sha[:12]})")
 
@@ -351,7 +356,7 @@ class DispatchMixin:
         # below as a commit) before anything else touches the worktree, so they are recovered
         # by `git stash apply`, not buried in a backup branch's synthetic commit.
         if worktree and not runner.remote:
-            self._stash_dirty_worktree(task, wt_path)
+            self._stash_dirty_worktree(task, wt_path, run)
         # A revise, rebase or resume run writes to a branch another writer may have just moved
         # (a prior revise round's push, the merge queue's own rebase): sync the worktree to
         # origin's head first so this run starts from the same head, instead of racing a stale
@@ -407,6 +412,7 @@ class DispatchMixin:
         runner.assign(run, self.active_runs())
         if wt is not None:
             run.worktree = str(wt)
+            run.env_snapshot["worktree_baseline"] = gitops.status_lines(wt)
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]

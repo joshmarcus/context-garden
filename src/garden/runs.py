@@ -97,6 +97,9 @@ class Run:
     # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
     # these instead of losing the round's context (see reap._handle_quota_env_error).
     env_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Dirty worktree material is never folded into a worker's branch by recovery. Dispatch
+    # and reap record named stash artifacts here so provenance stays with the run.
+    recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def path(self) -> Path:
