@@ -176,6 +176,8 @@ def test_external_merged_pr_completes_without_rechecks_after_final_base_verifica
     assert "external merged PR" in rep.transitions[0]
     assert sched.runs.latest(task.id).run_id == run.run_id
     assert not any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+    with pytest.raises(RuntimeError, match="no active run to finish"):
+        sched.finish_manual(sched.store.task(task.id), {"status": "done", "pr": pr.url})
 
 
 def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base(sched, fake_github, monkeypatch):
