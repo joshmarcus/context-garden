@@ -10,7 +10,9 @@ workflow: `docs/codex.md`. For a dispatched task, use its supplied brief and rea
 ## Development
 
 - Install: `uv venv && uv pip install -e ".[dev]"`.
-- Tests: `PYTHONPATH=src .venv/bin/python -m pytest -q`.
+- Tests: use the focused, serial suite commands and selection guide in
+  [`docs/test-suites.md`](docs/test-suites.md) while iterating; final full-suite validation
+  is `python3 scripts/check_ci.py`.
 - Lint: `.venv/bin/ruff check src tests`.
 - In a worktree without a venv, use an available Python environment with the dev
   dependencies and `PYTHONPATH=src` so tests exercise this worktree's source.
