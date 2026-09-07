@@ -1,0 +1,132 @@
+demo/p1 · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+  demop1
+
+    spent $0.00 · 0 PR(s) tracked · fixed brief cost ~1,569 tokens (head + rules + digest + product + goals)
+
+      Budget $
+
+  BoardTrellis
+
+    Progress
+Merged against scope
+No merges yet. The burn-up starts with the first merged PR.
+
+        hide 0 done
+
+      idstatusptiertitledepsprreviewcirevbrieftokenscost
+
+      DM-001sproutreadynext · 1easyA worker that asks a question
+
+        ~1,590
+
+      DM-002sproutreadynext · 1easyA round with nothing to change
+
+        ~1,590
+
+        Approve all drafts
+
+          Plan phase
+
+        Close phase
+
+        Persona review of the body of work:
+
+         file high findings as tasks
+        Run personas
+
+  Kickoff
+
+    No kickoff report yet. Before this phase's tasks start taking runs, a planner-tier review can flag design gaps, goals with no measurable outcome, questions for you, and docs that need attention.
+
+    Kick off
+
+      New task
+
+        Title
+
+        Goal
+
+        Context
+
+        Acceptance criteria
+- [ ]
+- [ ]
+- [ ]
+
+          Difficulty
+
+              easymediumhard
+
+          Priority
+
+              first · 0next · 1normal · 2later · 3someday · 4
+
+        Reading list
+
+        Dependencies
+
+           approve now
+          Create task
+
+    Goals
+p1 goals
+
+Drive the loop end to end.
+
+      demo · plate I
+p1
+Pisum sativum — garden pea
+2 tasks · 0 merged · 0 PRs open
+spent $0.00
+plate: Thomé, Flora von Deutschland, 1885
+
+      open
+
+    Spend
+Cost by difficulty tier
+No runs recorded yet.
+
+      spend over time for this phase →
+
+    demo/p1/specs/spec.mdspec
+
+Nothing to it.

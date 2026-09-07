@@ -1,0 +1,62 @@
+Trellis · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+Trellis
+The structure the work climbs: dependencies left to right, dashed edges for discovered work. A task with one open dependency stacks on its PR instead of waiting.
+
+    hide done
+
+  all
+
+    demo/p1
+
+  ready now: DM-001 DM-002
+   · longest open chain: DM-001
+
+DM-001: A worker that asks a question — ready (sprout)DM-001A worker that asks a que…ready
+DM-002: A round with nothing to change — ready (sprout)DM-002A round with nothing to …ready
+
+    seeddraft · seedsproutready · sproutin leafrunning · in leafbud, taggedwaiting human · bud, taggedin budawaiting triage · in budin flowerin review · in flowerprunedchanges requested · prunedin fruitdone · in fruitwiltedfailed · wilted
+
+  mermaid source (paste into docs or PRs)graph LR
+  DM_001["DM-001<br/>A worker that asks a question"]
+  style DM_001 fill:#d1ecf1,stroke:#0c5460,color:#333
+  DM_002["DM-002<br/>A round with nothing to change"]
+  style DM_002 fill:#d1ecf1,stroke:#0c5460,color:#333

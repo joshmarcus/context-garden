@@ -1,0 +1,218 @@
+Configuration · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+  Configuration
+Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change most values: the scheduler re-reads garden.yaml (and its env / local overlays) each tick when the file changes, so an edit takes effect within one tick with no restart. A few keys are read once at startup and need a restart — they are named below. The pause switch and max_parallel can also be overridden live from here.
+
+  Dispatch
+
+  Pause / Resume
+
+  Dispatch is running. Pause it to prevent new work and revise runs from being dispatched on the next tick without restarting the server.
+
+    ⏸ Pause dispatch
+
+  Installation
+
+  Maintenance pause
+
+  Use this before reinstalling or restarting the scheduler. It lets active processes finish and save results, but does not collect them until you explicitly resume. Ordinary dispatch pause still lets collection, checks, reviews and merges continue.
+
+  Freeze for maintenance
+
+  Capacity
+
+  Local execution boundary
+
+    Host admission: 0/8 ·
+    heavy execution: 0/0 authoritative
+    (requested 0)
+     ·
+    cgroup isolation: not configured.
+    Available memory: 3983 MiB
+    (effective controller cgroup headroom 3983 MiB);
+    temporary storage: 1888 MiB.
+
+  Memory events: high=0, max=0, oom=0, oom_kill=0.
+
+  Local descendants do not have a separately enforced CPU/memory budget (not configured). Configure a delegated, finite resources.execution_cgroup before relying on service isolation.
+
+  Dispatch
+
+  Parallelism
+
+    garden.yaml: 4
+     · no live override
+
+  Worker occupancy: 0/4 — the same worker-mode count used by dispatch and shown in the rail and garden status.
+
+    live override
+
+  Takes effect on the next tick; running workers are never stopped by lowering it. Clear the field to drop the override.
+
+  Worker slots: work, revise, resume, trial, rebase. Reviews use the separate reviews cap; checks and edit runs are short machine-bound runs and do not consume worker slots, but they still count toward the shared local execution limit shown in the rail.
+
+  Dispatch
+
+  Operating profile
+
+    garden.yaml: (none)
+     · no live override
+
+    live override
+
+      none — plain garden.yaml values
+
+      economy
+
+      balanced
+
+      fast
+
+    Switch
+
+    Sets workers, reviews, the model tier map, the review and retro tiers and the observation
+    feed together, within one tick, no restart. A more specific live override (e.g.
+    max_parallel above) still wins for that one knob.
+
+    stopworkersreviewsreviewretrofeed
+
+      economy
+      3
+      2
+      easy
+      —
+      quiet
+
+      balanced
+      5
+      3
+      easy
+      —
+      quiet
+
+      fast
+      7
+      3
+      medium
+      —
+      watch
+
+    economy: 3 workers · 2 reviews · easy=claude-haiku-4-5-20251001, medium=claude-haiku-4-5-20251001, hard=claude-haiku-4-5-20251001 · review easy · feed quiet
+balanced: 5 workers · 3 reviews · easy=claude-sonnet-5, medium=claude-sonnet-5, hard=claude-opus-4-8 · review easy · feed quiet
+fast: 7 workers · 3 reviews · easy=claude-sonnet-5, medium=claude-opus-4-8, hard=claude-opus-4-8 · review medium · feed watch
+
+  garden observe
+
+  Feed
+
+    garden.yaml: (none — base observe fields)
+     · no live override
+
+    live override
+
+      none — uses the base observe fields
+
+      debug
+
+      quiet
+
+      watch
+
+  A running garden observe --follow picks up the switch on its next pass, no restart.
+
+  Config files loaded
+
+  Sources
+
+    garden.yaml
+
+  Live values
+
+  Scheduler & dispatch
+
+  Edit these in garden.yaml; the change is picked up on the next tick, no restart.
+
+    review_parallel4
+
+    auto_dispatchFalse
+
+    auto_reviseTrue
+
+    review.enabledFalse
+
+    review.max_rounds2
+
+    review.difficulty(task tier)
+
+    review.ladder(tier rule)
+
+    retro.difficultyhard
+
+    github.draft_prTrue
+
+    stackTrue
+
+    observe.interval30m
+
+    observe.digest_window30m
+
+    observe.eventsquestion, needs_human, failed
+
+    observe.stuck_after15m
+
+    observe.phasesopen
+
+  Needs a restart
+
+  Read once at startup
+
+  These keys are read when the scheduler is built (or when the watch/serve loop first sets its interval), so editing them takes effect only after restarting garden watch / garden serve.
+
+    work_dir
+tick_interval
+github.use_gh
+github.bot_logins
+github.bot_notice_patterns
+github.trusted_authors
+github.trusted_bots
+github.reviewers
+upgrade.package
+upgrade.pip

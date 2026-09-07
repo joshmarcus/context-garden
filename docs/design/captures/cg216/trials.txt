@@ -1,0 +1,50 @@
+Trials · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+Model trials
+The same task, several models, one comparison. Scores accumulate here so the tier-to-model map is a decision, not a guess.
+
+  Filter by contender
+
+    Filter
+
+  Leaderboard
+
+  No trials yet. On a ready task's page choose Model trial… and name two or more contenders, e.g. claude:sonnet, claude:opus.

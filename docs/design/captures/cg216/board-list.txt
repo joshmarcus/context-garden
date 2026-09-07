@@ -1,0 +1,80 @@
+Board · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+  Board
+Every task by state. The backlog stacks a product's open phases as sections you can reorder and drag between.
+
+    columns
+    list
+    backlog
+
+  all
+
+    demo/p1
+
+    bud, taggedwaiting human0
+
+    in budawaiting triage0
+
+    prunedchanges requested0
+
+    wiltedfailed0
+
+    in leafrunning0
+
+    in flowerin review0
+
+    sproutready2
+
+          DM-001
+          A worker that asks a question
+          p1 · easy
+
+          DM-002
+          A round with nothing to change
+          p1 · easy
+
+    seed, waitingblocked0
+
+    seeddraft0
+
+    in fruitdone0
+
+    set asidewont do0
