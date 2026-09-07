@@ -146,5 +146,8 @@ def test_inbox_offers_move_for_a_draft_in_a_frozen_phase(garden):
     assert run(garden, "freeze", "demo/p1").exit_code == 0
 
     html = client(garden).get("/inbox").text
+    assert "Deferred work" in html
+    assert "deferred by the phase freeze" in html
+    assert "need you</div>" in html and '<div class="v">0</div><div class="l">need you' in html
     assert "Move to p2" in html
     assert '/tasks/DM-003/move' in html and 'value="demo/p2"' in html

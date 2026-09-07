@@ -50,6 +50,46 @@ def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garde
     assert target not in result.output
 
 
+def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):
+    """CLI and web consume the shared ownership model for queued, stale, and approved PRs."""
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get("DM-001")
+    st.update({"head_sha": "new-head", "last_review_head": "old-head",
+               "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+               "pending_reviews": [{"kind": "review"}]})
+    state.save()
+
+    queued = run(garden, "inbox")
+    assert queued.exit_code == 0
+    assert "inbox zero" in queued.output
+    assert "Automated review" in queued.output
+    assert "prior automated verdict: request changes" in queued.output
+    assert "set-status DM-001 done" not in queued.output
+
+    st["last_review"] = {"verdict": "approve", "summary": "ready"}
+    st["last_review_head"] = "new-head"
+    st.pop("pending_reviews")
+    state.save()
+    approved = run(garden, "inbox")
+    assert "1 need you" in approved.output
+    assert "Review and merge" in approved.output
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox").text
+    assert "automated review approved this PR head" in page
+    assert 'action="/tasks/DM-001/done"' not in page
+
+
 def test_status_shows_retro_waiting_for_personas(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store
