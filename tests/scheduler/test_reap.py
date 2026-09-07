@@ -170,6 +170,43 @@ def test_missing_result_preserves_dirty_new_file_without_discarding_committed_wo
     assert not (worktree / "interrupted.txt").exists()
 
 
+def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
+    """A current brief cannot reach review without the checklist it required."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    assert run.env_snapshot["requires_preflight"] is True
+    frozen = list(run.env_snapshot["criteria"])
+    (run.path / "stdout.json").unlink()
+
+    report = sched.tick()
+
+    assert "DM-001 -> changes_requested (checks)" in report.transitions
+    revise = sched.runs.latest("DM-001")
+    assert revise.mode == "revise"
+    brief = (revise.path / "brief.md").read_text()
+    assert "missing items: result block and review pre-flight checklist" in brief
+    assert "Criteria frozen for the interrupted dispatch" in brief
+    for criterion in frozen:
+        assert criterion in brief
+
+
+def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):
+    """Saved runs from before the rubric retain their ordinary retry behaviour."""
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
+    (run.path / "stdout.json").unlink()
+
+    report = sched.tick()
+
+    assert "DM-001 -> changes_requested (checks)" not in report.transitions
+    assert "DM-001 -> ready (retry)" in report.transitions
+    assert sched.runs.latest("DM-001").run_id != run.run_id
+
+
 def _run_fake_claude(cwd, task_id, run_id, when):
     env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
     env.pop("FAKE_CLAUDE_MODE", None)
@@ -398,6 +435,9 @@ def test_missing_result_with_commits_is_reaped_and_sent_to_review(sched, fake_gi
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "noresult")
     sched.tick()
+    run = sched.runs.latest("DM-001")
+    run.env_snapshot.pop("requires_preflight")
+    run.save()
     rep = sched.tick()
     task = sched.store.task("DM-001")
     run = sched.latest_worker_run("DM-001")

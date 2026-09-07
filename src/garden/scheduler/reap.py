@@ -304,6 +304,16 @@ class ReapMixin:
         if not result:
             run.status = "failed"
             run.save()
+            if bool((run.env_snapshot or {}).get("requires_preflight")):
+                criteria = list((run.env_snapshot or {}).get("criteria") or [])
+                criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
+                failed = [{"name": "review pre-flight", "status": "fail",
+                           "summary": "missing items: result block and review pre-flight checklist",
+                           "details": ""}]
+                self._start_check_revise(task, failed, rep, cost,
+                                         feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
+                                         + criteria_note)
+                return
             self._retry_or_fail(task, run, rep, f"no GARDEN_RESULT in worker output ({run.error[:200] or 'see final.md'})")
             return
         if status == "blocked":
@@ -531,7 +541,7 @@ class ReapMixin:
         return results
 
     def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "",
-                            is_rebase: bool = False) -> None:
+                            is_rebase: bool = False, feedback_note: str = "") -> None:
         """Queue a revise round (or hand off to a human at the cap) for a pre-PR check the branch
         actually owns. Mirrors the historic inline behaviour of `_after_push`. `is_rebase` marks a
         stale-base rebase that failed to apply cleanly (CG-131): mechanical bookkeeping, not a
@@ -539,6 +549,8 @@ class ReapMixin:
         st = self.state.get(task.id)
         names = ", ".join(str(f.get("name")) for f in failed)
         feedback = to_feedback(failed, "pre-PR check")
+        if feedback_note:
+            feedback = f"{feedback}\n\n{feedback_note}" if feedback else feedback_note
         # A pre-PR failure can be the first reason this worker is sent back, before a
         # review run exists to add the frozen-criteria delta. Keep the contract that
         # failed worker received with the mechanical feedback, so a task-file edit made

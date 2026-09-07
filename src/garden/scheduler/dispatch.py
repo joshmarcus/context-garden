@@ -424,6 +424,10 @@ class DispatchMixin:
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot
+        # This marker is a versioned part of the dispatched contract.  Reap uses it to
+        # distinguish a new worker that failed to return its required pre-flight from an
+        # older saved run, whose missing-result recovery must remain compatible.
+        run.env_snapshot["requires_preflight"] = mode in ("work", "revise", "resume")
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())
