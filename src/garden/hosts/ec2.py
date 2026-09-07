@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -44,10 +45,21 @@ class EC2Provider:
         "availability_zone",
         "hourly_usd",
         "delete_root_on_termination",
+        "cpu_credits",
+        "bootstrap_path",
     }
 
-    def __init__(self, client: EC2Client):
+    def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
+                 wait_seconds: float = 60, sleep=time.sleep):
         self.client = client
+        self.required_tags = dict(required_tags or {})
+        if any(k.startswith("context-garden:") or k.startswith("aws:") for k in self.required_tags):
+            raise ValueError("policy tags cannot override reserved ownership tags")
+        if any(not isinstance(k, str) or not isinstance(v, str) or not k or not v
+               for k, v in self.required_tags.items()):
+            raise ValueError("policy tags must be nonempty strings")
+        self.wait_seconds = wait_seconds
+        self.sleep = sleep
 
     def validate_options(self, options: dict[str, Any]) -> None:
         unknown = set(options) - self.ALLOWED_OPTIONS
@@ -89,6 +101,7 @@ class EC2Provider:
         if missing:
             raise ValueError(f"missing ec2 options: {missing}")
         tags = {
+            **self.required_tags,
             OWNED_TAG: "true",
             OWNER_TAG: declaration.pool.owner,
             POOL_TAG: declaration.pool.name,
@@ -117,7 +130,7 @@ class EC2Provider:
                         "VolumeSize": declaration.pool.profile.disk_gib,
                         "VolumeType": "gp3",
                         "DeleteOnTermination": bool(
-                            options.get("delete_root_on_termination", True)
+                            options.get("delete_root_on_termination", not declaration.pool.profile.persistent_workspace)
                         ),
                         "Encrypted": True,
                     },
@@ -125,12 +138,17 @@ class EC2Provider:
             ],
             "TagSpecifications": [
                 {
-                    "ResourceType": "instance",
+                    "ResourceType": resource_type,
                     "Tags": [{"Key": key, "Value": value} for key, value in tags.items()],
-                }
+                } for resource_type in ("instance", "volume", "network-interface")
             ],
             "UserData": self._user_data(declaration),
         }
+        if str(options["instance_type"]).startswith(("t2.", "t3.", "t3a.", "t4g.")):
+            credits = options.get("cpu_credits", "standard")
+            if credits not in ("standard", "unlimited"):
+                raise ValueError("cpu_credits must be standard or unlimited")
+            args["CreditSpecification"] = {"CpuCredits": credits}
         if options.get("availability_zone"):
             args["Placement"] = {"AvailabilityZone": options["availability_zone"]}
         try:
@@ -156,38 +174,62 @@ class EC2Provider:
         return replace(self.inspect(provider_id), state=HostState.BOOTSTRAPPING)
 
     def destroy(self, provider_id: str, *, delete_storage: bool) -> HostFacts:
-        before = self.inspect(provider_id)
+        instance = self.client.describe_instances(InstanceIds=[provider_id])["Reservations"][0]["Instances"][0]
+        tags = {row["Key"]: row["Value"] for row in instance.get("Tags", [])}
+        if tags.get(OWNED_TAG) != "true" or not {OWNER_TAG, POOL_TAG, OPERATION_TAG} <= tags.keys():
+            raise ProviderError("refusing to terminate an instance without lifecycle ownership")
+        volumes = [row["Ebs"]["VolumeId"] for row in instance.get("BlockDeviceMappings", []) if "Ebs" in row]
+        interfaces = [row["NetworkInterfaceId"] for row in instance.get("NetworkInterfaces", [])]
+        mappings = [{"DeviceName": row["DeviceName"], "Ebs": {"DeleteOnTermination": delete_storage}}
+                    for row in instance.get("BlockDeviceMappings", []) if "Ebs" in row]
+        if mappings:
+            self.client.modify_instance_attribute(InstanceId=provider_id, BlockDeviceMappings=mappings)
         self.client.terminate_instances(InstanceIds=[provider_id])
-        retained = () if delete_storage else tuple(self._volume_ids(provider_id))
-        return replace(before, state=HostState.TERMINATED, retained_resources=retained)
-
-    @staticmethod
-    def _volume_ids(provider_id: str) -> list[str]:
-        # A retained-volume integration can override this adapter method and enumerate EBS.
-        return [f"attached-storage:{provider_id}"]
+        deadline = time.monotonic() + self.wait_seconds
+        while True:
+            after = self.inspect(provider_id)
+            if after.state == HostState.TERMINATED:
+                break
+            if time.monotonic() >= deadline:
+                return replace(after, state=HostState.DRAINING,
+                               retained_resources=tuple(volumes + interfaces),
+                               detail="termination requested; cleanup not yet confirmed")
+            self.sleep(min(1, max(0, deadline - time.monotonic())))
+        # Query by filters: already deleted IDs yield an empty result rather than NotFound.
+        retained = []
+        if volumes:
+            response = self.client.describe_volumes(Filters=[{"Name": "volume-id", "Values": volumes}])
+            retained += [v["VolumeId"] for v in response.get("Volumes", [])]
+        if interfaces:
+            response = self.client.describe_network_interfaces(
+                Filters=[{"Name": "network-interface-id", "Values": interfaces}])
+            retained += [n["NetworkInterfaceId"] for n in response.get("NetworkInterfaces", [])]
+        response = self.client.describe_addresses(Filters=[{"Name": f"tag:{OPERATION_TAG}",
+                                                           "Values": [tags[OPERATION_TAG]]}])
+        retained += [a.get("AllocationId", a.get("PublicIp", "")) for a in response.get("Addresses", [])]
+        return replace(after, retained_resources=tuple(retained),
+                       detail="termination observed; retained AWS resources inventoried")
 
     @staticmethod
     def _user_data(declaration: HostDeclaration) -> str:
         profile = declaration.pool.profile
         if not profile.endpoint:
             return ""
-        endpoint = shlex.quote(profile.endpoint.rstrip("/"))
-        secret_ref = shlex.quote(profile.enrollment_secret_ref)
-        version = shlex.quote(profile.bootstrap_version)
-        script = f"""#!/bin/sh
-set -eu
-umask 077
-token_file=$(mktemp)
-trap 'rm -f "$token_file"' EXIT
-aws secretsmanager get-secret-value --secret-id {secret_ref} --query SecretString --output text > "$token_file"
-curl --fail --silent --show-error --proto '=https' --tlsv1.2 \\
-  -H "Authorization: Bearer $(cat "$token_file")" \\
-  -H 'Content-Type: application/json' \\
-  --output /dev/null \\
-  --data '{{"contract":"{CONTRACT_VERSION}","worker_version":"{version}"}}' \\
-  {endpoint}/api/workers/enroll
-"""
-        return script
+        options = {**declaration.pool.provider_options, **profile.provider_options}
+        bootstrap_path = str(options.get("bootstrap_path") or "")
+        if not bootstrap_path.startswith("/") or any(c.isspace() for c in bootstrap_path):
+            raise ValueError("endpoint profiles require bootstrap_path on a verified prebuilt AMI")
+        # Environment-specific setup belongs to the pinned image/profile, not the EC2
+        # lifecycle. The executable verifies the image manifest and starts its service.
+        # Only secret references cross userdata; never inline auth material.
+        config = json.dumps({"contract_version": CONTRACT_VERSION, "host": declaration.host_id,
+                             "endpoint": profile.endpoint, "secret_ref": profile.enrollment_secret_ref,
+                             "profile_version": profile.version,
+                             "bootstrap_version": profile.bootstrap_version})
+        return ("#!/bin/sh\nset -eu\numask 077\n"
+                + "test -x " + shlex.quote(bootstrap_path) + "\n"
+                + "printf '%s' " + shlex.quote(config) + " > /run/host-bootstrap.json\n"
+                + shlex.quote(bootstrap_path) + " --config /run/host-bootstrap.json\n")
 
     @staticmethod
     def _facts(instance: dict[str, Any]) -> HostFacts:

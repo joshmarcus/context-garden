@@ -141,6 +141,9 @@ class StubEC2:
         self.instances.append(instance)
         return {"Instances": [instance]}
 
+    def describe_addresses(self, **kwargs):
+        return {"Addresses": []}
+
     def terminate_instances(self, **kwargs):
         for instance in self.instances:
             if instance["InstanceId"] in kwargs["InstanceIds"]:
@@ -179,6 +182,7 @@ def test_ec2_adapter_scopes_discovery_tags_credentials_and_bootstrap(tmp_path):
                 "security_group_ids": ["sg-egress-only"],
                 "instance_profile_arn": "arn:scoped-role",
                 "hourly_usd": 0.25,
+                "bootstrap_path": "/opt/company/bootstrap-v1",
             },
         ),
     )
@@ -198,7 +202,8 @@ def test_ec2_adapter_scopes_discovery_tags_credentials_and_bootstrap(tmp_path):
     }
     assert args["BlockDeviceMappings"][0]["Ebs"]["Encrypted"] is True
     assert "secret:worker" in args["UserData"]
-    assert "Bearer $(cat" in args["UserData"]
+    assert "/opt/company/bootstrap-v1 --config" in args["UserData"]
+    assert "/api/workers/enroll" not in args["UserData"]
     assert "controller" not in args["UserData"]
     assert lifecycle.plan(replace(declaration, desired=0)).retire == ("workers-0",)
     lifecycle.reconcile(replace(declaration, desired=0))
@@ -246,3 +251,61 @@ def test_declarative_contract_rejects_unknown_fields():
     assert pool_from_dict(value).maximum == 1
     with pytest.raises(ValueError, match="unsupported pool fields"):
         pool_from_dict({**value, "ec2_instance_type": "m6i.xlarge"})
+
+
+def test_ec2_policy_tags_and_standard_credits(tmp_path):
+    from garden.hosts.models import HostDeclaration
+    client = StubEC2()
+    provider = EC2Provider(client, required_tags={"ManagedBy": "context-garden", "Pool": "phase05"})
+    spec = pool(provider="ec2", profile=replace(profile(), endpoint=""), provider_options={
+        "instance_type": "t3.xlarge", "subnet_id": "subnet-test", "security_group_ids": ["sg-test"],
+        "instance_profile_arn": "arn:role", "hourly_usd": 0.18})
+    provider.provision(HostDeclaration("worker-0", "op-test", spec))
+    args = client.run_args
+    assert args["CreditSpecification"] == {"CpuCredits": "standard"}
+    assert {t["ResourceType"] for t in args["TagSpecifications"]} == {"instance", "volume", "network-interface"}
+    for spec in args["TagSpecifications"]:
+        tags = {t["Key"]: t["Value"] for t in spec["Tags"]}
+        assert tags["ManagedBy"] == "context-garden" and tags["Pool"] == "phase05"
+        assert tags[OPERATION_TAG] == "op-test"
+    with pytest.raises(ValueError, match="reserved"):
+        EC2Provider(client, required_tags={OWNER_TAG: "someone-else"})
+
+
+def test_ec2_does_not_claim_termination_before_aws_confirms():
+    client = StubEC2()
+    client.instances = [{"InstanceId": "i-owned", "State": {"Name": "running"}, "Tags": [
+        {"Key": "context-garden:managed", "Value": "true"},
+        {"Key": OWNER_TAG, "Value": "owner"}, {"Key": POOL_TAG, "Value": "pool"},
+        {"Key": OPERATION_TAG, "Value": "op"}]}]
+    client.terminate_instances = lambda **kw: {}
+    provider = EC2Provider(client, wait_seconds=0)
+    assert provider.destroy("i-owned", delete_storage=True).state == HostState.DRAINING
+    client.instances[0]["Tags"] = []
+    with pytest.raises(RuntimeError, match="ownership"):
+        provider.destroy("i-owned", delete_storage=True)
+
+
+def test_ec2_retirement_reports_real_retained_resources():
+    client = StubEC2()
+    client.instances = [{"InstanceId": "i-owned", "State": {"Name": "running"}, "Tags": [
+        {"Key": "context-garden:managed", "Value": "true"},
+        {"Key": OWNER_TAG, "Value": "owner"}, {"Key": POOL_TAG, "Value": "pool"},
+        {"Key": OPERATION_TAG, "Value": "op"}],
+        "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeId": "vol-real"}}],
+        "NetworkInterfaces": [{"NetworkInterfaceId": "eni-real"}]}]
+    modifications = []
+    client.modify_instance_attribute = lambda **kw: modifications.append(kw)
+    client.describe_volumes = lambda **kw: {"Volumes": [{"VolumeId": "vol-real"}]}
+    client.describe_network_interfaces = lambda **kw: {"NetworkInterfaces": []}
+    client.describe_addresses = lambda **kw: {"Addresses": [{"AllocationId": "eipalloc-real"}]}
+    result = EC2Provider(client).destroy("i-owned", delete_storage=False)
+    assert result.state == HostState.TERMINATED
+    assert result.retained_resources == ("vol-real", "eipalloc-real")
+    assert modifications[0]["BlockDeviceMappings"][0]["Ebs"]["DeleteOnTermination"] is False
+
+
+def test_endpoint_bootstrap_requires_prebuilt_contract():
+    from garden.hosts.models import HostDeclaration
+    with pytest.raises(ValueError, match="verified prebuilt AMI"):
+        EC2Provider._user_data(HostDeclaration("host", "op", pool()))

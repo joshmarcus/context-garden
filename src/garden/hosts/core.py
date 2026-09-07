@@ -122,7 +122,7 @@ class HostLifecycle:
             assumptions=(
                 f"compute and {pool.profile.disk_gib} GiB storage for {pool.desired} host(s)",
                 "public IPv4 and transfer are provider-dependent and excluded unless adapter pricing includes them",
-                f"hard pool spend limit ${pool.spend_limit_usd:.2f}",
+                f"projected admission budget ${pool.spend_limit_usd:.2f}; not a hard billing cap",
                 f"estimated runtime {pool.estimated_runtime_hours:g} hour(s)",
             ),
         )
@@ -142,6 +142,7 @@ class HostLifecycle:
         active = [h for h in hosts if h.state != HostState.TERMINATED]
         events: list[HostEvent] = []
         failures: list[HostFacts] = []
+        retirements: list[HostFacts] = []
         for slot in range(len(active), pool.desired):
             declaration = self._declaration(pool, slot)
             self.policy.authorize("provision", declaration)
@@ -203,6 +204,7 @@ class HostLifecycle:
             self.policy.authorize("destroy", declaration)
             delete_storage = not pool.profile.persistent_workspace
             retired = provider.destroy(host.provider_id, delete_storage=delete_storage)
+            retirements.append(retired)
             events.append(
                 HostEvent(
                     "retired", retired.host_id, retired.state, ", ".join(retired.retained_resources)
@@ -211,7 +213,9 @@ class HostLifecycle:
         refreshed = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
         discovered_operations = {host.operation_id for host in refreshed}
         failures = [host for host in failures if host.operation_id not in discovered_operations]
-        checked: list[HostFacts] = list(failures)
+        retired_ids = {host.provider_id for host in retirements}
+        refreshed = [host for host in refreshed if host.provider_id not in retired_ids]
+        checked: list[HostFacts] = [*failures, *retirements]
         for host in refreshed:
             if self.health_check is not None and host.state in {
                 HostState.BOOTSTRAPPING,

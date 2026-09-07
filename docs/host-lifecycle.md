@@ -37,12 +37,17 @@ pool = PoolDeclaration(
         "security_group_ids": ["sg-egress-only"],
         "instance_profile_arn": "arn:aws:iam::123:instance-profile/scoped-worker",
         "hourly_usd": 0.25,
+        "bootstrap_path": "/opt/company/bootstrap-v1",  # present on this pinned AMI
     },
 )
 lifecycle = HostLifecycle({"ec2": EC2Provider(workplace_ec2_client)}, state, workplace_policy)
 print(lifecycle.plan(pool))       # read-only, disabled, desired=0
 lifecycle.reconcile(replace(pool, enabled=True, desired=1))
 ```
+
+The AMI must implement the [prebuilt bootstrap contract](host-bootstrap-contract.md);
+a stock OS image is insufficient. The provider invokes the verified image executable and
+does not assume an enrollment API exists.
 
 The security group needs outbound HTTPS, not inbound SSH. User-data contains only the pinned
 version, endpoint and a secret *reference*. The scoped instance role retrieves enrollment at
