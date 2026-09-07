@@ -95,6 +95,11 @@ class Run:
     started_at: str = ""
     finished_at: str = ""
     worktree: str = ""
+    # How the task's code location was claimed.  This is deliberately not inferred from
+    # ``worktree``: an externally-owned directory can happen to have the scheduler's
+    # conventional name, and must never acquire managed-worktree behaviour by accident.
+    completion_mode: str = "managed"  # managed | external
+    external_pr: str = ""
     branch: str = ""
     base: str = ""
     start_head: str = ""  # origin/<branch>'s sha this run started from, for a lease-protected push (CG-220)

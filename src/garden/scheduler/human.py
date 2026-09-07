@@ -502,8 +502,62 @@ class HumanMixin:
         run = self.runs.latest(task.id)
         if run is None or run.status != "running":
             raise RuntimeError(f"{task.id} has no active run to finish")
+        if run.completion_mode == "external":
+            return self._finish_external_manual(task, run, result)
         ManualRunner.finish(run, result)
         rep = TickReport()
         self.finalize(task, run, self.runner_for(task, run.runner), rep)
+        self.state.save()
+        return rep
+
+    def _finish_external_manual(self, task: Task, run: Run, result: dict[str, Any]) -> TickReport:
+        """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
+        from ..runner.manual import ManualRunner
+
+        url = str(result.get("pr") or run.external_pr or task.pr or "")
+        match = re.search(r"/pull/(\d+)", url)
+        slug = self.slug_for(task)
+        if not match or not slug or not self.github.available:
+            raise RuntimeError("external completion needs an accessible PR URL")
+        pr = self.github.get_pr(slug, int(match.group(1)))
+        if not run.branch or pr.head != run.branch:
+            raise RuntimeError(
+                f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
+                "claim it again with `garden take ID --pr URL`"
+            )
+        if pr.state == "MERGED":
+            head = pr.head_sha or f"origin/{pr.head}"
+            try:
+                repo = self.repo_for(task)
+                gitops.fetch(repo)
+                merged = gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
+            except gitops.GitError as e:
+                raise RuntimeError(f"could not verify merged PR ancestry: {e}") from e
+            if not merged:
+                raise RuntimeError(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
+        elif pr.state != "OPEN":
+            raise RuntimeError(f"external PR is {pr.state.lower()}, not open or merged")
+        st = self.state.get(task.id)
+        task.pr, task.branch = pr.url, pr.head
+        st.update({"pr_number": pr.number, "pr_state": pr.state, "pr_base": pr.base,
+                   "head_sha": pr.head_sha, "checks": pr.checks,
+                   "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
+        ManualRunner.finish(run, {**result, "pr": pr.url})
+        run.result = {**result, "pr": pr.url}
+        run.finished_at = now_iso()
+        run.cost_usd = float(result["cost_usd"]) if isinstance(result.get("cost_usd"), (int, float)) else None
+        run.status = "done"
+        run.save()
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
+                         harness="human", status="done", cost_usd=run.cost_usd,
+                         external=True, supervised=True)
+        rep = TickReport()
+        if pr.state == "MERGED":
+            self._transition(task, Status.DONE, f"external PR merged and verified on {self.final_base_for(task)}")
+            rep.transitions.append(f"{task.id} -> done (external merged PR)")
+        elif pr.state == "OPEN":
+            self._transition(task, Status.IN_REVIEW, f"external PR attached at {pr.head}; existing CI is {pr.checks or 'unknown'}")
+            rep.transitions.append(f"{task.id} -> in_review (external PR)")
+            self._maybe_review(task, run, rep)
         self.state.save()
         return rep

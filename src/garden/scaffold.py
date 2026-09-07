@@ -148,6 +148,15 @@ own the code change.
 
 Run `garden take <ID>` without `--worktree`, create the branch it names from the base
 branch, work, push, open the PR yourself, then `garden finish <ID> --pr <url> --summary "..."`.
+For work already implemented outside the scheduler, claim the real identity first:
+
+```
+garden take <ID> --pr <url>
+garden finish <ID> --pr <url> --summary "..."
+```
+
+Or use `--branch <name> --external-worktree <path>` when the PR is not open yet. Garden
+records that checkout as external and never infers managed-worktree behaviour from its path.
 
 ## Rules
 

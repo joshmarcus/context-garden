@@ -3,7 +3,9 @@
 
 import pytest
 
+from garden import gitops
 from garden.model import Status
+from garden.runner.manual import ManualRunner
 from tests.scheduler.conftest import statuses
 
 
@@ -122,6 +124,71 @@ def test_mark_done_requires_pr_commits_on_the_base_unless_forced(sched, monkeypa
 
     sched.mark_done(task, force=True)
     assert statuses(sched)["DM-001"] == "done"
+
+
+def test_external_open_pr_uses_claimed_identity_and_review_without_managed_worktree(sched, fake_github):
+    """An operator-owned directory is audit data, not a signal to push or test it."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    coincidental_path = sched.worktree_for(task)
+    coincidental_path.mkdir(parents=True)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override="operator/fix", completion_mode="external",
+                         external_pr=pr.url, worktree_override=coincidental_path)
+    assert run.completion_mode == "external" and run.worktree == str(coincidental_path)
+
+    sched.finish_manual(task, {"status": "done", "summary": "implemented", "pr": pr.url})
+
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW and task.branch == "operator/fix"
+    assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+
+
+def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="garden/DM-001-generated", completion_mode="external")
+
+    with pytest.raises(RuntimeError, match="does not match claimed branch"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.runs.latest(task.id).status == "running"
+
+
+def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
+    pr.state, pr.head_sha = "MERGED", "verified-head"
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    rep = sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.DONE
+    assert "external merged PR" in rep.transitions[0]
+    assert sched.runs.latest(task.id).run_id == run.run_id
+    assert not any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+
+
+def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
+    pr.state, pr.head_sha = "MERGED", "stacked-head"
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: False)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    with pytest.raises(RuntimeError, match="not included in final base"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.runs.latest(task.id).run_id == run.run_id
+    assert sched.runs.latest(task.id).status == "running"
 
 
 def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):
