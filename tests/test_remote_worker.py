@@ -404,10 +404,37 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
             assert scheduler.runs.latest(phase_run.task_id).status == "done"
             assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
             assert "@build-1" in client.get(f"/runs/DM-001/{run.run_id}").text
-            (tmp_path / "served-remote-events.json").write_text(json.dumps({
-                "runs": events, "http": http_events, "transport": "real TCP HTTP",
+            artifact = {
+                "source_head": subprocess.run(
+                    ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+                    cwd=Path(__file__).resolve().parents[1],
+                ).stdout.strip(),
+                "test": "tests/test_remote_worker.py::test_remote_lifecycle_over_served_http",
+                "transport": "real TCP HTTP",
+                "worker_process": "separate python -m garden worker CLI process",
                 "worker_command": "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
-            }, indent=2))
+                "actions": [
+                    "reject unauthenticated and cross-origin claims",
+                    "claim then expire a work lease and reject its stale heartbeat",
+                    "reclaim and finish work, check, review, PR persona, and phase persona runs",
+                    "open the run page and drain the queue",
+                ],
+                "observations": {
+                    "scheduler_secret_absent_from_claim": True,
+                    "stale_heartbeat_status": 409,
+                    "review_verdict": "approve",
+                    "pr_opened": True,
+                    "run_page_host": "build-1",
+                    "final_claim_status": 204,
+                },
+                "runs": events,
+                "http": http_events,
+            }
+            (tmp_path / "served-remote-events.json").write_text(json.dumps(artifact, indent=2))
+            if destination := os.environ.get("GARDEN_REMOTE_INTERACTION_ARTIFACT"):
+                output = Path(destination)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(artifact, indent=2) + "\n")
     finally:
         server.should_exit = True
         thread.join(timeout=10)
