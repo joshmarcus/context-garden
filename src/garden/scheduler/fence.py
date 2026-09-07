@@ -623,6 +623,9 @@ class FenceMixin:
                     writes.append(segment[index + 1])
                     index += 2
                     continue
+                if word in {"<", "<<"} and index + 1 < len(segment):
+                    index += 2
+                    continue
                 # shlex separates a file-descriptor prefix: ``2 > errors.log``.
                 if (word.isdigit() and index + 2 < len(segment)
                         and segment[index + 1] in {">", ">>"}):
