@@ -3,6 +3,7 @@
 import os
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -10,6 +11,8 @@ from typer.testing import CliRunner
 from garden.cli import app
 from garden.model import Status
 from garden.suggestions import record_suggestion
+from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
+from garden.scheduler.report import TickReport
 from tests.scheduler.conftest import statuses
 
 
@@ -153,6 +156,45 @@ def test_revise_brief_names_rebase_conflict_without_github_feedback(sched):
     assert "## Concrete blocker" in brief
     assert "GitHub has no open review comments" in brief
     assert "rebase conflict" in brief
+
+
+def test_oversized_prompt_is_rejected_before_the_runner_starts(sched, monkeypatch):
+    """The scheduler must not spend a turn on a harness input it already knows is invalid."""
+    task = sched.store.task("DM-001")
+    runner = sched.runner_for(task)
+    started = False
+
+    def start(*args, **kwargs):
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(runner, "start", start)
+    with pytest.raises(ValueError, match="serialized prompt"):
+        sched.dispatch(task, prompt_override="x" * (MAX_SERIALIZED_PROMPT_BYTES + 1))
+    assert not started
+
+
+def test_large_rebase_conflict_uses_artifact_and_starts_one_bounded_recovery(sched):
+    """A generated conflict over the harness limit is recoverable without a retry/card."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    path = "docs/design/snapshot.json"
+    conflict = "<<<<<<< HEAD\n" + ("generated-data\n" * 80_000) + "=======\nbase\n>>>>>>> main\n"
+
+    sched._dispatch_rebase_agent(task, "main", [path], {path: conflict}, TickReport(), "fixture")
+    state = sched.state.get(task.id)
+    artifact = state["rebase_artifacts"][path]
+    assert Path(artifact["path"]).read_text() == conflict
+
+    run = sched.dispatch(task, mode="rebase")
+    brief = (run.path / "brief.md").read_text()
+    assert len(brief.encode("utf-8")) <= MAX_SERIALIZED_PROMPT_BYTES
+    assert "Generated conflict omitted from this prompt" in brief
+    assert artifact["path"] in brief
+    assert "generated-data" not in brief
+    assert not state.get("rebase_run_retries") and not state.get("needs_human")
 
 
 def test_redispatched_work_brief_lists_prior_commits(sched):

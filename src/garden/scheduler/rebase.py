@@ -28,6 +28,7 @@ Three rules live here (see docs/architecture.md, beside stacking):
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -174,6 +175,7 @@ class RebaseMixin:
         st["rebase_base"] = base
         st["rebase_files"] = list(files)
         st["rebase_hunks"] = hunks
+        st["rebase_artifacts"] = self._preserve_rebase_conflicts(task, hunks)
         self._queue_leave(task)  # a conflict takes the task off the merge queue
         st["force_push"] = True
         if task.status.pr_open:
@@ -183,6 +185,19 @@ class RebaseMixin:
         else:
             task.log(f"{reason}; rebase onto {base} conflicts; the next run must resolve it")
             self.store.save(task)
+
+    def _preserve_rebase_conflicts(self, task: Task, hunks: dict[str, str]) -> dict[str, dict[str, object]]:
+        """Persist captured conflict blobs without putting generated data in the prompt."""
+        root = self.cfg.garden_dir / "rebase-conflicts" / task.id
+        root.mkdir(parents=True, exist_ok=True)
+        artifacts: dict[str, dict[str, object]] = {}
+        for path, content in hunks.items():
+            digest = hashlib.sha256(path.encode("utf-8") + b"\0" + content.encode("utf-8", "replace")).hexdigest()
+            artifact = root / f"{digest}.conflict"
+            artifact.write_text(content)
+            artifacts[path] = {"path": str(artifact), "bytes": len(content.encode("utf-8", "replace")),
+                               "sha256": digest}
+        return artifacts
 
     # ---- verdict keep (rule 2) ---------------------------------------------
     def _rebase_review_or_keep(self, task: Task, run: Run, base: str, rep: TickReport, cost: str = "") -> None:
