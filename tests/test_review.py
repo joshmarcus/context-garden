@@ -1,4 +1,5 @@
 import copy
+import json
 import pytest
 
 from garden.model import Status
@@ -220,6 +221,20 @@ def test_lifecycle_implementations_require_interaction_evidence(behavior, path):
     assert path in reason, behavior
 
 
+@pytest.mark.parametrize("path", ["src/garden/review.py", "src/garden/stabilization.py"])
+def test_review_and_phase_close_implementations_require_interaction_evidence(path):
+    required, scalability, _ = interaction_requirement([path], "Internal policy cleanup")
+    assert required and not scalability
+
+
+def test_scalability_claim_in_pr_description_requires_load_evidence():
+    required, scalability, _ = interaction_requirement(
+        ["docs/design.md"], "Documentation task", "Routine update", "PR title",
+        "Keeps p95 latency bounded with larger histories",
+    )
+    assert not required and scalability
+
+
 @pytest.mark.parametrize("path", [
     "src/garden/runner/local.py",
     "src/garden/runs.py",
@@ -243,13 +258,41 @@ def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
     assert "Running-app evidence incomplete" in persisted.result["findings"][-1]["summary"]
 
 
+def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = sched.dispatch_review(task)
+    malformed = {
+        "verdict": "approve", "summary": "looks good", "pages_seen": [], "criteria": [],
+        "description_ok": True, "description_feedback": "", "description_rewrite": "",
+        "findings": [], "improvements": [],
+        "interaction": {
+            "head": run.env_snapshot["review_head"], "environment": "disposable", "command": "true",
+            "states": {name: {"status": "pass", "actions": "clicked", "observed": True}
+                       for name in ("affected", "empty", "failure_recovery")},
+            "artifacts": ["/etc/hosts"], "automated_checks": "pytest", "unverified": False,
+        },
+    }
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(malformed), "usage": {},
+    }
+    (run.path / "stdout.json").write_text(json.dumps(envelope))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id)
+    assert persisted is not None and persisted.result["verdict"] == "request_changes"
+    assert "structured interaction artifact" in persisted.result["findings"][-1]["summary"]
+
+
 def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):
     artifact = tmp_path / "journey.json"
-    artifact.write_text("{}")
     states = {
         name: {"status": "pass", "actions": [f"POST /{name}"], "observed": "state changed"}
         for name in ("affected", "empty", "failure_recovery")
     }
+    artifact.write_text(json.dumps({"head": "head-a", "states": states}))
     review = {"interaction": {
         "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
         "states": states, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
@@ -268,13 +311,14 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
 
 def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp_path):
     artifact = tmp_path / "latencies.json"
-    artifact.write_text("[]")
+    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
+              for name in ("affected", "empty", "failure_recovery")}
+    artifact.write_text(json.dumps({"head": "h", "states": states}))
     required, scalability, _ = interaction_requirement([], "Keep p95 latency bounded after cache expiry")
     assert not required and scalability
     review = {"interaction": {
         "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
-                   for name in ("affected", "empty", "failure_recovery")},
+        "states": states,
         "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
         "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
                         "cache_expiry_intervals": 3, "executing_processes": 2,
@@ -304,11 +348,12 @@ def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp
 ])
 def test_scalability_evidence_rejects_malformed_boundaries(tmp_path, field, value, message):
     artifact = tmp_path / "latencies.json"
-    artifact.write_text("[]")
+    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
+              for name in ("affected", "empty", "failure_recovery")}
+    artifact.write_text(json.dumps({"head": "h", "states": states}))
     interaction = {
         "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
-                   for name in ("affected", "empty", "failure_recovery")},
+        "states": states,
         "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
         "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
                         "cache_expiry_intervals": 3, "executing_processes": 2,

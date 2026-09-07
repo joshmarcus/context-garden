@@ -68,8 +68,9 @@ The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox
 or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
 against a disposable garden and report the command, performed actions, observed consequences,
 and artifact paths for the affected journey, an empty state, and a relevant failure/recovery
-state. This structured interaction record names the reviewed SHA and lists automated checks
-separately. A screenshot by itself is capture evidence, not interaction evidence; missing,
+state. This structured JSON interaction record names the reviewed SHA, repeats the performed
+actions and observations, and lists automated checks separately. A screenshot, generic file, or
+image-only artifact by itself is capture evidence, not interaction evidence; missing,
 failed, stale-head, live-garden, or partly unverified interaction evidence mechanically changes
 an approval to changes requested. Reviews of performance or scalability claims additionally
 record representative and larger histories, repeated cache-expiry intervals, executing bounded

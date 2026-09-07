@@ -23,7 +23,8 @@ INTERACTION_PATHS = (
     "src/garden/runner/", "src/garden/brief.py", "src/garden/checkrun.py", "src/garden/checks.py",
     "src/garden/config.py", "src/garden/gitops.py", "src/garden/github.py", "src/garden/harness.py",
     "src/garden/inbox.py", "src/garden/kickoff.py", "src/garden/model.py", "src/garden/notify.py",
-    "src/garden/outcomes.py", "src/garden/run_supervisor.py", "src/garden/runs.py", "src/garden/store.py",
+    "src/garden/outcomes.py", "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runs.py",
+    "src/garden/stabilization.py", "src/garden/store.py", "src/garden/walkthrough.py",
 )
 
 SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
@@ -38,13 +39,13 @@ def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
     return value
 
 
-def interaction_requirement(changed: list[str], task_body: str) -> tuple[bool, bool, str]:
+def interaction_requirement(changed: list[str], *review_context: str) -> tuple[bool, bool, str]:
     """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
     affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
     required = bool(affected)
     scalability = bool(re.search(
         r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
-        task_body, re.I,
+        "\n".join(review_context), re.I,
     ))
     reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6]) if affected else "non-UI change"
     return required, scalability, reason
@@ -63,20 +64,41 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         gaps.append("interaction evidence is stale or not tied to the reviewed head")
     if row.get("environment") != "disposable":
         gaps.append("interaction was not performed in a disposable garden")
-    if not str(row.get("command") or "").strip():
+    command = row.get("command")
+    if not isinstance(command, str) or not command.strip() or command.strip() in {"true", ":"}:
         gaps.append("interaction command was not reported")
     states = row.get("states") if isinstance(row.get("states"), dict) else {}
     for state in ("affected", "empty", "failure_recovery"):
         evidence = states.get(state) if isinstance(states.get(state), dict) else {}
-        if evidence.get("status") != "pass" or not evidence.get("actions") or not evidence.get("observed"):
+        actions = evidence.get("actions")
+        observed = evidence.get("observed")
+        if (evidence.get("status") != "pass"
+                or not isinstance(actions, list) or not actions
+                or any(not isinstance(action, str) or not action.strip() for action in actions)
+                or not isinstance(observed, str) or not observed.strip()):
             gaps.append(f"{state.replace('_', '/')} interaction is missing or failed")
-    if not isinstance(row.get("artifacts"), list) or not row.get("artifacts"):
+    artifacts = row.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or any(not isinstance(path, str) for path in artifacts):
         gaps.append("interaction artifact paths were not reported")
-    elif any(not Path(str(path)).exists() for path in row["artifacts"]):
+    elif any(not Path(path).exists() for path in artifacts):
         gaps.append("one or more interaction artifacts do not exist")
-    if "automated_checks" not in row:
+    else:
+        records = []
+        for artifact in artifacts:
+            path = Path(artifact)
+            if path.suffix.lower() != ".json":
+                continue
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict) and record.get("head") == expected_head and record.get("states") == states:
+                records.append(record)
+        if not records:
+            gaps.append("a structured interaction artifact tied to the reviewed head, actions, and observations was not reported")
+    if not isinstance(row.get("automated_checks"), list):
         gaps.append("automated checks were not distinguished from real interaction")
-    if "unverified" not in row:
+    if not isinstance(row.get("unverified"), list):
         gaps.append("unverified requirements were not stated")
     elif row.get("unverified"):
         gaps.append("interaction requirements remain unverified")

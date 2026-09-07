@@ -258,7 +258,6 @@ class ReviewMixin:
         diff = gitops.diff(wt, base)
         review_head = gitops.head_sha(wt)
         changed = gitops.diff_names(wt, base)
-        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(changed, task.body)
         pr_title, pr_body, pr_comment, verified = task.title, "", "", None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
@@ -275,6 +274,9 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
+        needs_interaction, needs_scalability, interaction_reason = interaction_requirement(
+            changed, task.title, task.body, pr_title, pr_body,
+        )
         capture_paths: list[str] = []
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
