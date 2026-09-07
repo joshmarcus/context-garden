@@ -147,7 +147,6 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     """Use Codex's latest cumulative ``token_count`` rather than summing its snapshots."""
     total: dict[str, Any] | None = None
     session = path.stem
-    model = ""
     turn_models: dict[str, int] = {}
     first = last = ""
     turns = 0
@@ -158,7 +157,7 @@ def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
         if event.get("type") == "turn_context":
             # A turn can publish several cumulative token snapshots.  The context
             # event is its boundary, so it alone owns turn/model attribution.
-            model = str(payload.get("model") or model)
+            model = str(payload.get("model") or "")
             turns += 1
             if model:
                 turn_models[model] = turn_models.get(model, 0) + 1
