@@ -22,6 +22,7 @@ def status(
     from ..graph import effective_status
     from ..inbox import build_inbox, needs_you
     from ..runs import RunStore
+    from ..scheduler import State
 
     store = _store()
     tasks = store.tasks()
@@ -98,7 +99,6 @@ def status(
         if count is not None:
             line += f", {count} merged PR{'s' if count != 1 else ''} since {str(up.get('from') or '')[:12] or 'the current install'}"
         console.print(f"[cyan]{line}[/cyan] — run `garden upgrade`")
-    from ..scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     if ctrl.get("dispatch") == "paused":
         at = ctrl.get("at", "")
@@ -113,6 +113,9 @@ def status(
         at = str(entry.get("at") or "")
         reason = str(entry.get("reason") or "")
         console.print(f"[yellow]harness {name} paused (at {at[11:16]}){f': {reason}' if reason else ''}[/yellow]")
+        parked = [t.id for t in tasks.values() if sched.state.get(t.id).get("harness_hold") == name]
+        if parked:
+            console.print(f"[yellow]waiting for {name} to resume: {', '.join(parked)}[/yellow]")
     from ..gitops import is_repo, uncommitted_task_files
     if is_repo(store.root):
         dirty = uncommitted_task_files(store.root)

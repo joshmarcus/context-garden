@@ -57,6 +57,24 @@ def test_probe_resumes_a_recovered_harness(sched, monkeypatch):
     assert "DM-001(work)" in rep.dispatched
 
 
+@pytest.mark.parametrize("mode,kind", [("quota", "quota"), ("authnotloggedin", "auth")])
+def test_probe_dispatches_environment_stopped_task_after_resume(sched, monkeypatch, mode, kind):
+    """A harness stop parks work in the ready queue, which must not need a hand dispatch."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+    sched.tick()
+    rep = sched.tick()
+    assert f"DM-001 -> ready (env_error: {kind})" in rep.transitions
+    assert sched.is_harness_paused("claude")
+
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    rep = sched.tick()
+
+    assert not sched.is_harness_paused("claude")
+    assert sched.state.get("DM-001").get("harness_hold") is None
+    assert "DM-001(work)" in rep.dispatched
+
+
 def test_probe_leaves_the_harness_paused_while_still_over_quota(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
     sched.tick()

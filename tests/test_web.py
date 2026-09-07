@@ -1100,6 +1100,19 @@ def test_inbox_shows_a_paused_harness_notice(garden):
     assert "Harness paused" in home and "claude" in home and "quota limit hit on claude" in home
 
 
+def test_task_page_names_harness_hold(garden):
+    from garden.scheduler import Scheduler
+
+    sched = Scheduler(Store(garden))
+    sched.pause_harness("claude", "quota limit hit on claude")
+    sched.state.get("DM-001")["harness_hold"] = "claude"
+    sched.state.save()
+
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Waiting for claude to resume" in page
+    assert "will return to the dispatch queue automatically" in page
+
+
 def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden):
     """A long run id must not squeeze the decision text under an action column."""
     from garden.model import Status

@@ -40,6 +40,13 @@
 </div>
 {% endif %}
 
+{% if state.harness_hold %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--warn)">Waiting for {{ state.harness_hold }} to resume</div>
+  <p style="margin:6px 0 0">This task is ready and will return to the dispatch queue automatically when the harness probe succeeds.</p>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
