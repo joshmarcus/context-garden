@@ -310,6 +310,8 @@ def test_completed_check_continuation_survives_pressure_until_next_tick(sched, m
     assert sched.reap_check(task, type("Report", (), {})()) is True
     assert handled == [True]
     assert sched.state.get(task.id)["check_run"] == {}
+    assert sched.reap_check(task, type("Report", (), {})()) is False
+    assert handled == [True]
 
 
 def _cache_limited(sched, monkeypatch, tmp_path, *, inactive_file=700 * 1024 * 1024):

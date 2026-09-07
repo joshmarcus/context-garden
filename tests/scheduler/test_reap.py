@@ -544,6 +544,33 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 
+def test_empty_collected_check_parks_once_without_fabricating_success(sched):
+    """A collected check with no results produces one durable stop, not a replay per tick."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "retries": 0, "collected": True,
+    }
+    sched.state.save()
+
+    first = TickReport()
+    assert sched.reap_check(task, first) is True
+    stop = sched.state.get(task.id)["needs_human"]
+    assert stop["kind"] == "check_did_not_run"
+    assert not sched.state.get(task.id).get("check_run")
+    assert not any(event.get("status") in ("pass", "passed")
+                   for event in sched.events.read(task_id=task.id, kinds=["check"]))
+
+    event_count = len(sched.events.read(task_id=task.id, kinds=["needs_human"]))
+    for _ in range(3):
+        assert sched.reap_check(sched.store.task(task.id), TickReport()) is False
+    assert len(sched.events.read(task_id=task.id, kinds=["needs_human"])) == event_count == 1
+
+
 def test_auxiliary_reapers_do_not_dispatch_work_directly():
     """CG-330: only the work/revise reap path may put a task back on the work queue."""
     import inspect
