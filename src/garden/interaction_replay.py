@@ -91,12 +91,12 @@ def main() -> int:
             raise RuntimeError("escape dispatch was refused")
         wait_for("DM-002", "failed", "failure")
         state_times["failure"] = time.time()
-        # This is the actual served failure observation: a failed task cannot be dispatched
-        # again until the person takes the retry action below.
-        failed_dispatch = request("POST", "/tasks/DM-002/dispatch", state="failure")
-        if failed_dispatch.status_code < 400:
-            raise RuntimeError("failed task accepted another dispatch")
-        failed_dispatch_request = journal[-1]
+        # This is the actual served failure observation: the failed task's action endpoint
+        # rejects an invalid recovery action with a real HTTP error before the retry below.
+        failed_action = request("POST", "/tasks/DM-002/not-an-action", state="failure")
+        if failed_action.status_code < 400:
+            raise RuntimeError("failed task action was not rejected")
+        failed_action_request = journal[-1]
         if request("POST", "/tasks/DM-002/retry", state="recovery").status_code != 303:
             raise RuntimeError("retry was refused")
         second = next((box.garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
@@ -124,14 +124,14 @@ def main() -> int:
         events = [
             event_for(affected_request, "affected", "success",
                       "operator spec commit survived and DM-001 reaped to review"),
-            event_for(failed_dispatch_request, "failure", "failure",
-                      "DM-002 fence failure blocked a second dispatch after its transcript redirect"),
+            event_for(failed_action_request, "failure", "failure",
+                      "DM-002 was failed by its transcript redirect and rejected an invalid action"),
             event_for(recovery_request, "recovery", "success", "clean retry reaped DM-002 to review"),
             event_for(empty_request, "empty", "empty", "no active or fenced task remains after both reaps"),
         ]
         states = {
             "affected": {"status": "pass", "action": "GET /api/tasks after operator commit and reap", "observed": events[0]["observed"]},
-            "failure": {"status": "pass", "action": "POST /tasks/DM-002/dispatch after fenced reap", "observed": events[1]["observed"]},
+            "failure": {"status": "pass", "action": "POST /tasks/DM-002/not-an-action after fenced reap", "observed": events[1]["observed"]},
             "recovery": {"status": "pass", "action": "POST /tasks/DM-002/retry then reap", "observed": events[2]["observed"]},
             "empty": {"status": "pass", "action": "GET /api/tasks", "observed": events[3]["observed"]},
         }

@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from garden import interaction_replay
+from garden import runner as runner_registry
+from garden.runner.local import LocalRunner
 
 
 @pytest.mark.parametrize(("head", "dirty"), [("different-head", ""), ("expected-head", " M src/garden/review.py")])
@@ -24,6 +26,9 @@ def test_replay_rejects_wrong_or_uncommitted_source_before_serving(monkeypatch, 
 
 def test_replay_records_performed_requests_and_existing_artifacts(monkeypatch, tmp_path):
     """The served replay may report only the requests it made and files it wrote."""
+    # The regular suite substitutes deterministic in-process workers. The replay's served
+    # app intentionally exercises the actual disposable worker command instead.
+    monkeypatch.setitem(runner_registry.REGISTRY, "local", LocalRunner)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     monkeypatch.setattr("sys.argv", ["replay", "--out", str(tmp_path), "--head", head, "--nonce", "nonce"])
 
