@@ -209,6 +209,57 @@ def test_failed_install_that_mutates_environment_restores_verified_old_install(g
     assert "pip failed after replacing files" in info["diagnosis"]
 
 
+def test_target_installer_exception_restores_verified_old_install(garden, fake_github):
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    old_sha = up.commit
+    original_install = up.install
+
+    def raise_then_restore(url: str, sha: str) -> tuple[bool, str]:
+        if sha == new_sha:
+            up.installs.append((url, sha))
+            raise OSError("pip process disappeared")
+        return original_install(url, sha)
+
+    up.install = raise_then_restore
+
+    result = sched.upgrade(restart=True)
+
+    assert not result["ok"] and result["reason"] == "install failed"
+    assert restart.called == 0
+    assert up.installs == [(str(garden.parent / "repo"), new_sha),
+                           (str(garden.parent / "repo"), old_sha)]
+    info = sched.upgrade_available()
+    assert info["status"] == "failed" and info["recovered"] is True
+    assert info["active"] == old_sha
+    assert "installer raised OSError: pip process disappeared" in info["diagnosis"]
+
+
+def test_rollback_installer_exception_persists_unrecovered_failure(garden, fake_github):
+    sched, up, restart, new_sha = _armed(garden, fake_github)
+    old_sha = up.commit
+
+    def broken_install(url: str, sha: str) -> tuple[bool, str]:
+        up.installs.append((url, sha))
+        if sha == new_sha:
+            up.commit = new_sha
+            raise OSError("target installer crashed")
+        raise RuntimeError("rollback installer crashed")
+
+    up.install = broken_install
+
+    result = sched.upgrade(restart=True)
+
+    assert not result["ok"] and result["reason"] == "install failed"
+    assert restart.called == 0
+    assert up.installs == [(str(garden.parent / "repo"), new_sha),
+                           (str(garden.parent / "repo"), old_sha)]
+    info = sched.upgrade_available()
+    assert info["status"] == "failed" and info["recovered"] is False
+    assert info["active"] == ""
+    assert "installer raised OSError: target installer crashed" in info["diagnosis"]
+    assert "installer raised RuntimeError: rollback installer crashed" in info["diagnosis"]
+
+
 def test_rollback_success_with_wrong_commit_is_not_reported_as_recovered(garden, fake_github):
     sched, up, restart, new_sha = _armed(garden, fake_github)
     old_sha = up.commit

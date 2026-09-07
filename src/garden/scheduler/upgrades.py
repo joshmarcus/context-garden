@@ -132,7 +132,11 @@ class UpgradeMixin:
         self.state.save()
         self.events.emit("upgrade_installing", product, sha=sha[:12], url=url)
         self.log(f"tool upgrade installing configured-base commit {sha[:12]}")
-        ok, output = self.upgrader.install(url, sha)
+        try:
+            ok, output = self.upgrader.install(url, sha)
+        except Exception as e:  # noqa: BLE001
+            output = f"installer raised {type(e).__name__}: {e}"
+            ok = False
         if not ok:
             self.events.emit("upgrade_failed", product, sha=sha[:12], reason="install")
             self.log(f"tool upgrade to {sha[:12]} failed to install; restoring the prior install")
@@ -167,7 +171,11 @@ class UpgradeMixin:
         recovered = False
         diagnosis = reason
         if old_sha:
-            rollback_ok, output = self.upgrader.install(url, old_sha)
+            try:
+                rollback_ok, output = self.upgrader.install(url, old_sha)
+            except Exception as e:  # noqa: BLE001
+                rollback_ok = False
+                output = f"installer raised {type(e).__name__}: {e}"
             if not rollback_ok:
                 diagnosis += f"; rollback to {old_sha[:12]} failed: {output[-1000:]}"
             else:
