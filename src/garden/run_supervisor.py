@@ -300,6 +300,22 @@ def _signal_descendants(sig: int) -> None:
             pass
 
 
+def _reap_exited_children(*, excluding: int | None = None) -> None:
+    """Reap exited children owned by this supervisor, except the run leader.
+
+    Targeting current direct children individually avoids consuming the leader's exit
+    status between ``Popen.poll`` calls.  Orphaned descendants become direct children
+    of this subreaper, so this reaps only processes this run owns.
+    """
+    for pid in _children(os.getpid()):
+        if pid == excluding:
+            continue
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
@@ -362,7 +378,14 @@ def main() -> int:
     elif not _run_setup(run_dir):
         return 1
     child = subprocess.Popen(["sh", "-c", script])
-    code = child.wait()
+    kill_deadline = None
+    while (code := child.poll()) is None:
+        _reap_exited_children(excluding=child.pid)
+        if stopping:
+            kill_deadline = kill_deadline or time.monotonic() + 5.0
+            if time.monotonic() >= kill_deadline:
+                _signal_descendants(signal.SIGKILL)
+        time.sleep(0.05)
     deadline = time.monotonic() + 5.0 if stopping else None
     while True:
         try:
