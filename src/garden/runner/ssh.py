@@ -118,6 +118,7 @@ garden_scrub() {{
 {config_files}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
+  export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
 }}
 # Run the setup command once per worktree (again only when it changes, tracked by a marker kept
 # beside the worktree so `git add -A` above cannot commit it) in the scrubbed environment. A
@@ -219,6 +220,9 @@ class SSHRunner(Runner):
             config_files=config_file_shell(self.config),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
             setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
+            validation_timeout=shlex.quote(str(
+                int(self.config.get("checks", {}).get("timeout_seconds", 900) or 900)
+            )),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")
