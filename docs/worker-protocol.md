@@ -227,7 +227,10 @@ cannot be claimed by another worker. A successful heartbeat renews the ordinary 
 grace; it does not change any EC2/bootstrap runtime deadline.
 
 Workers retry connection refusal, transport timeouts, HTTP 408/425/429, and 5xx responses with
-bounded exponential backoff. Authentication failures and other 4xx rejections are terminal.
+bounded exponential backoff through the claim's total recovery window (the lease plus its
+recovery grace, 420 seconds with the defaults). Each successful heartbeat starts a fresh total
+window matching the controller's renewed durable deadlines. Authentication failures and other
+4xx rejections are terminal.
 When the durable recovery deadline passes, the old token is rejected and the run becomes
 claimable with a new token and staging ref. Thus a stale generation can neither renew itself
 nor publish after confirmed replacement.

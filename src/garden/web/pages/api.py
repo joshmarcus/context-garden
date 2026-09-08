@@ -280,6 +280,10 @@ def register(app: FastAPI, site: Site) -> None:
                     "execution_deadline_at": execution_deadline(run).isoformat()
                     if execution_deadline(run) is not None else "",
                     "recovery_seconds": int(hub.store.config.get("workers.recovery_seconds", 300)),
+                    "recovery_window_seconds": (
+                        int(hub.store.config.get("workers.lease_seconds", 120))
+                        + int(hub.store.config.get("workers.recovery_seconds", 300))
+                    ),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
