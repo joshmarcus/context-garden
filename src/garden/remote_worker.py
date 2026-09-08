@@ -266,6 +266,9 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
         int(run.get("validation_timeout_seconds") or 900)
     )
     env.pop("CLAUDECODE", None)
+    from .validation import enforce_validation_policy_env
+
+    enforce_validation_policy_env(env)
     return env
 
 
