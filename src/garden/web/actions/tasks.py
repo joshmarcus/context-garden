@@ -114,9 +114,19 @@ def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> No
     sched.retry(t)
 
 
+@action("recover")
+def recover(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.delegate_recovery(t)
+
+
 @action("recover-check")
 def recover_check(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.recover_waiting_check(t)
+
+
+@action("operator-evidence")
+def operator_evidence(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.submit_operator_evidence(t, note)
 
 
 @action("resume")

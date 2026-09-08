@@ -108,6 +108,8 @@ class DispatchMixin:
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
                 continue  # infrastructure hold: no worker run or task attempt is consumed
+            if not self.operator_scope_ready(task):
+                continue  # live config is an operator prerequisite, never worker scope
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
@@ -323,6 +325,8 @@ class DispatchMixin:
         self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
+        if not self.operator_scope_ready(task):
+            raise RuntimeError("operator evidence is required before checkout work can dispatch")
         runner = runner or self.runner_for(task)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()

@@ -54,6 +54,7 @@ from .report import TickReport
 from .resources import ResourceMixin
 from .retro import RetroMixin
 from .review import ReviewMixin
+from .scope import ScopeMixin
 from .state import State, _TaskState
 from .trials import TrialsMixin
 from .upgrades import UpgradeMixin
@@ -92,6 +93,7 @@ class Scheduler(
     EditsMixin,
     PollMixin,
     UpgradeMixin,
+    ScopeMixin,
     DispatchMixin,
     HumanMixin,
     AuxMixin,

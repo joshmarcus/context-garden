@@ -24,6 +24,7 @@ GROUPS = [
     ("decision", "Choose the product outcome", "A worker recommends cancelling or changing the promised outcome. The card explains what each choice does.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
+    ("operator", "Operator recovery", "A bounded operational repair is available or an infrastructure prerequisite needs attention. It does not ask for a product decision.", "notice"),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
@@ -91,6 +92,7 @@ ATTENTION_KINDS = {
     "base_broken": ("The base branch is broken", "A pre-PR check fails at the branch's base commit, not because of this branch. The garden re-checks the base every tick and, the moment it goes green, rebases this branch onto it and re-runs the checks by itself — no revise round and nothing for you to do unless you want to step in."),
     "worker_failed": ("A worker run failed", "The last run ended without a usable result and automatic retries are used up."),
     "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
+    "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
 }
 
 
@@ -102,7 +104,8 @@ def needs_human_info(raw: Any) -> dict[str, str] | None:
     if isinstance(raw, dict):
         reason = str(raw.get("reason", ""))
         return {"kind": str(raw.get("kind") or _guess_kind(reason)), "reason": reason,
-                "prior_status": str(raw.get("prior_status", "")), "at": str(raw.get("at", ""))}
+                "prior_status": str(raw.get("prior_status", "")), "at": str(raw.get("at", "")),
+                "delegated_recovery": bool(raw.get("delegated_recovery"))}
     reason = str(raw)
     return {"kind": _guess_kind(reason), "reason": reason, "prior_status": "", "at": ""}
 
@@ -232,6 +235,10 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                     if t.pr and t.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)
                     else "resets attempts and starts a fresh work run from the task brief")
     actions: list[dict[str, str]] = []
+    delegated = bool(info.get("delegated_recovery"))
+    if delegated:
+        actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
+                        "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
     if can_resume:
         actions.append({"label": "Nothing to fix, resume", "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
@@ -250,6 +257,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
             "resume_to": resume_to if can_resume else "", "evidence": evidence, "actions": actions,
+            "delegated": delegated,
             "discuss": discuss_prompt(t, info, evidence, actions)}
 
 
@@ -405,6 +413,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 {"label": "Open PR", "kind": "link", "href": t.pr},
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
+            if st.get("ci_missing"):
+                add("operator", t, "CI has not reported a status for this PR head", [
+                    {"label": "Open PR", "kind": "link", "href": t.pr,
+                     "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
+                ], kind="ci_missing", kind_title="CI status missing",
+                    kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
+                    reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
+                continue
             if st.get("review_run"):
                 why = "review queued"
             else:
@@ -419,7 +435,8 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
             att = attention_view(t, st, runs)
             if att:
-                add("attention", t, f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
+                add("operator" if att.get("delegated") else "attention", t,
+                    f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
                     **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")},
                     decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.DRAFT:
@@ -449,6 +466,24 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
             add("retrying", t, why, [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
                 attempts=t.attempts, last_log=last)
+        hold = st.get("infrastructure_hold")
+        if isinstance(hold, dict) and hold.get("diagnostic"):
+            add("operator", t, f"capture prerequisite: {hold['diagnostic']}", [
+                {"label": "Check environment", "kind": "doctor", "command": "garden doctor",
+                 "detail": "verify the prepared worker environment, then the scheduler will retry admission"},
+            ], kind="infrastructure_hold", kind_title="Capture runtime unavailable",
+                kind_blurb="No worker attempt was consumed; this is an operator environment repair, not a product decision.",
+                reason=str(hold["diagnostic"]), evidence=[])
+        scope = st.get("operator_scope")
+        if isinstance(scope, dict) and scope.get("steps"):
+            steps = list(scope["steps"])
+            summary = "; ".join(f"{step.get('path')}: {step.get('action')}" for step in steps)
+            add("operator", t, f"live-config prerequisite: {summary}", [
+                {"label": "Record operator evidence", "kind": "operator-evidence", "command": f'garden evidence {t.id} "..."',
+                 "detail": "record what was verified; the worker remains restricted to its checkout"},
+            ], kind="operator_scope", kind_title="Operator-owned configuration",
+                kind_blurb="This configuration is outside the worker checkout. Verify it as an operator, then dispatch resumes without granting production-write access.",
+                reason=summary, evidence=[])
 
     up = getattr(sched, "upgrade_available", lambda: None)()
     if up:

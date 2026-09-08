@@ -156,6 +156,12 @@ DEFAULTS: dict[str, Any] = {
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,
+    "recovery": {
+        # An operator may spend one additional, scheduler-owned recovery round for a
+        # stopped revision or check.  It is deliberately opt-in: this is operational
+        # authority, not permission to change a product outcome.
+        "delegated": False,
+    },
     "upgrade": "manual",          # "auto" upgrades the pinned tool install on the next idle tick;
                                   # may also be a mapping {auto, package, pip} (see Config.upgrade_*)
     "plan": {"auto_approve": True},

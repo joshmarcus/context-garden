@@ -45,6 +45,119 @@ def test_retry_of_changes_requested_without_pr_is_a_revise(sched, fake_github):
     assert "DM-001(revise)" in rep.dispatched
 
 
+def test_delegated_recovery_queues_one_retained_feedback_revision(sched, fake_github):
+    """A delegated operator repairs a routine cap without turning it into an owner card.
+
+    The same feedback fingerprint may use exactly one extra round; a repeated unchanged
+    failure remains stopped for a product owner instead of consuming another worker run.
+    """
+    from garden.inbox import build_inbox
+
+    sched.cfg.data["recovery"] = {"delegated": True}
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["revisions"] = 2
+    st["pending_feedback"] = "- **CI** is missing; preserve this request"
+    st["needs_human"] = {"kind": "revision_cap", "reason": "2 revision rounds used",
+                         "delegated_recovery": True}
+
+    card = next(item for item in build_inbox(sched.store, sched) if item["task"] == task.id)
+    assert card["group"] == "operator"
+    assert any(action["kind"] == "recover" for action in card["actions"])
+    assert sched.delegate_recovery(task) == "one retained-feedback revise round queued"
+    assert st["pending_feedback"] == "- **CI** is missing; preserve this request"
+    assert st["revisions"] == 1
+    assert "DM-001(revise)" in sched.tick().dispatched
+
+    task = sched.store.task(task.id)
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["revisions"] = 2
+    st["pending_feedback"] = "- **CI** is missing; preserve this request"
+    st["needs_human"] = {"kind": "revision_cap", "reason": "2 revision rounds used",
+                         "delegated_recovery": True}
+    with pytest.raises(RuntimeError, match="unchanged recovery"):
+        sched.delegate_recovery(sched.store.task(task.id))
+
+
+def test_delegated_check_recovery_keeps_stop_when_resource_admission_defers(sched, monkeypatch):
+    """A resource gate cannot consume the sole delegated check continuation."""
+    from garden.scheduler.resources import ResourcePressureError
+
+    sched.cfg.data["recovery"] = {"delegated": True}
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out",
+                         "delegated_recovery": True}
+    st["recovery_check"] = {"stage": "ci", "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
+    monkeypatch.setattr(sched, "_dispatch_check_run", lambda *_a, **_k: (_ for _ in ()).throw(ResourcePressureError("full")))
+
+    with pytest.raises(ResourcePressureError, match="full"):
+        sched.delegate_recovery(task)
+    assert st["needs_human"]["kind"] == "check_did_not_run"
+    assert not st.get("delegated_recovery_fingerprints")
+
+
+def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sched):
+    """Routine prerequisites name their repair without masquerading as product decisions."""
+    from garden.inbox import build_inbox, needs_you
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["infrastructure_hold"] = {"kind": "missing_libraries", "diagnostic": "install libnss3"}
+    st["ci_missing"] = True
+
+    cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
+    assert [card["kind"] for card in cards if card["group"] == "operator"] == ["ci_missing"]
+    assert not any(needs_you(card) for card in cards if card["group"] == "operator")
+
+    st["ci_missing"] = False
+    cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
+    assert [card["kind"] for card in cards if card["group"] == "operator"] == ["infrastructure_hold"]
+
+
+def test_mixed_checkout_and_live_config_work_waits_for_operator_evidence(sched, fake_github):
+    """A live setting is an operator prerequisite, never a worker instruction or owner card."""
+    from garden.brief import build_brief
+    from garden.inbox import build_inbox, needs_you
+
+    task = sched.store.task("DM-001")
+    task.extra["deliverables"] = [
+        {"path": "src/demo.py", "action": "add the product behavior"},
+        {"path": "/etc/demo/live.yaml", "owner": "operator", "action": "enable the deployed feature"},
+    ]
+    sched.store.save(task)
+
+    # Preflight parks the live change as an operator action before a worker/run exists.
+    assert not sched.operator_scope_ready(task)
+    cards = [item for item in build_inbox(sched.store, sched) if item["task"] == task.id]
+    card = next(item for item in cards if item["kind"] == "operator_scope")
+    assert card["group"] == "operator"
+    assert not needs_you(card)
+    assert "/etc/demo/live.yaml" in card["reason"]
+    assert "enable the deployed feature" not in build_brief(sched.store, task).text
+    assert not sched.runs.runs_for(task.id)
+
+    sched.submit_operator_evidence(task, "deployed setting enabled in the disposable environment")
+    assert sched.operator_scope_ready(sched.store.task(task.id))
+    evidence = sched.state.get(task.id)["operator_evidence"]
+    assert evidence["text"] == "deployed setting enabled in the disposable environment"
+
+    # The product-only work now runs normally; the worker still receives no live config step.
+    assert "DM-001(work)" in sched.tick().dispatched
+
+
 # ---- CG-142: a done or cancelled task is terminal; no action reopens it -----
 @pytest.mark.parametrize("action", ["triage", "retry", "cancel", "answer", "accept_decision", "reject_decision", "resume_task", "dispatch", "dispatch_review", "review_again", "dispatch_persona_pr", "integrate_now"])
 def test_state_changing_actions_refuse_a_merged_done_task(sched, fake_github, action):
