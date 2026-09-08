@@ -64,7 +64,7 @@
     </select>
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
-  {% if task.status.value in ('ready','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/dispatch"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}</button></form>{% endif %}
+  {% if task.status.value in ('ready','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
@@ -78,9 +78,21 @@
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if (task.status.value in ('ready','draft','failed') and not task.pr) or trial_again %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
-  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
+  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
+{% if manual_runner and task.status.value == 'running' and latest_run and latest_run.runner == 'manual' %}
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Manual session claimed</div>
+  <p style="margin:6px 0 10px">This task packet is assigned to this manual session. Complete the work, then submit its result to finish the session.</p>
+  <div class="actions" style="margin-bottom:8px"><a class="btn quiet" href="/tasks/{{ task.id }}/packet" target="_blank">Open assigned packet</a></div>
+  <form method="post" action="/tasks/{{ task.id }}/finish-manual">
+    <label for="manual-result">Manual result JSON</label>
+    <textarea id="manual-result" name="note" rows="4" required placeholder='{"status":"blocked","summary":"Explain what is waiting."}'></textarea>
+    <div class="actions" style="margin-top:8px"><button class="primary">Finish manual session</button></div>
+  </form>
+</div>
+{% endif %}
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
 <div id="trial-form" class="panel" hidden>
   <div class="eyebrow">{{ 'Run this trial again' if trial_again else 'Start a model trial' }}</div>
