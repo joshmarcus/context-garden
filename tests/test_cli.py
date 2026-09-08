@@ -760,6 +760,24 @@ def test_status_shows_a_paused_harness(garden):
     assert "harness claude paused" in out and "quota limit hit on claude" in out
 
 
+def test_status_names_tasks_waiting_for_a_paused_harness(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    sched = Scheduler(store)
+    sched.pause_harness("claude", "quota limit hit on claude")
+    sched.state.get("DM-001")["harness_hold"] = "claude"
+    sched.state.save()
+
+    out = run(garden, "status").output
+    assert "waiting for claude to resume: DM-001" in out
+
+    sched.resume_harness("claude")
+    out = run(garden, "status").output
+    assert "waiting for claude to resume" not in out
+
+
 def test_config_accept_with_nothing_held(garden):
     r = run(garden, "config", "accept")
     assert r.exit_code == 1

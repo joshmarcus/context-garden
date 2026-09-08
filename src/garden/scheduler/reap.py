@@ -1008,6 +1008,9 @@ class ReapMixin:
             self._transition(task, Status.WAITING_HUMAN, f"{note}; the pending question and session are restored, answer again once it resumes")
             rep.transitions.append(f"{task.id} -> waiting_human (env_error: {kind})")
             return
+        if harness_name and kind != "resource":
+            self.state.get(task.id)["harness_hold"] = harness_name
+            self.state.save()
         self._transition(task, Status.READY, note)
         rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")
 
