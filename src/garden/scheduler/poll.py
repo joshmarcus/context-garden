@@ -606,6 +606,9 @@ class PollMixin:
                 return False, "the exact-head PR checks have not reported success"
         ci_status = self._ci_status(task, pr)
         if ci_status.state != "not_required" and not ci_status.green:
+            if (ci_status.provider == "github" and ci_status.state == "missing"
+                    and self.cfg.product_setup(task.product).get("worker_push") is True):
+                return False, "worker CI is enabled but the PR has no CI result yet"
             return False, status_reason(ci_status)
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
