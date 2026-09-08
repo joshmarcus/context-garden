@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
     PANEL_BOARD,
@@ -352,13 +353,13 @@ def take(
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
     external = bool(branch or external_worktree or pr_url)
     if pr_url:
-        import re
-        match = re.search(r"/pull/(\d+)", pr_url)
-        if not match or not sched.github.available or not sched.slug_for(t):
-            err.print("[red]--pr needs an accessible pull-request URL[/red]")
+        slug = sched.slug_for(t)
+        pr_number = pull_request_number(pr_url, slug) if slug else None
+        if not pr_number or not sched.github.available:
+            err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
             raise typer.Exit(1)
         try:
-            info = sched.github.get_pr(sched.slug_for(t) or "", int(match.group(1)))
+            info = sched.github.get_pr(slug, pr_number)
         except Exception as e:  # GitHub clients expose provider-specific errors
             err.print(f"[red]could not read PR: {e}[/red]")
             raise typer.Exit(1) from None
