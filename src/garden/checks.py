@@ -17,6 +17,19 @@ garden.yaml:
           retry_command: "scripts/ci_rerun.sh" # run instead of a revise round when the log looks flaky
       timeout_seconds: 600
 
+    products:
+      handbook:
+        checks:
+          pre_pr: []              # explicitly disables inherited pre-PR checks
+          timeout_seconds: 60
+
+``products.<name>.checks`` inherits each omitted ``pre_pr``, ``ci``, and
+``timeout_seconds`` value from the top-level block.  An explicit empty list disables that
+category for the product; in particular, ``pre_pr: []`` also opts out of the usual
+``setup.test``/``setup.lint`` fallback.  Leaving ``pre_pr`` absent retains that fallback
+when the inherited pre-PR list is empty.  Per-check ``env`` values override same-named
+values from the product's ``setup.env``.
+
 A `command` check passes on exit 0. If its stdout is a JSON object it is used as the
 result; otherwise the last lines of output become the details. A `python` check is
 `module:function(ctx, spec) -> dict`. Result shape:
