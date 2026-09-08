@@ -31,11 +31,13 @@ from garden.web.app import create_app
 from tests.conftest import git, write
 
 
-def remote_client(garden, monkeypatch, *, validation_timeout=900):
+def remote_client(garden, monkeypatch, *, validation_timeout=900, capacity=1, max_bypasses=3):
     path = garden / "garden.yaml"
     cfg = yaml.safe_load(path.read_text())
-    cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN", "max_parallel": 1}]}
+    cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN",
+                                                        "max_parallel": capacity}]}
     cfg["max_parallel"] = 1
+    cfg.setdefault("resources", {})["max_bypasses"] = max_bypasses
     cfg["products"]["demo"]["runner"] = "remote"
     cfg["checks"] = {"pre_pr": [
         {"name": "remote-context", "command": "test \"$GARDEN_BRANCH\" = garden/dm-001-first-task"}
@@ -341,6 +343,51 @@ def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
     assert check_data["specs"][0]["out_dir"] == str(
         repo.parent / "check-1-check-artifacts/0-ui"
     )
+def test_remote_weighted_admission_first_fits_cheap_work_without_bypassing_cap(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch, capacity=4, max_bypasses=1)
+    runs = RunStore(store.config.garden_dir)
+
+    occupied = queued_run(store)
+    occupied.host = "build-1"
+    occupied.lease_token = "live"
+    occupied.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5)).isoformat()
+    occupied.env_snapshot = {"product": "demo", "resource_weight": 3}
+    occupied.save()
+    heavy = runs.new_run("HEAVY-001", "remote", mode="work")
+    heavy.harness, heavy.difficulty = "claude", "easy"
+    heavy.env_snapshot = {"product": "demo", "resource_weight": 2,
+                          "execution_timeout_minutes": 120}
+    RemoteRunner({}, store.config.harness("claude")).start(heavy, store.root, "heavy")
+    cheap = runs.new_run("CHEAP-001", "remote", mode="work")
+    cheap.harness, cheap.difficulty = "claude", "easy"
+    cheap.env_snapshot = {"product": "demo", "resource_weight": 1,
+                          "execution_timeout_minutes": 15}
+    RemoteRunner({}, store.config.harness("claude")).start(cheap, store.root, "cheap")
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                    "capacity": 4},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == cheap.run_id
+    assert response.json()["resource_weight"] == 1
+    assert response.json()["execution_timeout_minutes"] == 15
+    assert not RunStore(store.config.garden_dir).latest("HEAVY-001").host
+
+    claimed_cheap = RunStore(store.config.garden_dir).latest("CHEAP-001")
+    claimed_cheap.status = "done"
+    claimed_cheap.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    claimed_cheap.save()
+    another = runs.new_run("CHEAP-002", "remote", mode="work")
+    another.harness, another.difficulty = "claude", "easy"
+    another.env_snapshot = {"product": "demo", "resource_weight": 1}
+    RemoteRunner({}, store.config.harness("claude")).start(another, store.root, "another cheap")
+
+    protected = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                     "capacity": 4},
+                            headers={"Authorization": "Bearer secret-token"})
+    assert protected.status_code == 204
+    assert not RunStore(store.config.garden_dir).latest("CHEAP-002").host
 
 
 def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatch, tmp_path):

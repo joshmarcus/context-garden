@@ -98,6 +98,8 @@ class CheckRunMixin:
         # remote worker happens to have checked out. Keep that source identity durable so a
         # retry/claim cannot substitute a moving ref.
         run.source_head = source_head
+        run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
+                                 "resource_weight": self.cfg.product_resource_weight(task.product)})
         run.save()
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):
