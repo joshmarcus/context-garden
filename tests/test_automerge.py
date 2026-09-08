@@ -412,6 +412,7 @@ def test_invalid_branch_ownership_and_protected_paths_fail_config_load(tmp_path)
 def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["setup"] = {"worker_push": True}
+    pr.head_sha = "current-head"
     pr.checks = ""
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "no CI result" in reason
@@ -446,3 +447,5 @@ def test_command_validation_must_match_exact_pr_head(sched, fake_github):
     assert not ok and "exact PR head" in reason
     st["validation_head"] = pr.head_sha
     assert sched._automerge_gate(t, pr)[0]
+     ok, reason = sched._automerge_gate(t, pr)
+     assert ok, reason
