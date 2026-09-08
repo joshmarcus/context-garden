@@ -297,42 +297,58 @@ def test_trellis_open_filter(garden):
     assert "DM_001" not in r.output and "DM_002" in r.output
 
 
-def test_pr_attach_resets_cached_pr_state(garden):
+def test_pr_attach_resets_cached_pr_state(garden, fake_github, monkeypatch):
     """CG-174: attaching a PR by hand resets every cached PR fact so the scheduler follows the
     newly attached PR from the next poll instead of stale state left over from an old one."""
+    import garden.cli.state as state_cli
     from garden.scheduler import Scheduler
     from garden.store import Store
 
-    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
+    first = fake_github.create_pr("test/demo", "operator/one", "main", "first", "")
+    first.url = "https://github.com/test/demo/pull/101"
+    second = fake_github.create_pr("test/demo", "operator/two", "main", "second", "")
+    second.url = "https://github.com/test/demo/pull/102"
+    assert run(garden, "pr", "DM-001", first.url).exit_code == 0
     store = Store(garden)
-    sched = Scheduler(store)
-    st = sched.state.get("DM-001")
-    st["pr_number"] = 71
+    state_sched = Scheduler(store)
+    st = state_sched.state.get("DM-001")
+    st["pr_number"] = first.number
     st["pr_state"] = "CLOSED"
     st["head_sha"] = "deadbeef"
     st["review_run"] = "some-run-id"
     st["automerge_blocked"] = "stale reason"
-    sched.state.save()
+    state_sched.state.save()
 
-    r = run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/99")
+    r = run(garden, "pr", "DM-001", second.url)
     assert r.exit_code == 0 and "status=in_review" in r.output
 
     store.invalidate()
     t = store.task("DM-001")
-    assert t.pr == "https://github.com/test/demo/pull/99"
+    assert t.pr == second.url
     assert t.status.value == "in_review"
-    assert "pr_number 71 -> 99" in t.body
+    assert f"pr_number {first.number} -> {second.number}" in t.body
 
     st2 = Scheduler(Store(garden)).state.get("DM-001")
-    assert st2["pr_number"] == 99
-    for key in ("pr_state", "head_sha", "review_run", "automerge_blocked"):
+    assert st2["pr_number"] == second.number
+    assert st2["pr_state"] == "OPEN" and st2["head_sha"] == second.head_sha
+    for key in ("review_run", "automerge_blocked"):
         assert key not in st2
 
 
-def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
+def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden, fake_github, monkeypatch):
     """CG-142: done/cancelled are terminal on the CLI too. `garden set-status` is the only
     escape hatch, and it needs --force to move a task back out of one of them."""
-    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    import garden.cli.state as state_cli
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "manual", "")
+    pr.url = "https://github.com/test/demo/pull/101"
+    assert run(garden, "pr", "DM-001", pr.url).exit_code == 0
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
 
     for args in (("retry", "DM-001"), ("cancel", "DM-001"), ("review", "DM-001"), ("dispatch", "DM-001"),
