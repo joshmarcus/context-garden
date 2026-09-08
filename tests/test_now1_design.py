@@ -194,6 +194,22 @@ def test_difficulty_by_model_tables():
     assert metrics(events, tasks)["by_difficulty_model"] == difficulty_by_model(events, tasks)
 
 
+def test_metrics_count_exact_head_ci_states_without_dropping_existing_totals():
+    tasks = {"T-1": SimpleNamespace(difficulty="easy")}
+    events = [
+        _ev("ci_status", "T-1", "2026-09-05T10:00:00+00:00",
+            state="success", stale=False, exists_for_sha=True),
+        _ev("ci_status", "T-1", "2026-09-05T10:01:00+00:00",
+            state="mismatched", stale=True, exists_for_sha=False),
+    ]
+
+    out = metrics(events, tasks)
+
+    assert out["ci_status"] == {"mismatched": 1, "success": 1, "stale": 1, "absent": 1}
+    assert out["merges"] == 0
+    assert out["operator"] == {"spend": 0, "share": None}
+
+
 def _accepted(task, model, cost, at="2026-09-05T11:00:00+00:00"):
     return [_ev("dispatch", task, "2026-09-05T10:00:00+00:00", mode="work"),
             _ev("run_finished", task, "2026-09-05T10:10:00+00:00", mode="work", model=model, cost_usd=cost),
