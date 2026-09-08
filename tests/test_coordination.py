@@ -395,6 +395,9 @@ def test_stacked_child_merged_into_parent_branch_stays_open_until_parent_merges(
     gitc("fetch", "origin", cwd=repo)
     gitc("merge", "-q", "--ff-only", f"origin/{parent_branch}", cwd=repo)
     gitc("push", "-q", "origin", "main", cwd=repo)
+    # The provider fixture deliberately retains the parent PR's older head SHA.  Its fetched
+    # branch is the revision that actually absorbed the child and must still promote it.
+    assert fake_github.prs[parent_branch].head_sha != gitc("rev-parse", f"origin/{parent_branch}", cwd=repo).strip()
     fake_github.prs[parent_branch].state = "MERGED"
     rep = sched.tick()
     assert "DM-001 -> done" in rep.transitions and "DM-002 -> done" in rep.transitions
