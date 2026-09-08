@@ -11,8 +11,8 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import urlencode
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from garden.model import Status
