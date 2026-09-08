@@ -124,6 +124,35 @@ def verify_resource_and_workload_summary(report: dict[str, object], readme: str)
     assert expected in readme
 
 
+def verify_current_head_interaction(readme: str) -> None:
+    interaction = json.loads((HERE / "current-head" / "interaction.json").read_text())
+    assert interaction["head"] in readme
+    assert "docs/validation/cg380/replay_interaction.py" in interaction["command"]
+    assert "--source" in interaction["command"] and "--output" in interaction["command"]
+    assert interaction["environment"]["fixture"] == {
+        "tasks": 1000,
+        "runs": 1549,
+        "events": 12500,
+    }
+    assert interaction["states"] == [
+        "empty_worker_occupancy",
+        "four_replay_occupants",
+        "failure",
+        "recovery",
+    ]
+    assert [run["slots"] for run in interaction["runs"]] == [0, 4]
+    for run in interaction["runs"]:
+        assert run["server"]["pid"] > 0 and run["server"]["cgroup"]
+        assert len(run["replay_processes"]) == run["slots"]
+        assert all(process["pid"] > 0 and process["cgroup"] for process in run["replay_processes"])
+        events = run["events"]
+        assert [event["status"] for event in events[-3:]] == [404, 200, 0]
+        assert events[-3]["state"].endswith(":failure")
+        assert events[-2]["state"].endswith(":recovery")
+        assert all(event["status"] == 200 for event in events[:6])
+        assert max(event["elapsed_s"] for event in events if "elapsed_s" in event) < 4
+
+
 def main() -> None:
     report = json.loads((HERE / "report.json").read_text())
     readme = (HERE / "README.md").read_text()
@@ -148,6 +177,7 @@ def main() -> None:
         counts = observation["read_scan_counts"]
         assert counts
         assert all(isinstance(value, (int, float)) and value >= 0 for value in counts.values())
+    verify_current_head_interaction(readme)
     print("CG-380 README summary matches report.json")
 
 

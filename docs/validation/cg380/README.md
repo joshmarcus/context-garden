@@ -147,3 +147,27 @@ caps, pressure/OOM safeguards, 1,536MiB reserve, and the four-slot cap.
 Run `.venv/bin/python docs/validation/cg380/verify_report.py` to recompute the generated
 tables from `report.json`. Reproduction creates only its output tree, starts no agents, and
 does not touch production.
+
+## Current-head served interaction
+
+[`current-head/interaction.json`](current-head/interaction.json) is a bounded replay on
+source commit `e45591ffa611d4bf46e85df83b8cd58ebf792b30`, run from 17:07:17Z to
+17:07:34Z on 2026-09-08. It uses the same 1,000-task/1,549-run/12,500-event disposable
+fixture, first with no occupants and then with four deterministic replay occupants. This
+replay verifies the served flow and evidence shape; the full report above remains the
+attribution dataset.
+
+```bash
+"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- \
+  .venv/bin/python docs/validation/cg380/replay_interaction.py \
+  --source "$PWD" --output /tmp/cg380-interaction.nG0jy7
+```
+
+In chronological order, each occupancy state requested cold and warm `/now1`, `/inbox`,
+and `/config` pages, observed HTTP 200, requested an intentionally absent route and
+observed HTTP 404, then recovered with `/now1` HTTP 200 and completed a no-dispatch
+background tick. Empty-state request latency was .288–.753s and its tick took .635s;
+four-occupant request latency was .439–1.759s and its tick took .754s. Every page remained
+below four seconds. The artifact records the exact command, environment and caps, states,
+request URLs/statuses/timestamps/consequences, phase timing, and server/replay PID and
+cgroup identities. The matching Uvicorn logs and profiling spans are retained beside it.

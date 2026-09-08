@@ -1,0 +1,615 @@
+{
+  "command": "docs/validation/cg380/replay_interaction.py --source /home/joshua/work/worktrees/CG-380 --output /tmp/cg380-interaction.nG0jy7",
+  "environment": {
+    "caps": {
+      "cpu.max": "200000 100000",
+      "cpu.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=75179021\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=75126084",
+      "cpu.stat": "usage_usec 6262955321\nuser_usec 5057245433\nsystem_usec 1205709888\nnr_periods 113793\nnr_throttled 4013\nthrottled_usec 755225096\nnr_bursts 0\nburst_usec 0",
+      "io.pressure": "some avg10=0.00 avg60=0.04 avg300=0.02 total=10243127\nfull avg10=0.00 avg60=0.04 avg300=0.02 total=10215752",
+      "memory.current": "3377123328",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "memory.high": "4831838208",
+      "memory.max": "5368709120",
+      "memory.peak": "3534598144",
+      "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=49855\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=49648",
+      "memory.stat": "anon 787910656\nfile 2410500096\nkernel 177074176\nkernel_stack 802816\npagetables 4571136\nsec_pagetables 0\npercpu 2880\nsock 4096\nvmalloc 0\nshmem 12738560\nfile_mapped 253952\nfile_dirty 10276864\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 799367168\nactive_anon 1179648\ninactive_file 1212112896\nactive_file 1185636352\nunevictable 0\nslab_reclaimable 166312608\nslab_unreclaimable 5151112\nslab 171463720\nworkingset_refault_anon 0\nworkingset_refault_file 137559\nworkingset_activate_anon 0\nworkingset_activate_file 106105\nworkingset_restore_anon 0\nworkingset_restore_file 12950\nworkingset_nodereclaim 0\npgscan 1032482\npgsteal 848953\npgscan_kswapd 1026174\npgscan_direct 6308\npgscan_khugepaged 0\npgsteal_kswapd 842772\npgsteal_direct 6181\npgsteal_khugepaged 0\npgfault 76766426\npgmajfault 15967\npgrefill 129342\npgactivate 1969902\npgdeactivate 116904\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+      "pids.max": "9417",
+      "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+      "self_pid": 723668,
+      "temp_free_bytes": 945132371968
+    },
+    "fixture": {
+      "events": 12500,
+      "runs": 1549,
+      "tasks": 1000
+    },
+    "python": "3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]",
+    "representativeness": "Deterministic 32 MiB CPU/sleep subprocesses represent model-session occupancy, not vendor, network, or production traffic."
+  },
+  "events": [
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:19Z",
+      "elapsed_s": 0.7353612419974525,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "empty_worker_occupancy:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/now1"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:20Z",
+      "elapsed_s": 0.7531867569996393,
+      "method": "GET",
+      "observed_consequence": "received 200 with 1801385 response bytes",
+      "state": "empty_worker_occupancy:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/inbox"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:20Z",
+      "elapsed_s": 0.3051880610000808,
+      "method": "GET",
+      "observed_consequence": "received 200 with 75939 response bytes",
+      "state": "empty_worker_occupancy:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/config"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:21Z",
+      "elapsed_s": 0.6935739000036847,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "empty_worker_occupancy:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/now1"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:21Z",
+      "elapsed_s": 0.6725329050022992,
+      "method": "GET",
+      "observed_consequence": "received 200 with 1801385 response bytes",
+      "state": "empty_worker_occupancy:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/inbox"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:22Z",
+      "elapsed_s": 0.28806476700265193,
+      "method": "GET",
+      "observed_consequence": "received 200 with 75939 response bytes",
+      "state": "empty_worker_occupancy:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/config"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:22Z",
+      "elapsed_s": 0.0010556870038271882,
+      "method": "GET",
+      "observed_consequence": "received 404 with 22 response bytes",
+      "state": "empty_worker_occupancy:failure",
+      "status": 404,
+      "url": "http://127.0.0.1:37991/cg380-intentional-missing"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:22Z",
+      "elapsed_s": 0.6700186250018305,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "empty_worker_occupancy:recovery",
+      "status": 200,
+      "url": "http://127.0.0.1:37991/now1"
+    },
+    {
+      "action": "bounded no-dispatch scheduler tick",
+      "at": "2026-09-08T17:07:24Z",
+      "observed_consequence": "tick completed and emitted phase timing",
+      "state": "empty_worker_occupancy:background_tick",
+      "status": 0
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:26Z",
+      "elapsed_s": 1.7591419119999046,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "four_replay_occupants:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/now1"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:28Z",
+      "elapsed_s": 1.3610288819982088,
+      "method": "GET",
+      "observed_consequence": "received 200 with 1801385 response bytes",
+      "state": "four_replay_occupants:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/inbox"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:29Z",
+      "elapsed_s": 0.4391932420039666,
+      "method": "GET",
+      "observed_consequence": "received 200 with 75939 response bytes",
+      "state": "four_replay_occupants:cold",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/config"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:29Z",
+      "elapsed_s": 1.141791097004898,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "four_replay_occupants:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/now1"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:31Z",
+      "elapsed_s": 0.9731028949972824,
+      "method": "GET",
+      "observed_consequence": "received 200 with 1801385 response bytes",
+      "state": "four_replay_occupants:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/inbox"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:32Z",
+      "elapsed_s": 0.6904091890028212,
+      "method": "GET",
+      "observed_consequence": "received 200 with 75939 response bytes",
+      "state": "four_replay_occupants:warm",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/config"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:32Z",
+      "elapsed_s": 0.001098029999411665,
+      "method": "GET",
+      "observed_consequence": "received 404 with 22 response bytes",
+      "state": "four_replay_occupants:failure",
+      "status": 404,
+      "url": "http://127.0.0.1:41675/cg380-intentional-missing"
+    },
+    {
+      "action": "HTTP request",
+      "at": "2026-09-08T17:07:32Z",
+      "elapsed_s": 1.0371040450045257,
+      "method": "GET",
+      "observed_consequence": "received 200 with 96355 response bytes",
+      "state": "four_replay_occupants:recovery",
+      "status": 200,
+      "url": "http://127.0.0.1:41675/now1"
+    },
+    {
+      "action": "bounded no-dispatch scheduler tick",
+      "at": "2026-09-08T17:07:34Z",
+      "observed_consequence": "tick completed and emitted phase timing",
+      "state": "four_replay_occupants:background_tick",
+      "status": 0
+    }
+  ],
+  "final_cgroup": {
+    "cpu.max": "200000 100000",
+    "cpu.pressure": "some avg10=13.20 avg60=2.98 avg300=0.65 total=77182421\nfull avg10=13.20 avg60=2.98 avg300=0.65 total=77129002",
+    "cpu.stat": "usage_usec 6290128423\nuser_usec 5083646472\nsystem_usec 1206481951\nnr_periods 113967\nnr_throttled 4105\nthrottled_usec 768978022\nnr_bursts 0\nburst_usec 0",
+    "io.pressure": "some avg10=0.00 avg60=0.03 avg300=0.02 total=10243166\nfull avg10=0.00 avg60=0.03 avg300=0.02 total=10215791",
+    "memory.current": "3347120128",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+    "memory.high": "4831838208",
+    "memory.max": "5368709120",
+    "memory.peak": "3670261760",
+    "memory.pressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=49855\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=49648",
+    "memory.stat": "anon 789110784\nfile 2378731520\nkernel 177520640\nkernel_stack 737280\npagetables 4562944\nsec_pagetables 0\npercpu 4032\nsock 0\nvmalloc 0\nshmem 12759040\nfile_mapped 253952\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 0\nshmem_thp 0\ninactive_anon 788865024\nactive_anon 12988416\ninactive_file 1182044160\nactive_file 1183928320\nunevictable 0\nslab_reclaimable 166075368\nslab_unreclaimable 5208816\nslab 171284184\nworkingset_refault_anon 0\nworkingset_refault_file 137559\nworkingset_activate_anon 0\nworkingset_activate_file 106105\nworkingset_restore_anon 0\nworkingset_restore_file 12950\nworkingset_nodereclaim 0\npgscan 1040246\npgsteal 856717\npgscan_kswapd 1033938\npgscan_direct 6308\npgscan_khugepaged 0\npgsteal_kswapd 850536\npgsteal_direct 6181\npgsteal_khugepaged 0\npgfault 76914757\npgmajfault 15967\npgrefill 129764\npgactivate 1972792\npgdeactivate 117326\npglazyfree 0\npglazyfreed 0\nthp_fault_alloc 0\nthp_collapse_alloc 0",
+    "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+    "pids.max": "9417",
+    "self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+    "self_pid": 723668,
+    "temp_free_bytes": 945132351488
+  },
+  "finished_at": "2026-09-08T17:07:34Z",
+  "head": "e45591ffa611d4bf46e85df83b8cd58ebf792b30",
+  "limitations": "Bounded serial localhost replay on a disposable garden. It verifies served behavior and evidence structure; the retained full report remains the attribution dataset.",
+  "runs": [
+    {
+      "events": [
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:19Z",
+          "elapsed_s": 0.7353612419974525,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "empty_worker_occupancy:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/now1"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:20Z",
+          "elapsed_s": 0.7531867569996393,
+          "method": "GET",
+          "observed_consequence": "received 200 with 1801385 response bytes",
+          "state": "empty_worker_occupancy:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/inbox"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:20Z",
+          "elapsed_s": 0.3051880610000808,
+          "method": "GET",
+          "observed_consequence": "received 200 with 75939 response bytes",
+          "state": "empty_worker_occupancy:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/config"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:21Z",
+          "elapsed_s": 0.6935739000036847,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "empty_worker_occupancy:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/now1"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:21Z",
+          "elapsed_s": 0.6725329050022992,
+          "method": "GET",
+          "observed_consequence": "received 200 with 1801385 response bytes",
+          "state": "empty_worker_occupancy:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/inbox"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:22Z",
+          "elapsed_s": 0.28806476700265193,
+          "method": "GET",
+          "observed_consequence": "received 200 with 75939 response bytes",
+          "state": "empty_worker_occupancy:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/config"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:22Z",
+          "elapsed_s": 0.0010556870038271882,
+          "method": "GET",
+          "observed_consequence": "received 404 with 22 response bytes",
+          "state": "empty_worker_occupancy:failure",
+          "status": 404,
+          "url": "http://127.0.0.1:37991/cg380-intentional-missing"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:22Z",
+          "elapsed_s": 0.6700186250018305,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "empty_worker_occupancy:recovery",
+          "status": 200,
+          "url": "http://127.0.0.1:37991/now1"
+        },
+        {
+          "action": "bounded no-dispatch scheduler tick",
+          "at": "2026-09-08T17:07:24Z",
+          "observed_consequence": "tick completed and emitted phase timing",
+          "state": "empty_worker_occupancy:background_tick",
+          "status": 0
+        }
+      ],
+      "replay_processes": [],
+      "server": {
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+        "command": [
+          "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+          "-m",
+          "uvicorn",
+          "serve_profiled:app",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "37991",
+          "--workers",
+          "1"
+        ],
+        "log": "slots-0-server.log",
+        "pid": 723672
+      },
+      "slots": 0,
+      "state": "empty_worker_occupancy",
+      "tick": {
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+        "controller_other_counters": {
+          "process_resource_inspection_calls": 1.0,
+          "process_resource_inspection_wall_s": 0.0004919350030831993,
+          "run_index_calls": 3.0,
+          "run_index_wall_s": 0.05930387099942891,
+          "task_product_scan_calls": 2.0,
+          "task_product_scan_wall_s": 0.5416264630039223
+        },
+        "controller_other_process_cpu_s": 0.6024350929999999,
+        "controller_other_wall_s": 0.6026886539839325,
+        "lock_wait_process_cpu_s": 3.164299999999787e-05,
+        "lock_wait_wall_s": 3.2809999538585544e-05,
+        "phases": {
+          "audit": {
+            "counters": {
+              "run_index_calls": 2.0,
+              "run_index_wall_s": 8.654002158436924e-06
+            },
+            "process_cpu_s": 0.0009919250000000046,
+            "wall_s": 0.0009890100045595318
+          },
+          "base_reprobe": {
+            "counters": {},
+            "process_cpu_s": 0.00017026800000008446,
+            "wall_s": 0.00016852199769346043
+          },
+          "harness_probe": {
+            "counters": {},
+            "process_cpu_s": 3.03499999999568e-05,
+            "wall_s": 1.84740056283772e-05
+          },
+          "merge_queue": {
+            "counters": {},
+            "process_cpu_s": 0.00035787300000000855,
+            "wall_s": 0.0003548740060068667
+          },
+          "poll": {
+            "counters": {},
+            "process_cpu_s": 0.00015900000000002024,
+            "wall_s": 0.0001510660003987141
+          },
+          "reap": {
+            "counters": {
+              "run_index_calls": 3.0,
+              "run_index_wall_s": 1.4020006346981972e-05
+            },
+            "process_cpu_s": 0.030256708999999993,
+            "wall_s": 0.030275475000962615
+          },
+          "retro_close": {
+            "counters": {},
+            "process_cpu_s": 2.1907000000043197e-05,
+            "wall_s": 1.9645005522761494e-05
+          },
+          "tool_update": {
+            "counters": {},
+            "process_cpu_s": 6.621000000039956e-06,
+            "wall_s": 4.954999894835055e-06
+          }
+        },
+        "pid": 723674,
+        "total_process_cpu_s": 0.634429746,
+        "total_wall_s": 0.6346706750045996,
+        "unsupported_waits": [
+          "GitHub/network waits (fixture tasks have no PRs)",
+          "worker completion and vendor model waits (replay fixtures only)"
+        ]
+      }
+    },
+    {
+      "events": [
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:26Z",
+          "elapsed_s": 1.7591419119999046,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "four_replay_occupants:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/now1"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:28Z",
+          "elapsed_s": 1.3610288819982088,
+          "method": "GET",
+          "observed_consequence": "received 200 with 1801385 response bytes",
+          "state": "four_replay_occupants:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/inbox"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:29Z",
+          "elapsed_s": 0.4391932420039666,
+          "method": "GET",
+          "observed_consequence": "received 200 with 75939 response bytes",
+          "state": "four_replay_occupants:cold",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/config"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:29Z",
+          "elapsed_s": 1.141791097004898,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "four_replay_occupants:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/now1"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:31Z",
+          "elapsed_s": 0.9731028949972824,
+          "method": "GET",
+          "observed_consequence": "received 200 with 1801385 response bytes",
+          "state": "four_replay_occupants:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/inbox"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:32Z",
+          "elapsed_s": 0.6904091890028212,
+          "method": "GET",
+          "observed_consequence": "received 200 with 75939 response bytes",
+          "state": "four_replay_occupants:warm",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/config"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:32Z",
+          "elapsed_s": 0.001098029999411665,
+          "method": "GET",
+          "observed_consequence": "received 404 with 22 response bytes",
+          "state": "four_replay_occupants:failure",
+          "status": 404,
+          "url": "http://127.0.0.1:41675/cg380-intentional-missing"
+        },
+        {
+          "action": "HTTP request",
+          "at": "2026-09-08T17:07:32Z",
+          "elapsed_s": 1.0371040450045257,
+          "method": "GET",
+          "observed_consequence": "received 200 with 96355 response bytes",
+          "state": "four_replay_occupants:recovery",
+          "status": 200,
+          "url": "http://127.0.0.1:41675/now1"
+        },
+        {
+          "action": "bounded no-dispatch scheduler tick",
+          "at": "2026-09-08T17:07:34Z",
+          "observed_consequence": "tick completed and emitted phase timing",
+          "state": "four_replay_occupants:background_tick",
+          "status": 0
+        }
+      ],
+      "replay_processes": [
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+          "pid": 723676
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+          "pid": 723677
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+          "pid": 723678
+        },
+        {
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+          "pid": 723679
+        }
+      ],
+      "server": {
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+        "command": [
+          "/home/joshua/work/worktrees/CG-380/.venv/bin/python",
+          "-m",
+          "uvicorn",
+          "serve_profiled:app",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "41675",
+          "--workers",
+          "1"
+        ],
+        "log": "slots-4-server.log",
+        "pid": 723675
+      },
+      "slots": 4,
+      "state": "four_replay_occupants",
+      "tick": {
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/garden-serve.service",
+        "controller_other_counters": {
+          "process_resource_inspection_calls": 1.0,
+          "process_resource_inspection_wall_s": 0.000592119999055285,
+          "run_index_calls": 3.0,
+          "run_index_wall_s": 0.0821169650007505,
+          "task_product_scan_calls": 2.0,
+          "task_product_scan_wall_s": 0.6186627489951206
+        },
+        "controller_other_process_cpu_s": 0.6622889509999998,
+        "controller_other_wall_s": 0.7026338120122091,
+        "lock_wait_process_cpu_s": 2.9748999999995585e-05,
+        "lock_wait_wall_s": 3.087900404352695e-05,
+        "phases": {
+          "audit": {
+            "counters": {
+              "run_index_calls": 2.0,
+              "run_index_wall_s": 7.060989446472377e-06
+            },
+            "process_cpu_s": 0.000868351000000045,
+            "wall_s": 0.0008655650017317384
+          },
+          "base_reprobe": {
+            "counters": {},
+            "process_cpu_s": 0.00016865900000007095,
+            "wall_s": 0.0001666530006332323
+          },
+          "harness_probe": {
+            "counters": {},
+            "process_cpu_s": 1.830599999996796e-05,
+            "wall_s": 1.6677993698976934e-05
+          },
+          "merge_queue": {
+            "counters": {},
+            "process_cpu_s": 0.000293647000000008,
+            "wall_s": 0.0002900179970311001
+          },
+          "poll": {
+            "counters": {},
+            "process_cpu_s": 0.00016246500000005604,
+            "wall_s": 0.0001528590000816621
+          },
+          "reap": {
+            "counters": {
+              "run_index_calls": 3.0,
+              "run_index_wall_s": 1.8111997633241117e-05
+            },
+            "process_cpu_s": 0.050098014999999996,
+            "wall_s": 0.05008301400084747
+          },
+          "retro_close": {
+            "counters": {},
+            "process_cpu_s": 1.1668999999936425e-05,
+            "wall_s": 9.406001481693238e-06
+          },
+          "tool_update": {
+            "counters": {},
+            "process_cpu_s": 5.961000000054284e-06,
+            "wall_s": 4.663997970055789e-06
+          }
+        },
+        "pid": 723682,
+        "total_process_cpu_s": 0.713916024,
+        "total_wall_s": 0.754222669005685,
+        "unsupported_waits": [
+          "GitHub/network waits (fixture tasks have no PRs)",
+          "worker completion and vendor model waits (replay fixtures only)"
+        ]
+      }
+    }
+  ],
+  "started_at": "2026-09-08T17:07:17Z",
+  "states": [
+    "empty_worker_occupancy",
+    "four_replay_occupants",
+    "failure",
+    "recovery"
+  ]
+}
