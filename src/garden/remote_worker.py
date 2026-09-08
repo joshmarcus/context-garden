@@ -121,6 +121,18 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     return env
 
 
+def _remote_check_data(check_data: dict[str, Any], repo: Path, root: Path, run_id: str) -> dict[str, Any]:
+    """Translate controller-local UI paths to the pull worker's checkout."""
+    specs = []
+    for raw_spec in check_data.get("specs") or []:
+        spec = dict(raw_spec)
+        if spec.get("python") == "garden.walkthrough:ui_check":
+            spec["worktree"] = str(repo)
+            spec["out_dir"] = str(root / "runs" / run_id / "ui")
+        specs.append(spec)
+    return {**check_data, "specs": specs}
+
+
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
     heartbeat = _LeaseHeartbeat(run, client)
@@ -140,7 +152,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
                            timeout=int(setup.get("timeout_seconds") or 600), check=True)
         if run.get("mode") == "check":
-            check_data = dict(run.get("checks") or {})
+            check_data = _remote_check_data(dict(run.get("checks") or {}), repo, root, str(run["id"]))
+            # The controller's pre-PR UI spec identifies the proposed checkout and an
+            # output directory.  Neither absolute path exists on a pull worker: this
+            # worker has just materialised the same branch at ``repo`` instead.  Point
+            # the capture at that checkout and a run-owned directory before invoking
+            # the check, rather than trying to stat a controller-owned path.
             ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
             # A managed consumer passes the product command above so admission covers it.
             # Do not repeat it inside the check job. A standalone worker may instead
