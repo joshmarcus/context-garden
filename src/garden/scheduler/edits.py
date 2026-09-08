@@ -34,8 +34,6 @@ class EditsMixin:
         tasks = self.store.tasks()
         active = {r.task_id for r in self.active_runs()}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
-            if self.slots_free() <= 0:
-                break
             st = self.state.get(t.id)
             if st.get("edit_run") or t.id in active:
                 continue
@@ -68,6 +66,8 @@ class EditsMixin:
         """One cheap, text-only run that rewrites the task body to fold in its suggestions.
         The old body is kept in the run directory so the page can show the diff."""
         from ..suggestions import edit_brief, pending_suggestions
+
+        self.require_maintenance_running()
 
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)

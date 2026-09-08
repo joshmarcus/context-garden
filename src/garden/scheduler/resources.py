@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..model import now_iso
-from ..run_supervisor import _finite_cgroup_limits
+from ..run_supervisor import _authoritative_limit, _finite_cgroup_limits
 
 _ADMISSION_LOCKS: dict[str, threading.Lock] = {}
 _ADMISSION_LOCKS_GUARD = threading.Lock()
@@ -33,15 +33,40 @@ class ResourceStatus:
     temp_free_mb: int | None
     temp_min_mb: int
     cgroup_available_mb: int | None
+    cgroup_boundary: str
+    cgroup_events: tuple[tuple[str, int], ...]
     isolation: str
+    requested_heavy_limit: int
     heavy_limit: int
+    heavy_conflict: str | None
     heavy_running: int
     heavy_waiting: int
-    reasons: tuple[str, ...]
+    pressure_reasons: tuple[str, ...]
+
+    @property
+    def capacity_full(self) -> bool:
+        """Whether ordinary local concurrency, not host pressure, is full."""
+        return self.active >= self.limit
+
+    @property
+    def capacity_reason(self) -> str | None:
+        if self.capacity_full:
+            return f"local execution capacity is full ({self.active}/{self.limit} busy)"
+        return None
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """All admission blockers, with capacity kept distinct from pressure."""
+        return ((self.capacity_reason,) if self.capacity_reason else ()) + self.pressure_reasons
 
     @property
     def pressured(self) -> bool:
-        return bool(self.reasons)
+        """True only for a real host resource gate, never normal occupancy."""
+        return bool(self.pressure_reasons)
+
+    @property
+    def admission_blocked(self) -> bool:
+        return self.capacity_full or self.pressured
 
 
 class ResourcePressureError(RuntimeError):
@@ -69,21 +94,35 @@ def _free_mb(path: Path) -> int | None:
         return None
 
 
-def _cgroup_memory_available_mb(root: Path = Path("/sys/fs/cgroup")) -> int | None:
-    """Memory headroom against this process's effective cgroup high/max ceiling."""
+def _cgroup_path_for_process(root: Path = Path("/sys/fs/cgroup")) -> Path | None:
     try:
         relative = next(line.split("::", 1)[1] for line in Path("/proc/self/cgroup").read_text().splitlines()
                         if line.startswith("0::"))
-        group = root / relative.lstrip("/")
+        return root / relative.lstrip("/")
+    except (OSError, StopIteration):
+        return None
+
+
+def _cgroup_memory_status(group: Path) -> tuple[int | None, dict[str, int]]:
+    """Return finite memory headroom and pressure counters for one cgroup."""
+    try:
         current = int((group / "memory.current").read_text().strip())
         ceilings = []
         for name in ("memory.high", "memory.max"):
             raw = (group / name).read_text().strip()
             if raw != "max":
                 ceilings.append(int(raw))
-        return max(0, min(ceilings) - current) // (1024 * 1024) if ceilings else None
-    except (OSError, ValueError, StopIteration):
-        return None
+        events = dict(line.split(maxsplit=1) for line in (group / "memory.events").read_text().splitlines())
+        return (max(0, min(ceilings) - current) // (1024 * 1024) if ceilings else None,
+                {key: int(events.get(key, "0")) for key in ("high", "max", "oom", "oom_kill")})
+    except (OSError, ValueError):
+        return None, {}
+
+
+def _cgroup_memory_available_mb(root: Path = Path("/sys/fs/cgroup")) -> int | None:
+    """Compatibility helper for the control process's cgroup headroom."""
+    group = _cgroup_path_for_process(root)
+    return _cgroup_memory_status(group)[0] if group else None
 
 
 class ResourceMixin:
@@ -127,18 +166,38 @@ class ResourceMixin:
         memory_min = int(self.effective("resources.min_memory_available_mb", 0) or 0)
         temp_min = int(self.effective("resources.min_temp_free_mb", 0) or 0)
         host_memory = _memory_available_mb()
-        cgroup_memory = _cgroup_memory_available_mb()
+        controller_group = _cgroup_path_for_process()
+        controller_memory_actual, controller_events = (_cgroup_memory_status(controller_group)
+                                                       if controller_group else (None, {}))
+        # Keep this seam for callers and focused tests that provide the controller reading.
+        controller_memory = _cgroup_memory_available_mb()
+        execution_cgroup = str(self.effective("resources.execution_cgroup", "") or "")
+        execution_group = Path(execution_cgroup) if execution_cgroup else None
+        execution_memory, execution_events = (_cgroup_memory_status(execution_group)
+                                               if execution_group else (None, {}))
+        cgroup_values = [("controller cgroup", controller_memory),
+                         ("execution cgroup", execution_memory)]
+        known_cgroup_values = [(name, value) for name, value in cgroup_values if value is not None]
+        cgroup_memory = min((value for _, value in known_cgroup_values), default=None)
+        cgroup_boundary = min(known_cgroup_values, key=lambda item: item[1])[0] if known_cgroup_values else "none"
+        events = execution_events if execution_group else controller_events
         values = [v for v in (host_memory, cgroup_memory) if v is not None]
         memory = min(values) if values else None
         temp = _free_mb(self.cfg.work_dir / "tmp")
-        execution_cgroup = str(self.effective("resources.execution_cgroup", "") or "")
         isolation = "not configured"
         if execution_cgroup:
             target = Path(execution_cgroup)
             bounded, _, reason = _finite_cgroup_limits(target)
             procs = target / "cgroup.procs"
             isolation = "available" if bounded and procs.exists() and os.access(procs, os.W_OK) else reason or "unavailable"
-        heavy_limit = max(0, int(self.effective("resources.heavy_test_parallel", 1) or 0))
+        requested_heavy_limit = max(0, int(self.effective("resources.heavy_test_parallel", 1) or 0))
+        if requested_heavy_limit == 0:
+            heavy_limit, heavy_conflict = 0, None
+        else:
+            try:
+                heavy_limit, heavy_conflict = _authoritative_limit(requested_heavy_limit)
+            except RuntimeError as exc:
+                heavy_limit, heavy_conflict = 0, str(exc)
         heavy_running = heavy_waiting = 0
         for run in self.local_runs_active():
             try:
@@ -158,21 +217,27 @@ class ResourceMixin:
                     continue
                 heavy_running += state == "running"
                 heavy_waiting += state == "waiting"
-        reasons: list[str] = []
-        if active >= limit:
-            reasons.append(f"local execution limit reached ({active}/{limit})")
+        pressure_reasons: list[str] = []
         if memory_min and memory is not None and memory < memory_min:
-            reasons.append(f"available memory {memory} MiB is below {memory_min} MiB")
+            if cgroup_memory is not None and cgroup_memory <= (host_memory or memory):
+                prefix = "" if cgroup_boundary == "controller cgroup" else f"{cgroup_boundary} "
+                pressure_reasons.append(f"{prefix}available memory {memory} MiB is below {memory_min} MiB")
+            else:
+                pressure_reasons.append(f"available memory {memory} MiB is below {memory_min} MiB")
+        if any(events.get(name, 0) for name in ("oom", "oom_kill")):
+            pressure_reasons.append("execution cgroup memory events report oom pressure")
         if temp_min and temp is not None and temp < temp_min:
-            reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
+            pressure_reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
         return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, cgroup_memory,
-                              isolation, heavy_limit, heavy_running, heavy_waiting, tuple(reasons))
+                              cgroup_boundary, tuple(sorted(events.items())), isolation,
+                              requested_heavy_limit, heavy_limit, heavy_conflict,
+                              heavy_running, heavy_waiting, tuple(pressure_reasons))
 
     def _record_resource_status(self, status: ResourceStatus) -> None:
         ctrl = self.control()
         old = ctrl.get("resource_pressure")
         if status.pressured:
-            reason = "; ".join(status.reasons)
+            reason = "; ".join(status.pressure_reasons)
             if not old or old.get("reason") != reason:
                 ctrl["resource_pressure"] = {"reason": reason, "at": now_iso()}
                 self.events.emit("resource_pressure", "", reason=reason, active=status.active, limit=status.limit)
@@ -191,13 +256,18 @@ class ResourceMixin:
 
     def local_slots_free(self) -> int:
         status = self.resource_status()
-        if status.pressured:
+        if status.admission_blocked:
             return 0
         return max(0, status.limit - status.active)
 
     def _admit_local_launch(self, kind: str) -> None:
         status = self.refresh_resource_pressure()
-        if status.pressured:
+        if status.admission_blocked:
+            if status.capacity_full and not status.pressured:
+                raise ResourcePressureError(
+                    f"{kind} waits for a local execution slot ({status.active}/{status.limit} busy); "
+                    "eligible work dispatches automatically when one finishes"
+                )
             raise ResourcePressureError(
                 f"{kind} deferred by resource pressure: {'; '.join(status.reasons)}; "
                 "pause dispatch or wait for active runs to drain, then retry"

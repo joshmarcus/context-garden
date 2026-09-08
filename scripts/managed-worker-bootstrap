@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Pinned Ubuntu bootstrap for a one-slot garden worker; root executes once.
+
+Userdata contains only this artifact's digest and a Secrets Manager reference.
+The secret contains consumer configuration and scoped enrollment material.
+"""
+import argparse
+import hashlib
+import io
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import tarfile
+import urllib.request
+from pathlib import Path
+
+
+def command(*args):
+    subprocess.run(args, check=True, timeout=600)
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return response.read()
+
+
+
+CODEX_VERSION = "0.153.4"
+CODEX_ARCHIVE_SHA256 = "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821"
+CODEX_ARCHIVE_URL = ("https://github.com/openai/codex/releases/download/rust-v" + CODEX_VERSION
+                     + "/codex-package-x86_64-unknown-linux-musl.tar.gz")
+CODEX_PACKAGE_FILES = {
+    "bin/codex", "bin/codex-code-mode-host", "codex-package.json",
+    "codex-path/rg", "codex-resources/bwrap", "codex-resources/zsh/bin/zsh",
+}
+GITHUB_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+
+def production_files(secret):
+    """Validate the production identity before writing it; never return it in run facts."""
+    auth = secret.pop("codex_auth")
+    tokens = auth.get("tokens", {}) if isinstance(auth, dict) else {}
+    if not all(isinstance(tokens.get(k), str) and tokens[k] for k in ("access_token", "refresh_token")):
+        raise ValueError("dedicated Codex ChatGPT credentials are required")
+    key = secret.pop("git_ssh_private_key")
+    if not isinstance(key, str) or not key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----\n"):
+        raise ValueError("dedicated repository SSH key is required")
+    repo = secret.pop("git_repo")
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("git_repo must be an owner/repository identity")
+    return {
+        ".codex/auth.json": json.dumps(auth),
+        ".codex/config.toml": 'cli_auth_credentials_store = "file"\n',
+        ".ssh/id_ed25519": key,
+        ".ssh/known_hosts": "[ssh.github.com]:443 " + GITHUB_HOST_KEY + "\n",
+        ".gitconfig": ('[user]\n    name = garden-worker\n    email = garden-worker@localhost\n'
+                       + '[url "ssh://git@ssh.github.com:443/' + repo + '.git"]\n'
+                       + '    insteadOf = https://github.com/' + repo + '.git\n'),
+    }
+
+
+def install_codex(destination=Path("/usr/local/bin/codex"), package_root=None):
+    package_root = package_root or Path("/opt") / ("codex-" + CODEX_VERSION)
+    data = fetch(CODEX_ARCHIVE_URL)
+    if hashlib.sha256(data).hexdigest() != CODEX_ARCHIVE_SHA256:
+        raise ValueError("Codex archive checksum mismatch")
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+        members = archive.getmembers()
+        if any(not (member.isfile() or member.isdir()) for member in members):
+            raise ValueError("Codex package must contain regular executable files")
+        regular = {member.name: member for member in members if member.isfile()}
+        if set(regular) != CODEX_PACKAGE_FILES or len(regular) != sum(m.isfile() for m in members):
+            raise ValueError("Codex package is incomplete or has unexpected files")
+        with archive.extractfile(regular["codex-package.json"]) as manifest_file:
+            manifest = json.load(manifest_file)
+        if manifest != {
+            "layoutVersion": 1, "version": CODEX_VERSION, "target": "x86_64-unknown-linux-musl",
+            "variant": "codex", "entrypoint": "bin/codex",
+            "resourcesDir": "codex-resources", "pathDir": "codex-path",
+        }:
+            raise ValueError("Codex package manifest mismatch")
+        # Preserve the vendor layout: Codex discovers its tool host and resources here.
+        # The bootstrap's private umask must not make vendor directories root-only.
+        for name, member in regular.items():
+            path = package_root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            parent = path.parent
+            while parent.is_relative_to(package_root):
+                parent.chmod(0o755)
+                parent = parent.parent
+            with archive.extractfile(member) as binary, path.open("wb") as output:
+                shutil.copyfileobj(binary, output)
+            path.chmod(0o444 if name.endswith(".json") else 0o555)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    for link, target in (
+        (destination, package_root / "bin/codex"),
+        (destination.with_name("codex-code-mode-host"), package_root / "bin/codex-code-mode-host"),
+    ):
+        link.unlink(missing_ok=True)
+        link.symlink_to(target.resolve())
+    actual = subprocess.check_output([str(destination), "--version"], text=True).strip()
+    if actual != "codex-cli " + CODEX_VERSION:
+        raise ValueError("installed Codex version mismatch")
+
+
+def write_worker_files(files, uid, gid, home=Path("/var/lib/garden-worker")):
+    for rel, value in files.items():
+        path = home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chown(path.parent, uid, gid)
+        path.parent.chmod(0o700)
+        path.write_text(value)
+        path.chmod(0o600)
+        os.chown(path, uid, gid)
+
+
+def production_environment():
+    return ('Environment=CODEX_HOME=/var/lib/garden-worker/.codex\n'
+            'Environment=GIT_CONFIG_GLOBAL=/var/lib/garden-worker/.gitconfig\n'
+            'Environment="GIT_SSH_COMMAND=/usr/bin/ssh -i /var/lib/garden-worker/.ssh/id_ed25519 '
+            '-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes '
+            '-o UserKnownHostsFile=/var/lib/garden-worker/.ssh/known_hosts"\n')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    declaration = json.loads(Path(parser.parse_args().config).read_text())
+    os.umask(0o077)
+    # Independent of the controller and the worker. Launch must specify termination
+    # on OS shutdown; the operator also arms an external termination deadline.
+    runtime = int(declaration.get("runtime_seconds", 1500))
+    if not 60 <= runtime <= 21600:
+        raise ValueError("runtime_seconds must be between one minute and six hours")
+    command("systemd-run", "--unit=garden-worker-deadline", f"--on-active={runtime}s", "/sbin/shutdown", "-h", "now")
+    for path in Path("/etc/apt").rglob("*"):
+        if path.is_file() and path.suffix in {".list", ".sources"}:
+            path.write_text(path.read_text().replace("http://", "https://"))
+    command("apt-get", "update", "-qq")
+    command("apt-get", "install", "-y", "-qq", "python3-venv", "python3-boto3", "git", "openssh-client", "iptables")
+    import boto3
+    secret = json.loads(boto3.client("secretsmanager", region_name="us-east-1").get_secret_value(
+        SecretId=declaration["secret_ref"])["SecretString"])
+    for key in ("host", "endpoint", "profile_version", "bootstrap_version"):
+        if secret[key] != declaration[key]:
+            raise ValueError("enrollment declaration mismatch: " + key)
+    source = secret["source_head"]
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise ValueError("worker source must be an exact commit")
+    command("python3", "-m", "venv", "/opt/garden-worker")
+    command("/opt/garden-worker/bin/pip", "install", "--disable-pip-version-check",
+            "context-garden @ git+https://github.com/joshmarcus/context-garden@" + source)
+    command("chmod", "-R", "a+rX", "/opt/garden-worker")
+    version = "1.102.3"
+    data = fetch("https://pkgs.tailscale.com/stable/tailscale_" + version + "_amd64.tgz")
+    if hashlib.sha256(data).hexdigest() != "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5":
+        raise ValueError("tailscale checksum mismatch")
+    archive = Path("/run/tailscale.tgz")
+    archive.write_bytes(data)
+    with tarfile.open(archive) as tar:
+        tar.extractall("/opt", filter="data")
+    base = "/opt/tailscale_" + version + "_amd64/"
+    command("install", "-m", "755", base + "tailscale", base + "tailscaled", "/usr/local/bin/")
+    Path("/etc/systemd/system/tailscaled.service").write_text(
+        "[Service]\nExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state\n"
+        "Restart=on-failure\nStateDirectory=tailscale\n[Install]\nWantedBy=multi-user.target\n")
+    command("systemctl", "daemon-reload")
+    command("systemctl", "enable", "--now", "tailscaled")
+    key = Path("/run/garden-tailnet-key")
+    key.write_text(secret.pop("tailscale_auth_key"))
+    try:
+        command("tailscale", "up", "--auth-key=file:" + str(key), "--hostname=" + declaration["host"],
+                "--accept-dns=true", "--accept-routes=false")
+    finally:
+        key.unlink(missing_ok=True)
+    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
+    identity = pwd.getpwnam("garden-worker")
+    uid, gid = identity.pw_uid, identity.pw_gid
+    # Block IMDS (both address families) before starting unprivileged workload code.
+    command("iptables", "-I", "OUTPUT", "-d", "169.254.169.254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
+    command("ip6tables", "-I", "OUTPUT", "-d", "fd00:ec2::254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
+    firewall = Path("/usr/local/bin/garden-worker-firewall")
+    firewall.write_text("#!/bin/sh\nset -eu\n"
+        + "iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT\n"
+        + "ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT\n")
+    firewall.chmod(0o700)
+    Path("/etc/systemd/system/garden-worker-firewall.service").write_text(
+        "[Unit]\nBefore=garden-worker.service\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/bin/garden-worker-firewall\nRemainAfterExit=yes\n")
+    token = fetch_imds("api/token", token=True)
+    secret["provider_id"] = fetch_imds("meta-data/instance-id", token=token)
+    secret["work_dir"] = "/var/lib/garden-worker/work"
+    canary = bool(secret.get("canary"))
+    extra_environment = ""
+    if canary:
+        git_token = secret.pop("git_token")
+        harness = fetch("https://raw.githubusercontent.com/joshmarcus/context-garden/" + source + "/tests/fake_claude.py")
+        hp = Path("/usr/local/bin/claude")
+        hp.write_bytes(harness)
+        hp.chmod(0o755)
+        write_worker_files({".gitconfig": '[http "' + secret["endpoint"] + '/git/"]\n    extraHeader = Authorization: Bearer ' + git_token + '\n'}, uid, gid)
+    else:
+        files = production_files(secret)
+        install_codex()
+        write_worker_files(files, uid, gid)
+        extra_environment = production_environment()
+        secret["env_pass"] = ["GIT_CONFIG_GLOBAL", "GIT_SSH_COMMAND"]
+        # Verify dedicated account credentials without starting a model.
+        command("runuser", "-u", "garden-worker", "--", "env",
+                "CODEX_HOME=/var/lib/garden-worker/.codex", "/usr/local/bin/codex", "login", "status")
+    public_key = secret.pop("operator_ssh_public_key", "")
+    if public_key:
+        if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]+)?", public_key):
+            raise ValueError("operator SSH public key must be one ed25519 key")
+        ubuntu = pwd.getpwnam("ubuntu")
+        write_worker_files({".ssh/authorized_keys": public_key + "\n"}, ubuntu.pw_uid, ubuntu.pw_gid,
+                           home=Path(ubuntu.pw_dir))
+    cfg = Path("/etc/garden-worker.json")
+    cfg.write_text(json.dumps(secret))
+    os.chown(cfg, uid, gid)
+    cfg.chmod(0o400)
+    Path("/etc/systemd/system/garden-worker.service").write_text(
+        "[Unit]\nRequires=garden-worker-firewall.service\nAfter=garden-worker-firewall.service network-online.target\n"
+        "[Service]\nUser=garden-worker\nGroup=garden-worker\n"
+        "Environment=HOME=/var/lib/garden-worker\nEnvironment=PATH=/opt/garden-worker/bin:/usr/local/bin:/usr/bin:/bin\n"
+        + extra_environment + "ExecStart=/opt/garden-worker/bin/python -m garden.managed_worker --config /etc/garden-worker.json\n"
+        "StandardOutput=journal+console\nStandardError=journal+console\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\n"
+        "ReadWritePaths=/var/lib/garden-worker\nPrivateTmp=yes\nMemoryMax=12G\nMemorySwapMax=0\nCPUQuota=300%\n"
+        "[Install]\nWantedBy=multi-user.target\n")
+    command("systemctl", "daemon-reload")
+    command("systemctl", "enable", "--now", "garden-worker")
+
+
+def fetch_imds(path, token):
+    url = "http://169.254.169.254/latest/" + path
+    req = urllib.request.Request(url, method="PUT" if token is True else "GET",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"} if token is True else {"X-aws-ec2-metadata-token": token})
+    with urllib.request.urlopen(req, timeout=5) as response:
+        return response.read().decode()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,47 @@
+[
+  {
+    "at": 1788820280.6771312,
+    "path": "/api/runs/claim",
+    "status": 204
+  },
+  {
+    "at": 1788820283.8275125,
+    "path": "/api/runs/claim",
+    "status": 204
+  },
+  {
+    "at": 1788820286.967429,
+    "path": "/api/runs/claim",
+    "status": 204
+  },
+  {
+    "at": 1788820290.1159809,
+    "path": "/api/runs/claim",
+    "status": 204
+  },
+  {
+    "at": 1788820293.338921,
+    "path": "/api/runs/claim",
+    "status": 200
+  },
+  {
+    "at": 1788820294.651268,
+    "path": "/api/runs/20260907T223131Z-work/heartbeat",
+    "status": 200
+  },
+  {
+    "at": 1788820313.4433155,
+    "path": "/api/runs/20260907T223131Z-work/heartbeat",
+    "status": 200
+  },
+  {
+    "at": 1788820430.794518,
+    "path": "/api/runs/claim",
+    "status": 200
+  },
+  {
+    "at": 1788820430.8250809,
+    "path": "/api/runs/20260907T223131Z-work/heartbeat",
+    "status": 409
+  }
+]

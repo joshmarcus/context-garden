@@ -171,6 +171,7 @@ class RetroMixin:
         """Start a phase retro. Runs the missing persona reviews (unless `skip_personas`), then
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
+        self.require_maintenance_running()
         self_prod = self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
@@ -202,6 +203,7 @@ class RetroMixin:
         return entry
 
     def _dispatch_retro_run(self, probe: Task, brief_text: str, worktree: Path, difficulty: str = "hard") -> Run:
+        self.require_maintenance_running()
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         run = self._new_local_run(probe.id, "retro", "retro")

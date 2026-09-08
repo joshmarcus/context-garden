@@ -338,13 +338,10 @@ class Harness:
         if not out["final_text"].strip() and not out["error"]:
             out["error"] = (stderr.strip()[-2000:] or "worker produced no output")
         out["result"] = parse_result(out["final_text"]) or parse_result(stdout)
-        # A quota message is the harness's own error: it is in the error text or on stderr,
-        # or it is the whole of a short output with no result block. A worker that merely
-        # quotes the pattern (one that reads this file, say) has not hit a limit.
-        short = len(out["final_text"].strip()) < 2000 and not out["result"]
-        kind = (self._quota_kind(out["error"], stderr) or self._resource_kind(out["error"], stderr)
-                or ((self._quota_kind(out["final_text"], stdout) or self._resource_kind(out["final_text"], stdout))
-                    if short else ""))
+        # Only the parsed harness error and stderr are authoritative. Worker/tool output can
+        # quote an outage message, including in a short report, without making this run an
+        # environment failure.
+        kind = (self._quota_kind(out["error"], stderr) or self._resource_kind(out["error"], stderr))
         if kind:
             out["env_error"] = True
             out["env_kind"] = kind

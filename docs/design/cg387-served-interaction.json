@@ -1,0 +1,113 @@
+{
+  "head": "a4400a67bdecdbcdddbd150e5bec1705b811343f",
+  "environment": "disposable",
+  "command": "PYTHONPATH=src .venv/bin/python scripts/cg387_replay.py",
+  "states": {
+    "affected": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox at 2/2",
+        "GET /config at 2/2"
+      ],
+      "observed": "neutral full-capacity wording"
+    },
+    "empty": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox with available slot"
+      ],
+      "observed": "no capacity or pressure alert"
+    },
+    "failure_recovery": {
+      "status": "pass",
+      "actions": [
+        "GET /config and /inbox at 900 MiB",
+        "restore 4096 MiB then GET /inbox"
+      ],
+      "observed": "pressure and mixed state shown; recovery removes only pressure"
+    }
+  },
+  "events": [
+    {
+      "state": "empty",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/inbox",
+      "status_code": 200,
+      "outcome": "empty",
+      "observed": "available slot; no capacity or resource-pressure alert"
+    },
+    {
+      "state": "affected",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/inbox",
+      "status_code": 200,
+      "outcome": "success",
+      "observed": "full-but-healthy: 2/2 busy; eligible work waits and dispatches automatically"
+    },
+    {
+      "state": "affected",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/config",
+      "status_code": 200,
+      "outcome": "success",
+      "observed": "Config repeats neutral at-capacity automatic-admission wording"
+    },
+    {
+      "state": "failure",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/config",
+      "status_code": 200,
+      "outcome": "failure",
+      "observed": "low headroom is identified as resource pressure: 900 MiB below 1500 MiB"
+    },
+    {
+      "state": "failure",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/inbox",
+      "status_code": 200,
+      "outcome": "failure",
+      "observed": "mixed state retains both 2/2 occupancy and low-headroom pressure"
+    },
+    {
+      "state": "recovery",
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:8873/inbox",
+      "status_code": 200,
+      "outcome": "success",
+      "observed": "recovery returns to neutral full capacity with automatic admission enabled"
+    }
+  ],
+  "scalability": {
+    "served_app": "http://127.0.0.1:8873",
+    "history_sizes": [
+      100,
+      1000
+    ],
+    "cache_expiry_intervals": 3,
+    "executing_processes": 2,
+    "latencies": [
+      0.05717095799991512,
+      0.0036496959983196575,
+      0.014189446999807842,
+      0.0029675549994863104,
+      0.002773676002107095,
+      0.0027872809987457003,
+      0.006388677000359166,
+      0.04463017200032482,
+      0.029740853002294898,
+      0.032786883999506244,
+      0.030022633000044152
+    ],
+    "read_scan_counts": {
+      "reads": 11,
+      "scans": 45
+    },
+    "load_kind": "controlled"
+  }
+}

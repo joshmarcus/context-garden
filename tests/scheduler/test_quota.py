@@ -85,6 +85,31 @@ def test_probe_leaves_the_harness_paused_while_still_over_quota(sched, monkeypat
     assert rep.dispatched == []  # DM-001 was not dispatched: still paused
 
 
+def test_repeated_environment_errors_stop_at_cap_and_success_clears_streak(sched, monkeypatch):
+    sched.cfg.data["max_consecutive_env_errors"] = 2
+    sched.cfg.data["harness_pause"] = {"probe_minutes": 0}
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
+    sched.tick()  # dispatch work
+    sched.tick()  # first harness-owned environment error
+    assert statuses(sched)["DM-001"] == "ready"
+    sched.resume_harness("claude", by="test")  # emulate a recovered probe admission
+    sched.tick()  # dispatch the retry
+    sched.tick()  # second error reaches the cap
+    assert statuses(sched)["DM-001"] == "waiting_human"
+    assert sched.state.get("DM-001")["consecutive_env_errors"] == 2
+
+    # A later successful harness-owned completion resets the per-task streak.
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nocommit")
+    sched.state.get("DM-001").pop("needs_human", None)
+    task = sched.store.task("DM-001")
+    task.status = Status.READY
+    sched.store.save(task)
+    sched.state.save()
+    sched.tick()
+    sched.tick()
+    assert "consecutive_env_errors" not in sched.state.get("DM-001")
+
+
 def test_probe_does_not_run_before_its_interval(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "quota")
     sched.tick()

@@ -21,7 +21,7 @@ attention and tokens. So:
   bookkeeping are deterministic Python. Tokens are spent only on planning, working,
   reviewing and revising, and every one of those is bounded.
 - **The human does the parts only a human can do**: write goals and specs, answer the
-  questions workers raise, review and merge, and decide when the loop should stop.
+  questions workers raise, review, and decide when the loop should stop.
 
 ## Vocabulary
 
@@ -83,7 +83,8 @@ token-free scripts; `events` records history; `store` and `model` read and write
 7. **Humans.** Review on GitHub. Comments and red CI (analysed by token-free checkers,
    with flaky reruns) become revise runs. Stall detection stops loops that do not
    converge; questions pause the task until answered.
-8. **Merge.** The task is done, dependents unblock or restack, the worktree is removed.
+8. **Merge.** The scheduler automatically merges eligible reviewed PRs. The task is done,
+   dependents unblock or restack, and the worktree is removed.
 9. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each
    difficulty tier really cost; persona reviews of the phase and the friction log feed
    the next plan. `garden retro product/phase` runs the whole retrospective as one
@@ -106,10 +107,12 @@ token-free scripts; `events` records history; `store` and `model` read and write
 
 ## Bounded loops, on purpose
 
-Every automatic loop has a cap in `garden.yaml`: `max_attempts`, `max_revisions`,
-`review.max_rounds`, `timeout_minutes`, per-phase `budgets`, plus stall detection. When a
-cap is hit the task is flagged for a human rather than retried. The garden should never
-be the thing that spends money while nobody is watching.
+Every automatic loop has a bound in `garden.yaml`: `max_attempts`, `max_revisions`,
+`timeout_minutes`, per-phase `budgets`, plus stall detection. `review.max_rounds` defaults
+to two and accepts either a positive hard cap or `null` for unlimited review rounds. In the
+unlimited mode `review.friction_after` records one non-blocking, retrospective-visible loop
+signal; stall handling still stops unchanged paid attempts. The garden should never spend
+money on an identical loop while nobody is watching.
 
 ## The operator seat
 
@@ -160,5 +163,5 @@ the page evidence.
 
 ## Non-goals
 
-Hosted or multi-user operation, automatic merging, and being a general workflow engine.
+Hosted or multi-user operation and being a general workflow engine.
 If the garden ever needs a database or a queue, something has gone wrong with the design.
