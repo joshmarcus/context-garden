@@ -1,6 +1,6 @@
 [project]
 name = "context-garden"
-version = "0.3.0rc2"
+version = "0.3.0rc3"
 description = "Drive agent development from a repository of context files: principles, products, phases, tasks."
 readme = "README.md"
 requires-python = ">=3.11"
