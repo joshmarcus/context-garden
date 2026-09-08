@@ -57,7 +57,8 @@ class PollMixin:
                 self._mark_merged_into_parent(task, pr, rep)
                 return
             by_garden = bool(st.get("automerged"))
-            self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}")
+            self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}",
+                             base_merged=True)
             rep.transitions.append(f"{task.id} -> done")
             self._on_merged(task, rep, head_sha=pr.head_sha)
             self._cleanup(task)
@@ -433,7 +434,8 @@ class PollMixin:
             return
         st.pop("stack_parent", None)
         self._transition(child, Status.DONE,
-                         f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}")
+                         f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}",
+                         base_merged=True)
         rep.transitions.append(f"{child.id} -> done")
         self._on_merged(child, rep, head_sha=target)
         self._cleanup(child)

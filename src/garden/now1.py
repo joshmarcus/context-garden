@@ -28,6 +28,7 @@ from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metri
 from .graph import effective_status
 from .inbox import merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
+from .outcomes import base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
@@ -496,8 +497,9 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     shaded table: runs by harness and model, and the five difficulty-by-model tables."""
     window = [e for e in events if str(e.get("at") or "") >= since]
     done_at: dict[str, str] = {}
+    merge_facts = {str(e.get("task")) for e in events if e.get("kind") == "automerged" and e.get("task")}
     for e in window:
-        if e.get("kind") == "transition" and e.get("to") == "done" and e.get("task"):
+        if base_acceptance(e, merge_facts) and e.get("task"):
             done_at[e["task"]] = e["at"]
     # A merge the loop made emits `automerged` for the task (the digest's rule); a task that
     # reached done without one was merged by hand, the phase's definition-of-done number.
