@@ -928,6 +928,10 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     # The shared context is rewritten by pull-based workers to identify their host-local
     # clone.  Prefer it over a legacy per-check value, which may still name the controller's
     # checkout when a check payload crosses hosts.
+    # The check context is rebound to the checkout that actually executes the job.  This
+    # matters for remote checks: the serialized spec was created by the controller and may
+    # still contain its local absolute path, which is neither meaningful nor necessarily
+    # readable on the worker host.  Locally both values name the same checkout.
     worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():

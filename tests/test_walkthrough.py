@@ -552,6 +552,25 @@ def test_ui_check_classifies_clean_missing_result_as_return_infrastructure(tmp_p
 
     assert result["status"] == "error"
     assert result["capture_infrastructure"]["kind"] == "capture_result_unavailable"
+def test_ui_check_prefers_execution_checkout_over_serialized_controller_path(tmp_path, monkeypatch):
+    worktree = tmp_path / "remote-checkout"
+    (worktree / "src").mkdir(parents=True)
+    controller_path = tmp_path / "unavailable-controller-worktree"
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["cwd"], seen["env"] = kwargs["cwd"], kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["task"]}\n', "")
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "worktree": str(controller_path)},
+    )
+
+    assert result["status"] == "pass"
+    assert seen["cwd"] == worktree
+    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
 
 
 def test_browser_is_prepared_automatically(monkeypatch):
