@@ -861,6 +861,11 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
             "reason": "The worker needs a product decision before it can continue.",
         }
         state.save()
+        # The UI check always verifies a representative decision card.  Keep its task page
+        # alongside a scoped page selection so the assertion below describes an actual
+        # captured page rather than a page filtered out by the selection.
+        if pages is not None and "*" not in pages:
+            pages = list(dict.fromkeys([*pages, "task-decision"]))
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
                          log=logs.append, pages=pages)

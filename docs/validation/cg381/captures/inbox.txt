@@ -1,0 +1,90 @@
+Inbox · qa
+
+  qacontext garden
+
+    Inbox 1
+    Now
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+  What needs you
+Decision cards need your judgment; operator cards name a bounded repair. Beyond that, the garden grows.
+
+  BoardTimeline
+
+Serving build
+unversioned
+
+  1
+need you
+
+  0/4
+workers running
+
+  0/4
+reviews running
+
+  0
+PRs open
+
+  $0.00
+spent in 24h
+
+  decisionChoose the product outcome
+A worker recommends cancelling or changing the promised outcome. The card explains what each choice does.
+
+    sprout
+
+    DM-001readysprout · easy · 250d
+
+      A worker that asks a question
+
+  Decide whether to change the promised outcome
+
+  The worker needs a product decision before it can continue.
+
+  Recommendation: accept the stated limitation. Accepting continues verification with that limitation; keeping the original outcome sends it back for another bounded revision.
+
+    Accept the changed outcome
+
+    Keep the original outcome
+
+  Progress
+Merged work against scope, all phases
+No merges yet. The burn-up starts with the first merged PR.
+
+  Spend
+Cost by difficulty tier
+No runs recorded yet.
+If a tier's revisions climb, its model is too cheap for the work; see metrics.
+
+  Report friction…
