@@ -45,6 +45,13 @@ git fetch --prune origin >&2
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
   GARDEN_CANONICAL_LEASE="$REPO/.git/garden-canonical-lease"
   GARDEN_ACTIVE_RUN_IDS={active_run_ids}
+  # The run store, not the lifetime of this shell, owns the checkout.  In particular, a
+  # completed ssh process remains active until the scheduler has collected and fenced it.
+  # Refuse that durable evidence even if an interrupted older implementation left no lease.
+  if [ -n "$GARDEN_ACTIVE_RUN_IDS" ]; then
+    GARDEN_ACTIVE_OWNER=${{GARDEN_ACTIVE_RUN_IDS%% *}}
+    echo "canonical checkout is leased by active run $GARDEN_ACTIVE_OWNER" >&2; exit 4
+  fi
   if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then
     GARDEN_LEASE_OWNER=$(cat "$GARDEN_CANONICAL_LEASE/run-id" 2>/dev/null || :)
     case " $GARDEN_ACTIVE_RUN_IDS " in
@@ -58,7 +65,6 @@ if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
     if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then echo "canonical checkout was claimed during recovery" >&2; exit 4; fi
   fi
   printf '%s\n' {run_id} > "$GARDEN_CANONICAL_LEASE/run-id"
-  trap 'rm -f "$GARDEN_CANONICAL_LEASE/run-id"; rmdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null || :' EXIT HUP INT TERM
   if [ -n "$(git status --porcelain)" ]; then echo "canonical checkout has uncommitted work; refusing preparation" >&2; exit 4; fi
   GARDEN_CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
   if [ "$GARDEN_CURRENT_BRANCH" != "$BRANCH" ] && [ "$GARDEN_CURRENT_BRANCH" != "$BASE" ]; then echo "canonical checkout branch drift: $GARDEN_CURRENT_BRANCH" >&2; exit 4; fi

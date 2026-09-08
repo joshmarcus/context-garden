@@ -262,8 +262,15 @@ class Scheduler(
 
         checkout = self.cfg.product_checkout(task.product)
         if runner.remote and str(checkout.get("strategy") or "worktree") == "in_place":
+            # A process that exited is still an owner until its result has passed collection
+            # and fence/preservation processing.  ``active`` covers the former interval;
+            # ``unreaped`` covers a restart after finalize's terminal save but before the task
+            # transition completed.  The next remote claim may recover the durable lease only
+            # after neither source names its owner.
+            protected_ids = {item.run_id for item in self.runs.active()}
+            protected_ids.update(self.unreaped_run_ids())
             run.env_snapshot["canonical_active_run_ids"] = sorted(
-                item.run_id for item in self.runs.active() if item.run_id != run.run_id
+                item for item in protected_ids if item != run.run_id
             )
             run.save()
             return None

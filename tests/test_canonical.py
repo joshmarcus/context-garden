@@ -18,6 +18,7 @@ from garden.canonical import (
     preflight,
     reconcile,
 )
+from garden.model import Status
 from garden.runner.ssh import SSHRunner
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -128,7 +129,66 @@ def test_ssh_in_place_executes_reconciliation_and_recovers_named_stale_lease(gar
     runner.start(run, tmp_path, "brief")
     assert _wait_run(run) == 0
     assert tally.read_text() == "run\n"
-    assert not lease.exists()
+    assert (lease / "run-id").read_text() == f"{run.run_id}\n"
+
+
+def test_ssh_canonical_lease_survives_process_exit_until_run_is_reaped(garden, tmp_path):
+    remote = _remote_clone(garden)
+    scheduler = Scheduler(_enable(garden, (garden / "../repo").resolve()))
+    task = scheduler.store.task("DM-001")
+    runner = scheduler.runner_for(task, "ssh")
+    runner.config["timeout_minutes"] = 0
+
+    first = scheduler.runs.new_run(task.id, "ssh")
+    first.host, first.branch, first.base = "boxA", task.default_branch(), "main"
+    runner.start(first, tmp_path, "brief")
+    assert _wait_run(first) == 0
+    lease = remote / ".git" / "garden-canonical-lease"
+    assert (lease / "run-id").read_text() == f"{first.run_id}\n"
+
+    # Process exit is not collection: the durable run record still names A as active, so a
+    # fresh scheduler/controller cannot let B enter the canonical checkout yet.
+    second = scheduler.runs.new_run("DM-002", "ssh")
+    second.host, second.branch, second.base = "boxA", "garden/dm-002-second-task", "main"
+    scheduler.prepare_canonical_run(scheduler.store.task("DM-002"), second, runner,
+                                    second.branch, second.base)
+    runner.start(second, tmp_path, "brief")
+    assert _wait_run(second) == 4
+    assert f"leased by active run {first.run_id}" in (second.path / "stderr.log").read_text()
+    assert (lease / "run-id").read_text() == f"{first.run_id}\n"
+
+    # Once A is terminal and no longer awaits collection/fencing, the next claim deliberately
+    # recovers its clean lease and warm-reuses the checkout.
+    first.status = "done"
+    first.finished_at = "2026-09-08T00:00:00+00:00"
+    first.save()
+    second.status = "failed"
+    second.finished_at = "2026-09-08T00:00:01+00:00"
+    second.save()
+    third = scheduler.runs.new_run(task.id, "ssh")
+    third.host, third.branch, third.base = "boxA", task.default_branch(), "main"
+    scheduler.prepare_canonical_run(task, third, runner,
+                                    third.branch, third.base)
+    runner.start(third, tmp_path, "brief")
+    assert _wait_run(third) == 0
+    assert (lease / "run-id").read_text() == f"{third.run_id}\n"
+
+
+def test_remote_canonical_owner_remains_protected_during_interrupted_reap(garden):
+    scheduler = Scheduler(_enable(garden, (garden / "../repo").resolve()))
+    task = scheduler.store.task("DM-001")
+    runner = scheduler.runner_for(task, "ssh")
+    owner = scheduler.runs.new_run(task.id, "ssh")
+    owner.finished_at = "2026-09-08T00:00:00+00:00"
+    owner.status = "done"
+    owner.save()
+    task.status = Status.RUNNING
+    scheduler.store.save(task)
+
+    competitor = scheduler.runs.new_run("DM-002", "ssh")
+    scheduler.prepare_canonical_run(scheduler.store.task("DM-002"), competitor, runner,
+                                    "garden/dm-002-second-task", "main")
+    assert competitor.env_snapshot["canonical_active_run_ids"] == [owner.run_id]
 
 
 def test_ssh_in_place_refuses_reconciliation_without_working_timeout(garden, tmp_path, monkeypatch):
