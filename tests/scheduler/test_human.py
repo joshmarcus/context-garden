@@ -1382,6 +1382,17 @@ def test_external_claim_refuses_incomplete_pr_metadata_without_creating_run(
     assert not sched.runs.runs_for(task.id)
 
 
+def test_external_completion_records_a_moved_head_on_the_same_pr(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    pr.head_sha = "head-moved-outside-garden"
+
+    sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).pr == pr.url
+    assert sched.state.get(task.id)["head_sha"] == "head-moved-outside-garden"
 @pytest.mark.parametrize("error_type", [GitHubError, KeyError])
 def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
     task = sched.store.task("DM-001")
