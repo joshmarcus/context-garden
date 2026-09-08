@@ -59,6 +59,25 @@ dominates. Serial GETs do not queue and handlers do not take Hub locks, so reque
 wait is zero by construction. Mean request wall and CPU agree within .5ms; filesystem
 syscall wait cannot be separated from Python parsing by these spans.
 
+Cold is the first request for a page after each cache-expiry sleep; warm is the remaining
+six requests in that same cycle. This zero-slot comparison avoids mixing cache state with
+replay contention:
+
+<!-- report-cold-warm-start -->
+| tasks | page | cold (n/p50/p95/max) | warm (n/p50/p95/max) |
+| ---: | --- | ---: | ---: |
+| 100 | Now 1 | 3/.182/.272/.272s | 18/.127/.143/.143s |
+| 100 | Inbox | 3/.146/.210/.210s | 18/.126/.180/.180s |
+| 100 | Config | 3/.045/.058/.058s | 18/.043/.083/.083s |
+| 1,000 | Now 1 | 3/.753/.780/.780s | 18/.731/.793/.793s |
+| 1,000 | Inbox | 3/.820/1.179/1.179s | 18/.754/1.041/1.041s |
+| 1,000 | Config | 3/.350/.406/.406s | 18/.330/.404/.404s |
+<!-- report-cold-warm-end -->
+
+Cold samples are not consistently slower than warm samples: the dominant task scan runs
+on every request, so the measured in-process expiry does not provide a meaningful warm-page
+latency benefit.
+
 | tasks | page | task/product scan | event parse | run index | resource inspect | render |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
 | 100 | Now 1 | .055s | .017s | .006s | .0004s | .004s |

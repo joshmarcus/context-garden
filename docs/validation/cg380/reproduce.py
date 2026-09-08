@@ -383,9 +383,22 @@ def main() -> None:
         ],
         "observations": {
             key: {
-                path: value
-                for path, value in case["summary"].items()
-                if path.startswith("expiry_3:")
+                "expiry_3": {
+                    path: value
+                    for path, value in case["summary"].items()
+                    if path.startswith("expiry_3:")
+                },
+                "read_scan_counts": {
+                    name: sum(
+                        int(span["counts"].get(name, 0)) for span in case["spans"]
+                    )
+                    for name in (
+                        "task_product_scan_s",
+                        "event_read_parse_s",
+                        "run_index_s",
+                        "process_resource_inspection_s",
+                    )
+                },
             }
             for key, case in report["pages"].items()
             if "plain" not in key
