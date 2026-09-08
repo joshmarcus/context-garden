@@ -354,8 +354,13 @@ class Scheduler(
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
 
     def review_slots_free(self) -> int:
-        queue_free = self.review_parallel_limit() - len(self.review_runs_active())
-        return max(0, min(queue_free, self.local_slots_free()))
+        """Free slots in the global review/persona/comparison pool.
+
+        Physical capacity is backend-specific and is checked by each launch path.  Folding
+        local capacity into this global count prevents remote reviews from reaching their
+        independently admitted execution queue.
+        """
+        return max(0, self.review_parallel_limit() - len(self.review_runs_active()))
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:

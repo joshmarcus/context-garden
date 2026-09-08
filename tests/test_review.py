@@ -139,6 +139,81 @@ def test_queued_reviews_take_shared_capacity_before_lower_priority_work(sched):
     assert not sched.state.get(critical.id).get("pending_reviews")
 
 
+def test_pending_reviews_admit_remote_independently_of_occupied_local_capacity(sched):
+    """A local hold is per-backend; the reviewer ceiling remains global."""
+    local = sched.store.task("DM-001")
+    remote = sched.store.task("DM-002")
+    for task, order in ((local, 10), (remote, 20)):
+        task.status = Status.IN_REVIEW
+        task.priority = 0
+        task.order = order
+        task.depends_on = []
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [
+            {"kind": "review", "count_round": True},
+        ]
+    remote.runner = "remote"
+    sched.store.save(remote)
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+
+    occupant = sched.runs.new_run("occupied-local", "local", mode="work")
+    occupant.status = "running"
+    occupant.save()
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    assert rep.dispatched == ["DM-002(review)"], rep.errors
+    remote_run = sched.runs.latest(remote.id)
+    assert remote_run is not None and remote_run.runner == "remote" and remote_run.mode == "review"
+    assert sched.state.get(remote.id)["review_rounds"] == 1
+    assert sched.state.get(local.id)["pending_reviews"] == [
+        {"kind": "review", "count_round": True},
+    ]
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+    assert sched.review_wait_reason(local)[0] == "slots"  # the remote run holds the global ceiling
+
+    # Releasing only the reviewer ceiling still leaves the local backend accurately held.
+    remote_run.status = "done"
+    remote_run.save()
+    assert sched.review_wait_reason(local)[0] == "local"
+    held = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), held)
+    assert held.dispatched == [] and held.errors == []
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+
+    # Once local physical capacity recovers, the original queued round starts exactly once.
+    occupant.status = "done"
+    occupant.save()
+    recovered = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), recovered)
+    assert recovered.dispatched == ["DM-001(review)"], recovered.errors
+    local_run = sched.runs.latest(local.id)
+    assert local_run is not None and local_run.runner == "local" and local_run.mode == "review"
+    assert sched.state.get(local.id)["review_rounds"] == 1
+    assert not sched.state.get(local.id).get("pending_reviews")
+
+
+def test_review_atomic_local_admission_race_requeues_without_charging_round(sched, monkeypatch):
+    from garden.scheduler.resources import ResourcePressureError
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    item = {"kind": "review", "count_round": True}
+
+    def lose_atomic_admission(*_args, **_kwargs):
+        raise ResourcePressureError("slot claimed")
+
+    monkeypatch.setattr(sched, "dispatch_review", lose_atomic_admission)
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(task, [item], rep)
+
+    assert rep.dispatched == [] and rep.errors == []
+    assert sched.state.get(task.id)["pending_reviews"] == [item]
+    assert sched.state.get(task.id).get("review_rounds", 0) == 0
+
+
 
 def test_queued_critical_review_precedes_a_lower_priority_check(sched):
     from garden.scheduler import TickReport
