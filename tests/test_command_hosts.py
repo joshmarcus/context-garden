@@ -154,8 +154,12 @@ def test_readiness_stop_recovers_without_creating_another_host_and_can_cancel_or
 
     with pytest.raises(EnvironmentStop, match="checkout reconciliation failed"):
         lifecycle.acquire_ready(spec, **kwargs)
+    assert json.loads(path.read_text())["environment_stops"]["workers"]["detail"] == (
+        "workers-0: checkout reconciliation failed"
+    )
     wrapper.ready = True
     host = lifecycle.acquire_ready(spec, **kwargs)
+    assert "workers" not in json.loads(path.read_text())["environment_stops"]
     lifecycle.attach_run(host.provider_id, "terminal-run")
     assert lifecycle.orphaned(process_terminal=lambda _: True) == ["provider-1"]
     lifecycle.cancel_acquisition(host.provider_id)
@@ -170,6 +174,22 @@ def test_readiness_stop_recovers_without_creating_another_host_and_can_cancel_or
 
     assert retired.state.value == "terminated"
     assert [call[0][-1] for call in wrapper.calls].count("acquire") == 1
+
+
+def test_incompatible_warm_host_is_not_admitted(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    lifecycle.reconcile(command_pool())
+    wrapper.hosts[0]["bootstrap_version"] = "older-tools"
+
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        lifecycle.acquire_ready(
+            command_pool(), workspace="/work", revision="abc", harness="codex",
+            process_terminal=lambda _: True,
+        )
+    assert not any(call[0][-1] == "ready" for call in wrapper.calls)
 
 
 def test_pool_bounds_and_ttl_retire_expired_host(tmp_path):
