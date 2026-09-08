@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
 
@@ -371,7 +372,7 @@ class Config:
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")
-        if "://" in str(repo) or re.match(r"^[^@/:\s]+@[^/:\s]+:", str(repo)):
+        if is_git_remote_url(str(repo)):
             return str(repo)
         return (self.root / str(repo)).resolve()
 
