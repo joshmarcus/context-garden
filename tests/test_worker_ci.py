@@ -253,4 +253,4 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     cfg = yaml.load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(cfg["on"]["push"]["branches"]) >= {"garden/**", "codex/**", "main"}
     assert "pull_request" in cfg["on"]
-    assert any(s.get("run") == "pytest -q" for s in cfg["jobs"]["test"]["steps"])
+    assert any(s.get("run") == "pytest -q --durations=40" for s in cfg["jobs"]["test"]["steps"])
