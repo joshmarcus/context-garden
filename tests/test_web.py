@@ -81,6 +81,9 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert run is not None and run.runner == "manual" and run.mode == "work"
     packet = c.get("/tasks/DM-001/packet")
     assert packet.status_code == 200 and "DM-001" in packet.text
+    task_page = c.get("/tasks/DM-001").text
+    assert "Manual session claimed" in task_page and "Finish manual session" in task_page
+    assert "Mark done without merging" not in task_page
 
     # Replaying a rendered-but-stale take form cannot create a second run.
     stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
@@ -105,6 +108,20 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     sched.state.save()
     paused = c.get("/inbox").text
     assert "paused for a person" in paused and "Resume task" in paused
+
+    # A malformed completion stays recoverable; the valid result finalizes the assigned run.
+    unsafe_done = c.post("/tasks/DM-001/done", headers={"referer": "http://testserver/tasks/DM-001"},
+                         follow_redirects=True)
+    assert "finish the claimed manual session" in unsafe_done.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    invalid = c.post("/tasks/DM-001/finish-manual", data={"note": "not JSON"},
+                     headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert "manual result must be valid JSON" in invalid.text
+    finished = c.post("/tasks/DM-001/finish-manual", data={"note": '{"status":"blocked","summary":"waiting on access"}'},
+                      headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert finished.status_code == 200 and "DM-001 manual session finished" in finished.text
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
 
 
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
