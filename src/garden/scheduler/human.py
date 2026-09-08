@@ -19,6 +19,7 @@ from ..model import (
     phase_refusal,
     priority_label,
 )
+from ..review import feedback_with_operator_note
 from ..runs import Run
 from ..stabilization import ACTORS
 from .report import TickReport
@@ -208,7 +209,14 @@ class HumanMixin:
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if changes:
-            st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
+            previous = st.get("last_review")
+            if isinstance(previous, dict):
+                st["pending_feedback"] = feedback_with_operator_note(
+                    previous, changes, kind="triage", run_id=str(st.get("last_review_run") or ""),
+                    source_head=str(st.get("head_sha") or ""), superseded=True,
+                )
+            else:
+                st["pending_feedback"] = f"## Operator triage note\n\n{changes.strip()}"
             st.pop("pending_feedback_easy", None)
             st.pop("pending_feedback_rebase", None)
             st.pop("needs_human", None)
@@ -435,7 +443,16 @@ class HumanMixin:
             if self._grant_one_more_round(st):
                 note = "re-enabled by hand with one more round past the revision cap; revise run will follow"
             if not st.get("pending_feedback"):
-                st["pending_feedback"] = "- **human**: please re-check the open review comments and CI on this PR and address what is still outstanding."
+                previous = st.get("last_review")
+                recovery_note = "Please re-check the open review comments and CI on this PR and address what is still outstanding."
+                if isinstance(previous, dict):
+                    st["pending_feedback"] = feedback_with_operator_note(
+                        previous, recovery_note, kind="recovery",
+                        run_id=str(st.get("last_review_run") or ""),
+                        source_head=str(st.get("head_sha") or ""),
+                    )
+                else:
+                    st["pending_feedback"] = f"## Operator recovery note\n\n{recovery_note}"
             self._transition(task, Status.CHANGES_REQUESTED, note)
             self.state.save()
             return

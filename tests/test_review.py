@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from garden import interaction_replay
+from garden.brief import build_brief
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
     ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
+    feedback_with_operator_note,
     interaction_evidence_gaps,
     interaction_requirement,
     parse_review,
@@ -392,6 +394,57 @@ def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     brief = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
                          max_diff_chars=100, reask_missing_fixes=True)
     assert "Follow-up required" in brief and "`fix` for every blocking finding" in brief
+
+
+def test_revision_feedback_retains_long_findings_and_criterion_only_rejections(garden):
+    long_fix = "preserve every detail " * 799 + "final detail"
+    review = {
+        "summary": "A complete review record",
+        "criteria": [{"criterion": "The rejected outcome is explained.", "met": False,
+                      "reason": "the empty result has no source link",
+                      "evidence": "test_revision_feedback_retains_long_findings"}],
+        "findings": [{"severity": "blocking", "file": "src/garden/review.py", "line": 677,
+                      "summary": "The finding remains actionable", "fix": long_fix}],
+    }
+
+    feedback = feedback_from_review(review, run_id="DM-001-review-2", source_head="a" * 40)
+
+    assert "DM-001-review-2" in feedback and "a" * 40 in feedback
+    assert "The rejected outcome is explained." in feedback
+    assert "the empty result has no source link" in feedback
+    assert "test_revision_feedback_retains_long_findings" in feedback
+    assert long_fix in feedback
+    store = Store(garden)
+    brief = build_brief(store, store.task("DM-001"), review_feedback=feedback)
+    assert long_fix in brief.text
+    assert "test_revision_feedback_retains_long_findings" in brief.text
+
+
+def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    review = {"summary": "Prior review", "criteria": [{"criterion": "Original criterion", "met": False,
+              "reason": "not yet verified", "evidence": "review evidence"}],
+              "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
+                            "summary": "Original finding", "fix": "Make the original fix."}]}
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run="DM-001-review-1", head_sha="b" * 40)
+
+    sched.triage(task, changes="Use the new handoff instead.")
+    triage = st["pending_feedback"]
+    assert "Operator triage note" in triage and "Superseded automated review record" in triage
+    assert "do not repeat its requests" in triage
+    assert "Original finding" in triage and "Original criterion" in triage
+    assert "DM-001-review-1" in triage and "b" * 40 in triage
+
+    recovery = feedback_with_operator_note(
+        review, "Retry after the operator cleared the stop.", kind="recovery",
+        run_id="DM-001-review-1", source_head="b" * 40,
+    )
+    assert "Operator recovery note" in recovery
+    assert "remains applicable and this note supplements it" in recovery
+    assert "Original finding" in recovery and "review evidence" in recovery
 
 
 def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):

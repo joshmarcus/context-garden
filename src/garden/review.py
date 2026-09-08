@@ -782,9 +782,33 @@ def review_is_description_only(rev: dict[str, Any]) -> bool:
     return not any(f.get("severity") == "blocking" for f in findings) and not rev.get("description_ok", True)
 
 
-def feedback_from_review(rev: dict[str, Any]) -> str:
-    """The revise-brief text for a request_changes verdict."""
-    items = []
+def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: str = "") -> str:
+    """Return the complete review record needed by the next revision author.
+
+    A short scheduler or operator note is useful for triage, but is not a substitute for
+    the review that made the author revise.  Keep the finding fixes and failed criterion
+    assessments verbatim so a criterion-only rejection remains actionable too.
+    """
+    items = ["### Applicable automated review\n"]
+    source = "automated review"
+    if run_id:
+        source += f" run `{run_id}`"
+    if source_head:
+        source += f" on head `{source_head}`"
+    items.append(f"- **Source:** {source}")
+    if rev.get("summary"):
+        items.append(f"- **Summary:** {str(rev['summary'])}")
+    criteria = [criterion for criterion in rev.get("criteria") or []
+                if isinstance(criterion, dict) and criterion.get("met") is not True]
+    if criteria:
+        items.append("\n### Failed acceptance criteria\n")
+        for criterion in criteria:
+            text = str(criterion.get("criterion") or "unnamed criterion")
+            reason = str(criterion.get("reason") or "reviewer did not provide a reason")
+            evidence = str(criterion.get("evidence") or "reviewer did not provide evidence")
+            items.append(f"- **{text}**\n  - **Reason:** {reason}\n  - **Evidence:** {evidence}")
+    if rev.get("findings"):
+        items.append("\n### Findings to address\n")
     for f in rev.get("findings") or []:
         if not isinstance(f, dict):
             continue
@@ -807,6 +831,24 @@ def feedback_from_review(rev: dict[str, Any]) -> str:
             why = str(item.get("why") or "")
             items.append(f"- **{area}{f' · {effort}' if effort else ''}**: {suggestion}" + (f" — {why}" if why else ""))
     return "\n".join(items)
+
+
+def feedback_with_operator_note(rev: dict[str, Any], note: str, *, kind: str,
+                                run_id: str = "", source_head: str = "",
+                                superseded: bool = False) -> str:
+    """Add an operator handoff without replacing the applicable review record."""
+    label = "Operator triage note" if kind == "triage" else "Operator recovery note"
+    handoff = f"## {label}\n\n{note.strip()}"
+    record = feedback_from_review(rev, run_id=run_id, source_head=source_head)
+    if superseded:
+        handoff += ("\n\nThe automated review record below is **superseded for this revision** "
+                    "by this handoff. Retain it for provenance; do not repeat its requests "
+                    "unless this note explicitly raises them again.")
+        heading = "## Superseded automated review record"
+    else:
+        handoff += "\n\nThe automated review record below remains applicable and this note supplements it."
+        heading = "## Applicable automated review record"
+    return f"{handoff}\n\n{heading}\n\n{record}"
 
 
 def _where(f: dict[str, Any]) -> str:
