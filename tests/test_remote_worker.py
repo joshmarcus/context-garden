@@ -189,6 +189,30 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
     assert response.json()["harness"] == ""
 
 
+def test_claim_replaces_controller_ui_paths_with_portable_paths(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    run.mode = "check"
+    run.harness = ""
+    (run.path / "checks_input.json").write_text(json.dumps({"specs": [
+        {"name": "ui", "python": "garden.walkthrough:ui_check",
+         "worktree": "/controller/worktree", "out_dir": "/controller/run/ui"},
+        {"name": "tests", "command": "pytest -q"},
+    ], "ctx": {"worktree": "/controller/worktree"}}))
+    run.save()
+
+    response = client.post(
+        "/api/runs/claim", json={"host": "build-1", "harnesses": []},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert response.status_code == 200
+    ui, tests = response.json()["checks"]["specs"]
+    assert "worktree" not in ui
+    assert ui["out_dir"] == f".garden-ui-check/{run.run_id}"
+    assert tests == {"name": "tests", "command": "pytest -q"}
+
+
 def test_remote_ui_check_uses_the_pull_workers_checkout(tmp_path):
     repo = tmp_path / "host" / "repos" / "DM-001"
     root = tmp_path / "host"
