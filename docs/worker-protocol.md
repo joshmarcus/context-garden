@@ -568,3 +568,26 @@ reach `ready`, whatever `plan.auto_approve` says.
   shows the same with the last run's log.
 - `garden brief WID-003 --stats` prints exactly what the next worker would receive and
   how big each section is.
+
+
+## Proportionate verification and evidence metadata
+
+Authors and reviewers receive the same verification guidance. Prove the requested
+outcome and explicit constraints; implementation details and equivalent meaningful
+checks may vary. Authors report source/command/result and artifact references in
+`verified[].evidence`; reviewers inspect existing evidence and report their conclusions.
+For served journeys, keep the actual actions and consequences in `interaction.events`
+and point to saved evidence where available. Check paths and facts before finishing.
+
+Missing metadata is an advisory, not another implementation round. A saved artifact
+may use a different schema or wording from the reviewer report. The controller no
+longer requires a JSON file whose states/events exactly equal the reviewer's paraphrase.
+The old author brief exposed per-criterion prose while the detailed interaction fields
+were only described to reviewers, and the review JSON example omitted the events it
+required. Both briefs now state the evidence contract and the example includes events.
+
+Actual failed checks, contradictory source identities, failed or materially unverified
+journeys, and explicit phase evidence holds still block. An unavailable reference is
+reported honestly; this policy does not manufacture a performed test or interaction.
+Final current-head checks and CI remain required. Reviewers should reuse inspectable
+passing evidence and identify the concrete defect or unmet outcome behind a send-back.
