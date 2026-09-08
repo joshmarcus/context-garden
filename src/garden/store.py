@@ -132,20 +132,22 @@ class Store:
                         meta, _ = split_frontmatter(goals.read_text())
                     except (OSError, ValueError):
                         meta = {}
-                phases.append(
-                    Phase(
-                        product=d.name,
-                        name=pd.name,
-                        path=pd,
-                        goals_path=goals if goals.exists() else None,
-                        specs=specs,
-                        docs=docs,
-                        tasks=tasks,
-                        plant=str(meta.get("plant") or ""),
-                        plate=str(meta.get("plate") or ""),
-                        meta=meta,
-                    )
+                phase = Phase(
+                    product=d.name,
+                    name=pd.name,
+                    path=pd,
+                    goals_path=goals if goals.exists() else None,
+                    specs=specs,
+                    docs=docs,
+                    tasks=tasks,
+                    plant=str(meta.get("plant") or ""),
+                    plate=str(meta.get("plate") or ""),
+                    meta=meta,
                 )
+                # Fail while loading an invalid phase owner rather than later, when a view
+                # first asks for its effective task ownership.
+                _ = phase.owner
+                phases.append(phase)
             # botanical emblems: explicit in goals.md frontmatter, else the plant at this phase's
             # position (wrapping if there are more phases than plants; the plate number still
             # distinguishes them). Purely positional, so pinning one phase's plant never moves

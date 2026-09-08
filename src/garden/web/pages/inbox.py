@@ -22,6 +22,10 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         sched = hub.reader()
         items = build_inbox(s, sched)
+        owner = request.query_params.get("owner")
+        if owner is not None:
+            owner = "" if owner == "-" else owner
+            items = [item for item in items if not item.get("task") or item.get("owner", "") == owner]
         tasks = s.tasks()
         evs = EventLog(s.config.garden_dir / "events.jsonl")
         all_events = evs.read()
@@ -38,7 +42,7 @@ def register(app: FastAPI, site: Site) -> None:
             [event for event in all_events if event.get("kind") == "merge_head"],
         )
         return templates.TemplateResponse(request, "inbox.html", ctx(
-            request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
+            request, page="inbox", items=items, groups=GROUPS, owner_filter=owner, prs_open=sum(1 for t in open_tasks if t.pr),
             tool_build=sched.upgrade_status(),
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
             burnup=burnup_svg(all_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}),

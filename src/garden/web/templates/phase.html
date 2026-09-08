@@ -4,7 +4,7 @@
 {% if phase.frozen %}<div class="warn">frozen since {{ phase.frozen }} — approve and dispatch refuse this phase's tasks unless a task carries <code>freeze_exception: true</code> with a <code>freeze_exception_reason</code>, and planning is blocked outright. <code>garden unfreeze {{ phase.key }}</code> lifts it.</div>{% endif %}
 <div class="page-head">
   <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}{% if phase.frozen %} <span class="badge hot">frozen</span>{% endif %}</h1>
-    <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
+    <p>spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · default owner {{ phase.owner or 'unassigned' }} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
     <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
       <span class="muted">Budget $</span>
       <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px" onblur="this.form.requestSubmit()">
@@ -31,9 +31,9 @@
         {% else %}<a href="?hide=done" class="btn quiet" data-hide-toggle>hide {{ hidden_count }} done</a>{% endif %}
       </div>
       <div class="scroll"><table>
-      <tr><th>id</th><th>status</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>brief</th><th>tokens</th><th>cost</th></tr>
+      <tr><th>id</th><th>status</th><th>owner</th><th>p</th><th>tier</th><th>title</th><th>deps</th><th>pr</th><th>review</th><th>ci</th><th>rev</th><th>brief</th><th>tokens</th><th>cost</th></tr>
       {% for t, eff, st, u, brief_tok in rows %}
-      <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="state s-{{ eff }}" title="{{ stage_word(eff) }}">{{ stage(eff, 18) }}{{ eff.replace('_',' ') }}</span></td><td>{{ priority_label(t.priority) }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
+      <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="state s-{{ eff }}" title="{{ stage_word(eff) }}">{{ stage(eff, 18) }}{{ eff.replace('_',' ') }}</span></td><td>{{ t.owner or phase.owner or 'unassigned' }}</td><td>{{ priority_label(t.priority) }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
         <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% if st.pr_draft %} <span class="badge">draft</span>{% endif %}{% endif %}</td>
         <td class="muted">{% if st.last_review %}auto: {{ st.last_review.verdict.replace('_', ' ') }}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
         <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ (st.checks or '').lower() }}</td>
@@ -41,7 +41,7 @@
         <td class="muted mono">~{{ '{:,}'.format(brief_tok) }}</td>
         <td class="muted mono" title="input / cache-read / output">{% if u.runs %}{{ '{:,}'.format(u.input_tokens) }} / {{ '{:,}'.format(u.cache_read_input_tokens) }} / {{ '{:,}'.format(u.output_tokens) }}{% endif %}</td>
         <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
-      {% else %}<tr><td colspan="13" class="faint">{% if hide_done and hidden_count %}all {{ hidden_count }} tasks are done{% else %}no tasks yet{% endif %}</td></tr>{% endfor %}
+      {% else %}<tr><td colspan="14" class="faint">{% if hide_done and hidden_count %}all {{ hidden_count }} tasks are done{% else %}no tasks yet{% endif %}</td></tr>{% endfor %}
       </table></div>
       <div class="actions" style="margin-top:12px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>
