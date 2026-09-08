@@ -134,6 +134,145 @@ def test_claimed_review_recovery_preserves_logical_round_and_exhausts_to_decisio
     assert not st.get("last_review")
 
 
+def test_timed_out_review_applies_a_collected_verdict_once(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"]["enabled"] = True
+    for _ in range(5):
+        sched.tick()
+        if sched.state.get("DM-001").get("review_run"):
+            break
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    (run.path / "exit_code").unlink()
+    collected = []
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    original_collect = runner_type.collect
+
+    def collect_once(self, finished):
+        collected.append(finished.run_id)
+        return original_collect(self, finished)
+
+    def timeout(finished, _runner):
+        finished.status = "timeout"
+        finished.error = "claimed worker timed out"
+        finished.save()
+        return True
+
+    monkeypatch.setattr(runner_type, "collect", collect_once)
+    monkeypatch.setattr(sched, "_finished_or_timed_out", timeout)
+
+    assert sched.reap_review(task, TickReport())
+    assert collected == [run.run_id]
+    assert st["last_review_run"] == run.run_id
+    assert st["last_review"]["verdict"] == "approve"
+    assert st["review_rounds"] == 1
+    assert not st.get("review_run")
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert sched.reap_review(task, TickReport()) is False
+    assert collected == [run.run_id]
+
+
+def test_review_audit_preserves_the_round_of_a_lost_started_review(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 1})
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1})
+    lost = sched.runs.new_run(task.id, "local", mode="review")
+    lost.status = "timeout"
+    lost.pid = 123
+    lost.error = "host stopped after claim"
+    lost.env_snapshot = {"review_head": "current", "count_round": True}
+    lost.save()
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["review_rounds"] == 1
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    assert st["review_recovery"]["started"] is True
+    assert st["review_recovery"]["last_run"] == lost.run_id
+    assert rep.transitions == ["DM-001 review recovery queued (1/2)"]
+
+
+@pytest.mark.parametrize("event_already_emitted", [False, True])
+def test_review_audit_applies_a_lost_terminal_result_once(
+        sched, event_already_emitted):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 1})
+    wt = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task),
+        task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st.update({"head_sha": head, "review_rounds": 1})
+    completed = sched.runs.new_run(task.id, "local", mode="review")
+    completed.status = "done"
+    completed.result = {"verdict": "approve", "summary": "valid terminal verdict",
+                        "criteria": [], "findings": []}
+    completed.env_snapshot = {"review_head": head, "count_round": True}
+    completed.save()
+    if event_already_emitted:
+        sched.events.emit("run_finished", task.id, run=completed.run_id,
+                          mode="review", status="approve")
+
+    first = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), first)
+    sched._audit_review_continuations(sched.store.tasks(), first)
+
+    assert st["last_review_run"] == completed.run_id
+    assert st["last_review"]["verdict"] == "approve"
+    assert not st.get("review_run")
+    assert not st.get("pending_reviews")
+    finished = [event for event in sched.events.read(task_id=task.id, kinds=["run_finished"])
+                if event.get("run") == completed.run_id]
+    assert len(finished) == 1
+
+
+def test_served_tick_recovers_an_unstarted_review_with_original_round_intent(sched, fake_github):
+    import yaml
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    config_path = sched.store.root / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["review"].update({"enabled": True, "max_rounds": 2, "recovery_attempts": 2,
+                             "recovery_backoff_seconds": 300})
+    config_path.write_text(yaml.safe_dump(config))
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1})
+    lost = sched.runs.new_run(task.id, "local", mode="review")
+    lost.status = "failed"
+    lost.error = "startup failed before execution was confirmed"
+    lost.env_snapshot = {"review_head": "current", "count_round": True}
+    lost.save()
+    sched.state.save()
+
+    client = TestClient(create_app(Store(sched.store.root), watch=False, github=fake_github))
+    response = client.post("/tick")
+
+    assert response.status_code == 200
+    recovered = Scheduler(Store(sched.store.root), github=fake_github).state.get(task.id)
+    assert recovered["review_rounds"] == 0
+    assert recovered["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert recovered["review_recovery"]["started"] is False
+    assert recovered["review_recovery"]["last_run"] == lost.run_id
+
+
 def test_review_audit_restores_a_lost_additional_round_once(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
@@ -148,6 +287,7 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     prior.env_snapshot = {"review_head": "current"}
     prior.result = {"verdict": "approve"}
     prior.save()
+    st["last_review_run"] = prior.run_id
     assert sched.cfg.product(task.product)["automerge_min_review_rounds"] == 2
     assert sched._review_round_pending(st)
     assert sched.store.tasks()[task.id].status == Status.IN_REVIEW
@@ -1347,6 +1487,118 @@ def _review_after_completed_empty_replay(sched, task):
                                 task.branch or task.default_branch(), sched.base_for(task))
     sched.state.get(task.id)["interaction_replay"] = {"head": gitops.head_sha(wt)}
     return sched.dispatch_review(task)
+
+
+def test_interaction_replay_defers_model_review_and_survives_collection(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    check = sched.dispatch_review(task)
+    assert check.mode == "check"
+    assert not sched.state.get(task.id).get("review_run")
+    assert sched.state.get(task.id).get("review_rounds", 0) == 0
+    # Repeated requests while the detached check owns the slot must reuse that run.
+    assert sched.dispatch_review(task).run_id == check.run_id
+    assert len([r for r in sched.runs.runs_for(task.id) if r.mode == "check"]) == 1
+    info = sched.state.get(task.id)["check_run"]
+    manifest = Path(info["cont"]["manifest"])
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text('{"fixture": "completed independently before reviewer"}')
+    (check.path / "checks.json").write_text(json.dumps([
+        {"name": "interaction replay", "status": "pass", "summary": "fixture"}]))
+    (check.path / "exit_code").write_text("0")
+    sched.state.save()
+    sched = Scheduler(Store(sched.store.root), github=sched.github)
+    task = sched.store.task(task.id)
+    assert sched.reap_check(task, TickReport())
+    digest = sched.state.get(task.id)["interaction_replay"]["digest"]
+    assert digest == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    run = sched.dispatch_review(task)
+    assert run.mode == "review"
+    assert run.env_snapshot["interaction_replay_digest"] == digest
+    assert sched.state.get(task.id)["review_rounds"] == 1
+
+
+def test_interaction_replay_is_the_matching_current_validation_check(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "current-head")
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    stale = sched.runs.new_run(task.id, "local", mode="check")
+    stale.status = "done"
+    stale.env_snapshot = {"validation_plan": validation_plan(
+        ["src/garden/review.py"], task.title, head="old-head")}
+    stale.save()
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks", lambda *_args: None)
+
+    replay = sched.dispatch_review(task)
+    assert replay.mode == "check"
+    assert replay.env_snapshot["validation_plan"]["head"] == "current-head"
+    info = sched.state.get(task.id)["check_run"]
+    manifest = Path(info["cont"]["manifest"])
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text('{"head":"current-head","events":[]}')
+    (replay.path / "checks.json").write_text(json.dumps([
+        {"name": "interaction replay", "status": "pass", "summary": "served journey passed"}]))
+    (replay.path / "exit_code").write_text("0")
+    assert sched.reap_check(task, TickReport())
+
+    review = sched.dispatch_review(task)
+    assert review.mode == "review"
+    assert review.env_snapshot["validation_plan"]["head"] == "current-head"
+    assert review.env_snapshot["validation_check_current"] is True
+
+
+def test_remote_authored_interaction_replay_stays_on_controller_and_records_ownership(sched, monkeypatch):
+    """A replay command contains controller paths, so task runner inheritance is unsafe."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    check = sched.dispatch_review(task)
+
+    assert check.runner == "local"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "local", "provenance": "controller-owned replay inputs",
+    }
+    assert sched.state.get(task.id)["check_run"]["backend"] == "local"
+    command = submitted[0][1]["specs"][0]["command"]
+    assert str(sched.worktree_for(task)) in command
+    assert str(sched.cfg.garden_dir / "interaction-replays") in command
+
+
+@pytest.mark.parametrize("nonce", ["-leading", "--double-hyphen", "ordinary_urlsafe_value"])
+def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, monkeypatch, nonce):
+    """CG-456: replay nonce identity reaches argparse even when it resembles an option."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    monkeypatch.setattr("garden.scheduler.review.secrets.token_urlsafe", lambda _size: nonce)
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, _run, _worktree, payload: submitted.append(payload))
+
+    sched.dispatch_review(task)
+
+    command = submitted[0]["specs"][0]["command"]
+    argv = shlex.split(command)
+    replay_argv = argv[argv.index("garden.interaction_replay") + 1:]
+    parsed = interaction_replay.parse_args(replay_argv)
+    assert parsed.nonce == nonce
+    continuation = sched.state.get(task.id)["check_run"]["cont"]
+    assert parsed.head == continuation["head"]
+    assert continuation["nonce"] == nonce
 
 
 def test_remote_authored_portable_check_remains_remote(sched):
