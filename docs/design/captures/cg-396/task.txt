@@ -79,6 +79,8 @@ qa-worker: needs_input
         branch—
         PR—
 
+        exact-head CIworker_check · missing · abc123 · stale · absent for SHA
+
         attempts0
         runnerdefault / default harness
         updated2026-01-01T00:00

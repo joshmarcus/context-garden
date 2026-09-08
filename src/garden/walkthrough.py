@@ -733,9 +733,16 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
 def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
     from .qa.sandbox import make_garden
+    from .scheduler.state import State
 
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
+        state = State(garden_root / ".garden" / "state.json")
+        state.get("DM-001")["ci_status"] = {
+            "provider": "worker_check", "state": "missing", "queried_sha": "abc123",
+            "stale": True, "exists_for_sha": False, "evidence_url": "", "failures": [],
+        }
+        state.save()
         store = Store(garden_root)
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,

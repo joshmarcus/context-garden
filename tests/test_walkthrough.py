@@ -184,6 +184,9 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "ui" / "now.html").exists()
     assert (tmp_path / "ui" / "board.html").exists()
     assert (tmp_path / "ui" / "task.html").exists()
+    task_page = (tmp_path / "ui" / "task.html").read_text()
+    assert "exact-head CI" in task_page
+    assert "stale" in task_page and "absent for SHA" in task_page
     for slug in ("now", "inbox", "board", "task"):
         for width in VIEWPORTS:
             for scheme in COLOR_SCHEMES:
