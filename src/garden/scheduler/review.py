@@ -532,7 +532,7 @@ class ReviewMixin:
             command = shlex.join([
                 "env", f"PYTHONPATH={wt / 'src'}", sys.executable,
                 "-m", module, "--out", str(out),
-                "--head", review_head, "--nonce", nonce,
+                "--head", review_head, f"--nonce={nonce}",
             ])
             return self._dispatch_check_run(
                 task, worktree=wt, branch=branch, base=base,
