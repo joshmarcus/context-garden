@@ -117,8 +117,9 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
                 ["git", "rev-parse", "HEAD"], text=True, timeout=10,
             ).strip(),
             "command": (
-                "PYTHONPATH=src .venv/bin/python -m pytest "
-                "docs/design/cg443-validation/replay_test.py -q"
+                "timeout --signal=TERM --kill-after=10s 900 $GARDEN_VALIDATION_RUNNER "
+                "-m garden.validation -- .venv/bin/python -m pytest --timeout=120 "
+                "--timeout-method=thread docs/design/cg443-validation/replay_test.py -q"
             ),
             "started_at": started,
             "finished_at": datetime.now(UTC).isoformat(),
