@@ -2,11 +2,12 @@
 <ul class="tl">
 {% for ev in events %}
 {% set t = ev.get("type","") %}
-{% set msg_content = (ev.get("message") or {}).get("content") or [] %}
+{% set message = ev.get("message") %}
+{% set msg_content = message.get("content") or [] if message is mapping else [] %}
 {% if t == "assistant" %}
   {% for p in msg_content %}
-  {% if p.get("type") == "tool_use" %}
-  {% set inp = p.get("input") or {} %}
+  {% if p is mapping and p.get("type") == "tool_use" %}
+  {% set inp = p.get("input") if p.get("input") is mapping else {} %}
 <li>
   <span class="faint mono">tool</span>
   <span class="k">{{ p.get("name","") }}</span>
@@ -17,7 +18,7 @@
     {%- endif %}
   </span>
 </li>
-  {% elif p.get("type") == "text" and p.get("text","").strip() %}
+  {% elif p is mapping and p.get("type") == "text" and (p.get("text", "") | string).strip() %}
 <li>
   <span class="faint mono">text</span>
   <span class="k"></span>
@@ -27,17 +28,53 @@
   {% endfor %}
 {% elif t == "user" %}
   {% for p in msg_content %}
-  {% if p.get("type") == "tool_result" %}
+  {% if p is mapping and p.get("type") == "tool_result" %}
   {% set c = p.get("content") or [] %}
 <li>
   <span class="faint mono">result</span>
   <span class="k"></span>
   <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-    {%- if c is string %}{{ c[:160] }}{%- elif c and c[0] is mapping and c[0].get("text") %}{{ c[0].text[:160] }}{%- endif %}
+    {%- if c is string %}{{ c[:160] }}{%- elif c is sequence and c and c[0] is mapping and c[0].get("text") %}{{ (c[0].get("text") | string)[:160] }}{%- endif %}
   </span>
 </li>
   {% endif %}
   {% endfor %}
+{% elif t in ("item.started", "item.completed") and ev.get("item") is mapping %}
+  {% set item = ev.get("item") %}
+  {% set item_type = item.get("type", "") %}
+  {% set item_text = item.get("text", "") | string %}
+  {% if item_type == "agent_message" and item_text.strip() %}
+<li>
+  <span class="faint mono">text</span>
+  <span class="k"></span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ item_text[:160] }}</span>
+</li>
+  {% elif item_type == "command_execution" %}
+<li>
+  <span class="faint mono">tool</span>
+  <span class="k">command</span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("command") | string)[:160] }}</span>
+</li>
+    {% if item.get("aggregated_output") %}
+<li>
+  <span class="faint mono">result</span>
+  <span class="k"></span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("aggregated_output") | string)[:160] }}</span>
+</li>
+    {% endif %}
+  {% elif item_type == "file_change" %}
+<li>
+  <span class="faint mono">tool</span>
+  <span class="k">file change</span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("changes") | string)[:160] }}</span>
+</li>
+  {% elif item_type and (item.get("output") or item.get("text")) %}
+<li>
+  <span class="faint mono">tool</span>
+  <span class="k">{{ item_type }}</span>
+  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ((item.get("output") or item.get("text")) | string)[:160] }}</span>
+</li>
+  {% endif %}
 {% elif t not in ("system",) %}
 <li>
   <span class="faint mono">{{ t }}</span>

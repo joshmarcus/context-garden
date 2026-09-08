@@ -12,6 +12,22 @@ from ..common import Site
 from .design import recorded_captures
 
 
+def _is_streamed_transcript(events: list[dict[str, object]], output: str = "") -> bool:
+    """Whether stdout is a turn-by-turn Claude or Codex conversation.
+
+    The configured harness answers this before a newly-started worker has emitted its first
+    event.  Event shapes retain transcripts from older records that predate the harness field.
+    """
+    if output in {"claude-stream-json", "codex-jsonl"}:
+        return True
+    for event in events:
+        event_type = event.get("type")
+        if event_type in {"assistant", "user", "item.completed", "item.started",
+                          "thread.started", "turn.started", "turn.completed", "turn.failed"}:
+            return True
+    return False
+
+
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
 
@@ -40,17 +56,18 @@ def register(app: FastAPI, site: Site) -> None:
                 check_result = {"run_id": cr.run_id, "status": cr.status,
                                 "checks": (cr.result or {}).get("checks", [])}
         events = run.stdout_events(n=None)
-        # A streamed transcript is claude's stream-json (assistant/user turns + a final result);
-        # plain claude-json is one result object with no turns. Trust the harness config when it
-        # is known (so a just-started run tails before its first event), and fall back to sniffing
-        # the events for older runs whose harness is unrecorded.
-        is_stream = any(e.get("type") in ("assistant", "user") for e in events)
-        if not is_stream and run.harness:
+        # Trust the configured harness before a new worker has written stdout, then retain
+        # older transcript records by recognizing their Claude/Codex event envelopes.
+        output = ""
+        if run.harness:
             try:
                 h = s.config.harness(run.harness)
-                is_stream = h.output == "claude-json" and str(h.cfg.get("output_format") or "json") == "stream-json"
+                output = h.output
+                if output == "claude-json" and str(h.cfg.get("output_format") or "json") == "stream-json":
+                    output = "claude-stream-json"
             except Exception:  # noqa: BLE001
                 pass
+        is_stream = _is_streamed_transcript(events, output)
         final_path = run.path / "final.md"
         final_text = final_path.read_text() if final_path.exists() else ""
         if not final_text:
