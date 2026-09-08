@@ -487,7 +487,7 @@ def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
     page = client(garden).get("/tasks/DM-001").text
     assert "exact-head CI" in page
     assert "worker_check · mismatched" in page
-    assert "abc123" in page and "stale" in page
+    assert "abc123" in page and "stale" in page and "absent for SHA" in page
 
 
 def test_operator_owned_scope_is_recorded_from_the_inbox(garden):

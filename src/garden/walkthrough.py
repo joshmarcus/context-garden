@@ -852,6 +852,12 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
 
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
+        state = State(garden_root / ".garden" / "state.json")
+        state.get("DM-001")["ci_status"] = {
+            "provider": "worker_check", "state": "missing", "queried_sha": "abc123",
+            "stale": True, "exists_for_sha": False, "evidence_url": "", "failures": [],
+        }
+        state.save()
         store = Store(garden_root)
         # Keep the visual fixture representative even before a worker has run: the
         # walkthrough must always give personas a real decision card to inspect.
