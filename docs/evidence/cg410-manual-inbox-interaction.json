@@ -1,5 +1,5 @@
 {
-  "head": "2738f7aed90b7d1924c71c68df133c0eb0612408",
+  "head": "202b9b2003252efa805c96f1c9ca1f76293117fc",
   "environment": "disposable local garden fixture served at 127.0.0.1:8876",
   "command": "python scripts/capture_cg410.py",
   "states": [
@@ -58,7 +58,11 @@
     "docs/design/captures/cg-410-manual-inbox-1280-dark.png",
     "docs/design/captures/cg-410-manual-inbox-1280-light.png",
     "docs/design/captures/cg-410-manual-inbox-390-dark.png",
-    "docs/design/captures/cg-410-manual-inbox-390-light.png"
+    "docs/design/captures/cg-410-manual-inbox-390-light.png",
+    "docs/design/captures/cg-410-manual-task-1280-dark.png",
+    "docs/design/captures/cg-410-manual-task-1280-light.png",
+    "docs/design/captures/cg-410-manual-task-390-dark.png",
+    "docs/design/captures/cg-410-manual-task-390-light.png"
   ],
   "render": [
     {
