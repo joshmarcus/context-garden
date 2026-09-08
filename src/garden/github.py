@@ -120,8 +120,16 @@ def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | 
     public GitHub URL before looking it up prevents a same-numbered PR in the
     configured repository from being mistaken for an operator-supplied external PR.
     """
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != host.lower().rstrip(".") or parsed.port not in (None, 443):
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    # A PR link is an identifier, not a request URL.  Credentials and URL decorations
+    # have no identity meaning here and must not be copied into task or run records.
+    if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment
+            or parsed.hostname != host.lower().rstrip(".") or port not in (None, 443)):
         return None
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) != 4 or parts[2] != "pull" or "/".join(parts[:2]).lower() != slug.lower():
