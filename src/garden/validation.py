@@ -10,7 +10,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 POLICY_SOURCE_SHA = "887dbf76430e7ea8688a73eaa5392a210d4a36e6"
 STRESS_NODES = (
     "tests/test_web.py::test_initial_pages_stay_bounded_with_large_run_history",
