@@ -219,12 +219,19 @@ def doctor():
             # scrubbed_env), not doctor's own shell: a harness reachable there is what
             # actually dispatches. A trivial one-line prompt, not an "auth status" probe, so
             # a custom harness with no such subcommand is checked the same way.
-            ok, detail = h.check_login(scrubbed_env(store.config.data))
+            try:
+                worker_environment = scrubbed_env(store.config.data)
+            except Exception as exc:  # policy errors are reported without source paths/content
+                console.print(f"harness {hn}: [red]worker configuration unavailable[/red] "
+                              f"({type(exc).__name__}: {exc})")
+                fail(f"harness {hn}")
+                continue
+            ok, detail = h.check_login(worker_environment)
             if ok:
                 console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
-                fix = detail or f"run {h.bin}'s login command"
-                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  (fix: {fix})  "
+                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  "
+                              f"(fix: run {h.bin}'s login command)  "
                               f"models={h.cfg.get('models') or 'cli default'}  {found}")
                 fail(f"harness {hn}")
         else:
@@ -250,7 +257,9 @@ def doctor():
         fail("git identity")
     for name in sorted(runner_names):
         try:
-            cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}
+            cfg = dict(store.config.get("ssh" if name == "ssh" else "workers", {}) or {}) \
+                if name in {"ssh", "remote"} else {}
+            cfg["worker_env"] = dict(store.config.get("worker_env") or {})
             r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
             probs = r.doctor()
         except Exception as e:  # noqa: BLE001

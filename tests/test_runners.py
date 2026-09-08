@@ -770,6 +770,39 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
 
 
 @pytest.mark.needs_remote_clone
+def test_ssh_remote_worker_installs_only_named_config_file(sched, garden, fake_github, tmp_path, monkeypatch):
+    source = tmp_path / "synthetic-tool.json"
+    source.write_text("approved-tool-config")
+    unrelated = tmp_path / "unrelated-instructions.md"
+    unrelated.write_text("SECRET_SENTINEL_DENIED")
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg.setdefault("worker_env", {})["config_files"] = {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }
+    cfg["products"]["demo"]["setup"] = {
+        "command": "test \"$(cat \"$HOME/.config/synthetic/tool.json\")\" = approved-tool-config "
+                   "&& test \"$(stat -c %a \"$HOME/.config/synthetic/tool.json\")\" = 600",
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    task = sc.store.task("DM-001")
+    task.runner = "ssh"
+    sc.store.save(task)
+    sc.tick()
+    run = sc.runs.latest("DM-001")
+    _wait_for_child(run)
+
+    assert run.read_exit_code() == 0
+    public_outputs = [run.path / "brief.md", run.path / "stdout.json", run.path / "stderr.log",
+                      garden / ".garden/events.jsonl", task.path]
+    assert all("SECRET_SENTINEL_DENIED" not in path.read_text() for path in public_outputs if path.exists())
+
+
+@pytest.mark.needs_remote_clone
 def test_ssh_remote_worker_keeps_custom_config_dir_variable(sched, garden, fake_github, tmp_path, monkeypatch):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg.setdefault("worker_env", {})["config_dirs"] = {"CUSTOM_HARNESS_HOME": "/srv/custom-creds"}

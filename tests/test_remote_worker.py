@@ -90,12 +90,15 @@ def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):
 
     class Probe:
         returncode = 1
+        stdout = ""
+        stderr = "SECRET_SENTINEL_AUTH_REVOKED"
 
     monkeypatch.setattr("garden.remote_worker.subprocess.run", lambda *args, **kwargs: Probe())
 
     assert doctor_worker("", "https://example.test/team/repo.git", ["claude"]) == [
         "worker bearer token is missing",
         "git cannot read 'https://example.test/team/repo.git'",
+        "harness 'claude' authentication failed in scrubbed environment",
     ]
 
     monkeypatch.setattr(
@@ -105,6 +108,21 @@ def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):
     assert doctor_worker("token", "", ["claude"]) == [
         "harness 'claude' is not on PATH",
     ]
+
+
+def test_portable_worker_installs_claimed_config_mapping(tmp_path, monkeypatch):
+    from garden.remote_worker import _env
+
+    source = tmp_path / "host-tool.json"
+    source.write_text("portable-tool-config")
+    run = {"task_id": "T-1", "id": "run-1", "config_files": {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }}
+    env = _env(["PATH"], tmp_path / "repo", run)
+    copied = Path(env["HOME"]) / ".config/synthetic/tool.json"
+    assert copied.read_text() == "portable-tool-config"
+    assert copied.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])

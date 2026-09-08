@@ -232,6 +232,9 @@ def register(app: FastAPI, site: Site) -> None:
                     "setup": {"command": str(setup.get("command") or ""),
                               "timeout_seconds": int(setup.get("timeout_seconds") or 600)},
                     "env_allowlist": pass_env_patterns(hub.store.config.data),
+                    # Only mapping metadata crosses; file contents and credentials remain
+                    # host-local and are resolved by the portable worker.
+                    "config_files": dict(hub.store.config.get("worker_env.config_files") or {}),
                     "harness": run.harness, "model": run.model, "difficulty": run.difficulty,
                     # Command arguments may contain inline API keys. Remote hosts use the
                     # built-in harness defaults; only inert executable/output settings cross.
@@ -254,7 +257,8 @@ def register(app: FastAPI, site: Site) -> None:
                         "ctx": ctx,
                         "timeout": int(check_payload.get("timeout") or 600),
                         "config": {"worker_env": {
-                            "pass": list(((check_payload.get("config") or {}).get("worker_env") or {}).get("pass") or [])
+                            "pass": list(((check_payload.get("config") or {}).get("worker_env") or {}).get("pass") or []),
+                            "config_files": dict(((check_payload.get("config") or {}).get("worker_env") or {}).get("config_files") or {}),
                         }},
                         **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
                     }
