@@ -414,8 +414,9 @@ class DispatchMixin:
         wt_path = worktree_override or self.worktree_for(task)
         checkout_config = self.cfg.product_checkout(task.product)
         canonical_root = configured_root(checkout_config, self.store.root) if not runner.remote else None
-        if canonical_root is not None:
-            canonical_root = self.prepare_canonical_run(task, run, runner, branch, base)
+        prepared_root = self.prepare_canonical_run(task, run, runner, branch, base)
+        if prepared_root is not None:
+            canonical_root = prepared_root
         # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
         # below as a commit) before anything else touches the worktree, so they are recovered
         # by `git stash apply`, not buried in a backup branch's synthetic commit.

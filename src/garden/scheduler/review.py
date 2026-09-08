@@ -402,7 +402,18 @@ class ReviewMixin:
         self._supersede_running_review(task)
         base = self.base_for(task)
         branch = task.branch or task.default_branch()
-        wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        canonical_enabled = str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place"
+        run: Run | None = None
+        canonical = None
+        if canonical_enabled:
+            run = (self.runs.new_run(task.id, "remote", mode="review")
+                   if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
+            run.branch, run.base = branch, base
+            canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+        wt = canonical or gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        if run is not None:
+            run.worktree = str(wt)
+            run.save()
         diff = gitops.diff(wt, base)
         review_head = gitops.head_sha(wt)
         changed = gitops.diff_names(wt, base)
@@ -500,6 +511,14 @@ class ReviewMixin:
             if current.get("run_id"):
                 existing = self._run_by_id(task, current["run_id"])
                 if existing is not None:
+                    if run is not None:
+                        run.status = "superseded"
+                        run.finished_at = now_iso()
+                        run.save()
+                    if canonical is not None:
+                        from ..canonical import release
+
+                        release(canonical, run.run_id)
                     return existing
             nonce = secrets.token_urlsafe(24)
             out = self.cfg.garden_dir / "interaction-replays" / task.id / nonce
@@ -514,6 +533,14 @@ class ReviewMixin:
                 "-m", module, "--out", str(out),
                 "--head", review_head, "--nonce", nonce,
             ])
+            if run is not None:
+                run.status = "superseded"
+                run.finished_at = now_iso()
+                run.save()
+            if canonical is not None:
+                from ..canonical import release
+
+                release(canonical, run.run_id)
             return self._dispatch_check_run(
                 task, worktree=wt, branch=branch, base=base,
                 specs=[{"name": "interaction replay", "command": command}],
@@ -525,8 +552,9 @@ class ReviewMixin:
         replay_nonce = str(replay.get("nonce") or "") if needs_interaction and not reusable_author_interaction else ""
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
-        run = (self.runs.new_run(task.id, "remote", mode="review")
-               if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
+        if run is None:
+            run = (self.runs.new_run(task.id, "remote", mode="review")
+                   if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
@@ -568,10 +596,6 @@ class ReviewMixin:
             run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
                                      "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
         run.brief_tokens = max(1, len(text) // 4)
-        canonical = self.prepare_canonical_run(task, run, runner, branch, base)
-        if canonical is not None:
-            wt = canonical
-            run.worktree = str(canonical)
         run.save()
         runner.start(run, wt, text)
         st = self.state.get(task.id)

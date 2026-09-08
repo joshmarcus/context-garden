@@ -77,6 +77,16 @@ class RebaseMixin:
             self.log(f"{task.id}: external stack owner controls {branch}; skipped automatic rebase")
             return RebaseOutcome("error", wt, branch)
         repo = self.repo_for(task)
+        canonical_enabled = str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place"
+        run = self.runs.new_run(task.id, "local", mode="rebase") if canonical_enabled else None
+        if run is not None:
+            run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+            runner = self.runner_for(task, "local")
+            canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+            if canonical is not None:
+                wt = canonical
+                run.worktree = str(wt)
+                run.save()
         patch_before = ""
         artifact_dir: Path | None = None
         try:
@@ -100,7 +110,13 @@ class RebaseMixin:
                 artifacts = json.loads(manifest.read_text())
                 for item in artifacts.values():
                     item["manifest"] = str(manifest)
-            return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks, artifacts=artifacts)
+            if run is not None:
+                run.mode = "canonical"
+                run.status = "done"
+                run.error = "mechanical rebase conflicts; agent resolution required"
+                run.finished_at = now_iso()
+                run.save()
+            return RebaseOutcome("conflict", wt, branch, run=run, files=files, hunks=hunks, artifacts=artifacts)
         if skip_if_current:
             # A branch already on the base's tip whose diff is exactly what was reviewed: the
             # rebase above was a no-op, origin already holds this head, and the verdict still
@@ -117,9 +133,16 @@ class RebaseMixin:
                 if reason:
                     task.log(f"{reason}; already on {base}'s tip; not rebased or pushed")
                     self.store.save(task)
-                return RebaseOutcome("current", wt, branch)
-        run = self.runs.new_run(task.id, "local", mode="rebase")
-        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+                if run is not None:
+                    run.mode = "canonical"
+                    run.status = "done"
+                    run.cost_usd = 0.0
+                    run.finished_at = now_iso()
+                    run.save()
+                return RebaseOutcome("current", wt, branch, run=run)
+        if run is None:
+            run = self.runs.new_run(task.id, "local", mode="rebase")
+            run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
         try:
             note = gitops.push(wt, branch, force=True)
             if note:
