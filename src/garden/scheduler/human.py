@@ -9,6 +9,7 @@ from typing import Any
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
 from ..github import GitHubError, mark_garden_comment
+from ..graph import blockers
 from ..model import (
     Phase,
     Status,
@@ -20,6 +21,7 @@ from ..model import (
     priority_label,
 )
 from ..review import feedback_with_operator_note, review_item_ids
+from ..runner.manual import ManualRunner
 from ..runs import Run
 from ..stabilization import ACTORS
 from .report import TickReport
@@ -48,6 +50,31 @@ class HumanMixin:
         if reviewed:
             st["last_review_head"] = reviewed
         return reviewed
+
+    def take_manual(self, task: Task) -> Run:
+        """Claim a currently eligible manual task exactly once for the web Inbox.
+
+        The Inbox lock serializes browser requests, while these checks make a stale card
+        harmless if another action claimed or changed the task first.
+        """
+        ensure_open(task)
+        runner = self.runner_for(task)
+        if runner.detached:
+            raise RuntimeError(f"{task.id} is assigned to the {runner.name} runner, not manual work")
+        if task.status == Status.RUNNING or self.worker_run_in_flight(task.id):
+            raise RuntimeError(f"{task.id} is already claimed; its manual session is active")
+        if task.status not in (Status.READY, Status.CHANGES_REQUESTED):
+            raise RuntimeError(f"{task.id} is {task.status.value}, not ready to take")
+        if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled):
+            raise RuntimeError(f"{task.id} is waiting for dependencies and cannot be taken yet")
+        if task.status == Status.CHANGES_REQUESTED:
+            st = self.state.get(task.id)
+            if not str(st.get("pending_feedback") or "").strip():
+                raise RuntimeError(f"{task.id} has no revision feedback to resume manually")
+            if int(st.get("revisions", 0)) >= int(self.cfg.get("max_revisions", 3)):
+                raise RuntimeError(f"{task.id} reached its revision limit; resolve its Inbox decision first")
+        mode = "revise" if task.status == Status.CHANGES_REQUESTED else "work"
+        return self.dispatch(task, mode=mode, runner=ManualRunner({}), worktree=False)
 
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:

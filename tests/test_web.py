@@ -49,6 +49,64 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
+    """The served Inbox owns the manual take journey, including stale-card recovery."""
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.runner = "manual"
+    store.save(task)
+    blocked = store.task("DM-002")
+    blocked.runner = "manual"
+    store.save(blocked)
+
+    c = client(garden)
+    inbox = c.get("/inbox").text
+    assert "Manual work ready" in inbox
+    assert "Take task" in inbox and "assignment: unclaimed manual session" in inbox
+    assert "Manual work waiting" in inbox
+    assert "dependencies must finish" in inbox
+
+    # Manual claims are independent of full automated-worker capacity.
+    runs = RunStore(garden / ".garden")
+    full_runs = [runs.new_run("DM-002", "local", "work"), runs.new_run("DM-002", "local", "work")]
+    assert Scheduler(Store(garden)).slots_free() == 0
+    taken = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
+    assert taken.status_code == 200
+    assert "DM-001 claimed" in taken.text
+    assert "claimed already; a manual session owns this task packet" in taken.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    run = RunStore(garden / ".garden").latest("DM-001")
+    assert run is not None and run.runner == "manual" and run.mode == "work"
+    packet = c.get("/tasks/DM-001/packet")
+    assert packet.status_code == 200 and "DM-001" in packet.text
+
+    # Replaying a rendered-but-stale take form cannot create a second run.
+    stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
+    assert stale.status_code == 200
+    assert "already claimed" in stale.text
+    assert len(RunStore(garden / ".garden").runs_for("DM-001")) == 1
+
+    # A phase freeze and feedback pause are explicit waiting states, never a running claim.
+    store = Store(garden)
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen = c.get("/inbox").text
+    assert "waiting: demo/p1 is frozen" in frozen
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
+    for active_run in full_runs:
+        active_run.status = "finished"
+        active_run.save()
+    blocked = store.task("DM-002")
+    blocked.status = Status.CHANGES_REQUESTED
+    store.save(blocked)
+    sched = Scheduler(store)
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.save()
+    paused = c.get("/inbox").text
+    assert "paused for a person" in paused and "Resume task" in paused
+
+
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
     """The served fence journey keeps an operator's committed spec edit during a completed
     worker run: dispatch, operator commit, and reap all happen through the web app's tick."""

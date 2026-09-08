@@ -149,6 +149,20 @@ def register(app: FastAPI, site: Site) -> None:
         b = build_brief(s, t, review_feedback=fb)
         return f"# ~{b.tokens:,} tokens\n\n" + b.text
 
+    @app.get("/tasks/{task_id}/packet", response_class=PlainTextResponse)
+    def task_packet(task_id: str):
+        """Return the immutable packet assigned to the current manual session."""
+        s = hub.fresh()
+        try:
+            s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        run = RunStore(s.config.garden_dir).latest(task_id)
+        packet = run.path / "brief.md" if run and run.runner == "manual" else None
+        if packet is None or not packet.exists():
+            raise HTTPException(404, "no assigned manual packet")
+        return packet.read_text()
+
     @app.get("/tasks/{task_id}/log", response_class=PlainTextResponse)
     def task_log(task_id: str, run_id: str | None = None):
         s = hub.fresh()
