@@ -30,7 +30,9 @@ class AuxMixin:
                if runner_name == "remote" else self._new_local_run(run_task_id, kind, kind))
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
-        run.env_snapshot = {"product": probe.product}
+        run.env_snapshot.update({"product": probe.product,
+                                 "execution_timeout_minutes": self.cfg.product_timeout_minutes(probe.product),
+                                 "resource_weight": self.cfg.product_resource_weight(probe.product)})
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
         if kind in ("persona", "compare"):

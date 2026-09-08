@@ -149,7 +149,9 @@ DEFAULTS: dict[str, Any] = {
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
-        "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "max_parallel": None,     # capacity units shared by workers + reviews + checks
+        "weight": 1,              # default reservation per run, in capacity units
+        "max_bypasses": 3,        # cheap claims allowed past an older heavy run before reserving room
         "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
         # A detached check can wait for the host-wide heavy-validation lease without looking
         # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
@@ -447,6 +449,26 @@ class Config:
         differently sets its own commands (or leaves the block empty)."""
         s = self.product(name).get("setup")
         return dict(s) if isinstance(s, dict) else {}
+
+    def product_timeout_minutes(self, name: str) -> float:
+        """Worker/revision wall-clock budget, inherited from the garden default.
+
+        Check commands intentionally use ``checks.timeout_seconds`` instead.
+        """
+        value = self.product(name).get("timeout_minutes", self.get("timeout_minutes", 90))
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"products.{name}.timeout_minutes must be a non-negative number")
+        return float(value)
+
+    def product_resource_weight(self, name: str) -> int:
+        """Capacity units reserved by one run, inherited from ``resources.weight``."""
+        resources = self.product(name).get("resources") or {}
+        if not isinstance(resources, dict):
+            raise ValueError(f"products.{name}.resources must be a mapping")
+        value = resources.get("weight", self.get("resources.weight", 1))
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"products.{name}.resources.weight must be a positive integer (capacity units)")
+        return value
 
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
