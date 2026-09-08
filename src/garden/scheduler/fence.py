@@ -229,6 +229,15 @@ class FenceMixin:
                 manifest_sha = run.fence_manifest_sha256
                 if len(manifest_sha) != 64 or any(c not in "0123456789abcdef" for c in manifest_sha):
                     raise ValueError("invalid trusted manifest digest")
+                if isinstance(saved, dict):
+                    saved_run = str(saved.get("run") or "")
+                    saved_sha = str(saved.get("sha256") or "")
+                    if saved_run == run.run_id and saved_sha != manifest_sha:
+                        raise ValueError("task and run manifest references contradict")
+                    if saved_run != run.run_id and not any(
+                        candidate.run_id == saved_run for candidate in self.runs.runs_for(task.id)
+                    ):
+                        raise ValueError("task manifest reference names an unknown run")
                 copy_path = self.cfg.garden_dir / "fence-guard-manifests" / f"{manifest_sha}.json"
                 manifest_text = copy_path.read_text()
                 if hashlib.sha256(manifest_text.encode()).hexdigest() != manifest_sha:
