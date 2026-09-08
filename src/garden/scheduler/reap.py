@@ -109,7 +109,9 @@ class ReapMixin:
         # has completed the run record but has not yet written the task
         # transition (run.finished_at set, task still RUNNING).
         if run is not None and run.runner == "manual":
-            return False
+            submitted = bool((run.env_snapshot or {}).get("pushed_completion_submitted"))
+            if not (run.completion_mode == "pushed" and submitted and run.process_finished()):
+                return False
         if self._is_unreaped(task, run):
             # The run record already reached a terminal status (written by a
             # prior finalize() call) but the task is still RUNNING: an earlier
@@ -357,7 +359,8 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} -> waiting_human")
             return
 
-        if status == "no_change" and not self._no_change_changes_outcome(result):
+        if (status == "no_change" and run.completion_mode != "pushed"
+                and not self._no_change_changes_outcome(result)):
             run.status = status
             run.save()
             self._file_discovered(task, run, result)
@@ -383,7 +386,8 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} no-change -> verification")
             return
 
-        if status in ("wont_do", "no_change"):
+        if (status == "wont_do" or (status == "no_change" and
+                (run.completion_mode != "pushed" or self._no_change_changes_outcome(result)))):
             run.status = status
             run.save()
             self._file_discovered(task, run, result)
@@ -402,6 +406,17 @@ class ReapMixin:
 
         self._file_discovered(task, run, result)
 
+        if status == "no_change":
+            reason = str(result.get("reason") or result.get("summary") or "(no reason given)")
+            st = self.state.get(task.id)
+            st["no_change_reconciliation"] = {
+                "head": str(result.get("pushed_sha") or st.get("head_sha") or ""),
+                "run": run.run_id,
+            }
+            task.log(f"worker found no change to make: {reason}; reconciling the declared pushed head")
+            self.store.save(task)
+            self.events.emit("no_change_reconciled", task.id, reason=reason, run=run.run_id)
+
         missing = missing_preflight(result.get("pre_flight"))
         if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
             run.status = "failed"
@@ -416,7 +431,7 @@ class ReapMixin:
         branch = run.branch or task.branch or task.default_branch()
         repo = self.repo_for(task)
 
-        if runner.remote:
+        if runner.remote or run.completion_mode == "pushed":
             gitops.fetch(repo)
             try:
                 if run.pushed_ref:
@@ -443,7 +458,7 @@ class ReapMixin:
                 ahead = 0
                 if run.pushed_head:
                     run.error = str(e)
-            if ahead == 0:
+            if ahead == 0 and not (run.completion_mode == "pushed" and status == "no_change"):
                 run.status = "failed"
                 run.error = "no commits pushed"
                 run.save()
@@ -459,9 +474,14 @@ class ReapMixin:
                 else:
                     gitops.prepare_worktree(repo, wt, branch, base)
             except gitops.GitError as e:
-                self.log(f"{task.id}: could not materialise local worktree: {e}")
+                run.status = "failed"
+                run.error = f"could not materialise local worktree: {e}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
             task.branch = branch
-            self._after_push(task, run, wt, branch, base, result, rep, cost)
+            self._after_push(task, run, wt, branch, base, result, rep, cost,
+                             check_stall=status != "no_change")
             return
 
         worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)

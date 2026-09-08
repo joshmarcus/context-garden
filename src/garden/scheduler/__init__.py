@@ -337,8 +337,13 @@ class Scheduler(
         then. `finished_at` is only ever set by our own finalize()/timeout code, so its presence
         — whatever the record's status — distinguishes a genuinely interrupted reap from a live
         run (finished_at still empty) or one whose status was flipped out from under us."""
-        return (run is not None and run.runner != "manual" and run.mode != "review"
-                and bool(run.finished_at) and task.status == Status.RUNNING)
+        resumable_manual = bool(
+            run is not None and run.runner == "manual" and run.completion_mode == "pushed"
+            and (run.env_snapshot or {}).get("pushed_completion_submitted")
+        )
+        return (run is not None and (run.runner != "manual" or resumable_manual)
+                and run.mode != "review" and bool(run.finished_at)
+                and task.status == Status.RUNNING)
 
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()
