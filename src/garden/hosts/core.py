@@ -67,6 +67,17 @@ class JsonStateStore:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
+    @contextmanager
+    def acquisition_locked(self):
+        """Serialize provider acquisition through the durable lease reservation."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(f"{self.path.suffix}.acquire.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
 
 class HostLifecycle:
     def __init__(
@@ -369,8 +380,32 @@ class HostLifecycle:
 
         The durable lease is written only after every read-only readiness check succeeds.
         Callers perform this before incrementing a task attempt; ``EnvironmentStop`` is an
-        infrastructure outcome, not worker failure.
+        infrastructure outcome, not worker failure. Acquisition is serialized from provider
+        reconciliation through the durable reservation so overlapping controllers cannot
+        both provision an as-yet-unidentified host.
         """
+        with self.state.acquisition_locked():
+            return self._acquire_ready_locked(
+                pool,
+                workspace=workspace,
+                revision=revision,
+                harness=harness,
+                process_terminal=process_terminal,
+                now=now,
+                requirements=requirements,
+            )
+
+    def _acquire_ready_locked(
+        self,
+        pool: PoolDeclaration,
+        *,
+        workspace: str,
+        revision: str,
+        harness: str,
+        process_terminal: Callable[[str], bool],
+        now: Callable[[], float],
+        requirements: HostRequirements | None,
+    ) -> HostFacts:
         if requirements is not None:
             self._validate_requirements(requirements)
         try:
