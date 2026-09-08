@@ -196,7 +196,8 @@ def _push_rule(setup: dict, ci: dict[str, Any] | None = None) -> str:
             "Do NOT push and do NOT poll GitHub Actions. The controller owns publication and "
             "external status reads." + validation + " through `$GARDEN_VALIDATION_RUNNER -m "
             "garden.validation -- ...`; its Garden-authored exact-head receipt is the final "
-            "validation gate. Keep local iteration focused and exclude stress/load tests unless "
+            "validation gate. Commit the intended source before that suite and make no source "
+            "changes afterward; a later commit or rebase invalidates the receipt. Keep local iteration focused and exclude stress/load tests unless "
             "a separate bounded experiment explicitly opts in."
         )
     if setup.get("worker_push") is True:
