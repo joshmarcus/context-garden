@@ -59,12 +59,15 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st.get("last_review", {}).get("verdict") == "approve"
     run_id = st.get("last_review_run")
     assert run_id
+    review_run = sched._run_by_id(sched.store.task("DM-001"), run_id)
+    assert st.get("last_review_head") == review_run.env_snapshot["review_head"]
 
     # a new process on the same garden: state.json is the only thing that survives it
     fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
     st2 = fresh.state.get("DM-001")
     assert st2.get("last_review", {}).get("verdict") == "approve"
     assert st2.get("last_review_run") == run_id
+    assert st2.get("last_review_head") == review_run.env_snapshot["review_head"]
 
 
 @pytest.mark.parametrize("failure", ["unclaimed timeout", "admission timeout", "startup environment failure"])
@@ -537,23 +540,99 @@ def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
               "reason": "not yet verified", "evidence": "review evidence"}],
               "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
                             "summary": "Original finding", "fix": "Make the original fix."}]}
+    source_run = sched.runs.new_run(task.id, "local", mode="review")
+    source_run.status = "done"
+    source_run.env_snapshot = {"review_head": "a" * 40}
+    source_run.save()
     st = sched.state.get(task.id)
-    st.update(last_review=review, last_review_run="DM-001-review-1", head_sha="b" * 40)
+    st.update(last_review=review, last_review_run=source_run.run_id, head_sha="b" * 40)
 
     sched.triage(task, changes="Use the new handoff instead.")
     triage = st["pending_feedback"]
-    assert "Operator triage note" in triage and "Superseded automated review record" in triage
-    assert "do not repeat its requests" in triage
+    assert "Operator triage note" in triage and "Applicable automated review record" in triage
+    assert "remains applicable and this note supplements it" in triage
     assert "Original finding" in triage and "Original criterion" in triage
-    assert "DM-001-review-1" in triage and "b" * 40 in triage
+    assert source_run.run_id in triage and "a" * 40 in triage
+    assert "b" * 40 not in triage
+    assert st["last_review_head"] == "a" * 40
+
+    task.status = Status.AWAITING_TRIAGE
+    sched.store.save(task)
+    sched.triage(task, changes="The prior review is resolved.", supersede_review=True)
+    superseded = st["pending_feedback"]
+    assert "Superseded automated review record" in superseded
+    assert "do not repeat its requests" in superseded
+    assert "Original finding" in superseded and "a" * 40 in superseded
 
     recovery = feedback_with_operator_note(
         review, "Retry after the operator cleared the stop.", kind="recovery",
-        run_id="DM-001-review-1", source_head="b" * 40,
+        run_id=source_run.run_id, source_head="a" * 40,
     )
     assert "Operator recovery note" in recovery
     assert "remains applicable and this note supplements it" in recovery
     assert "Original finding" in recovery and "review evidence" in recovery
+
+
+def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, fake_github):
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    task = sched.store.task("DM-001")
+    task.status = Status.AWAITING_TRIAGE
+    task.pr = "https://example.test/pull/101"
+    sched.store.save(task)
+    review = {"summary": "Review from the examined head", "criteria": [],
+              "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
+                            "summary": "Keep this finding", "fix": "Apply the retained fix."}]}
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run="DM-001-review-1",
+              last_review_head="a" * 40, head_sha="b" * 40)
+    sched.state.save()
+    client = TestClient(create_app(
+        Store(sched.store.root), watch=False, host="testserver", github=fake_github))
+
+    response = client.post(
+        "/tasks/DM-001/triage-changes", data={"note": "Also cover the empty case."},
+        headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=False)
+    assert response.status_code == 303
+    brief = client.get("/tasks/DM-001/brief?revise=true")
+    assert brief.status_code == 200
+    assert "Operator triage note" in brief.text
+    assert "remains applicable and this note supplements it" in brief.text
+    assert "Keep this finding" in brief.text and "a" * 40 in brief.text
+    assert "b" * 40 not in brief.text
+
+    recovered = Scheduler(Store(sched.store.root), github=fake_github)
+    task = recovered.store.task(task.id)
+    task.status = Status.IN_REVIEW
+    recovered.store.save(task)
+    state = recovered.state.get(task.id)
+    state.pop("pending_feedback", None)
+    recovered._set_needs_human(task, "stall", "simulated failed handoff")
+    recovered.state.save()
+    response = client.post(
+        "/tasks/DM-001/retry", headers={"referer": "http://testserver/tasks/DM-001"},
+        follow_redirects=False)
+    assert response.status_code == 303
+    recovery_brief = client.get("/tasks/DM-001/brief?revise=true")
+    assert recovery_brief.status_code == 200
+    assert "Operator recovery note" in recovery_brief.text
+    assert "Keep this finding" in recovery_brief.text and "a" * 40 in recovery_brief.text
+
+    no_review = Scheduler(Store(sched.store.root), github=fake_github)
+    second = no_review.store.task("DM-002")
+    second.status = Status.AWAITING_TRIAGE
+    second.pr = "https://example.test/pull/102"
+    no_review.store.save(second)
+    response = client.post(
+        "/tasks/DM-002/triage-changes", data={"note": "Handle the empty state."},
+        headers={"referer": "http://testserver/tasks/DM-002"}, follow_redirects=False)
+    assert response.status_code == 303
+    empty_brief = client.get("/tasks/DM-002/brief?revise=true")
+    assert empty_brief.status_code == 200
+    assert "Operator triage note" in empty_brief.text
+    assert "Applicable automated review" not in empty_brief.text
 
 
 def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):
