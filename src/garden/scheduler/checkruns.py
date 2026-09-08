@@ -195,7 +195,9 @@ class CheckRunMixin:
         if not run_id:
             return False
         run = self._run_by_id(task, run_id)
-        if run is not None and run.status == "running" and not run.process_finished():
+        if run is None:
+            return False
+        if run.status == "running" and not run.process_finished():
             if not run.stop():
                 return False
             run.status = "cancelled"
@@ -205,7 +207,7 @@ class CheckRunMixin:
             self.events.emit("run_finished", task.id, run=run.run_id, mode="check",
                              status="cancelled", cost_usd=run.cost_usd, usage=run.usage,
                              error=run.error)
-        elif run is not None and run.status == "running":
+        elif run.status == "running":
             results = self._collect_check_results(run)
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()
