@@ -413,14 +413,38 @@ class ReviewMixin:
             if st.get("review_run") or st.get("pending_reviews") or st.get("needs_human"):
                 continue
             head = str(st.get("head_sha") or "")
-            current_verdict = any(
-                str((run.env_snapshot or {}).get("review_head") or "") == head and bool(run.result)
-                for run in self.runs.runs_for(task.id) if run.mode == "review"
-            ) if head else bool(st.get("last_review"))
+            review_runs = [run for run in self.runs.runs_for(task.id) if run.mode == "review"]
+            applied_run = str(st.get("last_review_run") or "")
+            current_verdict = (bool(st.get("last_review")) and any(
+                run.run_id == applied_run
+                and str((run.env_snapshot or {}).get("review_head") or "") == head
+                for run in review_runs
+            )) if head else bool(st.get("last_review"))
             product = self.cfg.product(task.product)
             minimum = int(product.get("automerge_min_review_rounds", 2 if product.get("provides_tool") else 1) or 0)
             missing_additional = current_verdict and int(st.get("review_rounds", 0)) < minimum
             if current_verdict and not missing_additional:
+                continue
+            available = next((run for run in reversed(review_runs)
+                              if str((run.env_snapshot or {}).get("review_head") or "") == head
+                              and run.status not in ("running", "superseded")
+                              and bool(run.result)), None) if head and not current_verdict else None
+            if available is not None:
+                st["review_run"] = available.run_id
+                self.state.save()
+                self.reap_review(task, rep)
+                continue
+            lost = next((run for run in reversed(self.runs.runs_for(task.id))
+                         if run.mode == "review"
+                         and str((run.env_snapshot or {}).get("review_head") or "") == head
+                         and run.status not in ("running", "superseded")
+                         and not run.result), None) if head and not current_verdict else None
+            if lost is not None:
+                self._queue_review_recovery(
+                    task, lost, lost.error or f"terminal {lost.status} review has no verdict", rep,
+                    started=self._review_execution_started(lost),
+                    count_round=bool((lost.env_snapshot or {}).get("count_round", True)),
+                )
                 continue
             if not self._review_round_pending(st):
                 continue
@@ -644,7 +668,7 @@ class ReviewMixin:
                 from ..canonical import release
 
                 release(canonical, run.run_id)
-            return self._dispatch_check_run(
+            replay_run = self._dispatch_check_run(
                 task, worktree=wt, branch=branch, base=base,
                 specs=[{"name": "interaction replay", "command": command}],
                 stage="interaction_replay", extra={"timeout": 180},
@@ -652,6 +676,9 @@ class ReviewMixin:
                       "manifest": str(out / "interaction-manifest.json"),
                       "worktree": str(wt), "branch": branch, "base": base}, rep=TickReport(),
             )
+            replay_run.env_snapshot["validation_plan"] = plan
+            replay_run.save()
+            return replay_run
         replay_nonce = str(replay.get("nonce") or "") if needs_interaction and not reusable_author_interaction else ""
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
@@ -859,64 +886,66 @@ class ReviewMixin:
                     started=self._review_execution_started(run),
                      count_round=bool((run.env_snapshot or {}).get("count_round", True)),
                  )
-            return self._apply_review(task, run, run.result, rep, emitted=True)
+             emitted = any(event.get("run") == run.run_id for event in self.events.read(
+                 task_id=task.id, kinds=["run_finished"]))
+             return self._apply_review(task, run, run.result, rep, emitted=emitted)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
             return False
         review: dict[str, Any] = {}
+        collected: dict[str, Any]
         if run.status == "timeout":
-            if self._review_execution_started(run):
-                collected = runner.collect(run)
-                run.usage = collected.get("usage") or {}
-                run.cost_usd = collected.get("cost_usd")
-                run.model = str(collected.get("model") or run.model)
-                run.error = collected.get("error") or run.error
-                final = collected.get("final_text") or ""
-                if final and not (run.path / "final.md").exists():
-                    (run.path / "final.md").write_text(final)
-                run.save()
-            return self._queue_review_recovery(
-                task, run, run.error or "timed out", rep,
-                started=self._review_execution_started(run),
-                count_round=bool((run.env_snapshot or {}).get("count_round", True)),
-            )
-        if run.status != "timeout":
+            if not self._review_execution_started(run):
+                return self._queue_review_recovery(
+                    task, run, run.error or "timed out", rep, started=False,
+                    count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+                )
+            collected = runner.collect(run)
+        else:
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()
             collected = runner.collect(run)
-            if collected.get("env_error"):
-                # The reviewer's own account, not the PR: pause the harness, give back the
-                # round this dispatch counted (see dispatch_review's count_round, snapshotted
-                # on the run since an after-rebase round is exempt and must not be charged),
-                # and rejoin the review queue so it is retried once the harness resumes
-                # instead of the PR silently never getting a verdict for this round.
-                st["review_run"] = ""
-                pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
-                counted = bool((run.env_snapshot or {}).get("count_round", True))
-                self._pause_for_env_error(run, collected)
-                run.status = "env_error"
-                run.save()
-                self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
-                                 cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
-                if counted:
-                    st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
-                self._queue_pending_reviews(st, [{"kind": "review", "count_round": counted}])
-                note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
-                       f"{run.harness or 'the harness'}); will retry once it resumes")
-                task.log(note)
-                self.store.save(task)
-                if pending_triage:
-                    notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
-                rep.transitions.append(f"{task.id} review paused (env_error)")
-                return True
-            run.usage = collected.get("usage") or {}
-            run.cost_usd = collected.get("cost_usd")
-            run.model = str(collected.get("model") or run.model)
-            run.error = collected.get("error") or ""
-            final = collected.get("final_text") or ""
-            if final and not (run.path / "final.md").exists():
-                (run.path / "final.md").write_text(final)
-            review = enforce_criteria_verdict(parse_review(final))
+        if collected.get("env_error"):
+            # The reviewer's own account, not the PR: pause the harness, give back the
+            # round this dispatch counted (see dispatch_review's count_round, snapshotted
+            # on the run since an after-rebase round is exempt and must not be charged),
+            # and rejoin the review queue so it is retried once the harness resumes
+            # instead of the PR silently never getting a verdict for this round.
+            st["review_run"] = ""
+            pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
+            counted = bool((run.env_snapshot or {}).get("count_round", True))
+            self._pause_for_env_error(run, collected)
+            run.status = "env_error"
+            run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
+                             cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
+            if counted:
+                st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
+            self._queue_pending_reviews(st, [{"kind": "review", "count_round": counted}])
+            note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
+                   f"{run.harness or 'the harness'}); will retry once it resumes")
+            task.log(note)
+            self.store.save(task)
+            if pending_triage:
+                notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
+            rep.transitions.append(f"{task.id} review paused (env_error)")
+            return True
+        run.usage = collected.get("usage") or {}
+        run.cost_usd = collected.get("cost_usd")
+        run.model = str(collected.get("model") or run.model)
+        run.error = ((collected.get("error") or run.error) if run.status == "timeout"
+                     else (collected.get("error") or ""))
+        final = collected.get("final_text") or ""
+        if final and not (run.path / "final.md").exists():
+            (run.path / "final.md").write_text(final)
+        review = enforce_criteria_verdict(parse_review(final))
+        if run.status == "timeout" and not review:
+            run.save()
+            return self._queue_review_recovery(
+                task, run, run.error or "timed out", rep, started=True,
+                count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+            )
+        if review:
             expansions = review.get("scope_expansions") if isinstance(review, dict) else None
             if isinstance(expansions, list):
                 for expansion in expansions:
