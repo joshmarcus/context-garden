@@ -964,6 +964,7 @@ def test_active_worker_completes_once_across_controller_stop_start(
 ):
     """A disposable real HTTP controller disappears while a real harness child is active."""
     import socket
+    import subprocess
 
     import httpx
     import uvicorn
