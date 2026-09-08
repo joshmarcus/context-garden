@@ -163,7 +163,7 @@ class DispatchMixin:
         inv = st["investigation"]
         attempts = [
             f"- {run.run_id}: {run.mode} {run.status}, head {run.pushed_head or run.start_head or 'unknown'}, "
-            f"cost {('$%.2f' % run.cost_usd) if run.cost_usd is not None else 'unknown'}"
+            f"cost {(f'${run.cost_usd:.2f}') if run.cost_usd is not None else 'unknown'}"
             for run in self.runs.runs_for(task.id)[-12:]
         ]
         escalations = [
@@ -194,7 +194,7 @@ class DispatchMixin:
             raise RuntimeError(f"{task.id} is still draining active work")
         inv["status"] = "active"
         inv["started_at"] = now_iso()
-        run = self.dispatch(task, mode="investigation", runner=runner, worktree=False,
+        run = self.dispatch(task, mode="investigation", runner=runner,
                             prompt_override=self._investigation_dossier(task))
         inv["run_id"] = run.run_id
         self.state.save()
@@ -621,7 +621,7 @@ class DispatchMixin:
             # Audit an operator-owned checkout without preparing, snapshotting or later
             # treating it as a scheduler worktree.
             run.worktree = str(worktree_override)
-        if mode in ("work", "revise", "resume", "rebase"):
+        if mode in ("work", "revise", "resume", "rebase", "investigation"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
             self._fence_snapshot(task, run)

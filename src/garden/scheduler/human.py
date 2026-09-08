@@ -27,7 +27,6 @@ from ..stabilization import ACTORS
 from .report import TickReport
 from .state import _TaskState
 
-
 INVESTIGATION_RECOMMENDATIONS = frozenset({
     "resume unchanged", "raise difficulty", "repair environment/verification",
     "change scope/approach", "defer", "cancel",
@@ -154,6 +153,8 @@ class HumanMixin:
         existing = st.get("investigation")
         if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
             return
+        if isinstance(existing, dict):
+            st.setdefault("investigation_history", []).append(dict(existing))
         active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
         status = "draining" if active else "requested"
         st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
@@ -164,13 +165,35 @@ class HumanMixin:
         self.events.emit("investigation_requested", task.id, status=status, owner=owner, scope=scope, budget=budget)
         self.state.save()
 
+    def retry_investigation(self, task: Task, owner: str = "agent") -> None:
+        """Retry a failed diagnosis without losing its transcript, cost, or original bounds."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") != "failed":
+            raise RuntimeError(f"{task.id} has no failed investigation to retry")
+        if owner not in ("agent", "operator"):
+            raise RuntimeError("investigation owner must be operator or agent")
+        st.setdefault("investigation_history", []).append(dict(inv))
+        active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
+        inv = {key: inv[key] for key in ("reason", "requester", "scope", "budget", "task", "task_status") if key in inv}
+        inv.update({"status": "draining" if active else "requested", "owner": owner,
+                    "requested_at": now_iso(), "request_id": f"{task.id}-{now_iso()}"})
+        st["investigation"] = inv
+        self._set_needs_human(task, "investigation", f"investigation retry requested for {owner}")
+        self.events.emit("investigation_retried", task.id, owner=owner, request_id=inv["request_id"])
+        self.state.save()
+
     def take_investigation(self, task: Task) -> None:
         """Let the operator claim a ready investigation without changing task work."""
         ensure_open(task)
         inv = self.state.get(task.id).get("investigation")
-        if not isinstance(inv, dict) or inv.get("owner") != "operator" or inv.get("status") != "requested":
+        if not isinstance(inv, dict) or inv.get("status") not in ("requested", "failed"):
             raise RuntimeError(f"{task.id} has no operator investigation ready to take")
-        inv.update({"status": "active", "taken_at": now_iso()})
+        if inv.get("status") == "failed":
+            st = self.state.get(task.id)
+            st.setdefault("investigation_history", []).append(dict(inv))
+        inv.update({"status": "active", "owner": "operator", "taken_at": now_iso()})
         self._set_needs_human(task, "investigation", "operator investigation active; implementation remains paused")
         self.events.emit("investigation_taken", task.id, owner="operator", request_id=inv["request_id"])
         self.state.save()
