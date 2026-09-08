@@ -233,6 +233,14 @@ class CheckRunMixin:
                                       backend=str(info.get("backend") or run.runner),
                                       provenance=str(info.get("provenance") or ""))
             return True
+        if stage == "interaction_replay" and check_failures(results):
+            # A broken replay selector, fixture, or artifact path is a verification
+            # continuation, not evidence that unchanged implementation source needs revision.
+            self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
+                                      int(info.get("retries", 0)), rep,
+                                      backend=str(info.get("backend") or run.runner),
+                                      provenance=str(info.get("provenance") or ""))
+            return True
         handler = {
             "interaction_replay": self._after_interaction_replay_check,
             "pre_pr": self._after_pre_pr_check,
@@ -306,6 +314,8 @@ class CheckRunMixin:
             if "check did not finish" in summary or "check run produced no results" in summary:
                 details = str(result.get("details") or "").strip()
                 return f"{summary}\n\n{details}".strip() if details else summary
+            if result.get("status") not in ("pass", "passed", "done") and summary:
+                return summary
         return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:

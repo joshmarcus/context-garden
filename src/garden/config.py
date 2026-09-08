@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,7 +41,9 @@ def no_live_garden_root(base: Path) -> str:
 # fence manifest until the run is reaped or an operator confirms it (CG-242): live reload must
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
-EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "checks", "worker_env.pass", "runner_adapters")
+EXECUTABLE_KEYS: tuple[str, ...] = (
+    "notify.command", "checks", "worker_env.pass", "worker_env.config_files", "runner_adapters",
+)
 
 
 def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +150,10 @@ DEFAULTS: dict[str, Any] = {
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
         "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
         "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
+        # A detached check can wait for the host-wide heavy-validation lease without looking
+        # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
+        # supervisor reports admission state, while idle detection reports missing progress.
+        "admission_wait_minutes": 30,
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
@@ -223,6 +230,7 @@ DEFAULTS: dict[str, Any] = {
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
+        "recipient": "",          # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
     },
     "worker_env": {
         "pass": [],               # extra environment variable names or globs a worker and its setup
@@ -234,6 +242,8 @@ DEFAULTS: dict[str, Any] = {
                                   # variable the harness reads. Claude's .credentials.json and
                                   # Codex's auth.json are copied into a fresh private directory
                                   # per dispatch; custom variables pass through unchanged.
+        "config_files": {},       # explicitly named {source, destination, required} files;
+                                  # destinations are relative to the isolated worker HOME.
     },
     "browser_readiness": {
         "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
@@ -286,6 +296,7 @@ class Config:
                     raise ValueError(f"{name}: top level must be a mapping")
                 data = _merge(data, raw)
                 sources.append(name)
+        _validate_product_policies(data)
         return cls(root=root, data=data, sources=sources, env=env)
 
     def source_names(self) -> list[str]:
@@ -325,10 +336,33 @@ class Config:
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})
 
+    def product_github(self, name: str) -> dict[str, str]:
+        """Return the product's explicitly scoped GitHub route.
+
+        ``github: owner/repo`` remains the compact public-GitHub spelling. Enterprise
+        products use a mapping so their web host, API base, and token source travel
+        together instead of relying on ambient ``gh`` configuration.
+        """
+        value = self.product(name).get("github")
+        if isinstance(value, str):
+            return {"slug": value, "host": "github.com"}
+        if not isinstance(value, dict):
+            return {}
+        slug = str(value.get("slug") or "")
+        host = str(value.get("host") or "github.com")
+        if not slug:
+            raise ValueError(f"products.{name}.github.slug is required when github is a mapping")
+        return {
+            "slug": slug,
+            "host": host,
+            "api_base": str(value.get("api_base") or value.get("api_url") or ""),
+            "token_env": str(value.get("token_env") or ""),
+        }
+
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")
-        if "://" in str(repo) or str(repo).startswith("git@"):
+        if "://" in str(repo) or re.match(r"^[^@/:\s]+@[^/:\s]+:", str(repo)):
             return str(repo)
         return (self.root / str(repo)).resolve()
 
@@ -344,6 +378,18 @@ class Config:
 
     def product_base_branch(self, name: str) -> str:
         return str(self.product(name).get("base_branch") or "main")
+
+    def product_stack_owner(self, name: str) -> str:
+        """Who may rewrite stacked branch history for a product.
+
+        ``garden`` is the established default. ``external`` means another stack tool owns
+        dependency branches, so scheduler recovery must leave their bases and heads alone.
+        """
+        return str(self.product(name).get("stack_owner") or "garden")
+
+    def product_protected_paths(self, name: str) -> list[str]:
+        """Additional product paths that always require a human merge."""
+        return [str(pattern) for pattern in self.product(name).get("protected_paths", [])]
 
     def product_runner(self, name: str) -> str:
         r = str(self.product(name).get("runner") or self.get("runner"))
@@ -488,6 +534,22 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def _validate_product_policies(data: dict[str, Any]) -> None:
+    """Reject ambiguous branch-ownership and protected-path configuration early."""
+    products = data.get("products") or {}
+    if not isinstance(products, dict):
+        raise ValueError("products must be a mapping")
+    for name, product in products.items():
+        if not isinstance(product, dict):
+            raise ValueError(f"products.{name} must be a mapping")
+        owner = product.get("stack_owner", "garden")
+        if owner not in ("garden", "external"):
+            raise ValueError(f"products.{name}.stack_owner must be 'garden' or 'external'")
+        paths = product.get("protected_paths", [])
+        if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
+            raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
 
 
 def find_root(start: Path | None = None) -> Path:

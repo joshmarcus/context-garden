@@ -1,6 +1,7 @@
 """A worker's wont_do / no_change is a decision for the person, not a failure (CG-100)."""
 
 import os
+import time
 
 from garden.github import Feedback
 from garden.inbox import build_inbox
@@ -88,6 +89,73 @@ def test_satisfied_no_change_reconciles_without_a_human_decision(sched, fake_git
     assert "DM-001 no-change -> verification" in rep.transitions
     assert not sched.state.get("DM-001").get("decision")
     assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_accept_revise_no_change_queues_review_without_waiting_question(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change_decision")
+    sched.cfg.data["review"] = {"enabled": False, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # initial work opens the PR and queues review
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.updated_at = "t2"
+    fake_github.feedback[pr.number] = Feedback(items=[{"kind": "comment", "author": "josh",
+                                                        "body": "tweak", "created": "2099-01-01T00:00:00Z"}])
+    sched.tick()  # poll feedback -> changes_requested
+    sched.tick()  # dispatch revise
+    sched.tick()  # reap revise no_change -> waiting_human decision
+    assert sched.store.task("DM-001").status == Status.WAITING_HUMAN
+    sched.cfg.data["review"]["enabled"] = True
+    sched.accept_decision(sched.store.task("DM-001"), note="the existing code is correct")
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW
+    assert sched.state.get(task.id).get("review_run")
+    assert not sched.state.get(task.id).get("question")
+    assert not any(item["task"] == task.id and item["group"] == "question"
+                   for item in build_inbox(sched.store, sched))
+
+
+def test_accept_no_change_without_pr_keeps_detached_check_out_of_inbox(sched, fake_github, monkeypatch):
+    """An accepted no-change on a pre-PR revise round is pipeline work while its check runs,
+    not an unanswered human stop."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "no_change_decision")
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
+    fake_github.available = False
+    sched.tick()
+    sched.tick()  # reap initial work and start its detached pre-PR check
+    sched.tick()  # initial check passes; branch has no PR
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW and not task.pr
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- revise the branch"
+    sched._transition(task, Status.CHANGES_REQUESTED, "test: queue a revise round")
+    assert sched.state.get(task.id)["pending_feedback"]
+    assert [(candidate.id, mode) for candidate, mode, _ in sched.dispatch_queue()] == [(task.id, "revise")]
+    sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+    sched.tick()  # reap revise no_change -> waiting_human decision
+    assert sched.store.task(task.id).status == Status.WAITING_HUMAN
+
+    sched.accept_decision(sched.store.task(task.id), note="the branch is already correct")
+
+    task = sched.store.task(task.id)
+    assert task.status == Status.CHANGES_REQUESTED
+    assert sched.state.get(task.id).get("check_run")
+    inbox = build_inbox(sched.store, sched)
+    assert not any(item["task"] == task.id and "no question" in item["why"].lower()
+                   for item in inbox)
+    assert not any(item["task"] == task.id and item.get("group") == "question" for item in inbox)
+
+    # The check runner is detached in production, so allow the continuation to be
+    # collected before asserting the final status.  In-process tests usually finish
+    # in one tick, but the lifecycle contract is eventual and must not depend on that
+    # scheduling detail.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not sched.state.get(task.id).get("check_run"):
+            break
+        sched.tick()
+        time.sleep(0.01)
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
 def test_real_scope_disagreement_is_a_product_decision(sched):

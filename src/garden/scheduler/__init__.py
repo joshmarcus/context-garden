@@ -25,7 +25,7 @@ from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub
+from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
 from ..model import Status, Task
 from ..notify import notify, should_notify
@@ -134,13 +134,26 @@ class Scheduler(
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
         trusted = [*(self.cfg.get("github.trusted_authors") or []), *(self.cfg.get("github.reviewers") or [])]
-        self.github = github if github is not None else GitHub(
-            use_gh=bool(self.cfg.get("github.use_gh", True)),
-            bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
-            bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
-            trusted_authors=[str(a) for a in trusted],
-            trusted_bots=[str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
-        )
+        if github is not None:
+            self.github = github
+        else:
+            common = {
+                "use_gh": bool(self.cfg.get("github.use_gh", True)),
+                "bot_logins": [str(b) for b in (self.cfg.get("github.bot_logins") or [])],
+                "bot_notice_patterns": [str(p) for p in notice_patterns] if notice_patterns is not None else None,
+                "trusted_authors": [str(a) for a in trusted],
+                "trusted_bots": [str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
+            }
+            default = GitHub(**common)
+            routes = {}
+            for product in (self.cfg.data.get("products") or {}):
+                route = self.cfg.product_github(str(product))
+                if isinstance(self.cfg.product(str(product)).get("github"), dict):
+                    routes[(route["host"], route["slug"])] = GitHub(
+                        **common, host=route["host"], api_base=route.get("api_base", ""),
+                        token_env=route.get("token_env", ""),
+                    )
+            self.github = GitHubRouter(default, routes)
         self._runner_factory = runner_factory
         if upgrader is None:
             from ..upgrade import Upgrader
@@ -157,6 +170,13 @@ class Scheduler(
     @property
     def stack_enabled(self) -> bool:
         return bool(self.cfg.get("stack", True))
+
+    def external_stack_owner(self, task: Task) -> bool:
+        """Whether another tool, rather than garden, owns this product's stack history."""
+        return self.cfg.product_stack_owner(task.product) == "external"
+
+    def stack_enabled_for(self, task: Task) -> bool:
+        return self.stack_enabled and not self.external_stack_owner(task)
 
     def runner_for(self, task: Task, name: str = "", harness_name: str = "") -> Runner:
         name = name or task.runner or self.cfg.product_runner(task.product)
@@ -242,7 +262,7 @@ class Scheduler(
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
         git_name, git_email = self.git_identity()
-        if isinstance(repo, str) and ("://" in repo or repo.startswith("git@")):
+        if isinstance(repo, str) and is_git_remote_url(repo):
             return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
         return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
@@ -272,9 +292,18 @@ class Scheduler(
         return self.cfg.product_base_branch(task.product)
 
     def slug_for(self, task: Task) -> str | None:
-        override = self.cfg.product(task.product).get("github")
-        if override:
-            return str(override)
+        route = self.cfg.product_github(task.product)
+        if route:
+            configured = self.cfg.product(task.product).get("github")
+            if isinstance(configured, dict):
+                remote = gitops.remote_url(self.repo_for(task))
+                if remote and is_git_remote_url(remote):
+                    actual = repo_slug_from_remote(remote, route["host"])
+                    if actual is None or actual.casefold() != route["slug"].casefold():
+                        raise gitops.GitError(
+                            f"product {task.product} remote does not match configured GitHub host and repository"
+                        )
+            return RepositorySlug(route["slug"], route["host"])
         return gitops.slug(self.repo_for(task))
 
     def active_runs(self) -> list[Run]:
@@ -340,8 +369,13 @@ class Scheduler(
         then. `finished_at` is only ever set by our own finalize()/timeout code, so its presence
         — whatever the record's status — distinguishes a genuinely interrupted reap from a live
         run (finished_at still empty) or one whose status was flipped out from under us."""
-        return (run is not None and run.runner != "manual" and run.mode != "review"
-                and bool(run.finished_at) and task.status == Status.RUNNING)
+        resumable_manual = bool(
+            run is not None and run.runner == "manual" and run.completion_mode == "pushed"
+            and (run.env_snapshot or {}).get("pushed_completion_submitted")
+        )
+        return (run is not None and (run.runner != "manual" or resumable_manual)
+                and run.mode != "review" and bool(run.finished_at)
+                and task.status == Status.RUNNING)
 
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()

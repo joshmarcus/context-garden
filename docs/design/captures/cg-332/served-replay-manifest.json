@@ -1,0 +1,84 @@
+{
+  "schema": "cg-332.served-replay.v1",
+  "head": "f72aff57043e25751209156f640caf5807cd75b3",
+  "reviewed_head": "f72aff57043e25751209156f640caf5807cd75b3",
+  "fixture": "disposable served garden with a ready task parked by a claude quota stop",
+  "environment": "disposable garden.qa sandbox, served over HTTP at an ephemeral localhost port; runtime source was clean at 053f3899 (the final head adds evidence metadata only)",
+  "command": "inline disposable Sandbox driver using httpx against the served ASGI app; scheduler regression exercised with .venv/bin/python -m pytest tests/scheduler/test_quota.py -q",
+  "captures": [
+    "task-1280-light.png",
+    "task-1280-dark.png",
+    "task-390-light.png",
+    "task-390-dark.png",
+    "inbox-1280-light.png",
+    "inbox-1280-dark.png",
+    "inbox-390-light.png",
+    "inbox-390-dark.png"
+  ],
+  "interaction": {
+    "transport": "served HTTP app driven by httpx; responsive task captures were inspected separately with Chromium-compatible image review",
+    "viewport": {
+      "requested": 390,
+      "client_width": 390,
+      "scroll_width": 390
+    },
+    "events": [
+      {
+        "state": "held",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "/tasks/DM-001 contains `Waiting for claude to resume`"
+      },
+      {
+        "state": "held",
+        "method": "GET",
+        "url": "/inbox",
+        "status": 200,
+        "observed": "Inbox contains the Harness paused notice"
+      },
+      {
+        "state": "failed_probe",
+        "method": "POST",
+        "url": "/tick",
+        "status": 303,
+        "observed": "task remains held after the failed recovery attempt"
+      },
+      {
+        "state": "failed_probe",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "task page still contains `Waiting for claude to resume`"
+      },
+      {
+        "state": "successful_recovery",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "after dispatch_resumed, task page is plain ready with no harness hold text"
+      },
+      {
+        "state": "successful_recovery",
+        "method": "GET",
+        "url": "/inbox",
+        "status": 200,
+        "observed": "after dispatch_resumed, Inbox has no Harness paused notice"
+      },
+      {
+        "state": "automatic_redispatch",
+        "method": "POST",
+        "url": "/tick",
+        "status": 303,
+        "observed": "served tick completed without an operator task action; scheduler test proves the ready queue dispatches on this pass"
+      },
+      {
+        "state": "recovered",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "task page has no harness hold text"
+      }
+    ]
+  }
+}

@@ -1,5 +1,7 @@
 """Per-task usage rollups, trial cost columns, config overlays."""
 
+from pathlib import Path
+
 import yaml
 
 from garden.checks import github_actions_failures
@@ -61,6 +63,22 @@ def test_config_overlays(tmp_path, monkeypatch):
     assert work.harness("claude").model_for("hard") == "sonnet" and work.harness("claude").model_for("easy") == "haiku"  # dicts merge
     monkeypatch.setenv("GARDEN_ENV", "work")
     assert Config.load(tmp_path).env == "work"
+
+
+def test_enterprise_profile_keeps_human_gates_and_fixed_notification_recipient():
+    profile = yaml.safe_load(
+        (Path(__file__).parents[1] / "examples" / "garden.enterprise.yaml").read_text(),
+    )
+
+    assert profile["github"] == {
+        "draft_pr": True,
+        "trusted_bots": ["review-app[bot]"],
+        "bot_notice_patterns": ["usage limit", "no issues", "looks good"],
+        "automerge": False,
+    }
+    assert profile["products"]["service"]["base_branch"] == "release"
+    assert profile["notify"]["recipient"] == "operator@example.invalid"
+    assert '"$GARDEN_NOTIFICATION_JSON"' in profile["notify"]["command"]
 
 
 def test_actions_analyser_needs_gh_context(monkeypatch):

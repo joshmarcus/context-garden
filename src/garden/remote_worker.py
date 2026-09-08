@@ -19,9 +19,11 @@ from typing import Any
 
 from .brief import parse_result
 from .harness import Harness
+from .runner.base import install_config_files, scrubbed_env
 
 
-def doctor_worker(token: str, repo: str, harnesses: list[str]) -> list[str]:
+def doctor_worker(token: str, repo: str, harnesses: list[str],
+                  config: dict[str, Any] | None = None, scratch_home: Path | None = None) -> list[str]:
     problems: list[str] = []
     if not token:
         problems.append("worker bearer token is missing")
@@ -32,6 +34,16 @@ def doctor_worker(token: str, repo: str, harnesses: list[str]) -> list[str]:
     for name in harnesses:
         if not shutil.which(name):
             problems.append(f"harness {name!r} is not on PATH")
+    try:
+        with tempfile.TemporaryDirectory(prefix="garden-doctor-") as raw_home:
+            probe_root = scratch_home or Path(raw_home)
+            environment = scrubbed_env(config or {}, worktree=probe_root / "probe")
+            for name in harnesses:
+                if shutil.which(name) and not Harness(name, {}).check_login(environment)[0]:
+                    problems.append(f"harness {name!r} authentication failed in scrubbed environment")
+    except Exception as exc:  # a policy/configuration failure is a doctor finding
+        # Mapping errors contain only operator-chosen entry names, never source paths/content.
+        problems.append(str(exc))
     return problems
 
 
@@ -96,6 +108,7 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in names)}
     home = worktree.parent / f".garden-home-{run['task_id']}"
     home.mkdir(parents=True, exist_ok=True)
+    install_config_files({"worker_env": {"config_files": run.get("config_files") or {}}}, home)
     env.setdefault("HOME", str(home))
     env.update(GARDEN_TASK_ID=run["task_id"], GARDEN_RUN_ID=run["id"],
                GARDEN_ROOT=str(worktree / ".garden-no-live-garden"))

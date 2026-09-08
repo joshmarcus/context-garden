@@ -46,6 +46,13 @@ class QuotaMixin:
     def resume_harness(self, name: str, by: str = "probe") -> None:
         if self.paused_harnesses().pop(name, None) is None:
             return
+        # Work is returned to READY while its harness is down. Keep that task
+        # distinguishable from ordinary ready work until the probe lifts the pause;
+        # the ready queue remains the source of truth for dispatch order.
+        for task in self.store.tasks().values():
+            st = self.state.get(task.id)
+            if st.get("harness_hold") == name:
+                st.pop("harness_hold", None)
         self.state.save()
         self.events.emit("dispatch_resumed", "", harness=name, by=by)
         self.log(f"harness {name} resumed by {by}")

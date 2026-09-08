@@ -98,7 +98,7 @@ class Run:
     # How the task's code location was claimed.  This is deliberately not inferred from
     # ``worktree``: an externally-owned directory can happen to have the scheduler's
     # conventional name, and must never acquire managed-worktree behaviour by accident.
-    completion_mode: str = "managed"  # managed | external
+    completion_mode: str = "managed"  # managed | external | pushed
     external_pr: str = ""
     completion_attempts: list[dict[str, Any]] = field(default_factory=list)
     branch: str = ""
@@ -211,11 +211,54 @@ class Run:
         return dt.datetime.fromtimestamp(max(times), dt.UTC)
 
     def idle_minutes(self) -> float:
-        """Minutes since the last sign of life (see last_activity_at). 0 when unknown."""
+        """Minutes since the last sign of life, never before this run started.
+
+        A newly launched check commonly shares a checkout whose files predate the run.  Those
+        mtimes describe the checkout, not this run's silence, so they must not make a new run
+        immediately eligible for an idle timeout.
+        """
         last = self.last_activity_at()
         if last is None:
             return 0.0
-        return max(0.0, (dt.datetime.now(dt.UTC) - last).total_seconds() / 60)
+        started = dt.datetime.fromisoformat(self.started_at) if self.started_at else last
+        activity = max(last, started)
+        return max(0.0, (dt.datetime.now(dt.UTC) - activity).total_seconds() / 60)
+
+    def supervisor_waiting_reason(self) -> str | None:
+        """The supervisor's current heavy-validation admission wait, if it published one."""
+        try:
+            execution = json.loads((self.path / "execution.json").read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(execution, dict) or execution.get("state") != "waiting":
+            return None
+        reason = str(execution.get("reason") or "heavy-validation capacity is unavailable")
+        return reason
+
+    def supervisor_waiting_since(self) -> dt.datetime | None:
+        """When the supervisor most recently entered its current admission wait.
+
+        Older supervisors did not write ``waiting_since``.  Their execution-state mtime is
+        the best durable start for the wait and prevents a compatibility path from charging
+        a run for time before it first reported waiting.
+        """
+        path = self.path / "execution.json"
+        try:
+            execution = json.loads(path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(execution, dict) or execution.get("state") != "waiting":
+            return None
+        recorded = execution.get("waiting_since")
+        if isinstance(recorded, str) and recorded:
+            try:
+                return dt.datetime.fromisoformat(recorded)
+            except ValueError:
+                pass
+        try:
+            return dt.datetime.fromtimestamp(path.stat().st_mtime, dt.UTC)
+        except OSError:
+            return None
 
     def kill(self) -> None:
         # The in-process test runner uses the scheduler process as the liveness sentinel.

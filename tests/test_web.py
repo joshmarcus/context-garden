@@ -129,6 +129,68 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
     assert reads == 1
 
 
+def test_page_store_snapshot_scans_once_and_refreshes_next_request(garden, monkeypatch):
+    """A retained-task page parses one fresh discovery snapshot, not one per component."""
+    from garden import store as store_module
+    from garden.model import Task
+
+    task_dir = garden / "demo" / "p1" / "tasks"
+    source = (task_dir / "DM-001-first.md").read_text()
+    for number in range(3, 123):
+        (task_dir / f"DM-{number:03d}-retained.md").write_text(source.replace("DM-001", f"DM-{number:03d}"))
+
+    scans = 0
+    parses = 0
+    stats = 0
+    original_scan = Store._scan
+    original_parse = Task.parse.__func__
+    original_stat = store_module.os.stat
+    c = client(garden)
+    legacy = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    def counted_scan(self):
+        nonlocal scans
+        scans += 1
+        return original_scan(self)
+
+    def counted_parse(cls, *args, **kwargs):
+        nonlocal parses
+        parses += 1
+        return original_parse(cls, *args, **kwargs)
+
+    def counted_stat(self, *args, **kwargs):
+        nonlocal stats
+        stats += 1
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "_scan", counted_scan)
+    monkeypatch.setattr(Task, "parse", classmethod(counted_parse))
+    monkeypatch.setattr(store_module.os, "stat", counted_stat)
+    scans = parses = stats = 0
+    response = c.get("/board")
+
+    assert response.status_code == 200
+    assert scans == 1
+    assert parses == 122
+    assert stats > 0
+    after = (scans, parses, stats)
+
+    # This app deliberately bypasses the request snapshot to compare deterministic discovery
+    # work against the old route. The served replay records latency distributions separately.
+    monkeypatch.setattr(Hub, "begin_request", lambda self: None)
+    monkeypatch.setattr(Hub, "end_request", lambda self, token: None)
+    scans = parses = stats = 0
+    response = legacy.get("/board")
+    assert response.status_code == 200
+    before = (scans, parses, stats)
+
+    assert before[0:2] == (2, 244)
+    assert before[2] > after[2]
+    changed = task_dir / "DM-001-first.md"
+    changed.write_text(changed.read_text().replace("First task", "Fresh task title"))
+    response = c.get("/board")
+    assert "Fresh task title" in response.text
+
+
 def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
     """An operator can clear a live-config prerequisite without exposing it to a worker."""
     store = Store(garden)
@@ -1249,6 +1311,24 @@ def test_inbox_shows_a_paused_harness_notice(garden):
     c = client(garden)
     home = c.get("/").text
     assert "Harness paused" in home and "claude" in home and "quota limit hit on claude" in home
+
+
+def test_task_page_names_harness_hold(garden):
+    from garden.scheduler import Scheduler
+
+    sched = Scheduler(Store(garden))
+    sched.pause_harness("claude", "quota limit hit on claude")
+    sched.state.get("DM-001")["harness_hold"] = "claude"
+    sched.state.save()
+
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Waiting for claude to resume" in page
+    assert "will return to the dispatch queue automatically" in page
+
+    sched.resume_harness("claude")
+    page = client(garden).get("/tasks/DM-001").text
+    assert "Waiting for claude to resume" not in page
+    assert 'class="state s-ready"' in page
 
 
 def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden):

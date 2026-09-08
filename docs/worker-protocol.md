@@ -266,6 +266,13 @@ that looks like a login failure (`"not logged in"`) with `env_error: true, env_k
 "auth"`, so this is told apart from a worker's own failure and pauses the harness (an
 environment stop) rather than counting toward the task's attempts.
 
+Tools outside the harness can receive individual approved configuration files through
+`worker_env.config_files`. Each entry is named and supplies a host-local `source`, a
+`destination` relative to the isolated HOME, and optional `required: true`. The local, SSH,
+and pull-based remote paths refresh only these files for each run, remove a stale optional
+copy when its source disappears, and reject traversal or destination symlinks. Directories
+are mode 0700 and files mode 0600. File contents never enter the brief or remote claim.
+
 `start` returns at once. The scheduler records the `running` transition, bumps
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick
 moves on.
@@ -550,6 +557,22 @@ An already merged PR completes only after its head is verified on the final base
 PR retains its normal checks and review. If the external work cannot proceed before a PR,
 use `garden finish WID-003 --blocked --summary '...'`; it follows ordinary manual blocked
 handling. Git and fence protections remain in force in all three cases.
+
+When the work was authored and pushed from a separate clone before a PR exists, use the
+explicit pushed-result contract. The repository, already-claimed branch, and full SHA are
+all required; the scheduler fetches the configured repository, requires that exact SHA at
+the remote branch tip, materialises it locally, and only then runs the ordinary checks, PR,
+and independent review path:
+
+```bash
+garden take WID-003 --branch operator/fix --pushed-result
+garden finish WID-003 --repository OWNER/REPO --branch operator/fix \
+  --pushed-sha 0123456789abcdef0123456789abcdef01234567 --summary '...'
+```
+
+A missing branch, repository mismatch, or stale SHA is refused without closing the manual
+run, so corrected evidence can be submitted after a controller restart. The result summary
+is provenance, not approval; checks and review remain authoritative.
 
 **the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
 model call that is not detached: it runs the harness synchronously with the planning prompt
