@@ -1,0 +1,53 @@
+{
+  "head": "966ff297dfcef86ef650105a4ad62c3ebb48aa79",
+  "environment": "disposable FastAPI/uvicorn controller and real fake-harness child over TCP",
+  "command": ".venv/bin/python -m pytest tests/test_remote_worker.py::test_active_worker_completes_once_across_controller_stop_start -q",
+  "states": [
+    "active",
+    "controller_down",
+    "reconnecting",
+    "completed",
+    "empty"
+  ],
+  "events": [
+    {
+      "state": "active",
+      "method": "POST",
+      "url": "/api/runs/claim",
+      "status": 200,
+      "consequence": "one worker generation started a live harness child"
+    },
+    {
+      "state": "controller_down",
+      "action": "stop disposable controller",
+      "outcome": "connection refused",
+      "consequence": "the harness child remained active"
+    },
+    {
+      "state": "reconnecting",
+      "action": "restart controller on the same port",
+      "outcome": "heartbeat accepted",
+      "consequence": "the original generation retained authority"
+    },
+    {
+      "state": "completed",
+      "method": "POST",
+      "url": "/api/runs/20260908T221838Z-work/finish",
+      "status": 200,
+      "consequence": "one durable result completed with exit code 0"
+    },
+    {
+      "state": "empty",
+      "method": "POST",
+      "url": "/api/runs/claim",
+      "status": 204,
+      "consequence": "no duplicate work remained to claim"
+    }
+  ],
+  "automated_checks": [
+    "one remote_result.json exists",
+    "saved exit code is 0",
+    "worker thread exited without error"
+  ],
+  "unverified": []
+}
