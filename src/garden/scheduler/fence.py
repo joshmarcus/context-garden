@@ -34,7 +34,9 @@ class FenceMixin:
             clone = Path(self.repo_for(task))
         except Exception:  # noqa: BLE001 - a missing/URL repo just means nothing to guard here
             return out
-        if gitops.is_repo(clone) and clone.resolve() != root.resolve():
+        own_checkout = self.worktree_for(task)
+        if (gitops.is_repo(clone) and clone.resolve() != root.resolve()
+                and clone.resolve() != own_checkout.resolve()):
             out.append(("the product clone", clone))
         return out
 

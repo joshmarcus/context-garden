@@ -221,6 +221,10 @@ class RetroMixin:
         run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
         run.difficulty = difficulty
         run.brief_tokens = max(1, len(brief_text) // 4)
+        canonical = self.prepare_canonical_run(probe, run, runner, self.final_base_for(probe), self.final_base_for(probe))
+        if canonical is not None:
+            worktree = canonical
+            run.worktree = str(canonical)
         run.save()
         runner.start(run, worktree, brief_text)
         self.events.emit("dispatch", run.task_id, run=run.run_id, mode="retro", model=run.model,
