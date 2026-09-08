@@ -212,6 +212,37 @@ def test_event_log_delegated_actions_and_automated_merge_preserve_passing_window
     ]
 
 
+def test_distinct_same_second_owner_events_are_each_retained_and_reset_once(garden):
+    phase = protected_phase(garden)
+    start(phase, "build-a")
+    data_path = phase.path / "docs" / "stabilization-evidence.json"
+    data = json.loads(data_path.read_text())
+    data["started_at"] = "2026-09-06T00:00:00+00:00"
+    data["samples"] = [{"at": "2026-09-06T01:00:00+00:00", "completed_tasks": 4}]
+    data_path.write_text(json.dumps(data))
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    at = "2026-09-06T02:00:00+00:00"
+    events.emit("retry", "DM-001", phase=phase.key, actor="human_owner", reason="repair first failure", at=at)
+    events.emit("retry", "DM-002", phase=phase.key, actor="human_owner", reason="repair second failure", at=at)
+
+    sample(phase, events, at="2026-09-06T02:01:00+00:00")
+    data = json.loads(data_path.read_text())
+    assert data["started_at"] == at
+    assert len(data["samples"]) == 1
+    assert data["samples"][0]["at"] == "2026-09-06T02:01:00+00:00"
+    assert [(a["reason"], a["source_identity"]) for a in data["interventions"]] == [
+        ("repair first failure", "event-log-line:1"),
+        ("repair second failure", "event-log-line:2"),
+    ]
+
+    sample(phase, events, at="2026-09-06T02:02:00+00:00")
+    data = json.loads(data_path.read_text())
+    assert len(data["interventions"]) == 2
+    assert [row["at"] for row in data["samples"]] == [
+        "2026-09-06T02:01:00+00:00", "2026-09-06T02:02:00+00:00",
+    ]
+
+
 def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
     import httpx
 

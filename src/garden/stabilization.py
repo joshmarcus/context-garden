@@ -79,12 +79,12 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
         raise RuntimeError(f"no stabilization recording for {phase.key}; start it first")
     at = at or now_iso()
     since = str(data["started_at"])
-    phase_events = [e for e in events.read(since=since) if e.get("phase") == phase.key or
+    phase_events = [e for e in events.read(since=since, with_line_number=True) if e.get("phase") == phase.key or
                     any(t.id == e.get("task") for t in phase.tasks)]
     phase_task_ids = {task.id for task in phase.tasks}
     actions = [action for event in phase_events if (action := _action_from_event(event))]
-    known = {(i.get("at"), i.get("kind"), i.get("actor") or "unknown") for i in data.get("interventions", [])}
-    new_actions = [a for a in actions if (a["at"], a["kind"], a["actor"]) not in known]
+    known = {_action_identity(i) for i in data.get("interventions", [])}
+    new_actions = [a for a in actions if _action_identity(a) not in known]
     owner_actions = [a for a in new_actions if a["operative"] and a["actor"] == "human_owner"]
     if new_actions:
         data.setdefault("interventions", []).extend(new_actions)
@@ -220,9 +220,22 @@ def _check_soak(data: dict[str, Any], row: dict[str, Any], missing: list[str]) -
         missing.append("productive_unattended: unknown actor provenance in the candidate window")
 
 
-def _action_row(*, at: str, kind: str, actor: str, reason: str) -> dict[str, str | bool]:
-    return {"at": at, "kind": kind, "actor": actor, "reason": reason,
-            "operative": kind in INTERVENTION_KINDS}
+def _action_row(*, at: str, kind: str, actor: str, reason: str,
+                source_identity: str = "") -> dict[str, str | bool]:
+    row: dict[str, str | bool] = {
+        "at": at, "kind": kind, "actor": actor, "reason": reason,
+        "operative": kind in INTERVENTION_KINDS,
+    }
+    if source_identity:
+        row["source_identity"] = source_identity
+    return row
+
+
+def _action_identity(action: dict[str, Any]) -> tuple[object, ...]:
+    """Return the durable source identity, retaining a safe fallback for old evidence."""
+    if source_identity := action.get("source_identity"):
+        return ("event", source_identity)
+    return ("legacy", action.get("at"), action.get("kind"), action.get("actor") or "unknown")
 
 
 def _unattended_completed_tasks(
@@ -266,6 +279,7 @@ def _action_from_event(event: dict[str, Any]) -> dict[str, str | bool] | None:
     return _action_row(
         at=str(event.get("at") or ""), kind=kind, actor=actor,
         reason=str(event.get("reason") or event.get("note") or "recorded action"),
+        source_identity=f"event-log-line:{event.get('_line_number')}" if event.get("_line_number") else "",
     )
 
 

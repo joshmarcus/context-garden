@@ -44,12 +44,13 @@ class EventLog:
             f.write(json.dumps(ev, sort_keys=True) + "\n")
         return ev
 
-    def read(self, since: str = "", task_id: str = "", kinds: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def read(self, since: str = "", task_id: str = "", kinds: Iterable[str] | None = None,
+             with_line_number: bool = False) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
         wanted = set(kinds) if kinds else None
         out = []
-        for line in self.path.read_text().splitlines():
+        for line_number, line in enumerate(self.path.read_text().splitlines(), start=1):
             line = line.strip()
             if not line:
                 continue
@@ -63,6 +64,10 @@ class EventLog:
                 continue
             if wanted and ev.get("kind") not in wanted:
                 continue
+            if with_line_number:
+                # JSONL lines are append-only, so this is a stable identity for consumers
+                # that must distinguish two otherwise identical historical events.
+                ev["_line_number"] = line_number
             out.append(ev)
         return out
 
