@@ -653,6 +653,16 @@ class PollMixin:
                 gitops.fetch(repo)
                 target = parent_ref or gitops.base_ref(repo, final_base)
                 ancestor = gitops.is_ancestor(repo, sha, target)
+                # GitHub normally reports the parent's final head on its merged PR, but a
+                # provider can leave that field stale while its branch still exists.  The
+                # fetched branch is the authoritative revision in that case: only accept it
+                # when it contains the recorded child revision, never merely because it is
+                # present.
+                if not ancestor and parent.branch:
+                    branch_target = gitops.base_ref(repo, parent.branch)
+                    if branch_target != target and gitops.is_ancestor(repo, sha, branch_target):
+                        target = branch_target
+                        ancestor = True
             except gitops.GitError:
                 ancestor = False
         if not ancestor:
