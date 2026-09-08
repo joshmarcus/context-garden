@@ -1,0 +1,114 @@
+{
+  "head": "0f975efb0c6c2a67716b84f042240183464be5bc",
+  "environment": "disposable served app with Chromium",
+  "command": ".venv/bin/python docs/design/cg319-validation/replay.py",
+  "status": "pass",
+  "states": {
+    "affected": {
+      "status": "pass",
+      "actions": [
+        {
+          "action": "click Inbox navigation link Now",
+          "observed": "canonical /now opened with five live run/attention strips"
+        },
+        {
+          "action": "click last 24 hours after observing the browser's stream request",
+          "observed": "24-hour ledger became visible and /now/stream was connected"
+        }
+      ],
+      "observed": "navigation, live content, period control and event stream worked"
+    },
+    "empty": {
+      "status": "pass",
+      "actions": [
+        {
+          "action": "finish all synthetic runs and reload /now",
+          "observed": "quiet state showed Nothing running while Next remained actionable"
+        }
+      ],
+      "observed": "quiet state retained the scheduler's next-work explanation"
+    },
+    "failure_recovery": {
+      "status": "pass",
+      "actions": [
+        {
+          "action": "open /now1 and /now2 bookmarks",
+          "observed": "both redirected to the single /now implementation"
+        }
+      ],
+      "observed": "both retired bookmarks recovered to canonical /now"
+    }
+  },
+  "viewport_checks": {
+    "1280": [
+      "light",
+      "dark"
+    ],
+    "390": {
+      "themes": [
+        "light",
+        "dark"
+      ],
+      "clientWidth": 390,
+      "scrollWidth": 390
+    }
+  },
+  "artifacts": [
+    "docs/design/cg319-validation/interaction-manifest.json",
+    "docs/design/cg319-validation/now-1280-light.png",
+    "docs/design/cg319-validation/now-1280-dark.png",
+    "docs/design/cg319-validation/now-390-light.png",
+    "docs/design/cg319-validation/now-390-dark.png"
+  ],
+  "ui_scope": [
+    {
+      "path": "src/garden/web/pages/__init__.py",
+      "consumers": [
+        "now",
+        "now1 redirect",
+        "now2 redirect"
+      ]
+    },
+    {
+      "path": "src/garden/web/templates/_now1_period.html",
+      "consumers": [
+        "now"
+      ]
+    },
+    {
+      "path": "src/garden/web/templates/_now2.js",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_attention.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_next.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_period.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_run.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_summary.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    },
+    {
+      "path": "src/garden/web/templates/_now2_where.html",
+      "consumers": [],
+      "reason": "retired file; no rendered consumer remains"
+    }
+  ]
+}
