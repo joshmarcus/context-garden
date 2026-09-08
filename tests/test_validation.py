@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from garden.validation import POLICY_SOURCE_SHA, STRESS_NODES, ValidationPolicyError, resolve_validation
+from garden.validation import (
+    POLICY_SOURCE_SHA,
+    STRESS_NODES,
+    ValidationPolicyError,
+    resolve_validation,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
