@@ -15,6 +15,7 @@ HTML and text.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -221,10 +222,85 @@ class _TextParser(HTMLParser):
     _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
                              "meta", "param", "source", "track", "wbr"})
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1024)
+    def _parse_simple_selector(selector: str) -> tuple[
+        str, str, tuple[str, ...], tuple[tuple[str, str | None], ...], tuple[object, ...]
+    ] | None:
+        """Parse the supported selector subset once instead of once per HTML element."""
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector, re.I)
+        tag = tag_name.group(0).lower() if tag_name else ""
+        if tag_name:
+            index = len(tag_name.group(0))
+        element_id = ""
+        classes: list[str] = []
+        attributes: list[tuple[str, str | None]] = []
+        negations: list[object] = []
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match:
+                    return None
+                element_id = match.group(0)[1:]
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match:
+                    return None
+                classes.append(match.group(0)[1:])
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return None
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                attributes.append((match.group(1).lower(), expected))
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return None
+                parsed = _TextParser._parse_simple_selector(selector[index + 5:end])
+                if parsed is None:
+                    return None
+                negations.append(parsed)
+                index = end + 1
+            else:
+                return None
+        return tag, element_id, tuple(classes), tuple(attributes), tuple(negations)
+
     def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self._hidden_selectors = hidden_selectors or []
+        self._hidden_rules: list[tuple[tuple, bool, bool, int]] = []
+        self._rules_by_id: dict[str, list[tuple]] = {}
+        self._rules_by_class: dict[str, list[tuple]] = {}
+        self._rules_by_tag: dict[str, list[tuple]] = {}
+        self._generic_rules: list[tuple] = []
+        for rule_index, (selector, is_none, important) in enumerate(hidden_selectors or []):
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
+            parsed = tuple(
+                (self._parse_simple_selector(component), relation)
+                for component, relation in components
+            )
+            if any(component is None for component, _relation in parsed):
+                continue
+            rule = (parsed, is_none, important, rule_index)
+            self._hidden_rules.append(rule)
+            final = parsed[-1][0]
+            final_tag, element_id, classes, _attributes, _negations = final
+            if element_id:
+                self._rules_by_id.setdefault(element_id, []).append(rule)
+            elif classes:
+                self._rules_by_class.setdefault(classes[0], []).append(rule)
+            elif final_tag not in ("", "*"):
+                self._rules_by_tag.setdefault(final_tag, []).append(rule)
+            else:
+                self._generic_rules.append(rule)
         self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
         self._hidden_depth = 0
         self._ignored_depth = 0
@@ -239,48 +315,34 @@ class _TextParser(HTMLParser):
         conservative visibility filter, not a CSS engine.  A false negative leaves text
         in a capture for review; a false positive can erase unrelated visible content.
         """
-        values = {name.lower(): value or "" for name, value in attrs}
-        classes = set(values.get("class", "").split())
-        index = 0
-        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
-        if tag_name:
-            if tag_name.group(0).lower() not in ("*", tag.lower()):
-                return False
-            index += len(tag_name.group(0))
-        while index < len(selector):
-            marker = selector[index]
-            if marker == "#":
-                match = re.match(r"#[\w-]+", selector[index:])
-                if not match or values.get("id") != match.group(0)[1:]:
-                    return False
-                index += len(match.group(0))
-            elif marker == ".":
-                match = re.match(r"\.[\w-]+", selector[index:])
-                if not match or match.group(0)[1:] not in classes:
-                    return False
-                index += len(match.group(0))
-            elif marker == "[":
-                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
-                if not match:
-                    return False
-                name = match.group(1).lower()
-                expected = next((value for value in match.groups()[1:] if value is not None), None)
-                if name not in values or (expected is not None and values[name] != expected):
-                    return False
-                index += len(match.group(0))
-            elif selector.startswith(":not(", index):
-                end = selector.find(")", index + 5)
-                if end < 0:
-                    return False
-                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
-                    return False
-                index = end + 1
-            else:
-                return False
-        return True
+        parsed = _TextParser._parse_simple_selector(selector)
+        if parsed is None:
+            return False
+        return _TextParser._matches_parsed_selector(tag, attrs, parsed)
 
     @staticmethod
-    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+    def _matches_parsed_selector(
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+        parsed: tuple[str, str, tuple[str, ...], tuple[tuple[str, str | None], ...], tuple[object, ...]],
+    ) -> bool:
+        selector_tag, element_id, required_classes, required_attrs, negations = parsed
+        if selector_tag not in ("", "*", tag.lower()):
+            return False
+        values = {name.lower(): value or "" for name, value in attrs}
+        if element_id and values.get("id") != element_id:
+            return False
+        classes = set(values.get("class", "").split())
+        if any(required not in classes for required in required_classes):
+            return False
+        if any(name not in values or (expected is not None and values[name] != expected)
+               for name, expected in required_attrs):
+            return False
+        return not any(_TextParser._matches_parsed_selector(tag, attrs, negation) for negation in negations)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=512)
+    def _selector_components(selector: str) -> tuple[tuple[str, str | None], ...] | None:
         """Split selectors, retaining whether each component requires a direct parent."""
         components: list[tuple[str, str | None]] = []
         buffer: list[str] = []
@@ -332,21 +394,24 @@ class _TextParser(HTMLParser):
                 whitespace = False
         if brackets or parentheses or not add_component() or pending:
             return None
-        return components
+        return tuple(components)
 
     def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
-        if not self._hidden_selectors:
+        if not self._hidden_rules:
             return False
         # A selector's final component identifies the element; checking its ancestors
         # as well handles the descendant selectors used by the web templates without
         # needing a CSS dependency in the walkthrough tool.
         hidden: bool | None = None
         winning_rule: tuple[bool, int] | None = None
-        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
-            components = self._selector_components(selector.strip())
-            if not components:
-                continue
-            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
+        values = {name.lower(): value or "" for name, value in attrs}
+        candidates = list(self._generic_rules)
+        candidates.extend(self._rules_by_tag.get(tag.lower(), ()))
+        candidates.extend(self._rules_by_id.get(values.get("id", ""), ()))
+        for class_name in values.get("class", "").split():
+            candidates.extend(self._rules_by_class.get(class_name, ()))
+        for components, is_none, important, rule_index in sorted(candidates, key=lambda rule: rule[3]):
+            if not self._matches_parsed_selector(tag, attrs, components[-1][0]):
                 continue
             ancestors = self._elements
             index = len(ancestors) - 1
@@ -355,11 +420,11 @@ class _TextParser(HTMLParser):
                 relation = components[component_index][1]
                 component = components[component_index - 1][0]
                 if relation == ">":
-                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                    if index < 0 or not self._matches_parsed_selector(*ancestors[index], component):
                         matched = False
                         break
                 else:
-                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                    while index >= 0 and not self._matches_parsed_selector(*ancestors[index], component):
                         index -= 1
                     if index < 0:
                         matched = False
