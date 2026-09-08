@@ -413,9 +413,15 @@ def no_change_on_revise(call: Call) -> bool:
 def no_change_decision_on_revise(call: Call) -> bool:
     if not call.revise:
         return False
-    final = ('The code is already correct.\nGARDEN_RESULT: {"status": "no_change", '
-             '"reason": "The remaining suggestion changes the promised outcome.", '
-             '"improvements_declined": [{"suggestion": "change the outcome", "reason": "not needed"}]}')
+    result = {
+        "status": "no_change",
+        "reason": "The remaining suggestion changes the promised outcome.",
+        "pr_title": "Keep the existing outcome",
+        "pr_body": "## What\n\nKeeps the already-correct outcome unchanged.",
+        "improvements_declined": [{"suggestion": "change the outcome", "reason": "not needed"}],
+        "pre_flight": preflight_rows(),
+    }
+    final = "The code is already correct.\nGARDEN_RESULT: " + json.dumps(result)
     print(result_json(final, {"input_tokens": 210, "output_tokens": 18}, 0.01))
     return True
 
