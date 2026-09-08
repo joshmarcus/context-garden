@@ -182,6 +182,10 @@ class DispatchMixin:
             inv["status"] = "draining"
             self.state.save()
             raise RuntimeError(f"{task.id} is still draining active work")
+        # A request made while a writer was active initially records ``running``. By this safe
+        # boundary that writer may have advanced the task into review or changes_requested;
+        # restore the state that actually entered investigation, never the stale request-time one.
+        inv["task_status"] = task.status.value
         inv["status"] = "active"
         inv["started_at"] = now_iso()
         run = self.dispatch(task, mode="investigation", runner=runner,
