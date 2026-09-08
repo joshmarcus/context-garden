@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,12 +25,30 @@ def main() -> int:
     status_dir.mkdir(parents=True, exist_ok=True)
     os.environ["GARDEN_HEAVY_EXECUTION"] = "1"
     os.environ["GARDEN_OWNER_SCOPED"] = "1"
-    # Replace this process with the ordinary supervisor: nested validation therefore gets
+    # Run the ordinary supervisor: nested validation therefore gets
     # the same signal forwarding, subreaper ownership and adopted-descendant drain as an
     # outer run, plus both the authoritative host slot and its owner's serialization lock.
-    os.execv(sys.executable, [sys.executable, "-m", "garden.run_supervisor",
-                              str(status_dir), shlex.join(argv)])
-    return 2  # pragma: no cover - execv either replaces us or raises
+    command = shlex.join(argv)
+    completed = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(status_dir), command],
+        check=False,
+    )
+    try:
+        source_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        source_sha = ""
+    receipt = {
+        "version": 1,
+        "source_sha": source_sha,
+        "command": command,
+        "selection": argv,
+        "exit_code": completed.returncode,
+        "log_location": str(status_dir),
+    }
+    (status_dir / "result.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
+    return completed.returncode
 
 
 if __name__ == "__main__":
