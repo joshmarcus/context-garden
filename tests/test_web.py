@@ -1671,7 +1671,9 @@ def test_run_page_renders_codex_transcript_and_escapes_item_content(garden):
             "type": "file_change", "changes": [{"path": "src/garden/web/pages/runs.py", "kind": "update"}]}}),
         json.dumps({"type": "turn.completed", "usage": {}}),
     ]) + "\n"
-    run = _record_run(garden, harness="codex", stdout=stdout)
+    # Older records can lack the Codex harness configuration; their event envelopes still
+    # identify this as a streamed transcript.
+    run = _record_run(garden, harness="retired-codex", stdout=stdout)
 
     c = client(garden)
     body = c.get(f"/runs/DM-001/{run.run_id}").text
