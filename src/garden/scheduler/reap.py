@@ -19,6 +19,7 @@ from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
 from .report import TickReport
+from .human import INVESTIGATION_RECOMMENDATIONS
 
 
 class ReapMixin:
@@ -156,6 +157,9 @@ class ReapMixin:
         if not self._finished_or_timed_out(run, runner):
             return False
         if run.status == "timeout":
+            if run.mode == "investigation":
+                self._fail_investigation(task, run, rep, "investigation agent timed out")
+                return True
             self._preserve_timeout_worktree(task, run)
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="timeout", cost_usd=None)
             self._retry_or_fail(task, run, rep, f"worker {run.error}" if run.error else "worker timed out")
@@ -223,6 +227,57 @@ class ReapMixin:
             return True
         return False
 
+    def _restore_investigation_task_status(self, task: Task, inv: dict[str, Any], note: str) -> None:
+        raw = str(inv.get("task_status") or Status.CHANGES_REQUESTED.value)
+        try:
+            target = Status(raw)
+        except ValueError:
+            target = Status.CHANGES_REQUESTED
+        self._transition(task, target, note, needs_human=True)
+
+    def _fail_investigation(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
+        st = self.state.get(task.id)
+        inv = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+        inv.update({"status": "failed", "error": reason, "failed_at": now_iso(), "run_id": run.run_id,
+                    "transcript": str(run.path / "final.md"), "cost_usd": run.cost_usd})
+        st["investigation"] = inv
+        self._set_needs_human(task, "investigation", f"investigation agent failed: {reason}; retry or take it as operator")
+        self._restore_investigation_task_status(task, inv, f"investigation agent failed: {reason}")
+        self.events.emit("investigation_failed", task.id, run=run.run_id, reason=reason, cost_usd=run.cost_usd)
+        self.state.save()
+        rep.transitions.append(f"{task.id} investigation failed")
+
+    def _finalize_investigation(self, task: Task, run: Run, rep: TickReport,
+                                collected: dict[str, Any]) -> None:
+        """Persist a read-only diagnosis independently of implementation revisions."""
+        result = run.result or {}
+        report = result.get("investigation_report")
+        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                    "retain_work", "alternatives", "recommendation"}
+        if collected.get("env_error"):
+            self._fail_investigation(task, run, rep, str(collected.get("error") or "investigation environment unavailable"))
+            return
+        if result.get("status") != "done" or not isinstance(report, dict) or not required.issubset(report):
+            self._fail_investigation(task, run, rep, "agent returned no complete investigation report")
+            return
+        if report.get("recommendation") not in INVESTIGATION_RECOMMENDATIONS:
+            self._fail_investigation(task, run, rep, "agent returned an unsupported recommendation")
+            return
+        st = self.state.get(task.id)
+        inv = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+        inv.update({"status": "report_ready", "report": report, "completed_at": now_iso(),
+                    "run_id": run.run_id, "transcript": str(run.path / "final.md"),
+                    "cost_usd": run.cost_usd, "usage": run.usage})
+        st["investigation"] = inv
+        run.status = "done"
+        run.save()
+        self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
+        self._restore_investigation_task_status(task, inv, "investigation report ready; task remains paused")
+        self.events.emit("investigation_reported", task.id, run=run.run_id,
+                         recommendation=report["recommendation"], cost_usd=run.cost_usd)
+        self.state.save()
+        rep.transitions.append(f"{task.id} investigation report ready")
+
     def finalize(self, task: Task, run: Run, runner: Runner, rep: TickReport, resumed: bool = False) -> None:
         run.exit_code = run.read_exit_code()
         run.finished_at = now_iso()
@@ -271,6 +326,10 @@ class ReapMixin:
         self._release_fence_bookkeeping(task)
         if violations:
             self._fence_fail(task, run, violations, rep)
+            return
+
+        if run.mode == "investigation":
+            self._finalize_investigation(task, run, rep, collected)
             return
 
         # A result only vouches for commits.  Preserve every uncommitted path before any
