@@ -1,14 +1,14 @@
 {
   "producer": "garden.cg356.onboarding-replay/v1",
-  "head": "e7c0e1a0faef2dd5a6c024e469445f2cca462122",
-  "started_at": "2026-09-08T09:38:29.817526+00:00",
+  "head": "dac4a1630582fad42b6d4b0690443312f25bf42f",
+  "started_at": "2026-09-08T09:39:54.013573+00:00",
   "environment": "disposable-served-http",
   "status": "pass",
   "requests": [
     {
       "method": "GET",
       "path": "/onboarding",
-      "url": "http://127.0.0.1:35779/onboarding",
+      "url": "http://127.0.0.1:33387/onboarding",
       "status_code": 200,
       "observation": {
         "product_exists": false,
@@ -18,10 +18,10 @@
     {
       "method": "POST",
       "path": "/onboarding/reject",
-      "url": "http://127.0.0.1:35779/onboarding/reject",
+      "url": "http://127.0.0.1:33387/onboarding/reject",
       "status_code": 422,
       "observation": {
-        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T091744Z-revise/cg356-replay-w9_mpbbk/sample-web --into /home/joshua/work/tmp-disk/20260908T091744Z-revise/cg356-replay-w9_mpbbk/garden",
+        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T093639Z-revise/cg356-replay-sv2kktxs/sample-web --into /home/joshua/work/tmp-disk/20260908T093639Z-revise/cg356-replay-sv2kktxs/garden",
         "preexisting_files_unchanged": true,
         "product_exists": false,
         "task_statuses": []
@@ -30,7 +30,7 @@
     {
       "method": "POST",
       "path": "/onboarding/retry",
-      "url": "http://127.0.0.1:35779/onboarding/retry",
+      "url": "http://127.0.0.1:33387/onboarding/retry",
       "status_code": 201,
       "observation": {
         "created": [
@@ -52,7 +52,7 @@
     {
       "method": "POST",
       "path": "/onboarding/collision",
-      "url": "http://127.0.0.1:35779/onboarding/collision",
+      "url": "http://127.0.0.1:33387/onboarding/collision",
       "status_code": 409,
       "observation": {
         "error": "onboarding would overwrite an existing product: product 'sample-web' in garden.yaml, sample-web, principles/10-sample-web-conventions.md",
@@ -70,7 +70,7 @@
       "state": "empty",
       "outcome": "empty",
       "method": "GET",
-      "url": "http://127.0.0.1:35779/onboarding",
+      "url": "http://127.0.0.1:33387/onboarding",
       "status_code": 200,
       "observed": "The disposable garden contains no product or tasks."
     },
@@ -79,7 +79,7 @@
       "state": "failure",
       "outcome": "failure",
       "method": "POST",
-      "url": "http://127.0.0.1:35779/onboarding/reject",
+      "url": "http://127.0.0.1:33387/onboarding/reject",
       "status_code": 422,
       "observed": "Planner rejection leaves the pre-existing garden unchanged."
     },
@@ -88,7 +88,7 @@
       "state": "recovery",
       "outcome": "success",
       "method": "POST",
-      "url": "http://127.0.0.1:35779/onboarding/retry",
+      "url": "http://127.0.0.1:33387/onboarding/retry",
       "status_code": 201,
       "observed": "A successful 201 retry creates draft-only onboarding output."
     },
@@ -97,7 +97,7 @@
       "state": "affected",
       "outcome": "success",
       "method": "POST",
-      "url": "http://127.0.0.1:35779/onboarding/collision",
+      "url": "http://127.0.0.1:33387/onboarding/collision",
       "status_code": 409,
       "observed": "A collision response preserves the completed garden."
     }
@@ -118,7 +118,7 @@
       "status": "pass",
       "action": "POST /onboarding/reject",
       "observed": {
-        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T091744Z-revise/cg356-replay-w9_mpbbk/sample-web --into /home/joshua/work/tmp-disk/20260908T091744Z-revise/cg356-replay-w9_mpbbk/garden",
+        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T093639Z-revise/cg356-replay-sv2kktxs/sample-web --into /home/joshua/work/tmp-disk/20260908T093639Z-revise/cg356-replay-sv2kktxs/garden",
         "preexisting_files_unchanged": true,
         "product_exists": false,
         "task_statuses": []
