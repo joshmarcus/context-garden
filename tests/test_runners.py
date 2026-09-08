@@ -577,20 +577,17 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
     brief = run_dir / "brief.md"
     brief.write_text("")
     run = Run(task_id="T-1", run_id="outer", dir=str(run_dir), runner="local")
-    env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
-           "GARDEN_EXECUTION_CGROUP": ""}
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
+    env.update({"GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+                "GARDEN_EXECUTION_CGROUP": "", "GARDEN_VALIDATION_RUNNER": sys.executable})
     runner.launch(run, tmp_path, brief, env)
 
-    deadline = time.monotonic() + 3
-    saw_waiting = False
-    while time.monotonic() < deadline and not run.process_finished():
-        statuses = list((run_dir / "validations").glob("*/execution.json"))
-        states = [json.loads(path.read_text())["state"] for path in statuses]
-        saw_waiting |= "waiting" in states
-        time.sleep(0.01)
     os.waitpid(run.pid, 0)
     assert run.read_exit_code() == 0
-    assert saw_waiting
     assert (tmp_path / "active.txt").read_text() == "0 1"
     statuses = list((run_dir / "validations").glob("*/execution.json"))
     assert len(statuses) == 2

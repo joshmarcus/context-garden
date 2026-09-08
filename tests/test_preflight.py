@@ -126,6 +126,21 @@ def test_mechanical_preflight_finds_ui_changes_from_inspected_paths(garden, monk
     assert next(row for row in results if row["name"] == "UI captures")["status"] == "fail"
 
 
+def test_mechanical_preflight_uses_the_validation_plan_not_the_web_path(garden, monkeypatch):
+    worktree = garden / "nonvisual-web-change"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs:
+                        "+route wiring\n" if "--name-only" not in args else "src/garden/web/app.py\n")
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[], required_ui=False)
+
+    assert next(row for row in results if row["name"] == "UI captures")["status"] == "pass"
+
+
 def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
     store = Store(garden)
     task = store.task("DM-001")
