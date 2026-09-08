@@ -67,6 +67,26 @@ def register(app: FastAPI, site: Site) -> None:
     def leased(run: Any) -> bool:
         return bool(run.lease_expires_at and run.lease_expires_at > dt.datetime.now(dt.UTC).isoformat())
 
+    def recovering(run: Any) -> bool:
+        deadline = run.recovery_expires_at
+        if not deadline and run.lease_expires_at:
+            # Runs claimed by the immediately previous controller version have no
+            # recovery field. Derive it from their durable lease so deploying the fix
+            # does not itself strand those active subprocesses.
+            deadline = (dt.datetime.fromisoformat(run.lease_expires_at) + dt.timedelta(
+                seconds=int(hub.store.config.get("workers.recovery_seconds", 300))
+            )).isoformat()
+        return bool(deadline and deadline > dt.datetime.now(dt.UTC).isoformat())
+
+    def renew(run: Any, now: dt.datetime | None = None) -> None:
+        now = now or dt.datetime.now(dt.UTC)
+        lease_seconds = int(hub.store.config.get("workers.lease_seconds", 120))
+        recovery_seconds = int(hub.store.config.get("workers.recovery_seconds", 300))
+        run.lease_expires_at = (now + dt.timedelta(seconds=lease_seconds)).isoformat()
+        run.recovery_expires_at = (
+            now + dt.timedelta(seconds=lease_seconds + recovery_seconds)
+        ).isoformat()
+
     def run_for(run_id: str):
         from ...runs import RunStore
 
@@ -77,12 +97,14 @@ def register(app: FastAPI, site: Site) -> None:
 
     def claimed_run(run_id: str, host: dict[str, Any], lease_token: str):
         run = run_for(run_id)
+        if run.status != "running" or run.process_finished():
+            raise HTTPException(409, "run lease has been revoked")
         if run.host != host.get("name"):
             raise HTTPException(409, "run is leased to another host")
         if not lease_token or not secrets.compare_digest(run.lease_token, lease_token):
             raise HTTPException(409, "run lease has been replaced")
-        if not leased(run):
-            raise HTTPException(409, "run lease has expired")
+        if not leased(run) and not recovering(run):
+            raise HTTPException(409, "run lease recovery deadline has expired")
         return run
 
     def credential_free_repo_url(value: str) -> str:
@@ -163,14 +185,15 @@ def register(app: FastAPI, site: Site) -> None:
 
             runs = RunStore(hub.store.config.garden_dir).all_runs()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
-                     and r.host == body["host"] and leased(r) and not r.process_finished()]
+                     and r.host == body["host"] and (leased(r) or recovering(r))
+                     and not r.process_finished()]
             if len(owned) >= capacity:
                 return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
                 if run.runner != "remote" or run.status != "running" or run.process_finished():
                     continue
-                if run.host and leased(run):
+                if run.host and (leased(run) or recovering(run)):
                     continue
                 # Checks execute the portable check payload and need no model harness.
                 # Every other remote mode is harness-backed: an empty offer means the
@@ -181,7 +204,7 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 run.host = str(body["host"])
                 run.claimed_at = now.isoformat()
-                run.lease_expires_at = (now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
+                renew(run, now)
                 run.lease_token = secrets.token_urlsafe(32)
                 fresh = hub.fresh()
                 task = fresh.tasks().get(run.task_id)
@@ -223,6 +246,7 @@ def register(app: FastAPI, site: Site) -> None:
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
                     "lease_token": run.lease_token,
                     "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
+                    "recovery_seconds": int(hub.store.config.get("workers.recovery_seconds", 300)),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
@@ -270,18 +294,51 @@ def register(app: FastAPI, site: Site) -> None:
             persist_host_facts(run, body.get("host_facts"))
             chunk = str(body.get("transcript") or "")
             if chunk:
-                with (run.path / "stdout.json").open("a") as f:
-                    f.write(chunk)
-            run.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
+                transcript = run.path / "stdout.json"
+                current = transcript.stat().st_size if transcript.exists() else 0
+                offset = body.get("transcript_offset")
+                if offset is None:  # compatibility with workers deployed before CG-428
+                    offset = current
+                if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                    raise HTTPException(422, "transcript_offset must be a non-negative integer")
+                encoded = chunk.encode()
+                if offset < current:
+                    with transcript.open("rb") as f:
+                        f.seek(offset)
+                        if f.read(len(encoded)) != encoded:
+                            raise HTTPException(409, "transcript upload conflicts with durable output")
+                elif offset > current:
+                    raise HTTPException(409, f"transcript offset {offset} is ahead of durable offset {current}")
+                else:
+                    with transcript.open("ab") as f:
+                        f.write(encoded)
+            renew(run)
             run.save()
-        return {"ok": True, "lease_expires_at": run.lease_expires_at}
+        transcript = run.path / "stdout.json"
+        return {"ok": True, "lease_expires_at": run.lease_expires_at,
+                "transcript_offset": transcript.stat().st_size if transcript.exists() else 0}
 
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
         body = await request.json()
         with hub.action_lock:
-            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            run = run_for(run_id)
+            token = str(body.get("lease_token") or "")
+            if run.host != host.get("name") or not token or not secrets.compare_digest(run.lease_token, token):
+                raise HTTPException(409, "run lease has been replaced")
+            if run.process_finished():
+                posted = run.path / "remote_result.json"
+                prior = json.loads(posted.read_text()) if posted.exists() else {}
+                same = (run.pushed_head == str(body.get("pushed_head") or "")
+                        and run.read_exit_code() == int(body.get("exit_code") or 0)
+                        and prior.get("result", {}) == (body.get("result") or {}))
+                if not same:
+                    raise HTTPException(409, "completed run result is immutable")
+                return {"ok": True, "already_finished": True}
+            if run.status != "running":
+                raise HTTPException(409, "run lease has been revoked")
+            run = claimed_run(run_id, host, token)
             run.pushed_head = str(body.get("pushed_head") or "")
             final = str(body.get("final_text") or "")
             (run.path / "final.md").write_text(final)

@@ -21,6 +21,15 @@ from .brief import parse_result
 from .harness import Harness
 
 
+class WorkerRequestError(RuntimeError):
+    """An HTTP response that retry policy can classify without parsing its text."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(f"garden returned HTTP {status}: {detail}")
+        self.status = status
+        self.retryable = status in {408, 425, 429} or status >= 500
+
+
 def doctor_worker(token: str, repo: str, harnesses: list[str]) -> list[str]:
     problems: list[str] = []
     if not token:
@@ -49,7 +58,7 @@ class WorkerClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 204:
                 return 204, {}
-            raise RuntimeError(f"garden returned HTTP {exc.code}: {exc.read().decode(errors='replace')}") from exc
+            raise WorkerRequestError(exc.code, exc.read().decode(errors="replace")) from exc
 
 
 class _LeaseHeartbeat:
@@ -60,18 +69,35 @@ class _LeaseHeartbeat:
         self.client = client
         self.stop_event = threading.Event()
         self.failure: BaseException | None = None
+        self.recovery_seconds = max(0.0, float(run.get("recovery_seconds") or 300))
+        self.recovery_deadline = time.monotonic() + self.recovery_seconds
+        self.post_lock = threading.Lock()
         self.thread = threading.Thread(target=self._run, name=f"garden-heartbeat-{run['id']}", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
-    def _post(self) -> None:
-        status, _ = self.client.post(
-            f"/api/runs/{self.run['id']}/heartbeat",
-            {"lease_token": self.run["lease_token"]},
-        )
-        if status != 200:
-            raise RuntimeError(f"garden heartbeat returned HTTP {status}")
+    def _post(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        delay = min(1.0, max(0.05, float(self.run.get("heartbeat_seconds") or 30) / 4))
+        while True:
+            try:
+                with self.post_lock:
+                    status, response = self.client.post(
+                        f"/api/runs/{self.run['id']}/heartbeat",
+                        {"lease_token": self.run["lease_token"], **(payload or {})},
+                    )
+                if status != 200:
+                    raise WorkerRequestError(status, "heartbeat rejected")
+                self.recovery_deadline = time.monotonic() + self.recovery_seconds
+                return response
+            except BaseException as exc:
+                if isinstance(exc, WorkerRequestError) and not exc.retryable:
+                    raise
+                if time.monotonic() >= self.recovery_deadline:
+                    raise
+                if self.stop_event.wait(delay):
+                    raise RuntimeError("remote run stopped during controller recovery") from None
+                delay = min(delay * 2, 5.0)
 
     def _run(self) -> None:
         interval = max(0.05, float(self.run.get("heartbeat_seconds") or 30))
@@ -86,6 +112,29 @@ class _LeaseHeartbeat:
         if self.failure is not None:
             raise RuntimeError(f"remote run lease renewal failed: {self.failure}") from self.failure
         self._post()
+
+    def upload(self, offset: int, chunk: str) -> int:
+        if self.failure is not None:
+            raise RuntimeError(f"remote run lease renewal failed: {self.failure}") from self.failure
+        response = self._post({"transcript_offset": offset, "transcript": chunk})
+        return int(response.get("transcript_offset", offset + len(chunk.encode())))
+
+    def finish(self, payload: dict[str, Any]) -> None:
+        delay = 0.1
+        while True:
+            try:
+                with self.post_lock:
+                    status, _ = self.client.post(f"/api/runs/{self.run['id']}/finish", payload)
+                if status != 200:
+                    raise WorkerRequestError(status, "finish rejected")
+                return
+            except BaseException as exc:
+                if isinstance(exc, WorkerRequestError) and not exc.retryable:
+                    raise
+                if time.monotonic() >= self.recovery_deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -155,25 +204,25 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 assert proc.stdin is not None
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
-                transcript_offset = 0
+                transcript_read_offset = 0
+                transcript_upload_offset = 0
                 while proc.poll() is None:
                     time.sleep(1)
                     stdout_file.flush()
                     with open(stdout_file.name) as transcript_file:
-                        transcript_file.seek(transcript_offset)
+                        transcript_file.seek(transcript_read_offset)
                         chunk = transcript_file.read()
-                        transcript_offset = transcript_file.tell()
+                        transcript_read_offset = transcript_file.tell()
                     if chunk:
-                        client.post(f"/api/runs/{run['id']}/heartbeat",
-                                    {"lease_token": run["lease_token"], "transcript": chunk})
+                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
                 stdout_file.flush()
                 stdout_file.seek(0)
                 stderr_file.seek(0)
                 stdout, stderr = stdout_file.read(), stderr_file.read()
-                tail = stdout[transcript_offset:]
+                stdout_file.seek(transcript_read_offset)
+                tail = stdout_file.read()
                 if tail:
-                    client.post(f"/api/runs/{run['id']}/heartbeat",
-                                {"lease_token": run["lease_token"], "transcript": tail})
+                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -188,9 +237,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
         heartbeat.ensure_current()
-        client.post(f"/api/runs/{run['id']}/finish", {"lease_token": run["lease_token"],
-                    "exit_code": rc, "final_text": final, "result": parsed,
-                    "usage": usage, "cost_usd": cost, "error": error, "pushed_head": head})
+        heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
+                          "final_text": final, "result": parsed, "usage": usage,
+                          "cost_usd": cost, "error": error, "pushed_head": head})
     finally:
         heartbeat.stop()
 

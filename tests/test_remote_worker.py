@@ -12,7 +12,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops
-from garden.remote_worker import doctor_worker, execute_claim
+from garden.remote_worker import WorkerRequestError, _LeaseHeartbeat, doctor_worker, execute_claim
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -216,6 +216,7 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     claim1 = client.post("/api/runs/claim", json=offer, headers=auth).json()
     run = RunStore(store.config.garden_dir).latest("DM-001")
     run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.recovery_expires_at = run.lease_expires_at
     run.save()
     claim2 = client.post("/api/runs/claim", json=offer, headers=auth).json()
 
@@ -299,11 +300,115 @@ def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
     run = queued_run(store)
     run.host = "build-1"
     run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.recovery_expires_at = run.lease_expires_at
     run.save()
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy"]},
                            headers={"Authorization": "Bearer secret-token"})
     assert response.status_code == 200 and response.json()["id"] == run.run_id
     assert store.task("DM-001").status.value == "ready"
+
+
+def test_expired_lease_waits_for_durable_recovery_window(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.save()
+
+    assert client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                       headers=auth).status_code == 204
+    page = client.get(f"/runs/DM-001/{run.run_id}")
+    assert "Reconnecting after a controller interruption" in page.text
+    assert "seconds to reconnect before this lease can be reassigned" in page.text
+    beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                       json={"lease_token": claim["lease_token"]}, headers=auth)
+    assert beat.status_code == 200
+    assert RunStore(store.config.garden_dir).latest("DM-001").lease_token == claim["lease_token"]
+
+
+def test_cancelled_remote_lease_is_explicitly_rejected(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.status = "cancelled"
+    run.save()
+
+    rejected = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                           json={"lease_token": claim["lease_token"]}, headers=auth)
+    assert rejected.status_code == 409
+    assert "revoked" in rejected.text
+
+
+def test_transcript_replay_is_ordered_and_idempotent(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    path = f"/api/runs/{run.run_id}/heartbeat"
+    payload = {"lease_token": claim["lease_token"], "transcript_offset": 0,
+               "transcript": "héllo\n"}
+
+    first = client.post(path, json=payload, headers=auth)
+    replay = client.post(path, json=payload, headers=auth)
+    ahead = client.post(path, json={**payload, "transcript_offset": 99}, headers=auth)
+
+    assert first.json()["transcript_offset"] == len("héllo\n".encode())
+    assert replay.status_code == 200
+    assert replay.json()["transcript_offset"] == first.json()["transcript_offset"]
+    assert ahead.status_code == 409
+    assert RunStore(store.config.garden_dir).latest("DM-001").stdout_text() == "héllo\n"
+
+
+def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    payload = {"lease_token": claim["lease_token"], "exit_code": 0, "result": {"status": "done"},
+               "pushed_head": "abc", "final_text": "done"}
+    path = f"/api/runs/{run.run_id}/finish"
+
+    assert client.post(path, json=payload, headers=auth).json() == {"ok": True}
+    assert client.post(path, json=payload, headers=auth).json() == {
+        "ok": True, "already_finished": True,
+    }
+    assert client.post(path, json={**payload, "pushed_head": "other"}, headers=auth).status_code == 409
+
+
+def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypatch):
+    class RecoveringClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, path, payload):
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionRefusedError("controller restarting")
+            return 200, {"transcript_offset": len(str(payload.get("transcript") or "").encode())}
+
+    run = {"id": "run-1", "lease_token": "lease", "heartbeat_seconds": 0.05,
+           "recovery_seconds": 1}
+    recovering = RecoveringClient()
+    heartbeat = _LeaseHeartbeat(run, recovering)
+    assert heartbeat.upload(0, "kept") == 4
+    assert recovering.calls == 2
+
+    class RejectingClient:
+        def post(self, path, payload):
+            raise WorkerRequestError(403, "revoked")
+
+    started = time.monotonic()
+    with pytest.raises(WorkerRequestError, match="403"):
+        _LeaseHeartbeat(run, RejectingClient()).ensure_current()
+    assert time.monotonic() - started < 0.5
 
 
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
@@ -458,6 +563,78 @@ def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, t
     execute_while_asserting_not_reclaimed(check_claim)
 
 
+def test_active_worker_completes_once_across_controller_stop_start(
+    garden, monkeypatch, tmp_path, fake_github,
+):
+    """A disposable real HTTP controller disappears while a real harness child is active."""
+    import socket
+
+    import httpx
+    import uvicorn
+
+    _, store = remote_client(garden, monkeypatch)
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["workers"].update(lease_seconds=2, recovery_seconds=5)
+    config_path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    scheduler = Scheduler(store, github=fake_github)
+    assert scheduler.tick().dispatched
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    url = f"http://127.0.0.1:{port}"
+
+    def start_controller():
+        server = uvicorn.Server(uvicorn.Config(
+            create_app(Store(garden), watch=False, host="127.0.0.1"),
+            host="127.0.0.1", port=port, log_level="error",
+        ))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert server.started
+        return server, thread
+
+    server, controller_thread = start_controller()
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = httpx.post(f"{url}/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+    }, headers=auth).json()
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "2.5")
+    worker_errors = []
+
+    def work():
+        try:
+            from garden.remote_worker import WorkerClient
+
+            execute_claim(claim, tmp_path / "restart-host", WorkerClient(url, "secret-token"))
+        except BaseException as exc:
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=work)
+    worker.start()
+    time.sleep(0.8)
+    server.should_exit = True
+    controller_thread.join(timeout=5)
+    assert not controller_thread.is_alive() and worker.is_alive()
+    time.sleep(1.0)
+    server, controller_thread = start_controller()
+    worker.join(timeout=15)
+    server.should_exit = True
+    controller_thread.join(timeout=5)
+
+    assert not worker.is_alive() and not worker_errors
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.process_finished() and saved.read_exit_code() == 0
+    assert json.loads((saved.path / "remote_result.json").read_text())["result"]["status"] == "done"
+    assert len(list(saved.path.glob("remote_result.json"))) == 1
+
+
 def test_worker_cli_setup_option(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
@@ -553,6 +730,7 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
             assert "must-not-travel" not in json.dumps(claim)
             run = scheduler.runs.latest("DM-001")
             run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+            run.recovery_expires_at = run.lease_expires_at
             run.save()
             assert client.post(f"/api/runs/{run.run_id}/heartbeat",
                                json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
