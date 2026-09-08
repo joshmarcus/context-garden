@@ -291,6 +291,86 @@ def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkey
     assert env["MY_HARNESS_HOME"] == "/opt/my-harness"  # a custom harness's own documented key
 
 
+def test_scrubbed_env_copies_only_named_config_files_and_revokes_them(tmp_path, monkeypatch):
+    from garden.runner.base import scrubbed_env
+
+    operator = tmp_path / "operator"
+    operator.mkdir()
+    allowed = operator / "allowed.json"
+    denied = operator / "unrelated-instructions.md"
+    allowed.write_text("synthetic-tool-config")
+    denied.write_text("SECRET_SENTINEL_DENIED")
+    monkeypatch.setenv("HOME", str(operator))
+    worktree = tmp_path / "worktrees" / "T-1"
+    config = {"worker_env": {"config_files": {
+        "synthetic-tool": {"source": str(allowed), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }}}
+
+    env = scrubbed_env(config, worktree=worktree)
+    copied = Path(env["HOME"]) / ".config/synthetic/tool.json"
+    assert copied.read_text() == "synthetic-tool-config"
+    assert copied.stat().st_mode & 0o777 == 0o600
+    assert copied.parent.stat().st_mode & 0o777 == 0o700
+    assert not any("SECRET_SENTINEL_DENIED" in p.read_text() for p in Path(env["HOME"]).rglob("*") if p.is_file())
+
+    allowed.unlink()  # revoking the host-side credential removes the prior worker copy
+    config["worker_env"]["config_files"]["synthetic-tool"]["required"] = False
+    scrubbed_env(config, worktree=worktree)
+    assert not copied.exists()
+
+
+@pytest.mark.parametrize("destination", ["../escape", "/absolute", "."])
+def test_config_file_destination_rejects_traversal(destination, tmp_path):
+    from garden.runner.base import RunnerError, scrubbed_env
+
+    source = tmp_path / "source"
+    source.write_text("safe")
+    with pytest.raises(RunnerError, match="below worker HOME"):
+        scrubbed_env({"worker_env": {"config_files": {"tool": {
+            "source": str(source), "destination": destination,
+        }}}}, worktree=tmp_path / "wt")
+
+
+def test_config_file_rejects_symlink_destination_and_missing_required_file(tmp_path):
+    from garden.runner.base import RunnerError, scrubbed_env, worker_home
+
+    worktree = tmp_path / "worktrees" / "T-1"
+    home = Path(worker_home(worktree))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / ".config").symlink_to(outside)
+    source = tmp_path / "source"
+    source.write_text("safe")
+    config = {"worker_env": {"config_files": {"tool": {
+        "source": str(source), "destination": ".config/tool/config",
+    }}}}
+    with pytest.raises(RunnerError, match="crosses a symlink"):
+        scrubbed_env(config, worktree=worktree)
+
+    (home / ".config").unlink()
+    config["worker_env"]["config_files"]["tool"] = {
+        "source": str(tmp_path / "missing"), "destination": ".config/tool/config", "required": True,
+    }
+    with pytest.raises(RunnerError, match="required config file 'tool' is unavailable"):
+        scrubbed_env(config, worktree=worktree)
+
+
+def test_config_file_rejects_symlink_worker_home(tmp_path):
+    from garden.runner.base import RunnerError, scrubbed_env, worker_home
+
+    worktree = tmp_path / "worktrees" / "T-1"
+    home = Path(worker_home(worktree))
+    home.rmdir()
+    home.symlink_to(tmp_path)
+    source = tmp_path / "source"
+    source.write_text("safe")
+    with pytest.raises(RunnerError, match="worker HOME.*symlink"):
+        scrubbed_env({"worker_env": {"config_files": {"tool": {
+            "source": str(source), "destination": ".config/tool",
+        }}}}, worktree=worktree)
+
+
 def test_run_setup_runs_in_the_scrubbed_env(tmp_path, monkeypatch):
     from garden.runner.base import run_setup
 

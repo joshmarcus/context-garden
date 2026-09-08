@@ -241,7 +241,8 @@ def friction(target: str = typer.Argument(..., help="product/phase")):
     rs = RunStore(store.config.garden_dir)
     cfg = store.config
 
-    github_slug = str(cfg.product(product).get("github") or "")
+    github_route = cfg.product_github(product)
+    github_slug = github_route.get("slug", "")
     if not github_slug:
         try:
             from ..gitops import slug as _git_slug
@@ -250,7 +251,8 @@ def friction(target: str = typer.Argument(..., help="product/phase")):
         except Exception:
             github_slug = ""
 
-    gh = GitHub(use_gh=bool(cfg.get("github.use_gh", True))) if github_slug else None
+    gh = GitHub(use_gh=bool(cfg.get("github.use_gh", True)), host=github_route.get("host", "github.com"),
+                api_base=github_route.get("api_base", ""), token_env=github_route.get("token_env", "")) if github_slug else None
 
     doc = ph.path / "docs" / "friction.md"
     date = _dt.date.today().isoformat()

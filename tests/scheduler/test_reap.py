@@ -766,6 +766,53 @@ def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(
     assert silent.stop(timeout=2)
 
 
+def test_real_local_check_hard_timeout_preserves_exact_recovery_cause(sched, tmp_path, monkeypatch):
+    """A supervisor deadline is a distinct retry cause, not a generic empty result."""
+    from garden.runner.local import LocalRunner
+
+    runtime = tmp_path / "timeout-runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(
+        "garden.runner.local.bounded_validation_timeout_seconds", lambda _configured: 0.1,
+    )
+    checkout = tmp_path / "timeout-checkout"
+    checkout.mkdir()
+    task = sched.store.task("DM-001")
+    specs = [{"name": "silent", "command": "sleep 5"}]
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.worktree, run.branch, run.base = str(checkout), "main", "main"
+    LocalRunner(sched.cfg.data).start_checks(run, checkout, {
+        "specs": specs, "cwd": str(checkout), "setup": {},
+        "config": sched.cfg.data, "timeout": 30,
+    })
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "ci", "cont": {}, "specs": specs,
+        "retries": 1, "backend": "local", "provenance": "timeout fixture",
+    }
+    sched.state.save()
+    try:
+        deadline = time.monotonic() + 3
+        while not run.process_finished() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert run.process_finished() and run.read_exit_code() == 124
+        assert sched.reap_check(task, TickReport())
+    finally:
+        if not run.process_finished():
+            run.stop(timeout=2)
+
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None and saved.status == "done"
+    assert saved.result["checks"] == [{
+        "name": "checks", "status": "error", "summary": "check execution timed out",
+        "details": "validation execution exceeded 0.1 seconds",
+    }]
+    recovery = sched.state.get(task.id)["recovery_check"]
+    assert recovery["cause"] == (
+        "check execution timed out\n\nvalidation execution exceeded 0.1 seconds"
+    )
+
+
 def test_running_card_shows_idle_time(sched, monkeypatch):
     from garden.inbox import running_now
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
