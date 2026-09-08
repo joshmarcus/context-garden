@@ -180,6 +180,30 @@ def retry(task_id: str):
         raise typer.Exit(1) from None
 
 
+@app.command("recover", rich_help_panel=PANEL_DECIDE)
+def recover(task_id: str):
+    """Use one delegated, bounded recovery continuation without changing product scope."""
+    store = _store()
+    try:
+        outcome = _scheduler(store).delegate_recovery(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: {outcome}")
+
+
+@app.command("evidence", rich_help_panel=PANEL_DECIDE)
+def evidence(task_id: str, text: str = typer.Argument(..., help="What the operator verified outside the worker checkout")):
+    """Record proof for an operator-owned live configuration prerequisite."""
+    store = _store()
+    try:
+        _scheduler(store).submit_operator_evidence(_task(store, task_id), text)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: operator evidence recorded")
+
+
 @app.command("recover-check", rich_help_panel=PANEL_DECIDE)
 def recover_check(task_id: str):
     """Repair an inconsistent waiting/check state without cancelling live check work."""

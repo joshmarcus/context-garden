@@ -24,6 +24,7 @@ from ..review import (
     review_is_description_only,
     review_to_markdown,
     validation_plan,
+    visual_source_digest,
 )
 from ..runs import Run
 from .report import TickReport
@@ -434,7 +435,9 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
-        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head, check_specs=self._pre_pr_specs(task))
+        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head,
+                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"))
+        plan["visual_source"] = visual_source_digest(wt, plan)
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
         interaction_reason = next((row["reason"] for row in plan["reasons"]
@@ -443,6 +446,7 @@ class ReviewMixin:
         capture_pages: list[str] = []
         check_results: list[dict[str, Any]] = []
         current_check = None
+        reusable_capture_check = None
         stale_validation_check = False
         for check_run in reversed(self.runs.runs_for(task.id)):
             checked_plan = (check_run.env_snapshot or {}).get("validation_plan")
@@ -453,9 +457,17 @@ class ReviewMixin:
                 current_check = check_run
                 plan = checked_plan
                 break
+            if (check_run.mode == "check" and check_run.status == "done"
+                    and isinstance(checked_plan, dict) and plan["pages"]
+                    and checked_plan.get("pages") == plan["pages"]
+                    and checked_plan.get("visual_source") == plan["visual_source"]):
+                reusable_capture_check = check_run
         if current_check is not None:
             check_results = list((current_check.result or {}).get("checks", []))
-            ui_results = [result for result in check_results if result.get("name") == "ui"]
+        capture_check = current_check or reusable_capture_check
+        if capture_check is not None:
+            ui_results = [result for result in (capture_check.result or {}).get("checks", [])
+                          if result.get("name") == "ui" and result.get("status") == "pass"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]

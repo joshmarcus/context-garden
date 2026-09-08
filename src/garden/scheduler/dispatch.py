@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -108,6 +109,8 @@ class DispatchMixin:
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
                 continue  # infrastructure hold: no worker run or task attempt is consumed
+            if not self.operator_scope_ready(task):
+                continue  # live config is an operator prerequisite, never worker scope
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
@@ -280,13 +283,15 @@ class DispatchMixin:
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None,
-                 reserved_run: Run | None = None) -> Run:
+                 reserved_run: Run | None = None, completion_mode: str = "managed",
+                 external_pr: str = "") -> Run:
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
-                                  branch_override, worktree_override, model_override, reserved_run)
+                                  branch_override, worktree_override, model_override, reserved_run,
+                                  completion_mode, external_pr)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
@@ -319,14 +324,30 @@ class DispatchMixin:
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
-                  reserved_run: Run | None = None) -> Run:
+                  reserved_run: Run | None = None, completion_mode: str = "managed",
+                  external_pr: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
+        if not self.operator_scope_ready(task):
+            raise RuntimeError("operator evidence is required before checkout work can dispatch")
         runner = runner or self.runner_for(task)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        # An external claim names an operator-owned branch (and sometimes a PR) before
+        # there is anything to finish. Keep that identity on the task as well as the
+        # run, so a restart and every task-facing surface describe the claimed work
+        # rather than falling back to the scheduler-generated default branch. Internal
+        # callers may still use branch_override without changing the task identity.
+        if completion_mode == "external":
+            task.branch = branch
+            if external_pr:
+                task.pr = external_pr
+                match = re.search(r"/pull/(\d+)", external_pr)
+                if match:
+                    st["pr_number"] = int(match.group(1))
+            self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
         # worktree's stash (further below) can both name themselves after the run about to
@@ -441,7 +462,8 @@ class DispatchMixin:
                 changed = []
                 inspection_error = str(exc)
             plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
-                                   check_specs=self._pre_pr_specs(task))
+                                   check_specs=self._pre_pr_specs(task),
+                                   visual_scope=task.extra.get("visual_scope"))
             if inspection_error:
                 plan["inspection_error"] = inspection_error
                 plan["reasons"].append({"item": "bounded diff inspection",
@@ -454,6 +476,8 @@ class DispatchMixin:
         if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
             raise ValueError(f"serialized prompt is {prompt_bytes:,} bytes; limit is {MAX_SERIALIZED_PROMPT_BYTES:,}")
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
+        run.completion_mode = completion_mode
+        run.external_pr = external_pr
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty
@@ -474,6 +498,10 @@ class DispatchMixin:
             run.env_snapshot["worktree_baseline"] = gitops.status_lines(wt)
             if mode != "rebase":
                 run.env_snapshot["validation_plan"] = plan
+        elif worktree_override is not None:
+            # Audit an operator-owned checkout without preparing, snapshotting or later
+            # treating it as a scheduler worktree.
+            run.worktree = str(worktree_override)
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]

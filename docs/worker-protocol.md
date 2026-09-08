@@ -43,10 +43,13 @@ applies; only a correctly token-authenticated runs API request bypasses it. Clai
 contain no token or environment value. Repository URL user-info, query strings, and fragments
 are stripped. Of SCP-style remotes, only the conventional `git@host:path` form is accepted;
 other user identities and malformed URL-like remotes fail closed. Configured harness arguments
-are not transported because they may contain inline credentials. The scheduler's
-`setup.command` is executable configuration and is not transported for the same reason; use
-`garden worker --setup-command ...` for host-owned setup. Git, setup, and harness credentials
-belong to the host.
+are not transported because they may contain inline credentials. The product's trusted
+`setup.command` and timeout are transported so a managed consumer can prepare every execution
+mode inside its admitted host slot; `setup.env` values are not transported. Git, setup, and
+harness credentials belong to the host. A standalone `garden worker` continues to use
+`--setup-command ...` for host-owned preparation. That explicit command also overrides
+product setup for checks. The configured command is sent verbatim to the authenticated host;
+keep credentials in host-local environment/configuration, never inline in that command.
 
 ```yaml
 runner: remote
@@ -86,6 +89,20 @@ Checks finish before the PR opens. Required personas post their comments before 
 automated review is dispatched, and their state is shown on the task page. Failed required
 checks enter the normal mechanical changes-requested path with their diagnostic in the
 revise brief.
+
+When a task materially changes rendered behavior, its frontmatter declares that scope
+explicitly instead of relying on prose or the path it edits:
+
+```yaml
+visual_scope:
+  behavior: Tighter task-page spacing in the activity panel
+  pages: [task]
+```
+
+`behavior` names what a person will see. `pages` is optional when the changed page module
+identifies one affected page; shared styles without an explicit page list use representative
+consumers. A task without this declaration has no screenshot requirement merely because it
+edits a web module; its functional validation remains required.
 
 Before dispatching a task that explicitly requires captures, the scheduler performs one
 bounded Chromium launch in the product check's final scrubbed child environment. A failed
@@ -519,6 +536,20 @@ does this from inside an interactive Claude Code session. `garden finish WID-003
 '{...}'` writes `result.json` and `exit_code` into the run directory and calls the same
 `finalize` as a detached run, so the push, checks, PR and review are identical. A manual
 run never times out and never occupies a scheduler slot.
+
+For work already implemented in an operator's checkout, claim its real identity instead:
+
+```bash
+garden take WID-003 --branch operator/fix --external-worktree /path/to/checkout
+# commit, push and open the PR from that checkout
+garden finish WID-003 --pr https://github.com/OWNER/REPO/pull/123 --summary '...'
+```
+
+The claim records the branch and PR rather than creating or inferring a garden worktree.
+An already merged PR completes only after its head is verified on the final base; an open
+PR retains its normal checks and review. If the external work cannot proceed before a PR,
+use `garden finish WID-003 --blocked --summary '...'`; it follows ordinary manual blocked
+handling. Git and fence protections remain in force in all three cases.
 
 **the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
 model call that is not detached: it runs the harness synchronously with the planning prompt

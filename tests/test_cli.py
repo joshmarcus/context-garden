@@ -1,6 +1,7 @@
 import json
 import re
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -925,6 +926,51 @@ def test_take_finish_revise_and_cost(garden):
     assert r.exit_code == 0, r.output
     run_rec = RunStore(garden / ".garden").latest("DM-001")
     assert run_rec.cost_usd == 2.5
+
+
+def test_external_take_persists_pr_identity_and_can_finish_blocked(garden):
+    """External branch-first work retains its claim and can stop before opening a PR."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    r = run(garden, "take", "DM-001", "--branch", "operator/blocked", "-q")
+    assert r.exit_code == 0, r.output
+    task = Store(garden).task("DM-001")
+    assert task.branch == "operator/blocked"
+
+    r = run(garden, "finish", "DM-001", "--blocked", "--summary", "waiting on access")
+    assert r.exit_code == 0, r.output
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/test/demo/pull/1",
+    "https://github.com/other/demo/pull/1",
+    "https://github.com/test/other/pull/1",
+])
+def test_take_rejects_external_pr_outside_the_configured_repository(garden, fake_github, monkeypatch, url):
+    """A PR number from another host or repository must never be looked up locally."""
+    import garden.cli.loop as loop
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    called = False
+
+    def get_pr(*_):
+        nonlocal called
+        called = True
+        raise AssertionError("a foreign PR URL must be rejected before lookup")
+
+    monkeypatch.setattr(fake_github, "get_pr", get_pr)
+    result = run(garden, "take", "DM-001", "--pr", url)
+
+    assert result.exit_code == 1
+    assert "GitHub URL for this repository" in result.output
+    assert not called
 
 
 def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):

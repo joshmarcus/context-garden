@@ -16,6 +16,7 @@ from garden.review import (
     review_brief,
     review_to_markdown,
     validation_plan,
+    visual_source_digest,
 )
 from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
@@ -392,13 +393,15 @@ def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
     assert parser["checks"] == [{"item": "configured pre-PR checks",
                                   "reason": "parser or brief behavior changed without rendered behavior"}]
 
-    page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout")
+    page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
+                           visual_scope={"behavior": "Tighter task layout"})
     assert page["pages"] == ["task"]
     assert page["interaction"] is True
 
-    shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style")
-    assert shared["pages"] == ["*"]
-    assert any("every consumer" in reason["reason"] for reason in shared["reasons"])
+    shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style",
+                             visual_scope={"behavior": "Updated shared rail style"})
+    assert shared["pages"] == ["board", "inbox"]
+    assert any("representative consumers" in reason["reason"] for reason in shared["reasons"])
     assert shared["checks"] == [{"item": "configured pre-PR checks",
                                   "reason": "changed behavior requires the configured pre-PR checks"}]
 
@@ -411,9 +414,60 @@ def test_validation_plan_requires_bounded_inspection_for_unknown_ui_scope():
     assert any(reason["item"] == "bounded UI inspection" for reason in plan["reasons"])
 
 
+@pytest.mark.parametrize("changed", [
+    ["src/garden/web/app.py"],
+    ["src/garden/web/common.py"],
+    ["src/garden/web/actions/control.py"],
+    ["docs/design/captures/board-1280-light.png"],
+    ["docs/design/snapshot.json"],
+])
+def test_validation_plan_does_not_infer_visual_evidence_from_nonvisual_or_generated_paths(changed):
+    plan = validation_plan(changed, "No rendered or visual behavior changes")
+
+    assert plan["pages"] == []
+
+
+def test_validation_plan_requires_one_page_capture_for_declared_layout_change():
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
+                           visual_scope={"behavior": "Tighter task layout"})
+
+    assert plan["pages"] == ["task"]
+    assert "visible behavior" in plan["reasons"][0]["reason"]
+
+
+def test_shared_path_without_visible_behavior_keeps_functional_evidence_without_captures():
+    plan = validation_plan(["src/garden/web/app.py", "src/garden/web/templates/base.html"],
+                           "Add authentication route wiring")
+
+    assert plan["pages"] == []
+    assert any(row["item"] == "no screenshot scope" for row in plan["reasons"])
+
+
+def test_declared_visual_shared_app_change_uses_representative_consumers():
+    plan = validation_plan(["src/garden/web/app.py"], "Render a visible shared navigation rail",
+                           visual_scope={"behavior": "Visible shared navigation rail"})
+
+    assert plan["pages"] == ["board", "inbox"]
+
+
+def test_visual_source_digest_ignores_generated_capture_artifacts(tmp_path):
+    page = tmp_path / "src/garden/web/pages/task.py"
+    page.parent.mkdir(parents=True)
+    page.write_text("VISIBLE = True\n")
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
+                           visual_scope={"behavior": "Tighter task layout"})
+    before = visual_source_digest(tmp_path, plan)
+    capture = tmp_path / "docs/design/captures/task-1280-light.png"
+    capture.parent.mkdir(parents=True)
+    capture.write_bytes(b"generated evidence")
+
+    assert visual_source_digest(tmp_path, plan) == before
+
+
 def test_review_brief_distinguishes_required_validation_from_available_captures(garden):
     store = Store(garden)
-    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a")
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
+                           visual_scope={"behavior": "Tighter task layout"})
     text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
                         diff="+x", max_diff_chars=1000,
                         captures=["/tmp/task-1280-light.png", "/tmp/inbox-1280-light.png"], plan=plan)
@@ -424,6 +478,7 @@ def test_review_brief_distinguishes_required_validation_from_available_captures(
 
 def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_demand(sched, monkeypatch):
     task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
                         lambda *_: ["src/garden/web/pages/task.py"])
     run = _review_after_completed_empty_replay(sched, task)
@@ -434,7 +489,9 @@ def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_d
 
 def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypatch):
     task = sched.store.task("DM-001")
-    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
+                           visual_scope=task.extra["visual_scope"])
     check = sched.runs.new_run(task.id, "local", mode="check")
     check.status = "done"
     check.env_snapshot = {"validation_plan": plan}
@@ -450,9 +507,11 @@ def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypa
 
 def test_review_omits_artifacts_from_a_stale_head_check(sched, monkeypatch):
     task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
     stale = sched.runs.new_run(task.id, "local", mode="check")
     stale.status = "done"
-    stale.env_snapshot = {"validation_plan": validation_plan(["src/garden/web/pages/task.py"], "layout", head="old")}
+    stale.env_snapshot = {"validation_plan": validation_plan(
+        ["src/garden/web/pages/task.py"], "layout", head="old", visual_scope=task.extra["visual_scope"])}
     stale.result = {"checks": [{"name": "ui", "pages": ["task"], "captures": ["/tmp/stale.png"]}]}
     stale.save()
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
@@ -466,8 +525,37 @@ def test_review_omits_artifacts_from_a_stale_head_check(sched, monkeypatch):
     assert "/tmp/stale.png" not in (run.path / "brief.md").read_text()
 
 
+def test_review_reuses_only_successful_ui_evidence_from_source_equivalent_check(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    plan = validation_plan(["src/garden/web/pages/task.py"], task.title, head="old-head",
+                           visual_scope=task.extra["visual_scope"])
+    plan["visual_source"] = visual_source_digest(wt, plan)
+    old = sched.runs.new_run(task.id, "local", mode="check")
+    old.status = "done"
+    old.env_snapshot = {"validation_plan": plan}
+    old.result = {"checks": [
+        {"name": "lint", "status": "fail", "summary": "old failure"},
+        {"name": "ui", "status": "pass", "pages": ["task"], "captures": ["/tmp/task.png"]},
+    ]}
+    old.save()
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
+                        lambda *_: ["src/garden/web/pages/task.py"])
+
+    run = _review_after_completed_empty_replay(sched, task)
+
+    assert run.env_snapshot["validation_check_current"] is False
+    assert '"name": "lint"' not in (run.path / "brief.md").read_text()
+    assert "/tmp/task.png" in (run.path / "brief.md").read_text()
+
+
 def test_worker_brief_carries_the_frozen_validation_plan(sched, monkeypatch):
     task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
     monkeypatch.setattr("garden.scheduler.dispatch.gitops.diff_names", lambda *_: ["src/garden/web/pages/task.py"])
     monkeypatch.setattr("garden.scheduler.dispatch.gitops.head_sha", lambda *_: "head-a")
 
@@ -1311,19 +1399,24 @@ def test_shared_ui_without_a_current_check_is_not_verified(sched, monkeypatch):
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
                         lambda *_: ["src/garden/web/templates/base.html"])
     task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Updated shared rail style"}
     run = _review_after_completed_empty_replay(sched, task)
-    assert run.env_snapshot["validation_plan"]["pages"] == ["*"]
+    assert run.env_snapshot["validation_plan"]["pages"] == ["board", "inbox"]
     assert run.env_snapshot["validation_check_current"] is False
 
 
-@pytest.mark.parametrize(("changed", "pages"), [
-    (["src/garden/web/actions/control.py"], []),
-    (["src/garden/criteria.py"], []),
-    (["src/garden/web/pages/task.py"], ["task"]),
-    (["src/garden/web/templates/base.html"], ["*"]),
+@pytest.mark.parametrize(("changed", "title", "pages"), [
+    (["src/garden/web/actions/control.py"], "Backend pause action", []),
+    (["src/garden/criteria.py"], "Parser behavior", []),
+    (["docs/design/captures/board-1280-light.png"], "Record generated capture", []),
+    (["src/garden/web/pages/task.py"], "Tighten task layout", ["task"]),
+    (["src/garden/web/templates/base.html"], "Update shared rail style", ["board", "inbox"]),
 ])
-def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, changed, pages):
+def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, changed, title, pages):
     task = sched.store.task("DM-001")
+    task.title = title
+    if pages:
+        task.extra["visual_scope"] = {"behavior": title}
     # Capture the job at the real scheduler/runner boundary; no browser is needed to
     # verify which pages the scheduler actually requests.
     submitted = []

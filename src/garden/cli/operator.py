@@ -23,7 +23,7 @@ def operator_spend_default(ctx: typer.Context, json_out: bool = typer.Option(Fal
     if ctx.invoked_subcommand is not None:
         return
     store = _store()
-    path = ops.default_path(store.root)
+    path = ops.default_path(store.root, store.config)
     rows = ops.session_rows(ops.read_records(path))
     if json_out:
         print(json.dumps(rows, indent=2))
@@ -64,7 +64,7 @@ def operator_spend_record(
 ) -> None:
     """Append one heartbeat record of the operator's own session spend, or a compaction marker."""
     store = _store()
-    out_path = Path(out) if out else ops.default_path(store.root)
+    out_path = Path(out) if out else ops.default_path(store.root, store.config)
     if compacted:
         if not session:
             err.print("[red]--compacted needs --session[/red]")

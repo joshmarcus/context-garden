@@ -1,5 +1,6 @@
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from garden.gitops import head_sha
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
 from garden.scheduler.snapshot import _safe
@@ -22,6 +24,21 @@ def client(garden):
     return TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
 
+def _init_garden_repo(garden: Path) -> None:
+    """Give the disposable live garden a baseline commit for an operator edit."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=garden, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=garden, check=True)
+    subprocess.run(["git", "-c", "user.email=operator@example.com", "-c", "user.name=operator",
+                    "commit", "-q", "-m", "initial garden"], cwd=garden, check=True)
+
+
+def _garden_commit(garden: Path, path: Path, message: str) -> None:
+    """Commit an operator edit in the disposable live garden."""
+    subprocess.run(["git", "add", str(path.relative_to(garden))], cwd=garden, check=True)
+    subprocess.run(["git", "-c", "user.email=operator@example.com", "-c", "user.name=operator",
+                    "commit", "-q", "-m", message], cwd=garden, check=True)
+
+
 def test_pages_render(garden):
     c = client(garden)
     for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials", "/costs"]:
@@ -30,6 +47,48 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
+    """The served fence journey keeps an operator's committed spec edit during a completed
+    worker run: dispatch, operator commit, and reap all happen through the web app's tick."""
+    c = client(garden)
+    spec = garden / "demo" / "p1" / "specs" / "spec.md"
+    _init_garden_repo(garden)
+
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    spec.write_text("# spec\n\nOperator clarification while the worker is running.\n")
+    _garden_commit(garden, spec, "operator: clarify spec")
+    operator_head = head_sha(garden)
+
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+
+    task = Store(garden).task("DM-001")
+    assert task.status.value == "in_review"
+    assert head_sha(garden) == operator_head
+    assert spec.read_text() == "# spec\n\nOperator clarification while the worker is running.\n"
+
+
+def test_tick_fence_failure_records_redirect_evidence_and_clean_retry_recovers(garden, monkeypatch):
+    """A served tick records a transcript-proven redirect escape as a failed run, then a
+    clean retry reaches review instead of inheriting the prior fence result."""
+    c = client(garden)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
+    monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", "garden.yaml")
+
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    failed = Store(garden).task("DM-001")
+    assert failed.status.value == "failed"
+    assert c.get("/api/tasks").json()[0]["status"] == "failed"
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    assert c.post("/tasks/DM-001/retry", headers={"Origin": "http://testserver"},
+                  follow_redirects=False).status_code == 303
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    assert c.post("/tick", headers={"Origin": "http://testserver"}, follow_redirects=False).status_code == 303
+    assert Store(garden).task("DM-001").status.value == "in_review"
 
 
 def test_backlog_move_has_no_javascript_fallback(garden):
@@ -119,6 +178,33 @@ def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
     assert "Deployment prerequisite" in page.text
     assert "Deployment completed, resume" in page.text
     assert "set-status DM-001 done" not in page.text
+
+
+def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
+    """An operator can clear a live-config prerequisite without exposing it to a worker."""
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.extra["deliverables"] = [
+        {"path": "src/demo.py", "action": "change checkout code"},
+        {"path": "/etc/demo/live.yaml", "owner": "operator", "action": "enable live setting"},
+    ]
+    store.save(task)
+    scheduler = Scheduler(Store(garden))
+    assert not scheduler.operator_scope_ready(task)
+
+    c = client(garden)
+    page = c.get("/inbox").text
+    assert "Operator recovery" in page
+    assert "enable live setting" in page
+    assert "/tasks/DM-001/operator-evidence" in page
+    task_page = c.get("/tasks/DM-001").text
+    assert "Operator-owned configuration" in task_page
+    response = c.post("/tasks/DM-001/operator-evidence", data={"note": "verified in disposable environment"},
+                      headers={"Origin": "http://testserver", "Referer": "http://testserver/inbox"},
+                      follow_redirects=False)
+    assert response.status_code == 303
+    state = Scheduler(Store(garden)).state.get("DM-001")
+    assert state["operator_evidence"]["text"] == "verified in disposable environment"
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])

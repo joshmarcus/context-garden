@@ -23,7 +23,7 @@ from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
 from ..preflight import mechanical_results
-from ..review import validation_plan
+from ..review import validation_plan, visual_source_digest
 from ..runs import Run
 from .report import TickReport
 
@@ -87,7 +87,9 @@ class CheckRunMixin:
             result = worker.result if worker is not None else {}
             plan = validation_plan(changed, task.title, task.body,
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
-                                   head=gitops.head_sha(worktree), check_specs=specs)
+                                   head=gitops.head_sha(worktree), check_specs=specs,
+                                   visual_scope=task.extra.get("visual_scope"))
+            plan["visual_source"] = visual_source_digest(worktree, plan)
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
@@ -251,7 +253,15 @@ class CheckRunMixin:
                                      cont=cont, rep=rep, retries=retries + 1)
             return
         note = f"check did not run ({run.run_id}): {cause}; retry also failed; needs human"
-        self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage)
+        # Keep the mechanical continuation, not merely its prose diagnostic.  A delegated
+        # operator can retry this exact check without turning it into a worker revision or
+        # losing the PR/check stage it belongs to.
+        self.state.get(task.id)["recovery_check"] = {
+            "stage": stage, "cont": cont, "specs": specs, "retries": retries,
+            "run": run.run_id, "cause": cause,
+        }
+        self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage,
+                              delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))
         self.events.emit("needs_human", task.id, stop_kind="check_did_not_run", reason=note, run=run.run_id)
         self.state.save()
         self._transition(task, Status.IN_REVIEW if task.pr else Status.CHANGES_REQUESTED, note, needs_human=True)

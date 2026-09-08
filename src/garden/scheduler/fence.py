@@ -257,10 +257,11 @@ class FenceMixin:
             audit_sha = ""
         if audit_sha != manifest_sha:
             rel = str(manifest_path.relative_to(root))
-            if self._worker_named(transcript, root, rel, worktree):
+            evidence = self._worker_path_evidence(transcript, root, rel, worktree)
+            if evidence:
                 manifest_path.write_text(manifest_text)
                 violations.append({"label": "the live garden", "path": str(manifest_path), "commits": [],
-                                   "files": [rel], "foreign": [], "reverted": True})
+                                   "files": [rel], "foreign": [], "evidence": {rel: evidence}, "reverted": True})
         for entry in manifest:
             path = Path(entry["abs"])
             rel = str(entry["rel"])
@@ -270,7 +271,8 @@ class FenceMixin:
                 continue
             if now_sha == entry.get("sha"):
                 continue  # unchanged
-            if not self._worker_named(transcript, root, rel, worktree):
+            evidence = self._worker_path_evidence(transcript, root, rel, worktree)
+            if not evidence:
                 continue  # the scheduler's own state.json write, or a person's config edit
             reverted = False
             # A sibling owns its live run evidence. Even an explicit forbidden write is
@@ -302,7 +304,7 @@ class FenceMixin:
                 except OSError as e:  # noqa: BLE001
                     self.log(f"fence: could not remove {rel}: {e}")
             violations.append({"label": "the live garden", "path": str(path), "commits": [],
-                               "files": [rel], "foreign": [], "reverted": reverted})
+                               "files": [rel], "foreign": [], "evidence": {rel: evidence}, "reverted": reverted})
         return violations
 
     def _migrate_fence_bookkeeping(self) -> None:
@@ -513,8 +515,14 @@ class FenceMixin:
         mutating operation or output redirection; an opaque program that might write remains
         deliberately ambiguous and is not used as authority to restore bytes.
         """
+        return bool(FenceMixin._worker_path_evidence(transcript, repo, rel, worktree))
+
+    @staticmethod
+    def _worker_path_evidence(transcript: str, repo: Path, rel: str,
+                              worktree: Path | None = None) -> list[str]:
+        """Describe transcript events that explicitly name a changed destination."""
         if not transcript:
-            return False
+            return []
         target = repo / rel
         candidates = {str(target)}
         try:
@@ -527,8 +535,8 @@ class FenceMixin:
                 candidates.add(os.path.relpath(str(target), str(anchor)))
             except (OSError, ValueError):
                 pass
-        return any(any(FenceMixin._evidence_names(item, candidate) for candidate in candidates)
-                   for item in FenceMixin._worker_write_evidence(transcript))
+        return [f"{source} names {rel}" for source, path in FenceMixin._worker_write_evidence(transcript)
+                if any(FenceMixin._evidence_names(path, candidate) for candidate in candidates)]
 
     @staticmethod
     def _evidence_names(evidence: str, candidate: str) -> bool:
@@ -538,8 +546,8 @@ class FenceMixin:
         return re.search(rf"(?<![{path_char}]){re.escape(candidate)}(?![{path_char}])", evidence) is not None
 
     @staticmethod
-    def _worker_write_evidence(transcript: str) -> list[str]:
-        evidence: list[str] = []
+    def _worker_write_evidence(transcript: str) -> list[tuple[str, str]]:
+        evidence: list[tuple[str, str]] = []
         for line in transcript.splitlines():
             try:
                 event = json.loads(line)
@@ -559,22 +567,25 @@ class FenceMixin:
                     if name in {"Edit", "Write", "MultiEdit", "NotebookEdit"}:
                         path = tool_input.get("file_path") or tool_input.get("path")
                         if path:
-                            evidence.append(str(path))
+                            evidence.append((f"Claude {name} tool call", str(path)))
                     elif name == "Bash":
                         command = tool_input.get("command")
                         if isinstance(command, str):
-                            evidence.extend(FenceMixin._shell_write_paths(command))
+                            evidence.extend(("Claude Bash command destination", path)
+                                            for path in FenceMixin._shell_write_paths(command))
             if event.get("type") in {"item.started", "item.completed"}:  # Codex JSONL
                 item = event.get("item") or {}
                 if not isinstance(item, dict):
                     continue
                 kind = item.get("type")
                 if kind in {"file_change", "file_changes"}:
-                    evidence.extend(FenceMixin._paths_in_file_change(item))
+                    evidence.extend(("Codex file_change", path)
+                                    for path in FenceMixin._paths_in_file_change(item))
                 elif kind == "command_execution":
                     command = item.get("command")
                     if isinstance(command, str):
-                        evidence.extend(FenceMixin._shell_write_paths(command))
+                        evidence.extend(("Codex command_execution destination", path)
+                                        for path in FenceMixin._shell_write_paths(command))
         return evidence
 
     @staticmethod
@@ -697,7 +708,8 @@ class FenceMixin:
                 # A HEAD move (or write) that only touched task files or .garden/ is the
                 # scheduler's own (e.g. `garden sync`): not a worker escape.
                 continue
-            attributed = [p for p in changed if self._worker_named(transcript, path, p, worktree)]
+            evidence = {p: self._worker_path_evidence(transcript, path, p, worktree) for p in changed}
+            attributed = [p for p in changed if evidence[p]]
             foreign = [p for p in changed if p not in attributed]
             if not attributed:
                 # Nothing here is the worker's: a person's edit to the live garden, or a HEAD
@@ -710,7 +722,8 @@ class FenceMixin:
             commits = gitops.commits_between(path, head_before, head_now) if reset else []
             self._fence_revert(path, head_before, reset, attributed)
             violations.append({"label": str(before.get("label") or path.name), "path": path_str,
-                               "commits": commits, "files": attributed, "foreign": foreign, "reverted": True})
+                               "commits": commits, "files": attributed, "foreign": foreign,
+                               "evidence": {p: evidence[p] for p in attributed}, "reverted": True})
         return guard + violations
 
     def _fence_revert(self, repo: Path, head_before: str, reset: bool, touched: list[str]) -> None:
@@ -727,18 +740,40 @@ class FenceMixin:
         except gitops.GitError as e:
             self.log(f"fence: revert in {repo} was incomplete: {e}")
 
+    def _fence_kept_worktree_files(self, task: Task, run: Run) -> list[str]:
+        """List worker-worktree changes left intact after a live-garden violation."""
+        worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
+        if not worktree.exists() or not gitops.is_repo(worktree):
+            return []
+        changed = {self._porcelain_path(line) for line in gitops.status_lines(worktree)}
+        base = run.base or self.base_for(task)
+        try:
+            changed.update(gitops.changed_files(worktree, gitops.base_ref(worktree, base), "HEAD"))
+        except gitops.GitError:
+            pass
+        return sorted(path for path in changed if path)
+
     def _fence_fail(self, task: Task, run: Run, violations: list[dict[str, Any]], rep: TickReport) -> None:
         parts = []
         foreign_seen = False
         kept_seen = False
+        reported_destinations: set[str] = set()
         for v in violations:
             # Lead with the operator-critical facts (which repo, which files) and put the
             # long absolute path last, so a truncated Inbox card still names what was touched.
             bits = []
-            if v["files"]:
+            files = [
+                rel for rel in v["files"]
+                if self._fence_destination_key(v, rel) not in reported_destinations
+            ]
+            reported_destinations.update(self._fence_destination_key(v, rel) for rel in files)
+            if files:
                 if not v.get("reverted", True):
                     kept_seen = True
-                bits.append("wrote " + ", ".join(v["files"]))
+                bits.append("wrote " + ", ".join(files))
+                proof = [item for path in files for item in v.get("evidence", {}).get(path, [])]
+                if proof:
+                    bits.append("transcript evidence: " + "; ".join(proof))
             if v["commits"]:
                 bits.append(f"{len(v['commits'])} commit(s) [{'; '.join(v['commits'])}]")
             if v.get("foreign"):
@@ -753,6 +788,9 @@ class FenceMixin:
                     "Restoration is unverified: " + "; ".join(integrity_errors))
         if kept_seen:
             card += " — some paths the scheduler owns (e.g. .garden/state.json) could not be reverted; inspect them."
+        kept = self._fence_kept_worktree_files(task, run)
+        if kept:
+            card += " — worktree writes kept: " + ", ".join(kept) + "."
         if foreign_seen:
             card += " — the un-attributed changes were left for a person to check."
         self.state.get(task.id)["needs_human"] = card
@@ -764,6 +802,19 @@ class FenceMixin:
         run.save()
         self._transition(task, Status.FAILED, f"fenced: {card}"[:400], needs_human=True)
         rep.transitions.append(f"{task.id} -> failed (wrote outside worktree)")
+
+    @staticmethod
+    def _fence_destination_key(violation: dict[str, Any], rel: str) -> str:
+        """Identity of a reported forbidden destination, not just its relative name.
+
+        Ordinary fence entries name a guarded repository, while guard-hash entries already
+        name the guarded file itself.  The card may suppress a duplicate report for the same
+        destination, but `garden.yaml` in the live garden and product clone must remain two
+        separately auditable writes.
+        """
+        path = Path(str(violation["path"]))
+        destination = path / rel if path.is_dir() else path
+        return str(destination.resolve())
 
     # ---- held config reload (CG-242) ----------------------------------------
     def _fenced_runs_in_flight(self) -> list[Run]:

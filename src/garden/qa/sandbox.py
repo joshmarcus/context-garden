@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -347,7 +348,8 @@ class Sandbox:
             path.write_text(json.dumps(self._hub.events, indent=1))
 
 
-def start(root: Path, host: str = "127.0.0.1", port: int = 0) -> Sandbox:
+def start(root: Path, host: str = "127.0.0.1", port: int = 0,
+          prepare: Callable[[Path], None] | None = None) -> Sandbox:
     """Build the throwaway garden under `root` and serve it (with the scheduler loop) on a
     thread. Returns once the server accepts connections."""
     import uvicorn
@@ -356,6 +358,8 @@ def start(root: Path, host: str = "127.0.0.1", port: int = 0) -> Sandbox:
     from ..web.app import create_app
 
     garden = make_garden(root)
+    if prepare is not None:
+        prepare(garden)
     github = MemoryGitHub()
     if port == 0:
         # Resolve the ephemeral port up front so the origin check's allowlist can include the

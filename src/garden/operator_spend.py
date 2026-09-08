@@ -39,8 +39,28 @@ PRICES: dict[str, tuple[float, float, float, float]] = {
 DEFAULT_RELATIVE_PATH = Path("docs") / "operator-spend.jsonl"
 
 
-def default_path(root: Path) -> Path:
-    return root / DEFAULT_RELATIVE_PATH
+def selected_product_path(root: Path, config: Any | None = None) -> Path | None:
+    """Return the garden directory for the product that owns the tool, when identified."""
+    products = (getattr(config, "data", {}) or {}).get("products", {}) if config is not None else {}
+    for name, product in products.items():
+        if isinstance(product, dict) and (product.get("provides_tool") or product.get("self")):
+            return root / str(name)
+    return None
+
+
+def default_path(root: Path, config: Any | None = None,
+                 product_path: Path | str | None = None) -> Path:
+    """Return the operator ledger path shared by the CLI, costs surfaces and retros.
+
+    A configured path is relative to the garden root unless absolute.  Without an
+    override, the ledger belongs to the selected product directory.
+    """
+    configured = config.get("operator_spend.path") if config is not None else None
+    if configured:
+        path = Path(str(configured))
+        return path if path.is_absolute() else root / path
+    base = Path(product_path) if product_path is not None else selected_product_path(root, config) or root
+    return base / DEFAULT_RELATIVE_PATH
 
 
 def project_dir_for(root: Path) -> Path:
@@ -246,6 +266,24 @@ def total_cost(records: list[dict[str, Any]], since: str = "") -> float:
     """The operator's total spend, windowed the same way `cost_series` windows a run:
     delta events at or after `since` (empty = all time)."""
     return round(sum(e["cost_usd"] for e in to_cost_events(records) if not since or e["at"] >= since), 4)
+
+
+def total_turns(records: list[dict[str, Any]], since: str = "") -> int:
+    """Return turns added in the window, accounting for cumulative heartbeats."""
+    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        if record.get("kind") != "compacted":
+            by_session[str(record.get("session") or "")].append(record)
+    total = 0
+    for rows in by_session.values():
+        rows.sort(key=lambda row: str(row.get("at") or ""))
+        previous = 0
+        for row in rows:
+            turns = int(row.get("turns") or 0)
+            if not since or str(row.get("at") or "") >= since:
+                total += max(turns - previous, 0)
+            previous = turns
+    return total
 
 
 def compaction_marks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

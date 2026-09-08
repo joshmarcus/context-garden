@@ -91,7 +91,7 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
     ui_changed = (ui_changed or any(_is_ui_path(name) for name in names)) if required_ui is None else required_ui
     pngs = [p for p in captures if p.endswith(".png")]
     if ui_changed and not pngs:
-        results.append(_fail("UI captures", "UI files changed but this run produced no PNG captures"))
+        results.append(_fail("UI captures", "planned visual behavior has no PNG captures"))
     else:
         results.append(_pass("UI captures"))
     if require_description and not pr_body.strip():

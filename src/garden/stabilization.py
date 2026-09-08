@@ -74,6 +74,7 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
     since = str(data["started_at"])
     phase_events = [e for e in events.read(since=since) if e.get("phase") == phase.key or
                     any(t.id == e.get("task") for t in phase.tasks)]
+    phase_task_ids = {task.id for task in phase.tasks}
     repairs = [e for e in phase_events if e.get("kind") in INTERVENTION_KINDS]
     known = {(i.get("at"), i.get("kind")) for i in data.get("interventions", [])}
     new_repairs = [e for e in repairs if (e.get("at"), e.get("kind")) not in known]
@@ -85,7 +86,11 @@ def sample(phase: Phase, events: EventLog, at: str | None = None) -> dict[str, A
         data["samples"] = []
         since = str(data["started_at"])
         phase_events = [e for e in phase_events if str(e.get("at") or "") >= since]
-    completed = len({e.get("task") for e in phase_events if e.get("kind") == "transition" and e.get("to") == "done"})
+    completion_events = [
+        event for event in events.read(kinds=["run_finished"])
+        if event.get("task") in phase_task_ids
+    ]
+    completed = _unattended_completed_tasks(phase_events, completion_events)
     mem = _memory()
     disk = shutil.disk_usage(phase.path)
     row = {"at": at, "completed_tasks": completed, "memory_available_bytes": mem[0],
@@ -188,6 +193,33 @@ def _check_soak(data: dict[str, Any], row: dict[str, Any], missing: list[str]) -
     completed = max((int(s.get("completed_tasks", 0)) for s in samples), default=0)
     if hours < 4 or completed < 10 or row.get("status") != "PASS":
         missing.append(f"productive_unattended: need 4 consecutive hours and 10 completed tasks since the last repair (recorded {hours:.2f}h, {completed} tasks; {len(data.get('interventions') or [])} total interventions counted)")
+
+
+def _unattended_completed_tasks(
+    events: list[dict[str, Any]], completion_events: list[dict[str, Any]],
+) -> int:
+    """Count completed tasks whose accepted run was not supervised external work.
+
+    ``transition`` records the task outcome, while ``run_finished`` records who performed
+    the accepted work.  Both are needed: an external merge follows the normal transition
+    path, but its linked successful run explicitly says it was supervised.
+    """
+    supervised = {
+        str(event.get("task"))
+        for event in completion_events
+        if event.get("kind") == "run_finished"
+        and event.get("status") == "done"
+        and event.get("external")
+        and event.get("supervised")
+    }
+    completed = {
+        str(event.get("task"))
+        for event in events
+        if event.get("kind") == "transition"
+        and event.get("to") == "done"
+        and str(event.get("task")) not in supervised
+    }
+    return len(completed)
 
 
 def _memory() -> tuple[int, int]:

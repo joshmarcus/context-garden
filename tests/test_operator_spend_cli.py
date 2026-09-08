@@ -4,7 +4,12 @@ tools/operator_spend.py (CG-223)."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
+import yaml
+
+from garden.now2 import snapshot
+from garden.store import Store
 from tests.test_cli import run
 
 
@@ -24,6 +29,27 @@ def test_operator_spend_bare_reports_no_records_yet(garden):
     assert r.exit_code == 0, r.output
     assert "no operator spend recorded yet" in r.output
     assert "docs/operator-spend.jsonl" in r.output
+
+
+def test_operator_ledger_default_is_shared_by_command_costs_and_now(garden):
+    """A tool-owning product's ledger is the one read by every spend surface."""
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["provides_tool"] = True
+    config_path.write_text(yaml.safe_dump(config))
+    at = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    ledger = garden / "demo" / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({"at": at, "session": "shared", "turns": 3,
+                                  "list_price_usd": 2.5}) + "\n")
+
+    operator = run(garden, "operator-spend")
+    assert operator.exit_code == 0 and "$2.50" in operator.output
+    costs = run(garden, "costs", "--by", "activity", "--json")
+    assert costs.exit_code == 0
+    assert json.loads(costs.output)["totals"]["operator"]["cost_usd"] == 2.5
+    now = snapshot(Store(garden), window="24h")
+    assert now["period"]["operator"] == 2.5
 
 
 def test_operator_spend_record_from_transcript_appends_and_prints(garden, tmp_path):

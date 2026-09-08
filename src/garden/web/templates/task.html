@@ -40,6 +40,15 @@
 </div>
 {% endif %}
 
+{% if state.operator_scope and state.operator_scope.steps %}
+<div class="panel" style="border-color:var(--s-running);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--s-running)">Operator-owned configuration</div>
+  <p style="margin:6px 0">This prerequisite is outside the worker checkout. Verify it as an operator; the worker will receive only checkout-owned work.</p>
+  <ul style="margin:0 0 10px;padding-left:18px">{% for step in state.operator_scope.steps %}<li><code>{{ step.path }}</code> — {{ step.action }}</li>{% endfor %}</ul>
+  <form method="post" action="/tasks/{{ task.id }}/operator-evidence"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><div class="actions" style="margin-top:8px"><button class="primary">Record evidence and continue</button></div></form>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
