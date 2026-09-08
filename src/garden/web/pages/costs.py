@@ -35,7 +35,7 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         tasks = s.tasks()
         events = EventLog(s.config.garden_dir / "events.jsonl").read()
-        operator_records = ops.read_records(ops.default_path(s.root))
+        operator_records = ops.read_records(ops.default_path(s.root, s.config))
         events = events + ops.to_cost_events(operator_records)
         by = by if by in GROUP_BY_CHOICES else "activity"
         bucket = bucket if bucket in ("day", "hour") else "day"

@@ -558,7 +558,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     state = sched.state
     runs: RunStore = sched.runs
     events = EventLog(cfg.garden_dir / "events.jsonl").read()
-    op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
+    op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
     control = state.get("_control")
     spent: dict[str, float] = defaultdict(float)
     for r in runs.all_runs():

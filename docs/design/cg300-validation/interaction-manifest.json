@@ -1,0 +1,17 @@
+{
+  "head": "a266923c2dbf589fa61d87e110de2e14e34accf6",
+  "server": "http://127.0.0.1:8769",
+  "fixture": "docs/design/now2-live/serve_fixture.py",
+  "actions": [
+    {"action": "GET /costs", "observation": "HTTP 200; Costs page rendered with work and operator series."},
+    {"action": "GET /costs?by=model", "observation": "HTTP 200; model-filtered Costs page rendered."},
+    {"action": "GET /now2", "observation": "HTTP 200; Now 2 rendered with Live · connected and running cards."},
+    {"action": "GET /now2?window=day", "observation": "HTTP 200; Now 2 rendered the day-window period view."}
+  ],
+  "captures": [
+    "captures/costs-1280-light.png", "captures/costs-1280-dark.png",
+    "captures/costs-390-light.png", "captures/costs-390-dark.png",
+    "captures/now2-1280-light.png", "captures/now2-1280-dark.png",
+    "captures/now2-390-light.png", "captures/now2-390-dark.png"
+  ]
+}
