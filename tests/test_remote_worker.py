@@ -125,6 +125,27 @@ def test_portable_worker_installs_claimed_config_mapping(tmp_path, monkeypatch):
     assert copied.stat().st_mode & 0o777 == 0o600
 
 
+def test_remote_claim_carries_mapping_but_not_config_contents(garden, tmp_path, monkeypatch):
+    source = tmp_path / "host-tool.json"
+    source.write_text("SECRET_SENTINEL_TOOL_CREDENTIAL")
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config.setdefault("worker_env", {})["config_files"] = {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }
+    path.write_text(yaml.safe_dump(config))
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["config_files"]["synthetic-tool"]["destination"] == ".config/synthetic/tool.json"
+    assert "SECRET_SENTINEL_TOOL_CREDENTIAL" not in response.text
+
+
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])
 def test_worker_with_no_harnesses_cannot_claim_harness_backed_run(garden, monkeypatch, mode):
     client, store = remote_client(garden, monkeypatch)
