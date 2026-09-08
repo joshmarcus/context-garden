@@ -510,9 +510,12 @@ def brief_context_metrics(run_records: Iterable[Any], tasks: dict[str, Any]) -> 
                           if isinstance(r.usage, dict) and r.usage.get("input_tokens") is not None]
         measured_cache = [int(r.usage["cache_read_input_tokens"]) for r in ordered
                           if isinstance(r.usage, dict) and r.usage.get("cache_read_input_tokens") is not None]
-        midpoint = len(ordered) // 2
-        baseline = [int(r.brief_tokens) for r in ordered[:midpoint] if int(r.brief_tokens or 0) > 0]
-        recent = [int(r.brief_tokens) for r in ordered[midpoint:] if int(r.brief_tokens or 0) > 0]
+        # Split only known estimates.  Missing older records must not make one time
+        # window look smaller or turn an unknown estimate into a zero.  For an odd
+        # count, leave the central observation out so both windows are comparable.
+        window_size = len(estimates) // 2
+        baseline = estimates[:window_size]
+        recent = estimates[-window_size:] if window_size else []
         baseline_mean = round(sum(baseline) / len(baseline), 1) if baseline else None
         recent_mean = round(sum(recent) / len(recent), 1) if recent else None
         enough = len(baseline) >= BRIEF_REGRESSION_MIN_SAMPLES and len(recent) >= BRIEF_REGRESSION_MIN_SAMPLES

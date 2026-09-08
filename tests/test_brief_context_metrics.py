@@ -17,24 +17,25 @@ def _tasks() -> dict[str, Task]:
 
 def test_brief_context_aggregates_known_mixed_runs_and_flags_comparable_growth(tmp_path):
     store = RunStore(tmp_path)
-    for number in range(10):
+    for number in range(12):
         run = store.new_run("CG-001", "local", run_id=f"run-{number}")
         run.mode, run.model, run.difficulty = "work", "model-a", "hard"
         run.started_at = f"2026-01-{number + 1:02d}T00:00:00+00:00"
         run.finished_at = run.started_at
         run.status = "done"
-        run.brief_tokens = 100 if number < 5 else 130
-        run.usage = {"input_tokens": 200 + number, "cache_read_input_tokens": 500 + number}
+        if number not in (2, 8):
+            run.brief_tokens = 100 if number < 6 else 130
+            run.usage = {"input_tokens": 200 + number, "cache_read_input_tokens": 500 + number}
         run.save()
 
     row = brief_context_metrics(store.all_runs(), _tasks())["groups"][0]
 
     assert (row["product"], row["phase"], row["mode"], row["model"], row["tier"]) == (
         "garden", "phase-07", "work", "model-a", "hard")
-    assert row["runs"] == 10
+    assert row["runs"] == 12
     assert row["estimated_tokens"] == {"known": 10, "mean": 115.0, "p50": 100, "p95": 130, "max": 130}
     assert row["measured_input_tokens"]["known"] == 10
-    assert row["measured_cache_read_tokens"]["p95"] == 509
+    assert row["measured_cache_read_tokens"]["p95"] == 511
     assert row["comparison"] == {"baseline_runs": 5, "recent_runs": 5,
                                  "baseline_mean_estimated_tokens": 100.0,
                                  "recent_mean_estimated_tokens": 130.0,
@@ -91,3 +92,4 @@ def test_metrics_cli_renders_brief_context_aggregation(garden):
     assert "model-a" in result.output
     assert "123" in result.output
     assert "456" in result.output
+    assert "789" in result.output

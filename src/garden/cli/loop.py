@@ -633,11 +633,13 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     )
     table = Table(title="brief and startup context by product / phase / mode / model / tier")
     for column in ("product", "phase", "mode", "model", "tier", "runs", "estimated (mean/p95/max)",
-                   "measured input (mean/p95/max)", "baseline → recent", "flag"):
+                   "measured input (mean/p95/max)", "measured cache read (mean/p95/max)",
+                   "baseline → recent", "flag"):
         table.add_column(column)
     for row in brief["groups"]:
         estimate = row["estimated_tokens"]
         measured = row["measured_input_tokens"]
+        cache_reads = row["measured_cache_read_tokens"]
         comparison = row["comparison"]
         def values(summary: dict) -> str:
             return (f"{summary['mean']:.0f}/{summary['p95']}/{summary['max']} (n={summary['known']})"
@@ -647,7 +649,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                    if comparison["baseline_mean_estimated_tokens"] is not None
                    and comparison["recent_mean_estimated_tokens"] is not None else "unknown")
         table.add_row(row["product"], row["phase"], row["mode"], row["model"], row["tier"], str(row["runs"]),
-                      values(estimate), values(measured), windows,
+                      values(estimate), values(measured), values(cache_reads), windows,
                       "REGRESSION" if comparison["regression"] else "")
     console.print(table)
     table = Table(title="per difficulty tier (is 'easy' really easy?)")
