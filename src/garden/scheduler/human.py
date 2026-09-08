@@ -92,7 +92,7 @@ class HumanMixin:
         ensure_open(task)
         st = self.state.get(task.id)
         existing = st.get("investigation")
-        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
+        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active"):
             return
         if isinstance(existing, dict):
             st.setdefault("investigation_history", []).append(dict(existing))

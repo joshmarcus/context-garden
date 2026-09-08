@@ -124,6 +124,25 @@ def test_troubled_cli_actions_match_web_lifecycle(garden):
     assert final.branch == "garden/preserved" and final.pr.endswith("/7")
 
 
+def test_cli_request_more_investigation_replaces_completed_report(garden):
+    from garden.scheduler import State
+
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["investigation"] = {
+        "status": "report_ready", "request_id": "completed",
+        "report": {"recommendation": "repair environment/verification"},
+    }
+    state.save()
+
+    result = run(garden, "investigate", "DM-001", "verify the repair", "--owner", "agent")
+
+    assert result.exit_code == 0, result.output
+    persisted = State(state.path).get("DM-001")
+    assert persisted["investigation_history"][-1]["request_id"] == "completed"
+    assert persisted["investigation"]["status"] == "requested"
+    assert persisted["investigation"]["reason"] == "verify the repair"
+
+
 def test_trellis_open_filter(garden):
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
     r = run(garden, "trellis")

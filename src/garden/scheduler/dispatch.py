@@ -151,15 +151,31 @@ class DispatchMixin:
     def _investigation_dossier(self, task: Task) -> str:
         st = self.state.get(task.id)
         inv = st["investigation"]
-        attempts = [
-            f"- {run.run_id}: {run.mode} {run.status}, head {run.pushed_head or run.start_head or 'unknown'}, "
-            f"cost {(f'${run.cost_usd:.2f}') if run.cost_usd is not None else 'unknown'}"
-            for run in self.runs.runs_for(task.id)[-12:]
-        ]
+        attempts = []
+        for run in self.runs.runs_for(task.id)[-12:]:
+            diff_lines = [line.strip() for line in run.diff_stat.splitlines() if line.strip()]
+            diff = diff_lines[-1] if diff_lines else "diff unavailable"
+            attempts.append(
+                f"- {run.run_id}: {run.mode} {run.status}, head "
+                f"{run.pushed_head or run.start_head or 'unknown'}, {diff}, "
+                f"cost {(f'${run.cost_usd:.2f}') if run.cost_usd is not None else 'unknown'}"
+            )
         escalations = [
             f"- revision {row.get('counter')}: {row.get('from')} -> {row.get('to')} ({row.get('reason')})"
             for row in st.get("difficulty_escalations", [])
         ]
+        interventions: list[str] = []
+        for row in st.get("troubled_decisions", []):
+            interventions.append(f"- continue: allowance {row.get('allowance')} at revision {row.get('counter')} ({row.get('at')})")
+        for row in st.get("approach_changes", []):
+            interventions.append(f"- changed approach: {row.get('approach')} ({row.get('at')})")
+        if deferred := st.get("troubled_deferred"):
+            interventions.append(f"- deferred: {deferred.get('reason')} ({deferred.get('at')})")
+        for row in st.get("investigation_history", []):
+            interventions.append(
+                f"- prior investigation {row.get('request_id', 'unknown')}: {row.get('status')} — "
+                f"{row.get('reason', 'no reason recorded')}"
+            )
         return "\n".join([
             f"# Investigation of {task.id}: {task.title}", "",
             "You are diagnosing only. Do not edit files, commit, push, update the PR, or implement a fix.",
@@ -168,7 +184,9 @@ class DispatchMixin:
             f"Branch: {task.branch or task.default_branch()}", f"PR: {task.pr or 'none'}",
             f"Pending feedback: {st.get('pending_feedback') or 'none'}",
             f"Revision counts: substantive={st.get('substantive_revisions', 0)}, total={st.get('revisions', 0)}, reviews={st.get('review_rounds', 0)}",
-            "", "## Attempts", *(attempts or ["- none"]), "", "## Escalations", *(escalations or ["- none"]),
+            "", "## Attempts and diff progress", *(attempts or ["- none"]),
+            "", "## Escalations", *(escalations or ["- none"]),
+            "", "## Prior interventions", *(interventions or ["- none"]),
             "", "Return one GARDEN_RESULT JSON object with status done and an investigation_report object containing: likely_cause, confidence, unknowns (list), evidence (list), attempted_checks (list), retain_work (boolean), alternatives (list), and recommendation. Recommendation must be one of: resume unchanged, raise difficulty, repair environment/verification, change scope/approach, defer, cancel.",
         ])
 
