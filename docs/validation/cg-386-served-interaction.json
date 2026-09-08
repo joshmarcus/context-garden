@@ -1,0 +1,41 @@
+{
+  "head": "fadf52f06151005e524775fe789fb26ac73cdae3",
+  "environment": "disposable garden cg386-served-qutrxdsb (removed after capture)",
+  "command": ".venv/bin/python disposable fixture script: uvicorn create_app(Store(disposable_root), watch=False) on 127.0.0.1:8876; HTTP via urllib",
+  "states": {
+    "preserved_runs": {
+      "terminal": {"status": "done", "cost_usd": 1.25, "result": {"checks": []}},
+      "active_empty_check": {"status": "done", "cost_usd": 0.75, "result": {"checks": []}}
+    }
+  },
+  "events": [
+    {
+      "state": "initial lifecycle tick",
+      "method": "POST",
+      "url": "http://127.0.0.1:8876/tick",
+      "status": 303,
+      "observed_consequence": "The terminal stale continuation was retired while its task stayed done; the active empty check moved to changes_requested with one needs_human event, and both check_run pointers were cleared. The client followed the redirect and observed 200."
+    },
+    {
+      "state": "after two repeated ticks",
+      "method": "POST",
+      "url": "http://127.0.0.1:8876/tick",
+      "status": 303,
+      "observed_consequence": "The terminal task remained done and the needs_human event count remained exactly one."
+    },
+    {
+      "state": "recovery request rejected",
+      "method": "POST",
+      "url": "http://127.0.0.1:8876/tasks/DM-002/resume",
+      "status": 403,
+      "observed_consequence": "A cross-origin action was rejected and the stop remained."
+    },
+    {
+      "state": "successful recovery",
+      "method": "POST",
+      "url": "http://127.0.0.1:8876/tasks/DM-002/resume",
+      "status": 303,
+      "observed_consequence": "A same-origin resume cleared the owner stop; the task remained changes_requested and no check result was fabricated. The client followed the redirect and observed 200."
+    }
+  ]
+}
