@@ -90,6 +90,40 @@ def test_set_rejects_unknown_key(garden):
     assert "can't be set live" in r.output
 
 
+def test_troubled_cli_actions_match_web_lifecycle(garden):
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.branch = "garden/preserved"
+    task.pr = "https://example.com/pull/7"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get(task.id).update({"needs_human": {"kind": "troubled_task", "reason": "not converging"},
+                               "pending_feedback": "keep finding", "substantive_revisions": 6})
+    state.save()
+
+    changed = run(garden, "troubled-change-approach", task.id, "replace parser")
+    assert changed.exit_code == 0, changed.output
+    persisted = State(state.path).get(task.id)
+    assert "replace parser" in persisted["pending_feedback"]
+    stale = run(garden, "troubled-cancel", task.id, "stale click")
+    assert stale.exit_code == 1 and "no troubled-task decision" in stale.output
+
+    persisted["needs_human"] = {"kind": "troubled_task", "reason": "still troubled"}
+    fresh_state = State(state.path)
+    fresh_state.get(task.id)["needs_human"] = persisted["needs_human"]
+    fresh_state.save()
+    cancelled = run(garden, "troubled-cancel", task.id, "not worth further cost")
+    assert cancelled.exit_code == 0, cancelled.output
+    final = Store(garden).task(task.id)
+    assert final.status == Status.CANCELLED
+    assert final.branch == "garden/preserved" and final.pr.endswith("/7")
+
+
 def test_trellis_open_filter(garden):
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
     r = run(garden, "trellis")

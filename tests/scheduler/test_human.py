@@ -10,7 +10,7 @@ from garden.github import GitHubError
 from garden.model import Status, now_iso
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
 from tests.scheduler.conftest import statuses
 
@@ -111,6 +111,143 @@ def test_exhausted_troubled_allowance_stops_before_another_dispatch(sched):
     with pytest.raises(RuntimeError, match="allowance is exhausted"):
         sched._apply_revision_policy(task, st)
     assert st["needs_human"]["kind"] == "troubled_task"
+
+
+def test_already_hard_threshold_stops_once_and_survives_restart(sched, fake_github):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 8}
+    task = sched.store.task("DM-001")
+    task.difficulty = "hard"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 2
+
+    with pytest.raises(RuntimeError, match="troubled"):
+        sched._apply_revision_policy(task, st)
+    first_thresholds = list(st["revision_thresholds"])
+
+    fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    fresh_task = fresh.store.task(task.id)
+    assert fresh.state.get(task.id)["revision_thresholds"] == first_thresholds == [2]
+    fresh._apply_revision_policy(fresh_task, fresh.state.get(task.id))
+    assert fresh.state.get(task.id)["revision_thresholds"] == [2]
+    assert fresh_task.difficulty == "hard"
+
+
+def test_troubled_change_approach_and_cancel_require_current_drained_decision(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.branch = "garden/preserved"
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"needs_human": {"kind": "troubled_task", "reason": "not converging"},
+               "pending_feedback": "keep this finding", "substantive_revisions": 6})
+
+    sched.change_troubled_approach(task, "replace the parser, keeping its public API")
+    assert "replace the parser" in st["pending_feedback"]
+    assert st["approach_changes"][-1]["approach"].startswith("replace")
+    assert task.branch == "garden/preserved" and task.pr.endswith("/101")
+    with pytest.raises(RuntimeError, match="no troubled-task decision"):
+        sched.change_troubled_approach(task, "stale second click")
+
+    st["needs_human"] = {"kind": "troubled_task", "reason": "still not converging"}
+    active = sched.runs.new_run(task.id, "local", mode="revise", initial_status="running")
+    with pytest.raises(RuntimeError, match="run in flight"):
+        sched.cancel_troubled(task, "not worth further work")
+    active.status = "done"
+    active.save()
+    with pytest.raises(RuntimeError, match="reason is required"):
+        sched.cancel_troubled(task, "")
+    sched.cancel_troubled(task, "not worth further work")
+    assert task.status == Status.CANCELLED
+    assert task.branch == "garden/preserved" and task.pr.endswith("/101")
+
+
+def test_investigation_drains_then_uses_shared_admission_and_preserves_failed_run(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    writer = sched.runs.new_run(task.id, "local", mode="revise", initial_status="running")
+    sched.pause_for_investigation(task, "diagnose repeated review", owner="agent", budget="$2")
+    inv = sched.state.get(task.id)["investigation"]
+    assert inv["status"] == "draining"
+
+    calls = []
+    monkeypatch.setattr(sched, "slots_free", lambda: 0)
+    monkeypatch.setattr(sched, "dispatch_investigation", lambda *args, **kwargs: calls.append(args))
+    sched._dispatch_pending_investigations({task.id: task}, TickReport())
+    assert calls == []
+
+    writer.status = "done"
+    writer.save()
+    monkeypatch.setattr(sched, "slots_free", lambda: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda: 1)
+    sched._dispatch_pending_investigations({task.id: task}, TickReport())
+    assert calls and calls[0][0].id == task.id
+
+    inv.update({"status": "failed", "run_id": "old", "transcript": "/tmp/old/final.md", "cost_usd": 1.25})
+    sched.retry_investigation(task)
+    assert inv is not sched.state.get(task.id)["investigation"]
+    assert sched.state.get(task.id)["investigation_history"][-1]["cost_usd"] == 1.25
+    with pytest.raises(RuntimeError, match="no failed investigation"):
+        sched.retry_investigation(task)
+
+
+def test_investigation_report_is_separate_from_revision_cost_and_waits_for_followup(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"revisions": 4, "substantive_revisions": 4,
+               "investigation": {"status": "active", "owner": "agent",
+                                 "task_status": Status.CHANGES_REQUESTED.value}})
+    run = sched.runs.new_run(task.id, "local", mode="investigation")
+    run.cost_usd = 0.75
+    run.usage = {"input_tokens": 20}
+    run.result = {"status": "done", "investigation_report": {
+        "likely_cause": "stale verification fixture", "confidence": "high", "unknowns": [],
+        "evidence": ["base comparison"], "attempted_checks": ["focused test"],
+        "retain_work": True, "alternatives": ["repair fixture"],
+        "recommendation": "repair environment/verification",
+    }}
+    sched._finalize_investigation(task, run, TickReport(), {})
+
+    assert task.status == Status.CHANGES_REQUESTED
+    assert st["revisions"] == st["substantive_revisions"] == 4
+    assert st["investigation"]["cost_usd"] == 0.75
+    assert st["needs_human"]["kind"] == "investigation_report"
+    with pytest.raises(RuntimeError, match="paused for investigation"):
+        sched.dispatch(task, mode="revise")
+
+
+def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"pending_feedback": "same finding", "substantive_revisions": 4,
+               "review_rounds": 3, "checks": "failure"})
+    sched.pause_for_investigation(task, "why does the same finding recur?", owner="agent",
+                                  scope="read-only diagnosis; no fix", budget="$2 or 20 minutes")
+    runner = sched.runner_for(task)
+    captured = {}
+
+    def start(run, cwd, prompt):
+        captured.update({"cwd": cwd, "prompt": prompt})
+        run.status = "running"
+        run.save()
+
+    monkeypatch.setattr(runner, "start", start)
+    run = sched.dispatch_investigation(task, runner=runner)
+
+    assert run.mode == "investigation" and run.worktree
+    assert run.fence_paths, "investigation checkout must use the ordinary write fence"
+    assert captured["cwd"] == sched.worktree_for(task)
+    assert "diagnosing only. Do not edit files" in captured["prompt"]
+    assert "same finding" in captured["prompt"] and "reviews=3" in captured["prompt"]
+    assert "$2 or 20 minutes" in captured["prompt"]
+    assert run.env_snapshot["requires_preflight"] is False
 
 
 def test_retry_of_changes_requested_without_pr_is_a_revise(sched, fake_github):

@@ -274,9 +274,20 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "detail": "grants one bounded revision under normal capacity; lifetime counts, feedback, branch and PR remain"})
         actions.append({"label": "Pause for investigation", "kind": "investigate", "command": f'garden investigate {t.id} "..."',
                         "detail": "records a bounded read-only diagnosis request; active work drains safely and no implementation restarts"})
-        actions.append({"label": "Defer", "kind": "defer", "command": f'garden investigate {t.id} "deferred"',
+        actions.append({"label": "Change approach", "kind": "change-approach", "command": f'garden troubled-change-approach {t.id} "..."',
+                        "detail": "adds the owner's new approach to preserved feedback and queues one bounded revision"})
+        actions.append({"label": "Defer", "kind": "defer", "command": f'garden troubled-defer {t.id} "..."',
                         "detail": "keeps all work and leaves implementation paused until an explicit later decision"})
         if info["kind"] == "investigation":
+            if investigation := st.get("investigation"):
+                if investigation.get("status") == "requested" and investigation.get("owner") == "operator":
+                    actions.append({"label": "Take investigation", "kind": "investigation-take",
+                                    "command": f"garden investigation-take {t.id}",
+                                    "detail": "claims the bounded diagnosis for the operator; implementation stays paused"})
+                if investigation.get("status") == "failed":
+                    actions.append({"label": "Retry investigation agent", "kind": "investigation-retry",
+                                    "command": f"garden investigation-retry {t.id}",
+                                    "detail": "queues a new bounded diagnosis and retains the failed transcript and cost"})
             actions.append({"label": "Publish investigation report", "kind": "investigation-report",
                             "command": f'garden investigation-report {t.id} "..."',
                             "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
@@ -285,13 +296,20 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
                     "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
-    actions.append({"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}",
-                    "detail": "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else "")})
+    cancel_command = f'garden troubled-cancel {t.id} "..."' if troubled else f"garden cancel {t.id}"
+    actions.append({"label": "Cancel", "kind": "troubled-cancel" if troubled else "cancel", "command": cancel_command,
+                    "detail": ("requires a reason and closes only after the writer drains; branch, PR, runs and artifacts stay preserved"
+                               if troubled else "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else ""))})
     if t.pr:
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
     investigation = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
     if investigation.get("report"):
-        evidence.insert(0, "investigation report: " + str(investigation["report"]))
+        report = investigation["report"]
+        if isinstance(report, dict):
+            evidence.insert(0, f"investigation recommendation: {report.get('recommendation', 'not stated')}")
+            evidence.insert(0, f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}")
+        else:
+            evidence.insert(0, "investigation report: " + str(report))
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
             "resume_to": resume_to if can_resume else "", "evidence": evidence, "actions": actions,
             "delegated": delegated,
