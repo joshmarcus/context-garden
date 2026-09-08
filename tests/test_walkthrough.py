@@ -230,8 +230,8 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
                 assert (tmp_path / "ui" / f"{slug}-{width}-{scheme}.png").exists()
 
 
-def test_scoped_ui_check_keeps_the_required_decision_card(tmp_path, monkeypatch):
-    """An Inbox-only check still captures the representative decision card it validates."""
+def test_scoped_ui_check_does_not_expand_to_decision_card(tmp_path, monkeypatch):
+    """An Inbox-only check validates only the requested surface."""
     monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
 
     def screenshots(_url, specs, out, _log):
@@ -248,8 +248,8 @@ def test_scoped_ui_check_keeps_the_required_decision_card(tmp_path, monkeypatch)
     result = _seeded_ui_capture(tmp_path / "ui", ["inbox"])
 
     assert result["status"] == "pass"
-    assert result["pages"] == ["inbox", "task-decision"]
-    assert (tmp_path / "ui" / "task-decision-1280-light.png").exists()
+    assert result["pages"] == ["inbox"]
+    assert not (tmp_path / "ui" / "task-decision-1280-light.png").exists()
 
 
 def test_ui_check_rejects_html_only_output_as_infrastructure_failure(tmp_path, monkeypatch):
