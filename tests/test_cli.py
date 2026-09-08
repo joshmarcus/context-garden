@@ -45,6 +45,11 @@ def test_assign_and_owner_filtered_machine_output(garden):
     assert rows[0]["effective_owner"] == "feature-team"
     assert run(garden, "assign", "DM-001", "-").exit_code == 0
     assert Store(garden).task("DM-001").owner == ""
+    assert Store(garden).task("DM-001").owner_unassigned
+    rows = json.loads(run(garden, "ls", "--owner", "-", "--json").output)
+    assert rows[0]["effective_owner"] == "" and rows[0]["owner_source"] == "unassigned"
+    assert run(garden, "assign", "DM-001", "inherit").exit_code == 0
+    assert Store(garden).task("DM-001").owner_unassigned is False
 
 
 def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garden):

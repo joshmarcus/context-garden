@@ -27,24 +27,6 @@ from ..common import Site
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
-    def remote_check_specs(specs: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
-        """Make UI-check paths meaningful to both current and pinned pull workers.
-
-        The controller's worktree and run directories are private to the scheduler.  A
-        current worker replaces them before running a UI check, but a previously
-        provisioned worker only supplies its clone through the check context.  Do not
-        send either controller path: the latter can use the context and a run-scoped,
-        checkout-relative output directory.
-        """
-        portable: list[dict[str, Any]] = []
-        for raw_spec in specs:
-            spec = dict(raw_spec)
-            if spec.get("python") == "garden.walkthrough:ui_check":
-                spec.pop("worktree", None)
-                spec["out_dir"] = f".garden-ui-check/{run_id}"
-            portable.append(spec)
-        return portable
-
     def host_facts(value: Any) -> dict[str, Any] | None:
         """Validate the small, durable host-attribution record at the HTTP boundary."""
         if value is None:
@@ -286,7 +268,7 @@ def register(app: FastAPI, site: Site) -> None:
                     ctx.pop("exec_root", None)
                     ctx.pop("worktree", None)
                     payload["checks"] = {
-                        "specs": remote_check_specs(list(check_payload.get("specs") or []), run.run_id),
+                        "specs": list(check_payload.get("specs") or []),
                         "ctx": ctx,
                         "timeout": int(check_payload.get("timeout") or 600),
                         "config": {"worker_env": {

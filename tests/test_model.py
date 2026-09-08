@@ -114,6 +114,9 @@ owner: product-team
     assert effective_owner(task, phase) == ("product-team", "task")
     task.owner = ""
     assert effective_owner(task, phase) == ("platform-team", "phase")
+    task.owner_unassigned = True
+    assert effective_owner(task, phase) == ("", "unassigned")
+    assert Task.parse(tmp_path / "x.md", task.render()).owner_unassigned
     assert effective_owner(task, None) == ("", "unassigned")
     assert "owner" not in Task(path=tmp_path / "old.md", id="X-002", title="Old").to_frontmatter()
 
@@ -121,6 +124,7 @@ owner: product-team
 def test_owner_rejects_contact_details_but_allows_unknown_logical_ids(tmp_path):
     text = "---\nid: X-001\ntitle: Build\nowner: future-team\n---\n\nGoal.\n"
     assert Task.parse(tmp_path / "x.md", text).owner == "future-team"
+    assert Task.parse(tmp_path / "x.md", text.replace("future-team", "unassigned")).owner_unassigned
     with pytest.raises(ValueError, match="stable logical identifier"):
         Task.parse(tmp_path / "x.md", text.replace("future-team", "person@example.com"))
 

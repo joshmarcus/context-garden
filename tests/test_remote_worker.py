@@ -12,7 +12,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops
-from garden.remote_worker import _remote_check_data, doctor_worker, execute_claim
+from garden.remote_worker import doctor_worker, execute_claim
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -187,46 +187,6 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
     assert response.status_code == 200
     assert response.json()["mode"] == "check"
     assert response.json()["harness"] == ""
-
-
-def test_claim_replaces_controller_ui_paths_with_portable_paths(garden, monkeypatch):
-    client, store = remote_client(garden, monkeypatch)
-    run = queued_run(store)
-    run.mode = "check"
-    run.harness = ""
-    (run.path / "checks_input.json").write_text(json.dumps({"specs": [
-        {"name": "ui", "python": "garden.walkthrough:ui_check",
-         "worktree": "/controller/worktree", "out_dir": "/controller/run/ui"},
-        {"name": "tests", "command": "pytest -q"},
-    ], "ctx": {"worktree": "/controller/worktree"}}))
-    run.save()
-
-    response = client.post(
-        "/api/runs/claim", json={"host": "build-1", "harnesses": []},
-        headers={"Authorization": "Bearer secret-token"},
-    )
-
-    assert response.status_code == 200
-    ui, tests = response.json()["checks"]["specs"]
-    assert "worktree" not in ui
-    assert ui["out_dir"] == f".garden-ui-check/{run.run_id}"
-    assert tests == {"name": "tests", "command": "pytest -q"}
-
-
-def test_remote_ui_check_uses_the_pull_workers_checkout(tmp_path):
-    repo = tmp_path / "host" / "repos" / "DM-001"
-    root = tmp_path / "host"
-    data = _remote_check_data({"specs": [
-        {"name": "ui", "python": "garden.walkthrough:ui_check",
-         "worktree": "/controller/worktree", "out_dir": "/controller/run/ui", "pages": ["inbox"]},
-        {"name": "tests", "command": "pytest -q"},
-    ]}, repo, root, "check-001")
-
-    ui, tests = data["specs"]
-    assert ui["worktree"] == str(repo)
-    assert ui["out_dir"] == str(root / "runs" / "check-001" / "ui")
-    assert ui["pages"] == ["inbox"]
-    assert tests == {"name": "tests", "command": "pytest -q"}
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
