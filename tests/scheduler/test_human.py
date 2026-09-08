@@ -250,6 +250,26 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     assert run.env_snapshot["requires_preflight"] is False
 
 
+def test_investigation_after_drain_restores_the_safe_boundary_status(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["investigation"] = {"status": "draining", "owner": "agent",
+                           "task_status": Status.RUNNING.value, "scope": "read-only",
+                           "budget": "$1", "reason": "diagnose"}
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    fake_run = sched.runs.new_run(task.id, "local", mode="investigation")
+    fake_run.status = "done"
+    fake_run.save()
+    monkeypatch.setattr(sched, "dispatch", lambda *args, **kwargs: fake_run)
+
+    sched.dispatch_investigation(task)
+
+    assert st["investigation"]["task_status"] == Status.IN_REVIEW.value
+
+
 def test_retry_of_changes_requested_without_pr_is_a_revise(sched, fake_github):
     """A pre-PR check that failed at the cap leaves the task in changes_requested with no
     PR. `garden retry` must continue the revise loop (keep the feedback, roll the cap back),
