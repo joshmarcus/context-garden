@@ -7,6 +7,7 @@ import pytest
 from garden.events import EventLog, digest, metrics, parse_since
 from garden.github import Feedback
 from garden.model import Status
+from garden.scheduler.report import TickReport
 
 
 def statuses(sched):
@@ -545,6 +546,36 @@ def test_merge_retargets_children_before_deleting_branch(sched, fake_github, tmp
     assert child.base == "main"
     assert {"number": child.number, "base": "main"} in [{"number": u["number"], "base": u["base"]} for u in fake_github.updated]
     assert child.state == "OPEN"
+
+
+def test_merge_keeps_parent_branch_for_external_child_to_retarget(sched, fake_github):
+    """An external child remains on its owner's base instead of garden retargeting it."""
+    sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["products"]["external"] = {
+        **sched.cfg.data["products"]["demo"], "stack_owner": "external"}
+    parent = sched.store.task("DM-001")
+    child = sched.store.task("DM-002")
+    child.product = "external"
+    child.status = Status.IN_REVIEW
+    sched.store.save(child)
+
+    parent_pr = fake_github.create_pr("test/demo", parent.default_branch(), "main", "parent", "")
+    child_pr = fake_github.create_pr("test/demo", child.default_branch(), parent.default_branch(), "child", "")
+    parent.pr, child.pr = parent_pr.url, child_pr.url
+    parent.status = Status.IN_REVIEW
+    sched.store.save(parent)
+    sched.store.save(child)
+    sched.state.get(parent.id)["pr_number"] = parent_pr.number
+    sched.state.get(child.id).update({"pr_number": child_pr.number, "stack_parent": parent.id})
+
+    sched._do_merge(parent, parent_pr, TickReport())
+
+    assert fake_github.merged == [{"number": parent_pr.number, "method": "squash", "delete_branch": False}]
+    assert child_pr.base == parent.default_branch()
+    assert not fake_github.updated
+    recovery = sched.state.get(child.id)["needs_human"]
+    assert recovery["kind"] == "external_stack_retarget"
+    assert "external stack owner must retarget" in recovery["reason"]
 
 
 def test_child_run_finishing_after_parent_merged_opens_pr_on_final_base(sched, fake_github, tmp_path):

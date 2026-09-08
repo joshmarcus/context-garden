@@ -471,6 +471,7 @@ class PollMixin:
         if not (slug and self.github.available):
             return True
         all_ok = True
+        parent_branch = task.branch or task.default_branch()
         for child in self.stacked_children(task):
             number = self._pr_number(child)
             new_base = self.final_base_for(child)
@@ -480,7 +481,20 @@ class PollMixin:
                 pr = self.github.get_pr(slug, number)
             except (GitHubError, KeyError):
                 continue
-            if pr.state != "OPEN" or pr.base == new_base:
+            if pr.state != "OPEN":
+                continue
+            if self.external_stack_owner(child):
+                if pr.base == parent_branch:
+                    reason = (f"external stack owner must retarget its PR from {parent_branch} "
+                              f"after stack parent {task.id} merges")
+                    self._set_needs_human(child, "external_stack_retarget", reason)
+                    self.events.emit("needs_human", child.id,
+                                     stop_kind="external_stack_retarget", reason=reason)
+                    child.log(reason)
+                    self.store.save(child)
+                    return False
+                continue
+            if pr.base == new_base:
                 continue
             try:
                 self.github.update_pr(slug, number, base=new_base)
