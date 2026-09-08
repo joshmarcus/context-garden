@@ -216,6 +216,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
         subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
         env = _env(list(run.get("env_allowlist") or []), repo, run)
+        runtime_dir = root / "runtime"
+        runtime_dir.mkdir(mode=0o700, exist_ok=True)
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
         setup = dict(run.get("setup") or {})
         if setup_command:
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
@@ -231,7 +234,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             runs_dir.mkdir(parents=True, exist_ok=True)
             execution_dir = Path(tempfile.mkdtemp(prefix="check-", dir=runs_dir))
             (execution_dir / "checks_input.json").write_text(json.dumps({
-                **check_data, "ctx": ctx, "cwd": str(repo), "setup": check_setup,
+                **check_data, "setup": check_setup,
             }))
             execution_env = dict(env)
             for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
