@@ -4,7 +4,7 @@
 {%- set nxt = snap.next -%}
 {%- set mq = nxt.merge -%}
 <div id="next-body">
-  <div class="region-head"><span class="eyebrow">Next</span><span class="lead">the order the tick will take</span>
+  <div class="region-head"><h2 class="section-title">Next</h2><span class="lead">the order the tick will take</span>
     <span class="right"><span class="tick">{% if g.next_tick_at %}next tick in <span data-countdown>{{ g.tick_interval }}</span> s{% else %}scheduler loop off{% endif %}</span><span>{% if g.free %}{{ g.free }} slot{{ 's' if g.free != 1 }} free{% else %}no slot free: the first line waits for a run to finish{% endif %}</span></span></div>
   {% if nxt.dispatch %}
   <ol class="queue">
