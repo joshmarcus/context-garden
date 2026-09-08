@@ -24,7 +24,7 @@ dependencies = [
 garden = "garden.cli:app"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-timeout==2.4.0", "ruff>=0.4"]
 plates = ["pillow>=10"]
 walkthrough = ["playwright>=1.40"]
 
@@ -37,6 +37,9 @@ packages = ["src/garden"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 120
+timeout_method = "signal"
+session_timeout = 900
 markers = [
     "stress: explicit opt-in load, scale, resource-pressure, or latency experiments",
     "needs_remote_clone: test executes an SSH worker against the remote-host checkout",

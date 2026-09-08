@@ -729,6 +729,8 @@ def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(
         "specs": [{"name": "once", "command": f"printf ran >> {marker}"}], "cwd": str(checkout),
         "setup": {}, "config": sched.cfg.data, "timeout": 30,
     })
+    deadline = time.monotonic() + 3
+    execution = {}
     while time.monotonic() < deadline:
         execution = json.loads((check.path / "execution.json").read_text()) if (check.path / "execution.json").exists() else {}
         if execution.get("state") == "waiting":
@@ -745,16 +747,19 @@ def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(
     assert len(sched.runs.runs_for(task.id)) == 1
 
     silent = sched.runs.new_run(task.id, "local", mode="check")
+    silent_started = tmp_path / "silent-started"
     runner.start_checks(silent, checkout, {
-        "specs": [{"name": "silent", "command": "sleep 5"}], "cwd": str(checkout),
+        "specs": [{"name": "silent", "command": f"touch {silent_started} && sleep 5"}],
+        "cwd": str(checkout),
         "setup": {}, "config": sched.cfg.data, "timeout": 30,
     })
-    while time.monotonic() < deadline:
-        execution = json.loads((silent.path / "execution.json").read_text()) if (silent.path / "execution.json").exists() else {}
-        if execution.get("state") == "running":
-            break
+    deadline = time.monotonic() + 3
+    while not silent_started.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert silent_started.exists()
+    execution = json.loads((silent.path / "execution.json").read_text())
     assert execution.get("state") == "running"
+    assert execution["timeout_seconds"] == 900
     make_idle(silent, 6)
     assert sched._finished_or_timed_out(silent, runner)
     assert silent.status == "timeout" and "idle 6 min" in silent.error
