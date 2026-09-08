@@ -142,6 +142,7 @@ class Task:
     harness: str = ""  # override harness (claude | codex | ...)
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
+    owner: str = ""  # stable logical owner id; never an execution or permission identity
     discovered_from: str = ""  # task id that reported this one as discovered work
     freeze_exception: bool = False  # with freeze_exception_reason, lets this task through a frozen phase
     freeze_exception_reason: str = ""
@@ -207,6 +208,7 @@ class Task:
         "harness",
         "difficulty",
         "model",
+        "owner",
         "discovered_from",
         "freeze_exception",
         "freeze_exception_reason",
@@ -266,6 +268,7 @@ class Task:
             harness=str(data.get("harness") or ""),
             difficulty=str(data.get("difficulty") or "medium"),
             model=str(data.get("model") or ""),
+            owner=_owner_id(data.get("owner"), path),
             discovered_from=str(data.get("discovered_from") or ""),
             freeze_exception=bool(data.get("freeze_exception") or False),
             freeze_exception_reason=str(data.get("freeze_exception_reason") or ""),
@@ -300,7 +303,7 @@ class Task:
             data["estimate"] = self.estimate
         data["difficulty"] = self.difficulty
         data["reading"] = list(self.reading)
-        for k in ("repo", "branch", "pr", "runner", "harness", "model", "discovered_from"):
+        for k in ("repo", "branch", "pr", "runner", "harness", "model", "owner", "discovered_from"):
             v = getattr(self, k)
             if v:
                 data[k] = v
@@ -430,6 +433,44 @@ class Phase:
         """Freeze date from `frozen:` in goals.md frontmatter; empty while the phase is not frozen."""
         v = self.meta.get("frozen")
         return str(v) if v else ""
+
+    @property
+    def owner(self) -> str:
+        """The phase's default logical owner, or ``""`` when work is unassigned.
+
+        ``default_owner`` is accepted as a descriptive alias for early documents.  A task's
+        own ``owner`` always takes precedence; see :func:`effective_owner`.
+        """
+        return _owner_id(self.meta.get("owner") or self.meta.get("default_owner"), self.path)
+
+
+_OWNER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _owner_id(value: Any, path: Path) -> str:
+    """Parse an optional, contact-free logical owner identifier.
+
+    IDs deliberately have no roster lookup: an unfamiliar ID remains useful metadata and
+    private contact mappings stay in local configuration rather than task documents.
+    """
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not _OWNER_ID_RE.fullmatch(value):
+        raise ValueError(f"{path}: owner must be a stable logical identifier")
+    return value
+
+
+def effective_owner(task: Task, phase: Phase | None = None) -> tuple[str, str]:
+    """Return ``(owner, source)`` using task override, then phase default, then unassigned.
+
+    Ownership is planning metadata only.  Callers must not use it to select credentials,
+    runners, permissions, or approval gates.
+    """
+    if task.owner:
+        return task.owner, "task"
+    if phase and phase.owner:
+        return phase.owner, "phase"
+    return "", "unassigned"
 
 
 def phase_refusal(phase: Phase, task: Task) -> str:
