@@ -8,7 +8,7 @@ import typer
 from rich import box
 from rich.table import Table
 
-from ..model import STATUS_ORDER, Status, priority_label
+from ..model import STATUS_ORDER, Status, effective_owner, priority_label
 from .common import PANEL_BOARD, _scheduler, _store, _style, _task, app, console
 
 
@@ -140,6 +140,7 @@ def ls(
     phase: str | None = typer.Option(None, "--phase"),
     status_: str | None = typer.Option(None, "--status", "-s", help="draft|blocked|ready|running|waiting_human|in_review|merged_into_parent|changes_requested|done|failed|cancelled"),
     discovered: bool = typer.Option(False, help="Only tasks that workers discovered"),
+    owner: str | None = typer.Option(None, "--owner", help="Only work owned by this logical id; use '-' for unassigned"),
     json_out: bool = typer.Option(False, "--json"),
 ):
     """List tasks."""
@@ -156,24 +157,29 @@ def ls(
             continue
         if discovered and not t.discovered_from:
             continue
+        ph = store.phase(t.product, t.phase)
+        task_owner, _ = effective_owner(t, ph)
+        if owner is not None and task_owner != ("" if owner == "-" else owner):
+            continue
         eff = effective_status(t, tasks, stack)
         if status_ and eff != status_:
             continue
-        rows.append((t, eff))
+        rows.append((t, eff, task_owner))
     if json_out:
-        print(json.dumps([{**t.to_frontmatter(), "effective_status": eff, "path": store.rel(t.path)} for t, eff in rows], indent=2))
+        print(json.dumps([{**t.to_frontmatter(), "effective_status": eff, "effective_owner": task_owner,
+                           "path": store.rel(t.path)} for t, eff, task_owner in rows], indent=2))
         return
     table = Table(show_lines=False)
-    for c in ("id", "status", "pri", "diff", "title", "phase", "deps", "pr"):
+    for c in ("id", "status", "owner", "pri", "diff", "title", "phase", "deps", "pr"):
         table.add_column(c)
-    for t, eff in rows:
+    for t, eff, task_owner in rows:
         deps = ",".join(t.depends_on)
         if eff == "blocked":
             deps = "[yellow]" + ",".join(blockers(t, tasks, stack)) + "[/yellow]"
         elif stack and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
             deps = "[cyan]stack:" + ",".join(blockers(t, tasks, stack=False)) + "[/cyan]"
         title = t.title + (" [dim](discovered)[/dim]" if t.discovered_from else "")
-        table.add_row(t.id, _style(eff), priority_label(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
+        table.add_row(t.id, _style(eff), task_owner or "-", priority_label(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
     console.print(table)
 
 
@@ -191,7 +197,8 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         print(t.render())
         return
     tasks = store.tasks()
-    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}")
+    owner, source = effective_owner(t, store.phase(t.product, t.phase))
+    console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}  owner={owner or '-'} ({source})")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
         rules = ", ".join(f"{d} (after {dependency_after(t, d, tasks)})" for d in t.depends_on)

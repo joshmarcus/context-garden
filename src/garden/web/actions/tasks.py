@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from ...brief import brief_gaps
 from ...github import GitHubError
 from ...gitops import GitError
-from ...model import Status, Task, ensure_open
+from ...model import Status, Task, _owner_id, ensure_open
 from ...runs import RecoveryLaunchConflict, Run, RunStore
 from ...scheduler import Scheduler
 from ...store import Store
@@ -65,6 +65,20 @@ def difficulty(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) 
     old = t.difficulty
     t.difficulty = tier
     t.log(f"difficulty {old} -> {tier} (web)")
+    s.save(t)
+
+
+@action("owner")
+def owner(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    """Change only the task's planning owner; this never affects access or approval."""
+    value = note.strip()
+    try:
+        value = _owner_id(value, t.path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    old = t.owner or "unassigned"
+    t.owner = value
+    t.log(f"owner {old} -> {value or 'unassigned'} (web)")
     s.save(t)
 
 
