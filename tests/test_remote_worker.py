@@ -13,7 +13,13 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops
-from garden.remote_worker import WorkerRequestError, _LeaseHeartbeat, doctor_worker, execute_claim
+from garden.remote_worker import (
+    WorkerRequestError,
+    _host_check_data,
+    _LeaseHeartbeat,
+    doctor_worker,
+    execute_claim,
+)
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -188,6 +194,34 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
     assert response.status_code == 200
     assert response.json()["mode"] == "check"
     assert response.json()["harness"] == ""
+
+
+def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
+    repo = tmp_path / "repos" / "DM-001"
+    run = {
+        "id": "check-1",
+        "checks": {
+            "ctx": {"worktree": "/controller/worktree", "branch": "garden/dm-001"},
+            "cwd": "/controller/worktree",
+            "specs": [{
+                "name": "ui",
+                "python": "garden.walkthrough:ui_check",
+                "worktree": "/controller/worktree",
+                "out_dir": "/controller/run/ui",
+            }],
+        },
+    }
+
+    check_data = _host_check_data(run, repo)
+
+    assert check_data["cwd"] == str(repo)
+    assert check_data["ctx"] == {
+        "worktree": str(repo), "exec_root": str(repo), "branch": "garden/dm-001",
+    }
+    assert check_data["specs"][0]["worktree"] == str(repo)
+    assert check_data["specs"][0]["out_dir"] == str(
+        repo.parent / "check-1-check-artifacts/0-ui"
+    )
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
