@@ -161,11 +161,17 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert beat.status_code == 200
     done = client.post(f"/api/runs/{run.run_id}/finish", json={"lease_token": payload["lease_token"],
                        "exit_code": 0, "final_text": "done", "result": {"status": "done"},
-                       "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc"}, headers=auth)
+                       "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc",
+                       "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
+                                                "selection": ["pytest", "-q"], "exit_code": 0,
+                                                "log_location": "/remote/path"}]}, headers=auth)
     assert done.status_code == 200
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
     assert saved.process_finished() and saved.stdout_text() == "hello\n"
+    receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
+    assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
+    assert receipt["log_location"].endswith("validations/remote-0")
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
