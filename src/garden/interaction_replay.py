@@ -37,7 +37,7 @@ def main() -> int:
                         "commit", "-q", "-m", "initial disposable garden"], cwd=garden, check=True)
         first, second = sorted((garden / "demo" / "p1" / "tasks").glob("*.md"))
         first.write_text(first.read_text().replace("qa-worker: needs_input", "qa-worker: done"))
-        second.write_text(second.read_text().replace("qa-worker: no_change", "qa-worker: escape")
+        second.write_text(second.read_text().replace("qa-worker: no_change_decision", "qa-worker: escape")
                           + f"\nqa-escape: {garden / 'garden.yaml'}\n")
         config = (garden / "garden.yaml").read_text().replace("draft_pr: true", "draft_pr: false")
         (garden / "garden.yaml").write_text(config)
@@ -147,6 +147,7 @@ def main() -> int:
     ]
     manifest = {
         "producer": "garden.scheduler.interaction-replay/v1",
+        "coverage": "generic_smoke",
         "head": args.head,
         "nonce": args.nonce,
         "started_at": started,

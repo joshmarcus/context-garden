@@ -1,0 +1,56 @@
+{
+  "head": "fc55b5e8770db24564a543f6e69ed5cd634d78af",
+  "environment": "disposable local FastAPI application and fake worker harness",
+  "command": "GARDEN_VALIDATION_RUNNER -m garden.validation -- .venv/bin/python -c 'from pathlib import Path; from garden.qa import run_qa; r=run_qa(Path(\"docs/validation/cg328/replay\"), scripted=True, keep=False)'",
+  "result": "garden qa: every flow completed (9 of 9)",
+  "states": {
+    "affected": "DM-002 reached waiting_human with the worker no-change decision visible on its task page and the Inbox, without '(no question recorded)'.",
+    "recovery": "Accepting the decision returned HTTP 303 and DM-002 subsequently reached in_review.",
+    "empty": "After the flow completed, the Inbox contained no '(no question recorded)' placeholder.",
+    "failure": "Sending DM-002 back with a note moved it into the revise path before the fake worker reported no_change."
+  },
+  "events": [
+    {
+      "state": "failure",
+      "method": "POST",
+      "url": "http://127.0.0.1:60791/tasks/DM-002/triage-changes",
+      "status": 303,
+      "observed": "The task entered the revise lifecycle."
+    },
+    {
+      "state": "affected",
+      "method": "GET",
+      "url": "http://127.0.0.1:60791/tasks/DM-002",
+      "status": 200,
+      "observed": "The no-change decision card was present after the revise worker completed."
+    },
+    {
+      "state": "affected",
+      "method": "GET",
+      "url": "http://127.0.0.1:60791/",
+      "status": 200,
+      "observed": "The Inbox showed the worker decision and did not show '(no question recorded)'."
+    },
+    {
+      "state": "recovery",
+      "method": "POST",
+      "url": "http://127.0.0.1:60791/tasks/DM-002/accept",
+      "status": 303,
+      "observed": "The accepted no-change decision resumed the review pipeline."
+    },
+    {
+      "state": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:60791/",
+      "status": 200,
+      "observed": "DM-002 was in_review and no unanswered-question placeholder appeared."
+    }
+  ],
+  "artifacts": [
+    "docs/validation/cg328/replay/result.json",
+    "docs/validation/cg328/replay/tick-log.json",
+    "docs/validation/cg328/replay/pages/0016-tasks-dm-002.html",
+    "docs/validation/cg328/replay/pages/0017-index.html",
+    "docs/validation/cg328/replay/pages/0018-index.html"
+  ]
+}

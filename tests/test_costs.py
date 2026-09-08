@@ -131,7 +131,7 @@ def test_outcomes_count_only_base_branch_merges_as_accepted():
         {"at": "2026-09-04T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude"},
         {"at": "2026-09-04T10:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 2.0},
         {"at": "2026-09-04T10:02:00+00:00", "kind": "review", "task": "DM-001", "verdict": "approve"},
-        {"at": "2026-09-04T10:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-04T10:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done", "base_merged": True},
         # Its task file can say done, but without the merge transition it was never accepted.
         {"at": "2026-09-04T11:00:00+00:00", "kind": "dispatch", "task": "DM-002", "mode": "work", "model": "opus", "harness": "codex"},
         {"at": "2026-09-04T11:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "model": "opus", "harness": "codex", "cost_usd": 9.0},
@@ -160,7 +160,7 @@ def test_outcomes_attribute_supporting_run_costs_to_the_task_route():
         # These runs support the same task, but their events identify only their mode.
         {"at": "2026-09-04T10:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "review", "cost_usd": 0.5},
         {"at": "2026-09-04T10:03:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "edit", "cost_usd": 0.25},
-        {"at": "2026-09-04T10:04:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-04T10:04:00+00:00", "kind": "transition", "task": "DM-001", "to": "done", "base_merged": True},
     ]
 
     outcome = metrics(events, tasks)

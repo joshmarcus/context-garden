@@ -337,8 +337,13 @@ class Scheduler(
         then. `finished_at` is only ever set by our own finalize()/timeout code, so its presence
         — whatever the record's status — distinguishes a genuinely interrupted reap from a live
         run (finished_at still empty) or one whose status was flipped out from under us."""
-        return (run is not None and run.runner != "manual" and run.mode != "review"
-                and bool(run.finished_at) and task.status == Status.RUNNING)
+        resumable_manual = bool(
+            run is not None and run.runner == "manual" and run.completion_mode == "pushed"
+            and (run.env_snapshot or {}).get("pushed_completion_submitted")
+        )
+        return (run is not None and (run.runner != "manual" or resumable_manual)
+                and run.mode != "review" and bool(run.finished_at)
+                and task.status == Status.RUNNING)
 
     def unreaped_run_ids(self) -> set[str]:
         out: set[str] = set()
@@ -354,7 +359,8 @@ class Scheduler(
                 out.add(review.run_id)
         return out
 
-    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False,
+                    notify_now: bool = True, base_merged: bool | None = None) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
@@ -374,7 +380,10 @@ class Scheduler(
             changed = self._queue_drop_head(task) or changed
         if changed:
             self.state.save()
-        self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
+        transition = {"from": old, "to": status.value, "note": note}
+        if status == Status.DONE and base_merged is not None:
+            transition["base_merged"] = base_merged
+        self.events.emit("transition", task.id, **transition)
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
         if notify_now and should_notify(status.value, needs_human=needs_human):
             notify(self.cfg.data, task.id, status.value, note, task.pr or "")
@@ -535,6 +544,8 @@ class Scheduler(
         self.state = State(self.state.path)
         self.maybe_auto_upgrade(rep)
         rep.duration_s = time.monotonic() - started
+        self.events.emit("tick", "", duration_s=rep.duration_s, steps=rep.steps,
+                         summary=rep.summary())
         budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
         if budget and rep.duration_s > budget:
             self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")

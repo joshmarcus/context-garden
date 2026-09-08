@@ -4,11 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 
 from garden import interaction_replay
 from garden import runner as runner_registry
 from garden.runner.local import LocalRunner
+from garden.scheduler import Scheduler
+from garden.store import Store
 
 
 @pytest.mark.parametrize(("head", "dirty"), [("different-head", ""), ("expected-head", " M src/garden/review.py")])
@@ -47,3 +50,23 @@ def test_replay_records_performed_requests_and_existing_artifacts(monkeypatch, t
         and event["at"] == request["at"]
         for request in requests
     ) for event in record["events"])
+
+
+def test_task_specific_harness_pause_is_observed_through_the_served_app(tmp_path):
+    """Reproduce the CG-332 distinction: this journey observes harness-pause behavior,
+    while the generic fence replay above does not and must not stand in for it."""
+    box = interaction_replay.start(tmp_path / "sandbox")
+    try:
+        scheduler = Scheduler(Store(box.garden))
+        scheduler.pause_harness("claude", "bounded quota fixture")
+        paused = httpx.get(box.base_url + "/", timeout=20)
+        assert paused.status_code == 200
+        assert "Harness paused" in paused.text
+        assert "bounded quota fixture" in paused.text
+
+        scheduler.resume_harness("claude")
+        recovered = httpx.get(box.base_url + "/", timeout=20)
+        assert recovered.status_code == 200
+        assert "bounded quota fixture" not in recovered.text
+    finally:
+        box.stop()

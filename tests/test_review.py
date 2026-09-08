@@ -1379,6 +1379,83 @@ def test_interaction_replay_defers_model_review_and_survives_collection(sched, m
     assert sched.state.get(task.id)["review_rounds"] == 1
 
 
+def test_remote_authored_interaction_replay_stays_on_controller_and_records_ownership(sched, monkeypatch):
+    """A replay command contains controller paths, so task runner inheritance is unsafe."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    check = sched.dispatch_review(task)
+
+    assert check.runner == "local"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "local", "provenance": "controller-owned replay inputs",
+    }
+    assert sched.state.get(task.id)["check_run"]["backend"] == "local"
+    command = submitted[0][1]["specs"][0]["command"]
+    assert str(sched.worktree_for(task)) in command
+    assert str(sched.cfg.garden_dir / "interaction-replays") in command
+
+
+def test_remote_authored_portable_check_remains_remote(sched):
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    sched.store.save(task)
+
+    check = sched._dispatch_check_run(
+        task, worktree=sched.store.root, branch=task.default_branch(), base="main",
+        specs=[{"name": "portable", "command": "true"}], stage="ci", cont={}, rep=TickReport(),
+    )
+
+    assert check.runner == "remote"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "remote", "provenance": "portable check payload",
+    }
+
+
+def test_interaction_replay_retry_preserves_local_backend_and_continuation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    sched.store.save(task)
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks", lambda *_args: None)
+    cont = {"head": "controller-head", "nonce": "replay-nonce", "manifest": "/controller/replay.json"}
+    first = sched._dispatch_check_run(
+        task, worktree=sched.worktree_for(task), branch=task.default_branch(), base="main",
+        specs=[{"name": "interaction replay", "command": "controller-only"}],
+        stage="interaction_replay", cont=cont, rep=TickReport(),
+    )
+    (first.path / "exit_code").write_text("1\n")
+
+    assert sched.reap_check(task, TickReport())
+    info = sched.state.get(task.id)["check_run"]
+    retry = sched._run_by_id(task, info["run_id"])
+    assert retry is not None and retry.run_id != first.run_id and retry.runner == "local"
+    assert task.runner == "remote"
+    assert info["backend"] == "local"
+    assert info["cont"] == cont
+    assert retry.env_snapshot["check_execution"] == first.env_snapshot["check_execution"]
+
+    (retry.path / "checks.json").write_text(json.dumps([
+        {"name": "interaction replay", "status": "fail", "summary": "affected replay module was not found"},
+    ]))
+    (retry.path / "exit_code").write_text("1\n")
+    assert sched.reap_check(task, TickReport())
+    recovery = sched.state.get(task.id)["recovery_check"]
+    assert recovery["stage"] == "interaction_replay"
+    assert recovery["cont"] == cont
+    assert recovery["cause"] == "affected replay module was not found"
+    fresh = Scheduler(Store(sched.store.root), github=sched.github)
+    assert fresh.state.get(task.id)["recovery_check"] == recovery
+    assert fresh.state.get(task.id)["needs_human"]["kind"] == "check_did_not_run"
+
+
 def test_scoped_backend_preflight_does_not_reintroduce_capture_all(garden, monkeypatch):
     from garden import gitops
     from garden.preflight import mechanical_results
@@ -1492,6 +1569,65 @@ def test_artifact_may_use_equivalent_schema_and_reviewer_paraphrase(tmp_path):
     artifact.write_text(json.dumps({"head": "another-commit"}))
     assert any("contradicts" in gap for gap in interaction_evidence_gaps(
         {"interaction": row}, required=True, scalability=False, expected_head="head-a"))
+
+
+def test_generic_replay_cannot_claim_a_declared_affected_flow(tmp_path):
+    manifest = tmp_path / "generic.json"
+    manifest.write_text(json.dumps({
+        "producer": "garden.scheduler.interaction-replay/v1", "head": "head-a", "nonce": "n",
+        "coverage": "generic_smoke", "environment": "disposable", "status": "pass",
+    }))
+    gaps = interaction_evidence_gaps(
+        {"interaction": _performed_interaction()}, required=True, scalability=False,
+        expected_head="head-a", replay_manifest=manifest, replay_nonce="n",
+        replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        affected_flow="harness-pause",
+    )
+    assert any("declared affected flow: harness-pause" in gap for gap in gaps)
+
+
+def test_current_task_specific_author_evidence_skips_generic_replay(sched, monkeypatch):
+    from garden import gitops
+
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.extra["interaction_replay"] = {"affected_flow": "harness-pause"}
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    work = _writer_run(sched, task.id, "claude", "sonnet")
+    work.result = {"interaction": {**_performed_interaction(head), "affected_flow": "harness-pause"}}
+    work.save()
+
+    review = sched.dispatch_review(task, work_run=work)
+
+    assert review.mode == "review"
+    assert review.env_snapshot["author_interaction_reused"] is True
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
+    assert "Author's task-specific interaction evidence" in (review.path / "brief.md").read_text()
+
+
+def test_declared_affected_replay_module_is_selected_for_remote_author(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    task.status = Status.IN_REVIEW
+    task.extra["interaction_replay"] = {
+        "affected_flow": "harness-pause", "module": "project_qa.harness_pause",
+    }
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    check = sched.dispatch_review(task)
+
+    assert check.runner == "local"
+    assert "-m project_qa.harness_pause" in submitted[0][1]["specs"][0]["command"]
+    assert sched.state.get(task.id)["check_run"]["cont"]["affected_flow"] == "harness-pause"
 
 
 @pytest.mark.parametrize("bug", [False, True])

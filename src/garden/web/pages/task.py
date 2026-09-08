@@ -88,6 +88,18 @@ def register(app: FastAPI, site: Site) -> None:
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
         trial_view = _trial_view(st.get("trial"), runs)
 
+        decision_card = decision_card_view(t, st, rs)
+        if decision_card is None and request.query_params.get("walkthrough") == "decision":
+            decision_card = {
+                "type": "attention",
+                "title": "Example decision card",
+                "reason": "This representative card shows where a person acts when work needs a decision.",
+                "blurb": "This example is captured for the walkthrough; it does not describe a live task decision.",
+                "final": "",
+                "evidence": [],
+                "attention": {"actions": [], "discuss": ""},
+            }
+
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
@@ -105,7 +117,7 @@ def register(app: FastAPI, site: Site) -> None:
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
             friction_text=friction_text,
             initial_stdout=initial_stdout,
-            decision_card=decision_card_view(t, st, rs),
+            decision_card=decision_card,
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,

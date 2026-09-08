@@ -242,6 +242,11 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
             operator += f" — {share:.0%} of total"
     lines = [f"- workers: ${worker_cost_usd:.2f}", operator, f"- total: ${total:.2f}"]
     outcomes = outcomes or {}
+    if outcomes.get("hand_merges") is not None:
+        lines.append(f"- hand merges: {outcomes['hand_merges']} (of {outcomes.get('merges', 0)} merged PRs)")
+    timing = outcomes.get("tick_duration") or {}
+    if timing.get("count"):
+        lines.append(f"- tick duration: mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)")
     for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
         rows = outcomes.get(dimension) or {}
         if not rows:
