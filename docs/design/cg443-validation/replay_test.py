@@ -20,6 +20,8 @@ from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.web.app import create_app
 
+pytest_plugins = ["tests.conftest"]
+
 
 def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github) -> None:
     output = Path("docs/design/cg443-validation/interaction-manifest.json")
