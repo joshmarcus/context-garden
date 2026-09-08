@@ -346,8 +346,10 @@ class Scheduler(
         from GARDEN_ROOT, which run_checks always sets to a non-existent sentinel so a check
         command cannot use it to act on the live garden (see find_root)."""
         st = self.state.get(task.id)
+        repo = self.slug_for(task)
         return {"exec_root": str(self.store.root), "task_id": task.id, "product": task.product, "phase": task.phase, "branch": branch, "base": base,
-                "repo_slug": self.slug_for(task) or "", "pr": task.pr, "pr_number": st.get("pr_number") or 0,
+                "repo_slug": repo or "", "repo_host": getattr(repo, "host", "github.com"),
+                "pr": task.pr, "pr_number": st.get("pr_number") or 0,
                 "head_sha": st.get("head_sha") or "", "failed_checks": st.get("failed_checks") or [],
                 "worktree": str(worktree or self.worktree_for(task))}
 
