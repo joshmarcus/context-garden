@@ -8,6 +8,7 @@ import pytest
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
+    ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
@@ -889,7 +890,7 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
     }
     events = interaction_events()
     artifact.write_text(json.dumps({"head": "head-a", "states": states, "events": events}))
-    review = {"interaction": {
+    review = {"criteria": [{"criterion": "Empty prompt is clear"}], "interaction": {
         "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
         "states": states, "events": events, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
         "unverified": [],
@@ -898,11 +899,49 @@ def test_interaction_evidence_must_be_performed_current_complete_and_replayable(
 
     review["interaction"]["head"] = "old-head"
     review["interaction"]["states"]["failure_recovery"]["status"] = "fail"
-    review["interaction"]["unverified"] = ["empty prompt copy"]
+    review["interaction"]["unverified"] = [{
+        "scope": "required", "criterion": "Empty prompt is clear",
+        "outcome": "empty prompt copy", "reason": "the empty response was not inspected",
+    }]
     gaps = interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a")
     assert any("stale" in gap for gap in gaps)
     assert any("failure/recovery" in gap for gap in gaps)
-    assert any("remain unverified" in gap for gap in gaps)
+    assert any("required outcome remains unverified" in gap for gap in gaps)
+
+
+def test_out_of_scope_limitation_is_visible_but_does_not_block_cg430_shape(tmp_path):
+    review = {"verdict": "approve", "summary": "all required outcomes passed",
+              "criteria": [{"criterion": f"criterion {index}", "met": True, "evidence": "passed"}
+                           for index in range(5)],
+              "interaction": _performed_interaction()}
+    review["interaction"]["unverified"] = [{
+        "scope": "limitation",
+        "observation": "The September 8 launch failures were not reproduced; their cause remains unverified.",
+    }]
+
+    assert interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+    ) == []
+    assert enforce_criteria_verdict(review)["verdict"] == "approve"
+    assert "September 8 launch failures" in review_to_markdown(review)
+
+
+def test_required_gap_blocks_and_legacy_string_needs_clarification():
+    review = {"interaction": _performed_interaction(), "criteria": []}
+    review["interaction"]["unverified"] = [{
+        "scope": "required", "affected_flow": "adopted-zombie cleanup",
+        "outcome": "recovery was not observed", "reason": "fixture stopped after failure",
+    }]
+    assert any("affected flow: adopted-zombie cleanup" in gap for gap in interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+        affected_flow="adopted-zombie cleanup",
+    ))
+
+    review["interaction"]["unverified"] = ["cause remains unknown"]
+    assert ambiguous_unverified(review) == ["cause remains unknown"]
+    assert interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+    ) == []
 
 
 @pytest.mark.parametrize("events", [
@@ -1849,6 +1888,48 @@ def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, 
     notes = [f for f in persisted["findings"] if f["summary"].startswith("Evidence metadata advisory:")]
     assert len(notes) == 1 and notes[0]["severity"] == "nit"
     assert any(f["severity"] == "blocking" for f in persisted["findings"]) is bug
+
+
+def test_legacy_unverified_gets_one_restart_safe_reviewer_clarification(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    review = {"verdict": "approve", "summary": "required behavior passed", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": [],
+              "interaction": _performed_interaction(run.env_snapshot["review_head"])}
+    review["interaction"]["unverified"] = ["the broader launch incident was not reproduced"]
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+    assert rep.transitions == ["DM-001 review re-asked to classify unverified observations"]
+    clarification = sched.runs.latest(task.id)
+    assert clarification.run_id != run.run_id
+    assert clarification.env_snapshot["count_round"] is False
+    assert clarification.env_snapshot["clarify_unverified"] is True
+    assert "broader launch incident" in (clarification.path / "brief.md").read_text()
+    assert sched._run_by_id(task, run.run_id).result["interaction"]["unverified"] == review["interaction"]["unverified"]
+
+    fresh = Scheduler(Store(sched.store.root), github=sched.github)
+    assert fresh.state.get(task.id)["review_run"] == clarification.run_id
+
+
+def test_failed_state_blocks_even_when_reviewer_calls_it_a_limitation():
+    review = {"interaction": _performed_interaction()}
+    review["interaction"]["states"]["affected"]["status"] = "fail"
+    review["interaction"]["unverified"] = [{
+        "scope": "limitation", "observation": "affected behavior was not demonstrated",
+    }]
+
+    gaps = interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+    )
+    assert "affected interaction is missing or failed" in gaps
 
 
 def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):
