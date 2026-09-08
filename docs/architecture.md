@@ -157,6 +157,25 @@ Git is the database. The split between the four stores is deliberate.
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
 `reservations.json` (durable id reservations, below).
+
+A product may opt into a provisioned canonical checkout instead of per-task worktrees:
+
+```yaml
+products:
+  widget:
+    checkout:
+      strategy: in_place
+      root: /srv/checkouts/widget       # local runner; SSH uses the host's repos entry
+      reconcile_command: ./prepare-run # optional, runs before every run
+      reconcile_timeout_seconds: 300
+```
+
+This mode is deliberately exclusive. A durable per-checkout lease covers worker, review,
+check and auxiliary sessions across scheduler restarts. Before switching from the configured
+base to the assigned task branch, the garden refuses dirty files, an unrelated branch, a
+symlinked root, or the controller checkout. Reconciliation is bounded, uses the scrubbed
+worker environment, and is followed by a fresh clean-tree/branch readiness check. The
+default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 

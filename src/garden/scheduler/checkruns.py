@@ -103,6 +103,10 @@ class CheckRunMixin:
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
+        canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+        if canonical is not None:
+            launch_cwd = canonical
+            run.worktree = str(canonical)
         run.save()
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)

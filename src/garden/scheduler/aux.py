@@ -42,6 +42,10 @@ class AuxMixin:
                 run.model = override
         run.difficulty = difficulty or "hard"
         run.brief_tokens = max(1, len(brief_text) // 4)
+        canonical = self.prepare_canonical_run(probe, run, runner, run.branch, run.base)
+        if canonical is not None:
+            worktree = canonical
+            run.worktree = str(canonical)
         run.save()
         runner.start(run, worktree, brief_text)
         self._aux_list().append({"run_id": run.run_id, "task": run.task_id, "kind": kind, **meta})

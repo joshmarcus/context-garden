@@ -33,11 +33,23 @@ from .base import Runner, RunnerError, config_dir_env, pass_env_patterns, setup_
 REMOTE_SCRIPT = r"""
 set -e
 REPO={repo}
-WT=$REPO/.garden-worktrees/{task}
+GARDEN_CHECKOUT_STRATEGY={checkout_strategy}
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then WT=$REPO; else WT=$REPO/.garden-worktrees/{task}; fi
 BRANCH={branch}
 BASE={base}
 cd "$REPO"
 git fetch --prune origin >&2
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
+  GARDEN_CANONICAL_LEASE="$REPO/.git/garden-canonical-lease"
+  if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then echo "canonical checkout is already leased" >&2; exit 4; fi
+  trap 'rmdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null || :' EXIT HUP INT TERM
+  if [ -n "$(git status --porcelain)" ]; then echo "canonical checkout has uncommitted work; refusing preparation" >&2; exit 4; fi
+  GARDEN_CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  if [ "$GARDEN_CURRENT_BRANCH" != "$BRANCH" ] && [ "$GARDEN_CURRENT_BRANCH" != "$BASE" ]; then echo "canonical checkout branch drift: $GARDEN_CURRENT_BRANCH" >&2; exit 4; fi
+  if [ "$GARDEN_CURRENT_BRANCH" = "$BASE" ] && [ "$BRANCH" != "$BASE" ]; then
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then git checkout -q "$BRANCH" >&2; else git checkout -q -b "$BRANCH" "origin/$BASE" >&2; fi
+  fi
+else
 git worktree prune >&2
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -48,9 +60,10 @@ if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
     git worktree add -b "$BRANCH" "$WT" "origin/$BASE" >&2
   fi
 fi
+fi
 cd "$WT"
-git checkout -q "$BRANCH" >&2 || true
-if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ]; then git checkout -q "$BRANCH" >&2 || true; fi
+if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ] && git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
   if [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ] && [ "$(git rev-list --count origin/$BRANCH..HEAD)" = "0" ]; then git merge -q --ff-only "origin/$BRANCH" >&2 || true; fi
   if [ "$(git rev-list --count origin/$BRANCH..HEAD)" != "0" ] && [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ]; then git reset -q --hard "origin/$BRANCH" >&2; fi
 fi
@@ -87,6 +100,15 @@ garden_scrub() {{
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
 }}
+# Reconciliation is per run, bounded, and followed by the same clean/branch readiness
+# checks. It is intentionally separate from the stamped one-time setup below.
+GARDEN_RECONCILE_CMD={reconcile_cmd}
+GARDEN_RECONCILE_TIMEOUT={reconcile_timeout}
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ] && [ -n "$GARDEN_RECONCILE_CMD" ]; then
+  if command -v timeout >/dev/null 2>&1; then GARDEN_RECONCILE_RUN="timeout $GARDEN_RECONCILE_TIMEOUT sh -c"; else GARDEN_RECONCILE_RUN="sh -c"; fi
+  if ! ( garden_scrub; $GARDEN_RECONCILE_RUN "$GARDEN_RECONCILE_CMD" >&2 ); then echo "canonical reconciliation failed or timed out" >&2; exit 4; fi
+  if [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]; then echo "canonical checkout not ready after reconciliation" >&2; exit 4; fi
+fi
 # Run the setup command once per worktree (again only when it changes, tracked by a marker kept
 # beside the worktree so `git add -A` above cannot commit it) in the scrubbed environment. A
 # setup failure fails the run before any push.
@@ -164,6 +186,7 @@ class SSHRunner(Runner):
             raise RunnerError("brief contains the heredoc delimiter")
         harness_cmd = self.harness_shell(run, None)
         setup = self._setup_for(host)
+        checkout = dict(self.config.get("checkout") or {})
         setup_cmd = str(setup.get("command") or "").strip()
         setup_env = "\n".join(
             f"  export {k}={shlex.quote(str(v))}" for k, v in (setup.get("env") or {}).items()
@@ -186,6 +209,9 @@ class SSHRunner(Runner):
             config_dirs=config_dirs, setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
             setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
+            checkout_strategy=shlex.quote(str(checkout.get("strategy") or "worktree")),
+            reconcile_cmd=shlex.quote(str(checkout.get("reconcile_command") or "").strip()),
+            reconcile_timeout=shlex.quote(str(int(checkout.get("reconcile_timeout_seconds") or 600))),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")
