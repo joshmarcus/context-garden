@@ -1,5 +1,5 @@
 {
-  "head": "e4b191fee261490b087d227466980c11ad4382c6",
+  "head": "f0db30112f79f6656aa0f8a749d7d071b6405fca",
   "environment": "disposable local garden fixture served at an ephemeral 127.0.0.1 port",
   "command": "python scripts/capture_cg410.py",
   "states": [
