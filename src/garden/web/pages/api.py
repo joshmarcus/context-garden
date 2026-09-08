@@ -304,6 +304,13 @@ def register(app: FastAPI, site: Site) -> None:
                       "cost_usd": body.get("cost_usd"), "final_text": final,
                       "error": str(body.get("error") or ""), "session_id": str(body.get("session_id") or "")}
             (run.path / "remote_result.json").write_text(json.dumps(posted))
+            for index, receipt in enumerate(body.get("validation_receipts") or []):
+                if not isinstance(receipt, dict):
+                    continue
+                target = run.path / "validations" / f"remote-{index}" / "result.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                durable = {**receipt, "log_location": str(target.parent)}
+                target.write_text(json.dumps(durable, sort_keys=True) + "\n")
             if run.mode == "check":
                 (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
             run.save()
