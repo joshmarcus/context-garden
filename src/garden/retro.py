@@ -225,15 +225,22 @@ def parse_retro(text: str) -> dict[str, Any]:
 
 
 def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
-                    outcomes: dict[str, Any] | None = None) -> str:
+                    outcomes: dict[str, Any] | None = None, operator_turns: int | None = None,
+                    operator_ledger_path: Path | str | None = None) -> str:
     """The phase's spend, workers against the operator watching them (CG-223): what the
     "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
     loop's most expensive seat is compared against the workers', not guessed at."""
     total = worker_cost_usd + operator_cost_usd
     share = operator_cost_usd / total if total else None
-    lines = [f"- workers: ${worker_cost_usd:.2f}",
-             f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
-             f"- total: ${total:.2f}"]
+    operator = f"- operator: ${operator_cost_usd:.2f}"
+    if operator_ledger_path is not None and not Path(operator_ledger_path).exists():
+        operator += f" — ledger not found ({operator_ledger_path})"
+    else:
+        if operator_turns is not None:
+            operator += f" — {operator_turns} turns"
+        if share is not None:
+            operator += f" — {share:.0%} of total"
+    lines = [f"- workers: ${worker_cost_usd:.2f}", operator, f"- total: ${total:.2f}"]
     outcomes = outcomes or {}
     for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
         rows = outcomes.get(dimension) or {}

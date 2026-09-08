@@ -302,8 +302,10 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monkeypatch):
+def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     task = sched.store.task("DM-001")
+    task.title = "Tighten inbox layout"
+    task.extra["visual_scope"] = {"behavior": "Tighter inbox layout"}
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
     captured = []
@@ -318,6 +320,7 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
     assert ui["worktree"] == str(worktree)
     assert "garden_root" not in ui
+    assert ui["pages"] == ["inbox", "now"]
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
@@ -325,10 +328,26 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
 
+    # A generic criterion can preserve milestone validation, but does not make this
+    # backend-only PR capture the walkthrough inventory.
     task.extra["requires"] = ["captures"]
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
+                        lambda _worktree, _base: ["src/garden/web/static/site.css"])
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
+    assert ui["pages"] == ["board", "inbox"]
+
+
+def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):
+    store = Store(garden)
+    result = capture(store, store.phase("demo", "p1"), tmp_path, screenshots=False, pages=[])
+
+    assert result.pages == []
 
 
 def test_html_to_text_strips_tags_and_scripts():
@@ -510,3 +529,22 @@ def test_capture_redacts_the_home_directory(garden, monkeypatch):
     assert fake_home not in run_html
     assert "~/work/checkout/src/thing.py" in run_html
     assert "paths are redacted" in (out / "index.md").read_text()
+
+
+def test_ui_check_entrypoint_accepts_new_controller_page_argument(monkeypatch, capsys, tmp_path):
+    import json
+
+    import garden.walkthrough as walkthrough
+
+    calls = []
+
+    def capture(path, pages):
+        calls.append((path, pages))
+        return {"status": "pass", "out_dir": str(path)}
+
+    monkeypatch.setattr(walkthrough, "_seeded_ui_capture", capture)
+    for selection, expected in [([], []), (['["*"]'], ["*"])]:
+        monkeypatch.setattr(walkthrough.sys, "argv", ["garden.walkthrough", "--ui-check", str(tmp_path), *selection])
+        assert walkthrough._main() == 0
+        assert json.loads(capsys.readouterr().out) == {"status": "pass", "out_dir": str(tmp_path)}
+        assert calls[-1] == (tmp_path, expected)

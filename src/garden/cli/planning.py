@@ -419,8 +419,11 @@ def usage(
 
 @app.command(rich_help_panel=PANEL_REVIEW)
 def review(task_id: str):
-    """Start an automated review run for a task's open PR now. If the task's review cap
-    was already reached, this raises it by one round and clears the needs-human stop."""
+    """Start an automated review run for a task's open PR now.
+
+    With a finite cap this raises the task's cap by one round when necessary; with an
+    unlimited cap it simply starts the review.
+    """
     store = _store()
     t = _task(store, task_id)
     if not t.pr:

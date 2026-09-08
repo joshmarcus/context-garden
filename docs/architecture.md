@@ -9,7 +9,8 @@ Everything on this page is what the code does today (`src/garden/`), not a plan.
 
 ## The shape of it
 
-Three kinds of process, one shared filesystem, one external service.
+Three kinds of process, one local audit filesystem, one external service. Pull-based remote
+workers may share nothing with the scheduler except HTTPS and the product's git remote.
 
 ```mermaid
 flowchart LR
@@ -56,10 +57,16 @@ flowchart LR
   agent CLI (`claude -p`, `codex exec`, or any CLI described under `harnesses:` in
   `garden.yaml`) running on this machine or on a host reached over ssh. They are
   detached: the scheduler keeps no handle to them and they outlive whichever process
-  started them. Local workers leave branches for the scheduler to push; the SSH runner
+ started them. Local workers leave branches for the scheduler to push; the SSH runner
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
-  different brief.
+ different brief.
+- The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
+  claims a leased run over HTTPS, clones the product with host-owned git credentials, renews
+  its lease from before clone through setup, execution and staging push, pushes work to a
+  lease-specific staging ref, streams its transcript, and posts its result and usage. Work,
+  reviews, checks, personas, and comparisons use the same run records; an expired lease
+  returns to the queue.
 - **Maintenance pause** is the installation boundary. `garden pause` only blocks new
   dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
   requests a whole-scheduler freeze and the next transaction acknowledges quiescence without
@@ -98,6 +105,7 @@ of the loop touch different files.
 | `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
 | `scheduler/dispatch.py` | `dispatch_ready`, the stuck audit, `_stack_for`, `dispatch` |
 | `scheduler/human.py` | `approve` (the one draft→ready gate the CLI, web and TUI share), answer, accept or reject a worker decision, `mark_wont_do`, triage, cancel, retry, resume, `finish_manual` |
+| `scheduler/scope.py` | checkout-ownership preflight: separates declared operator-owned live configuration from worker deliverables, records operator evidence, and releases checkout work only after that prerequisite is verified |
 | `scheduler/budget.py` | phase budgets, the dispatch pause, live config overrides |
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it |
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
@@ -107,9 +115,16 @@ of the loop touch different files.
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |
 | `runner/manual.py` | the human-driven runner backend |
+| `runner/remote.py` | the pull-based remote worker runner backend |
+| `remote_worker.py` | the independent-host worker agent |
+| `managed_worker.py` | measured single-host admission and remote resource/version attribution |
+| `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py` | scheduler-independent declarative host lifecycle, strict configuration and versioned provider/profile contracts |
+| `hosts/ec2.py`, `hosts/fake.py` | the first infrastructure adapter and the local extension/contract fixture |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
+| `interaction_replay.py`, `preflight.py` | disposable application replay that records review-journey evidence; shared worker pre-flight rules and token-free mechanical checks |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
 | `profiles.py` | named operating profiles that combine worker/review concurrency, model tiers, review and retro difficulty, and observation settings |
+| `inbox.py` | the shared operator decision-card vocabulary |
 | `costs.py`, `charts.py`, `operator_spend.py` | `cost_series`, the aggregation behind `garden costs` and the Costs page; server-side SVG charts (a burn-up, per-tier bars, the cost stack with its compaction annotations); the operator's own session spend — `docs/operator-spend.jsonl`'s format, turning cumulative heartbeats into `operator`-activity cost events, and the `garden operator-spend` CLI |
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
@@ -120,10 +135,12 @@ of the loop touch different files.
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
 | `web/pages/api.py` | JSON task, recent-event, and decision-notification endpoints under `/api/`, backed by the task store and event log |
 | `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
-| `web/actions/` | the task-action registry (`tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
+| `web/pages/costs.py` (`web/pages/costs`) | the Costs page's GET route and cost breakdown rendering |
+| `web/actions/` | the task-action registry (`web/actions/tasks.py`: one function per action, registered by name) and the other POST routes (`control`, `phases`, `decisions`, `friction`) |
 | `tui/` | the Textual TUI |
 | `qa/` | `garden qa`: the throwaway garden, its fake worker and pretend GitHub (`sandbox.py`, `worker.py`), the flows as one table that is both the agent's script and the scripted run (`flows.py`), and the run itself with its report (`__init__.py`) |
 | `canary.py` | `garden canary`: install a pinned build into a throwaway venv and drive it (the scripted QA flows plus a stacked-PR and a merge-queue scenario against the in-memory GitHub) before the pin is trusted with real PRs (CG-180) |
+| supporting modules | `__main__.py`, `browser.py`, `now2.py`, `now2_stream.py`, `onboard.py`, `outcomes.py`, `platefetch.py`, `run_supervisor.py`, `scaffold.py`, `stabilization.py`, `validation.py`; `cli/__init__.py`, `cli/common.py`, `cli/costs.py`, `cli/diagnostics.py`, `cli/loop.py`, `cli/now2.py`, `cli/operator.py`, `cli/planning.py`, `cli/scaffold.py`, `cli/stabilization.py`, `cli/state.py`, `cli/views.py`; `scheduler/browser.py`, `scheduler/resources.py`, `scheduler/selection.py`, `scheduler/snapshot.py`; `runner/__init__.py`, `runner/base.py`, `runner/local.py`, `runner/manual.py`, `runner/ssh.py`; `qa/__init__.py`, `qa/flows.py`, `qa/sandbox.py`, `qa/worker.py`; `tui/__init__.py`, `tui/app.py`; `web/actions/__init__.py`, `web/actions/control.py`, `web/actions/decisions.py`, `web/actions/friction.py`, `web/actions/phases.py`, `web/actions/tasks.py`; `web/pages/__init__.py`, `web/pages/api.py`, `web/pages/board.py`, `web/pages/config.py`, `web/pages/design.py`, `web/pages/events.py`, `web/pages/inbox.py`, `web/pages/now1.py`, `web/pages/now2.py`, `web/pages/phase.py`, `web/pages/runs.py`, `web/pages/task.py`, `web/pages/trellis.py`, `web/pages/trials.py` |
 
 ## Where state lives
 
@@ -247,6 +264,12 @@ keyed by phase (verdict, status, who accepted it and when, and the ids of the ta
 | `final.md` | harness or scheduler | the worker's final message (the `GARDEN_RESULT` line is its last line) |
 | `exit_code` | the shell wrapper (or `garden finish`) | the completion signal the scheduler waits for |
 | `result.json` | `garden finish` | the result of a human-driven run |
+
+Pull-based remote run records also carry a unique lease token and staging git ref for the
+current claim. A reclaim replaces both, fencing heartbeat and finish calls from the previous
+worker generation; only the scheduler promotes an accepted staging commit to the task branch.
+Remote check payloads retain the ordinary branch, PR, head, and failed-check context but
+replace scheduler-local checkout paths with the independent host's clone paths.
 
 ## One tick
 
@@ -648,8 +671,17 @@ CLI loop like `garden trial --wait`) refreshes only its task/product scan
 (`Store.invalidate_tasks`) between ticks, never garden.yaml itself, so no other code path can
 hand a held reload's executable fields a route around the gate.
 
-Every automatic loop has a cap here: `max_attempts`, `max_revisions`,
+Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+`review.max_rounds` defaults to two but accepts a positive cap or `null` for unlimited review
+rounds; its separate `review.friction_after` threshold emits one non-blocking loop record.
+Stall handling still stops unchanged paid attempts.
+
+**Restart recovery timing (CG-198).** Restart the controller only at a tick boundary. On
+startup, `reap_on_start` runs before the first tick and reaps every finished-but-unreaped run,
+including reviews, so completed work is applied exactly once; the normal tick then continues
+with the recovered state. Active workers remain detached while the controller restarts.
+
 Hitting a cap flags the task for a human instead of retrying.
 
 **`notify.command`** (`src/garden/notify.py`) is a shell command the scheduler runs
@@ -812,3 +844,9 @@ live work.
 - No model runs in the tick. Waiting is a sleeping Python process.
 
 The fence verifies the authoritative manifest against its saved digest. Missing or invalid trusted metadata fails the run for operator inspection; the worker-writable audit copy is never a restoration authority. References survive manual runs and interrupted finalization so a recovered reap can repeat the check safely.
+
+## Operator environment
+
+The [EC2 environment setup record](ec2-environment-setup.md) documents the phase-05
+AWS identities/network, Tailscale access rules, budget and remaining canary prerequisites.
+It distinguishes verified infrastructure from worker functionality still under review.

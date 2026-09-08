@@ -380,8 +380,8 @@ class HumanMixin:
         """When a human asks for one more automated review after the review cap stopped it,
         roll the counter back one so exactly one more review round is dispatchable. Returns
         True if the cap was raised."""
-        max_rounds = int(self.cfg.get("review.max_rounds", 2))
-        if int(st.get("review_rounds", 0)) >= max_rounds:
+        max_rounds = self.cfg.review_max_rounds()
+        if max_rounds is not None and int(st.get("review_rounds", 0)) >= max_rounds:
             st["review_rounds"] = max_rounds - 1
             return True
         return False
@@ -430,6 +430,60 @@ class HumanMixin:
             self._cancel_active_run(task)
         self._transition(task, Status.READY, "reset to ready by hand")
         self.state.save()
+
+    def delegate_recovery(self, task: Task, rep: TickReport | None = None) -> str:
+        """Spend one explicitly delegated recovery continuation.
+
+        This is intentionally narrower than ``retry``: it may resume a capped revision
+        with its existing feedback, or replay the exact interrupted check continuation.
+        A fingerprint is consumed before the continuation is queued, so an unchanged stop
+        cannot loop indefinitely under delegated authority.
+        """
+        ensure_open(task)
+        if not bool(self.cfg.get("recovery.delegated", False)):
+            raise RuntimeError("delegated recovery is disabled; an owner must choose a retry")
+        st = self.state.get(task.id)
+        raw = st.get("needs_human")
+        info = raw if isinstance(raw, dict) else {}
+        kind = str(info.get("kind") or "")
+        if kind not in {"revision_cap", "check_did_not_run"}:
+            raise RuntimeError(f"{task.id} has no delegated recovery for {kind or 'this stop'}")
+        feedback = str(st.get("pending_feedback") or "")
+        check = dict(st.get("recovery_check") or {})
+        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""), str(check.get("cause") or "")))
+        used = set(str(item) for item in (st.get("delegated_recovery_fingerprints") or []))
+        if fingerprint in used:
+            raise RuntimeError("this unchanged recovery has already used its delegated continuation")
+        rep = rep or TickReport()
+        if kind == "revision_cap":
+            if not feedback:
+                raise RuntimeError("a capped revision has no feedback to retain")
+            used.add(fingerprint)
+            st["delegated_recovery_fingerprints"] = sorted(used)
+            st.pop("needs_human", None)
+            self._grant_one_more_round(st)
+            self._transition(task, Status.CHANGES_REQUESTED,
+                             "delegated operator recovery: one retained-feedback revise round queued")
+            self.events.emit("delegated_recovery", task.id, stop_kind=kind, action="revise")
+            self.state.save()
+            return "one retained-feedback revise round queued"
+
+        if not check.get("specs"):
+            raise RuntimeError("the interrupted check has no preserved continuation")
+        self._dispatch_check_run(
+            task, worktree=Path(str(check.get("cont", {}).get("worktree") or self.worktree_for(task))),
+            branch=str(check.get("cont", {}).get("branch") or task.branch),
+            base=str(check.get("cont", {}).get("base") or self.base_for(task)),
+            specs=list(check["specs"]), stage=str(check["stage"]),
+            cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
+        )
+        used.add(fingerprint)
+        st["delegated_recovery_fingerprints"] = sorted(used)
+        st.pop("needs_human", None)
+        st.pop("recovery_check", None)
+        self.events.emit("delegated_recovery", task.id, stop_kind=kind, action="check")
+        self.state.save()
+        return "one preserved check continuation queued"
 
     def resume_task(self, task: Task) -> None:
         """'Nothing to fix': clear the needs-human stop and return the task to the state it

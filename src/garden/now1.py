@@ -328,7 +328,8 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in strips if s.get("mode") in REVIEW_MODES}
-    max_rounds = int(store.config.get("review.max_rounds", 2))  # the scheduler's own default
+    configured_cap = store.config.review_max_rounds()
+    max_rounds = configured_cap if configured_cap is not None else "unlimited"
     last_moved: dict[str, str] = {}
     for e in events:
         if e.get("task"):
@@ -557,7 +558,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     state = sched.state
     runs: RunStore = sched.runs
     events = EventLog(cfg.garden_dir / "events.jsonl").read()
-    op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
+    op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
     control = state.get("_control")
     spent: dict[str, float] = defaultdict(float)
     for r in runs.all_runs():

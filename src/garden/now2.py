@@ -286,7 +286,7 @@ def snapshot(s: Store, window: str = "hour", phase: str = "", now: dt.datetime |
     return {"server_now": now.isoformat(), "window": window, "phase": phase, "windows": WINDOWS,
             "running": running_rows(all_runs, tasks, now, s), "attention": attention, "quiet": quiet,
             "ever_run": bool(all_runs), "next": queues, "phases": phases,
-            "period": period_data(events, tasks, ops.read_records(ops.default_path(s.root)), since, until, phase if window == "phase" else "")}
+            "period": period_data(events, tasks, ops.read_records(ops.default_path(s.root, s.config)), since, until, phase if window == "phase" else "")}
 
 
 def text_view(data: dict) -> str:

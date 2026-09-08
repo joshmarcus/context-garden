@@ -1,0 +1,200 @@
+{
+  "source_head": "bdaed013187177272532979aacfce9a87c0b73ce",
+  "test": "tests/test_remote_worker.py::test_remote_lifecycle_over_served_http",
+  "transport": "real TCP HTTP",
+  "worker_process": "separate python -m garden worker CLI process",
+  "worker_command": "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
+  "actions": [
+    "reject unauthenticated and cross-origin claims",
+    "claim then expire a work lease and reject its stale heartbeat",
+    "reclaim and finish work, check, review, PR persona, and phase persona runs",
+    "open the run page and drain the queue"
+  ],
+  "observations": {
+    "scheduler_secret_absent_from_claim": true,
+    "stale_heartbeat_status": 409,
+    "review_verdict": "approve",
+    "pr_opened": true,
+    "run_page_host": "build-1",
+    "final_claim_status": 204
+  },
+  "runs": [
+    {
+      "mode": "work",
+      "run": "20260907T200715Z-work",
+      "host": "build-1"
+    },
+    {
+      "mode": "check",
+      "run": "20260907T200717Z-check",
+      "host": "build-1"
+    },
+    {
+      "mode": "review",
+      "run": "20260907T200717Z-review",
+      "host": "build-1"
+    },
+    {
+      "mode": "persona",
+      "run": "20260907T200718Z-persona",
+      "host": "build-1"
+    },
+    {
+      "mode": "persona",
+      "run": "20260907T200720Z-persona",
+      "host": "build-1"
+    }
+  ],
+  "http": [
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 401
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 403
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200715Z-work/heartbeat",
+      "status": 409
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200715Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200715Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200715Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200715Z-work/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-check/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-check/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-check/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200717Z-review/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200718Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200718Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200718Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200718Z-persona/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200720Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200720Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200720Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260907T200720Z-persona/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 204
+    },
+    {
+      "method": "GET",
+      "path": "/runs/DM-001/20260907T200715Z-work",
+      "status": 200
+    }
+  ]
+}

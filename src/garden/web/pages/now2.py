@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from ...now2 import snapshot
 from ...now2_stream import Fragments, stream, versions
+from ...operator_spend import selected_product_path
 from ...outcomes import format_cell
 from ...store import Store
 from ..common import Site
@@ -41,7 +42,10 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/api/events/now2")
     def now2_events(request: Request, window: str = "hour", phase: str = ""):
         fragments = Fragments(lambda: render_fragments(window, phase))
-        return StreamingResponse(stream(fragments, lambda: versions(site.hub.store.root, site.hub.store.config.garden_dir),
+        return StreamingResponse(stream(fragments, lambda: versions(
+                                        site.hub.store.root, site.hub.store.config.garden_dir,
+                                        site.hub.store.config,
+                                        selected_product_path(site.hub.store.root, site.hub.store.config)),
                                         request.is_disconnected), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

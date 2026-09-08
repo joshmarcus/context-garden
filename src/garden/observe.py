@@ -183,8 +183,10 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
         f"isolation {pressure.isolation}",
         f"spend ${totals['cost_usd']:.2f}",
     ]
+    if pressure.capacity_full:
+        bits.append(f"at capacity {pressure.active}/{pressure.limit} — eligible work waits for a slot")
     if pressure.pressured:
-        bits.append("pressure " + "; ".join(pressure.reasons) + " — wait for drain or pause dispatch")
+        bits.append("pressure " + "; ".join(pressure.pressure_reasons) + " — new local launches wait for recovery")
     if count_bits:
         bits.append(count_bits)
     return "  ".join(bits)
