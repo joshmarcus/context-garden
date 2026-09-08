@@ -413,8 +413,14 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         "merges": merges,
         "per_merge": round(rebases / merges, 2) if merges else None,
     }
+    ci_events = [ev for ev in events if ev.get("kind") == "ci_status" and ev.get("task") in tasks]
+    ci_status = {state: sum(1 for ev in ci_events if ev.get("state") == state)
+                 for state in sorted({str(ev.get("state") or "unknown") for ev in ci_events})}
+    ci_status["stale"] = sum(1 for ev in ci_events if ev.get("stale"))
+    ci_status["absent"] = sum(1 for ev in ci_events if not ev.get("exists_for_sha"))
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "rebase": rebase,
+            "ci_status": ci_status,
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 
