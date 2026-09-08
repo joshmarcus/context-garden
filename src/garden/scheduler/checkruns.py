@@ -140,8 +140,12 @@ class CheckRunMixin:
         # Keep the complete resolved contract with the continuation.  A base probe, retry,
         # or deferred recovery can happen after another product (or an operator) changes
         # garden.yaml; it must validate against the settings that started this check flow.
-        settings = deepcopy(cont.get("check_settings") or self._check_settings(task, stage))
-        settings["specs"] = deepcopy(specs)
+        inherited_settings = cont.get("check_settings")
+        settings = deepcopy(inherited_settings or self._check_settings(task, stage))
+        # A base probe intentionally runs only the failed subset.  Its continuation still
+        # needs the complete original suite if the branch is rebased and checked again.
+        if not inherited_settings:
+            settings["specs"] = deepcopy(specs)
         cont["check_settings"] = settings
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):

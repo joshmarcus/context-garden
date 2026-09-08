@@ -383,6 +383,18 @@ def test_check_run_persists_resolved_product_settings(garden, fake_github):
     assert continuation["timeout"] == 45
     assert continuation["specs"][0]["name"] == "product"
 
+    # A base probe may run only failed checks, but a successful rebase must return to the
+    # complete contract instead of silently shrinking its next validation.
+    full_specs = [*settings["specs"], {"name": "second", "command": "true"}]
+    continuation["specs"] = full_specs
+    probe = sc._dispatch_check_run(task, worktree=worktree, branch="garden/dm-001", base="main",
+                                   specs=[full_specs[0]], stage="base_probe",
+                                   cont={"check_settings": continuation}, rep=TickReport())
+    probe_payload = yaml.safe_load((probe.path / "checks_input.json").read_text())
+    probe_continuation = sc.state.get(task.id)["check_run"]["cont"]["check_settings"]
+    assert [spec["name"] for spec in probe_payload["specs"]] == ["product"]
+    assert [spec["name"] for spec in probe_continuation["specs"]] == ["product", "second"]
+
 
 def test_check_cli_pre_pr_uses_the_resolver(garden):
     """`garden check ID` for pre_pr goes through the same resolver as the automated gate:
