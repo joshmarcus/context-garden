@@ -77,6 +77,15 @@ def test_private_runner_adapter_reports_missing_import_without_config_load_impor
         get_runner("synthetic", {"_runner_adapters": config.get("runner_adapters")})
 
 
+def test_runner_adapter_registrations_are_fenced_as_executable_configuration():
+    from garden.config import executable_diff
+
+    original = {"runner_adapters": {"synthetic": {"path": "private.adapter.Runner"}}}
+    changed = {"runner_adapters": {"synthetic": {"path": "replacement.adapter.Runner"}}}
+
+    assert executable_diff(original, changed) == ["runner_adapters"]
+
+
 def _wait_for_child(run) -> None:
     """The ssh runner is the one path in the suite that still launches a real command: its
     remote script is shell, so fake_ssh runs it with `sh`, which runs fake_claude as a
