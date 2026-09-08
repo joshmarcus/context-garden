@@ -151,6 +151,24 @@ def test_ssh_in_place_refuses_reconciliation_without_working_timeout(garden, tmp
     assert "requires working timeout(1)" in (run.path / "stderr.log").read_text()
 
 
+def test_ssh_in_place_refuses_competing_active_claim(garden, tmp_path):
+    remote = _remote_clone(garden)
+    scheduler = Scheduler(_enable(garden, (garden / "../repo").resolve()))
+    task = scheduler.store.task("DM-001")
+    runner = scheduler.runner_for(task, "ssh")
+    runner.config["timeout_minutes"] = 0
+    lease = remote / ".git" / "garden-canonical-lease"
+    lease.mkdir()
+    (lease / "run-id").write_text("active-run\n")
+    run = scheduler.runs.new_run(task.id, "ssh")
+    run.host, run.branch, run.base = "boxA", task.default_branch(), "main"
+    run.env_snapshot["canonical_active_run_ids"] = ["active-run"]
+    runner.start(run, tmp_path, "brief")
+    assert _wait_run(run) == 4
+    assert "leased by active run active-run" in (run.path / "stderr.log").read_text()
+    assert (lease / "run-id").read_text() == "active-run\n"
+
+
 @pytest.mark.parametrize("consumer", ["review", "persona", "rebase"])
 @pytest.mark.parametrize("unsafe", ["dirty", "drift", "competing"])
 def test_every_canonical_consumer_claims_before_git_operations(garden, fake_github, consumer, unsafe):
