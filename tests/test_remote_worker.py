@@ -9,6 +9,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden import gitops
 from garden.remote_worker import doctor_worker, execute_claim
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
@@ -37,6 +38,49 @@ def queued_run(store):
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
+
+
+@pytest.mark.parametrize("task_override,reference", [
+    (False, "https://example.test/team/project.git"),
+    (True, "https://example.test/team/project.git"),
+    (False, "git@example.test:team/project.git"),
+    (True, "../repo"),
+])
+def test_claim_resolves_controller_repository_before_reading_branch_head(
+    garden, monkeypatch, task_override, reference,
+):
+    repo = garden.parent / "repo"
+    gitops.git("push", "origin", "main:refs/heads/garden/dm-001", cwd=repo)
+    expected_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    # Exercise real clone/fetch/ref lookup while keeping all transport inside the fixture.
+    if reference != "../repo":
+        git_config = garden.parent / "gitconfig"
+        gitops.git("config", "--file", str(git_config),
+                   f"url.{garden.parent / 'remote.git'}.insteadOf", reference, cwd=repo)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(git_config))
+    if task_override:
+        store = Store(garden)
+        task = store.tasks()["DM-001"]
+        task.repo = reference
+        store.save(task)
+    else:
+        path = garden / "garden.yaml"
+        cfg = yaml.safe_load(path.read_text())
+        cfg["products"]["demo"]["repo"] = reference
+        path.write_text(yaml.safe_dump(cfg))
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+
+    response = client.post("/api/runs/claim",
+                           json={"host": "build-1", "harnesses": ["claude"]},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.host == "build-1" and saved.start_head == expected_head
+    if reference != "../repo":
+        assert response.json()["repo"] == reference
+        assert (store.config.repos_dir / "project/.git").is_dir()
 
 
 def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):

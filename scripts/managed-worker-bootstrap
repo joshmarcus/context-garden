@@ -11,6 +11,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import tarfile
 import urllib.request
@@ -28,9 +29,13 @@ def fetch(url):
 
 
 CODEX_VERSION = "0.153.4"
-CODEX_ARCHIVE_SHA256 = "f479424eca092484dc40d87ae28c44f4cc40234a60045d6131e493800d814a30"
+CODEX_ARCHIVE_SHA256 = "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821"
 CODEX_ARCHIVE_URL = ("https://github.com/openai/codex/releases/download/rust-v" + CODEX_VERSION
-                     + "/codex-x86_64-unknown-linux-musl.tar.gz")
+                     + "/codex-package-x86_64-unknown-linux-musl.tar.gz")
+CODEX_PACKAGE_FILES = {
+    "bin/codex", "bin/codex-code-mode-host", "codex-package.json",
+    "codex-path/rg", "codex-resources/bwrap", "codex-resources/zsh/bin/zsh",
+}
 GITHUB_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 
@@ -57,18 +62,45 @@ def production_files(secret):
     }
 
 
-def install_codex(destination=Path("/usr/local/bin/codex")):
+def install_codex(destination=Path("/usr/local/bin/codex"), package_root=None):
+    package_root = package_root or Path("/opt") / ("codex-" + CODEX_VERSION)
     data = fetch(CODEX_ARCHIVE_URL)
     if hashlib.sha256(data).hexdigest() != CODEX_ARCHIVE_SHA256:
         raise ValueError("Codex archive checksum mismatch")
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        member = archive.getmember("codex-x86_64-unknown-linux-musl")
-        if not member.isfile():
-            raise ValueError("Codex archive has no regular executable")
-        with archive.extractfile(member) as binary:
-            path = destination
-            path.write_bytes(binary.read())
-            path.chmod(0o755)
+        members = archive.getmembers()
+        if any(not (member.isfile() or member.isdir()) for member in members):
+            raise ValueError("Codex package must contain regular executable files")
+        regular = {member.name: member for member in members if member.isfile()}
+        if set(regular) != CODEX_PACKAGE_FILES or len(regular) != sum(m.isfile() for m in members):
+            raise ValueError("Codex package is incomplete or has unexpected files")
+        with archive.extractfile(regular["codex-package.json"]) as manifest_file:
+            manifest = json.load(manifest_file)
+        if manifest != {
+            "layoutVersion": 1, "version": CODEX_VERSION, "target": "x86_64-unknown-linux-musl",
+            "variant": "codex", "entrypoint": "bin/codex",
+            "resourcesDir": "codex-resources", "pathDir": "codex-path",
+        }:
+            raise ValueError("Codex package manifest mismatch")
+        # Preserve the vendor layout: Codex discovers its tool host and resources here.
+        # The bootstrap's private umask must not make vendor directories root-only.
+        for name, member in regular.items():
+            path = package_root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            parent = path.parent
+            while parent.is_relative_to(package_root):
+                parent.chmod(0o755)
+                parent = parent.parent
+            with archive.extractfile(member) as binary, path.open("wb") as output:
+                shutil.copyfileobj(binary, output)
+            path.chmod(0o444 if name.endswith(".json") else 0o555)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    for link, target in (
+        (destination, package_root / "bin/codex"),
+        (destination.with_name("codex-code-mode-host"), package_root / "bin/codex-code-mode-host"),
+    ):
+        link.unlink(missing_ok=True)
+        link.symlink_to(target.resolve())
     actual = subprocess.check_output([str(path), "--version"], text=True).strip()
     if actual != "codex-cli " + CODEX_VERSION:
         raise ValueError("installed Codex version mismatch")

@@ -207,7 +207,11 @@ def register(app: FastAPI, site: Site) -> None:
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
                 try:
-                    scheduler_repo = Path(configured_repo)
+                    source = str(configured_repo)
+                    scheduler_repo = gitops.ensure_repo(
+                        source if "://" in source or source.startswith("git@") else repo_path,
+                        hub.store.config.repos_dir,
+                    )
                     gitops.fetch(scheduler_repo)
                     run.start_head = gitops.remote_head(scheduler_repo, run.branch)
                 except (AttributeError, gitops.GitError):
