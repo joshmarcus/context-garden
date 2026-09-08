@@ -849,7 +849,12 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     if not source.is_dir():
         return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    # This renderer is deliberately sourced wholly from the checkout under review.  In
+    # particular, a pull-based worker may have been launched with a controller-local
+    # PYTHONPATH that does not exist (or is not traversable) on the independent host.
+    # Retaining that path can make Python fail while resolving modules even though the
+    # checkout's source is first.
+    env["PYTHONPATH"] = str(source)
     proc = subprocess.run(
         [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
          json.dumps(spec.get("pages") or [])],
