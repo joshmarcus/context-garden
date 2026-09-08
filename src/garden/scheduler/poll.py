@@ -48,7 +48,7 @@ class PollMixin:
         # A configured CI analyser implies that a rollup is expected.  An absent rollup is
         # an operator prerequisite, not an owner review decision; leave unconfigured CI
         # alone so repositories that do not publish checks keep their normal review flow.
-        st["ci_missing"] = bool(self.cfg.get("checks.ci", []) and not pr.checks)
+        st["ci_missing"] = bool(self._check_settings(task, "ci")["specs"] and not pr.checks)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
@@ -100,7 +100,7 @@ class PollMixin:
             st["ci_failed_at"] = pr.updated_at
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
-            specs = list(self.cfg.get("checks.ci", []) or [])
+            specs = self._check_settings(task, "ci")["specs"]
             if specs:
                 # The CI analyser runs as a detached check run, reaped a tick later (CG-182): the
                 # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
