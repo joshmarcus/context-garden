@@ -108,6 +108,7 @@ def register(app: FastAPI, site: Site) -> None:
             decision_card=decision_card_view(t, st, rs),
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
+            manual_runner=(t.runner or s.config.product_runner(t.product)) == "manual",
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
             trial_view=trial_view,

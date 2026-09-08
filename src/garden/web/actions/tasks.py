@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -120,6 +121,19 @@ def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str
     return f"{t.id} claimed. Open the assigned task packet to begin."
 
 
+@action("finish-manual")
+def finish_manual(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    """Finish through the scheduler's guarded manual-session path."""
+    try:
+        result = json.loads(note)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("manual result must be valid JSON") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("manual result must be a JSON object")
+    sched.finish_manual(t, result)
+    return f"{t.id} manual session finished."
+
+
 @action("recover")
 def recover(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.delegate_recovery(t)
@@ -142,6 +156,9 @@ def resume(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 @action("done")
 def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    run = sched.runs.latest(t.id)
+    if not sched.runner_for(t).detached and run is not None and run.status == "running":
+        raise RuntimeError("finish the claimed manual session instead of marking this task done")
     sched.mark_done(t, note or "marked done without merging (web)", force=True)
 
 
