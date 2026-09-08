@@ -487,6 +487,9 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
+    assert "python" not in ui
+    assert 'PYTHONPATH="$GARDEN_EXEC_ROOT/src" python3 -m garden.walkthrough' in ui["command"]
+    assert "'[\"inbox\"]'" in ui["command"]
     assert "worktree" not in ui
     assert ui["out_dir"].startswith("../")
     assert "garden_root" not in ui
