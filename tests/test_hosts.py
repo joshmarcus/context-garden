@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import datetime as dt
+import json
 from dataclasses import replace
 
 import pytest
 
 from garden.hosts import (
+    Enrollment,
     EnvironmentProfile,
     HostLifecycle,
     HostState,
     JsonStateStore,
     PoolDeclaration,
+    ScaleOperation,
+    durable_worker_readiness,
     pool_from_dict,
 )
 from garden.hosts.ec2 import OPERATION_TAG, OWNER_TAG, POOL_TAG, EC2Provider
@@ -327,3 +332,115 @@ def test_endpoint_bootstrap_requires_prebuilt_contract():
     from garden.hosts.models import HostDeclaration
     with pytest.raises(ValueError, match="verified prebuilt AMI"):
         EC2Provider._user_data(HostDeclaration("host", "op", pool()))
+
+
+class Enrollments:
+    def __init__(self, values=None):
+        self.values = values or {}
+        self.revoked = []
+
+    def resolve(self, host_id):
+        return self.values.get(host_id, Enrollment())
+
+    def revoke(self, host_id):
+        self.revoked.append(host_id)
+        return (f"secret:{host_id}",)
+
+
+def ready_enrollment(host_id="workers-0", **changes):
+    return replace(Enrollment(secret_ref=f"secret/{host_id}", model_identity="codex-host",
+                              repository_identity="github-installation",
+                              tailnet_identity="tailscale-tag-worker",
+                              controller_identity="worker-token"), **changes)
+
+
+def test_scale_operation_resumes_missing_and_expired_enrollment_without_duplicates(tmp_path):
+    provider = FakeProvider()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "lifecycle.json"))
+    enrollments = Enrollments({"workers-0": ready_enrollment()})
+    def clock():
+        return dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "workers-scale.json", enrollments, now=clock)
+    requested = pool(enabled=True, desired=2, maximum=2,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    deadline = dt.datetime(2026, 9, 9, tzinfo=dt.UTC)
+
+    status = operation.request(requested, deadline=deadline, aggregate_spend_limit_usd=80)
+    assert status.desired == 2 and status.missing_setup == {
+        "workers-1": ("scoped bootstrap secret", "dedicated model identity",
+                      "repository installation/key identity", "tag-limited tailnet enrollment",
+                      "scoped controller enrollment")}
+    assert operation.continue_(requested).healthy == 1
+    enrollments.values["workers-1"] = ready_enrollment("workers-1",
+        model_expires_at="2026-09-07T00:00:00+00:00")
+    assert operation.continue_(requested).missing_setup["workers-1"] == (
+        "renew expired model identity",)
+    enrollments.values["workers-1"] = ready_enrollment("workers-1",
+        model_expires_at="2026-09-10T00:00:00+00:00")
+    assert operation.continue_(requested).healthy == 2
+    assert operation.continue_(requested).healthy == 2
+    assert provider.provision_calls == 2
+
+
+def test_scale_partial_bootstrap_failure_preserves_ready_sibling_and_cleanup(tmp_path):
+    provider = FakeProvider()
+    def checks(host, _pool):
+        return (host.host_id == "workers-0",
+                "durable real-task result returned" if host.host_id == "workers-0"
+                else "pinned bootstrap failed")
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"),
+                              health_check=checks)
+    enrollments = Enrollments({f"workers-{slot}": ready_enrollment(f"workers-{slot}")
+                               for slot in range(2)})
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "pool-scale.json", enrollments,
+                               now=lambda: now)
+    requested = pool(enabled=True, desired=2, maximum=2,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    operation.request(requested, deadline=now + dt.timedelta(hours=1))
+
+    result = operation.continue_(requested)
+    assert result.healthy == 1
+    assert any(host.state == HostState.TERMINATED for host in result.hosts)
+    cleaned = operation.continue_(replace(requested, desired=0))
+    assert cleaned.healthy == 0
+    assert enrollments.revoked == ["workers-0", "workers-1"]
+
+
+def test_scale_deadline_and_aggregate_budget_survive_restart(tmp_path):
+    provider = FakeProvider(hourly_usd=1)
+    state = tmp_path / "pool-scale.json"
+    lifecycle_state = tmp_path / "life.json"
+    enrollments = Enrollments({"workers-0": ready_enrollment()})
+    before = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    requested = pool(enabled=True, desired=1, estimated_runtime_hours=2, spend_limit_usd=10,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    first = ScaleOperation(HostLifecycle({"fake": provider}, JsonStateStore(lifecycle_state)),
+                           state, enrollments, now=lambda: before)
+    with pytest.raises(ValueError, match="aggregate"):
+        first.request(requested, deadline=before + dt.timedelta(hours=1),
+                      aggregate_spend_limit_usd=1)
+    first.request(requested, deadline=before + dt.timedelta(hours=1),
+                  aggregate_spend_limit_usd=80)
+    assert first.continue_(requested).healthy == 1
+    after = before + dt.timedelta(hours=2)
+    restarted = ScaleOperation(HostLifecycle({"fake": provider}, JsonStateStore(lifecycle_state)),
+                               state, enrollments, now=lambda: after)
+    assert restarted.continue_(requested).healthy == 0
+    assert provider.destroy_calls == [("fake-1", True)]
+
+
+def test_production_readiness_requires_matching_pinned_durable_task_result(tmp_path):
+    check = durable_worker_readiness(tmp_path / ".garden")
+    host = __import__("garden.hosts", fromlist=["HostFacts"]).HostFacts(
+        "workers-0", "i-123", "op", HostState.BOOTSTRAPPING, "ami-pinned123", "0.1.0+abcdef")
+    assert check(host, pool())[0] is None
+    run = tmp_path / ".garden/runs/CG-1/run-1"
+    run.mkdir(parents=True)
+    (run / "host_facts.json").write_text(json.dumps({
+        "provider_id": "i-123", "profile_version": "1.0.0",
+        "bootstrap_version": "0.1.0+abcdef", "source_head": "1.0.0"}))
+    (run / "run.json").write_text(json.dumps({
+        "run_id": "run-1", "status": "done", "finished_at": "2026-09-08T12:00:00Z"}))
+    healthy, detail = check(host, pool())
+    assert healthy is True and "run-1" in detail

@@ -7,7 +7,7 @@ import json
 import os
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .models import (
@@ -52,7 +52,7 @@ class HostLifecycle:
         providers: dict[str, HostProvider],
         state: JsonStateStore,
         policy: PolicyResolver | None = None,
-        health_check: Callable[[HostFacts, PoolDeclaration], tuple[bool, str]] | None = None,
+        health_check: Callable[[HostFacts, PoolDeclaration], tuple[bool | None, str]] | None = None,
         retry_attempts: int = 3,
         retry_delay: Callable[[float], None] = time.sleep,
     ):
@@ -100,7 +100,14 @@ class HostLifecycle:
 
     def _declaration(self, pool: PoolDeclaration, slot: int) -> HostDeclaration:
         operation = self._operation_id(pool, slot)
-        return HostDeclaration(host_id=f"{pool.name}-{slot}", operation_id=operation, pool=pool)
+        host_id = f"{pool.name}-{slot}"
+        # A reference template gives every host an independently revocable enrollment
+        # secret without ever putting its value in lifecycle state or launch arguments.
+        secret_ref = pool.profile.enrollment_secret_ref.replace("{host_id}", host_id)
+        declaration_pool = replace(
+            pool, profile=replace(pool.profile, enrollment_secret_ref=secret_ref)
+        )
+        return HostDeclaration(host_id=host_id, operation_id=operation, pool=declaration_pool)
 
     def _available_slots(self, pool: PoolDeclaration, hosts: list[HostFacts]) -> list[int]:
         """Return the lowest stable slots not occupied by discovered hosts."""
@@ -234,7 +241,9 @@ class HostLifecycle:
                 HostState.READY,
             }:
                 healthy, detail = self.health_check(host, pool)
-                if not healthy:
+                if healthy is None:
+                    host = HostFacts(**{**asdict(host), "detail": detail})
+                elif not healthy:
                     host = HostFacts(
                         **{**asdict(host), "state": HostState.FAILED, "detail": detail}
                     )
