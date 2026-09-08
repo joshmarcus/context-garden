@@ -98,7 +98,8 @@ is no shell interpolation. Exit status, stdout and stderr remain byte-exact in
 another approved transport, but it is always launched by the controller and does not require
 one acquired host to connect to another.
 
-The actions are `inspect`, `inspect-one`, `acquire`, `ready`, `release`, `start`, and `retire`.
+The core actions are `inspect`, `inspect-one`, `acquire`, `ready`, `release`, `start`, and
+`retire`; host-local admission adds the actions documented below.
 `acquire` receives the stable logical host and operation aliases and may return
 `provisioning`; later reconciliation discovers the same operation rather than submitting a
 duplicate. `ready` is explicitly read-only and receives the configured workspace, exact
@@ -113,3 +114,28 @@ admit work. Consumers call it before counting or dispatching a task attempt. Aft
 `attach_run()` records the process identity. `release()` stops a reusable host and clears its
 lease; `cancel_acquisition()` clears an unlaunched reservation, `orphaned()` exposes terminal
 process leases for inspection, and `destroy()` remains the explicit retirement boundary.
+
+### Host-local resource and capability admission
+
+Callers that need resource routing pass `HostRequirements` to `acquire_ready()`. The command
+wrapper then receives an `admit` action after checkout readiness. The request names the
+activity (`work`, setup, base probe, check, or review), logical host class and environment,
+required capabilities, memory and disk headroom, whether it consumes heavy capacity, probe
+maximum age, and lease duration. These names are portable aliases; physical host identifiers
+and connection details do not enter shared evidence.
+
+`admit` is the authority for both measurement and leasing. It must atomically compare a fresh
+host-local probe with the request and reserve the requested capacity before returning. Its
+response contains `eligible`, `measured_at`, host class/environment, capabilities,
+`memory_available_mib`, `disk_free_gib`, `lease_id`, `lease_expires_at`, and a safe `detail`.
+Garden independently rejects stale or future probes, mismatched routing, missing capabilities,
+insufficient headroom, and missing or expired leases. Controller memory is never consulted for
+this decision. A rejected host is reported by its logical host alias.
+
+The wrapper's lease store is the cross-controller authority: all activities use the same
+host-local capacity and a repeated controller cannot manufacture another heavy slot.
+`renew-admission` receives the provider and lease IDs; an unknown, changed, or expired lease is
+an `EnvironmentStop`. `release-admission` must confirm `{"released": true}` and is called by
+`release()` (and by `cancel_acquisition(..., pool=...)` for an admitted but unlaunched run).
+These stops are environment-owned and happen before task-attempt accounting. Callers renew
+through setup and execution and treat lease loss as recoverable host unavailability.
