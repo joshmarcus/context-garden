@@ -37,7 +37,7 @@ def _sandbox_denial(*texts: str) -> bool:
 # only writer of those four (CG-232).
 AGAIN_RESET_KEYS = (
     "pr_number", "pr_state", "head_sha", "pr_draft", "pr_base", "stack_parent",
-    "review_run", "last_review", "review_rounds", "review_decision",
+    "review_run", "last_review", "last_review_run", "last_review_head", "review_rounds", "review_decision",
     "checks", "failed_checks", "automerged",
     "needs_human", "decision",
     "pending_feedback", "pending_feedback_easy", "pending_feedback_rebase",
