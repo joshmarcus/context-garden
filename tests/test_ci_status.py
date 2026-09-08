@@ -10,6 +10,13 @@ from garden.ci_status import (
     worker_check_status,
 )
 from garden.github import PRInfo
+from garden.validation import POLICY_SOURCE_SHA
+
+
+def receipt(source_sha="new", command="pytest -q", exit_code=0):
+    return {"source_sha": source_sha, "command": command, "exit_code": exit_code,
+            "log_location": "/logs/1", "policy": {"source_sha": POLICY_SOURCE_SHA},
+            "source_dirty": "", "source_changed": False}
 
 
 def test_github_status_fails_closed_for_missing_unknown_and_failure():
@@ -25,16 +32,13 @@ def test_github_status_fails_closed_for_missing_unknown_and_failure():
 def test_worker_check_is_exact_head_and_authoritative(tmp_path):
     result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "1" / "result.json"
     result.parent.mkdir(parents=True)
-    result.write_text(json.dumps({"source_sha": "old", "command": "pytest -q",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+    result.write_text(json.dumps(receipt(source_sha="old")))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.state == "mismatched" and status.stale and not status.green
 
-    result.write_text(json.dumps({"source_sha": "new", "command": "pytest -q",
-                                  "exit_code": 1, "log_location": "/logs/1"}))
+    result.write_text(json.dumps(receipt(exit_code=1)))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "failure"
-    result.write_text(json.dumps({"source_sha": "new", "command": "pytest -q",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+    result.write_text(json.dumps(receipt()))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.green and status.exists_for_sha and status.evidence_url == "/runs/CG-1/run"
 
@@ -44,8 +48,7 @@ def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
     result.parent.mkdir(parents=True)
     result.write_text("not json")
     assert worker_check_status(tmp_path, "CG-1", "new", {}).state == "malformed"
-    result.write_text(json.dumps({"source_sha": "new", "command": "focused",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+    result.write_text(json.dumps(receipt(command="focused")))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "ordinary"}).state == "missing"
 
 

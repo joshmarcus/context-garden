@@ -5,6 +5,7 @@ import json
 from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
+from garden.validation import POLICY_SOURCE_SHA
 from tests.scheduler.conftest import statuses
 
 
@@ -317,7 +318,9 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     receipt = work.path / "validations" / "123" / "result.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"source_sha": st["head_sha"], "command": "pytest -q",
-                                   "exit_code": 0, "log_location": str(receipt.parent)}))
+                                   "exit_code": 0, "log_location": str(receipt.parent),
+                                   "source_dirty": "", "source_changed": False,
+                                   "policy": {"source_sha": POLICY_SOURCE_SHA}}))
     rep = sched.tick()
     assert "DM-001(review)" in rep.dispatched
     assert sched.state.get("DM-001")["ci_status"]["green"] is True
