@@ -179,6 +179,8 @@ DEFAULTS: dict[str, Any] = {
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
         "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
+        "recovery_attempts": 2,   # bounded retries for a review that never yields a verdict
+        "recovery_backoff_seconds": 30,  # linear delay before each recovered review admission
     },
     "retro": {
         "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and

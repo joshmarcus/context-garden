@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import secrets
 import shlex
@@ -202,6 +203,9 @@ class ReviewMixin:
                 task.log(f"automated {kind} could not start: {e}")
                 self.store.save(task)
                 rep.errors.append(f"{task.id}: {kind} dispatch failed: {e}")
+                if kind == "review" and not self._verdict_is_moot(task):
+                    self._queue_review_recovery(task, None, f"startup failed: {e}", rep, started=False,
+                                                count_round=bool(item.get("count_round", True)))
                 if kind == "persona" and item.get("required"):
                     self._required_persona_failed(task, str(item["name"]), f"could not start: {e}", rep)
         if deferred:
@@ -320,6 +324,13 @@ class ReviewMixin:
     def _queued_review_can_start(self, task: Task) -> bool:
         """Whether one of a queued task's items can use a newly free review slot."""
         st = self.state.get(task.id)
+        retry_at = str((st.get("review_recovery") or {}).get("retry_at") or "")
+        if retry_at:
+            try:
+                if dt.datetime.now(dt.UTC) < dt.datetime.fromisoformat(retry_at):
+                    return False
+            except ValueError:
+                pass
         if st.get("check_run"):
             return False
         required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
@@ -344,6 +355,7 @@ class ReviewMixin:
         # Drain them before ready work starts, strict by task priority.  A task whose
         # own gate is held is requeued and does not prevent the next eligible task from
         # using the slot; equal-priority tasks are deterministic by order then id.
+        self._audit_review_continuations(tasks, rep)
         for task in sorted(tasks.values(), key=dispatch_sort_key):
             if self.review_slots_free() <= 0:
                 break
@@ -353,8 +365,41 @@ class ReviewMixin:
             pending = list(st.get("pending_reviews") or [])
             if not pending:
                 continue
+            if not self._queued_review_can_start(task):
+                continue
             st["pending_reviews"] = []
             self._dispatch_or_defer_reviews(task, pending, rep, from_pending=True)
+
+    def _audit_review_continuations(self, tasks: dict[str, Task], rep: TickReport) -> None:
+        """Restore a reviewable current head that has neither a verdict nor a continuation."""
+        if not bool(self.cfg.get("review.enabled", True)):
+            return
+        for task in tasks.values():
+            if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
+                continue
+            st = self.state.get(task.id)
+            if st.get("review_run") or st.get("pending_reviews") or st.get("needs_human"):
+                continue
+            head = str(st.get("head_sha") or "")
+            current_verdict = any(
+                str((run.env_snapshot or {}).get("review_head") or "") == head and bool(run.result)
+                for run in self.runs.runs_for(task.id) if run.mode == "review"
+            ) if head else bool(st.get("last_review"))
+            product = self.cfg.product(task.product)
+            minimum = int(product.get("automerge_min_review_rounds", 2 if product.get("provides_tool") else 1) or 0)
+            missing_additional = current_verdict and int(st.get("review_rounds", 0)) < minimum
+            if current_verdict and not missing_additional:
+                continue
+            if not self._review_round_pending(st):
+                continue
+            self._queue_pending_reviews(st, [{"kind": "review", "count_round": True}])
+            st["review_recovery"] = {"head": head, "attempts": 0,
+                                     "limit": int(self.cfg.get("review.recovery_attempts", 2) or 0),
+                                     "retry_at": "", "reason": "reviewable head lost every continuation",
+                                     "owner": "scheduler", "started": False, "last_run": ""}
+            self.events.emit("review_recovery", task.id, head=head, attempt=0,
+                             reason="reviewable head lost every continuation")
+            rep.transitions.append(f"{task.id} missing review continuation restored")
 
     def _supersede_running_review(self, task: Task) -> None:
         """A second review dispatched for this task (a person pressed "one more review"
@@ -395,9 +440,6 @@ class ReviewMixin:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
-        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
-        runner = self.runner_for(task, runner_name, harness_name)
-        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         self._supersede_running_review(task)
         base = self.base_for(task)
         branch = task.branch or task.default_branch()
@@ -505,6 +547,13 @@ class ReviewMixin:
         replay_nonce = str(replay.get("nonce") or "") if needs_interaction else ""
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
+        # Controller-owned captures and replay manifests are local paths. Keep their
+        # reviewer local rather than handing a remote worker evidence it cannot inspect.
+        controller_evidence = bool(capture_paths or needs_interaction)
+        runner_name = ("remote" if self.runner_for(task).name == "remote" and not controller_evidence
+                       else "local")
+        runner = self.runner_for(task, runner_name, harness_name)
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         run = (self.runs.new_run(task.id, "remote", mode="review")
                if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
@@ -545,7 +594,14 @@ class ReviewMixin:
                                      "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
-        runner.start(run, wt, text)
+        try:
+            runner.start(run, wt, text)
+        except Exception as exc:
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = f"startup failed before execution was confirmed: {exc}"
+            run.save()
+            raise
         st = self.state.get(task.id)
         st["review_run"] = run.run_id
         st.setdefault("review_heads", []).append(run.env_snapshot["review_head"])
@@ -584,6 +640,50 @@ class ReviewMixin:
         st.pop("needs_human", None)
         return self.dispatch_review(task)
 
+    @staticmethod
+    def _review_execution_started(run: Run) -> bool:
+        """Classify execution from claim/process/output evidence, never worktree age."""
+        if run.runner == "remote":
+            return bool(run.claimed_at or run.host or (run.path / "remote_result.json").exists()
+                        or (run.path / "stdout.json").exists())
+        return bool(run.pid is not None or (run.path / "stdout.json").exists()
+                    or (run.path / "final.md").exists())
+
+    def _queue_review_recovery(self, task: Task, run: Run | None, reason: str, rep: TickReport,
+                               *, started: bool, count_round: bool) -> bool:
+        """Retain one head-bound review continuation, or stop after bounded retries."""
+        st = self.state.get(task.id)
+        old = st.get("review_recovery") or {}
+        head = str(((run.env_snapshot if run else {}) or {}).get("review_head") or
+                   old.get("head") or st.get("head_sha") or "")
+        attempts = int(old.get("attempts", 0)) + 1 if old.get("head") == head else 1
+        limit = int(self.cfg.get("review.recovery_attempts", 2) or 0)
+        st["review_run"] = ""
+        if run is not None and not started and count_round:
+            st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
+        if attempts > limit:
+            st.pop("pending_reviews", None)
+            message = f"automatic review recovery exhausted after {limit} attempt(s): {reason}"
+            self._set_needs_human(task, "review_recovery_exhausted", message)
+            task.log(message)
+            self.store.save(task)
+            rep.transitions.append(f"{task.id} review recovery exhausted")
+            self.state.save()
+            return True
+        delay = float(self.cfg.get("review.recovery_backoff_seconds", 30) or 0) * attempts
+        retry_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=delay)).isoformat()
+        st["review_recovery"] = {"head": head, "attempts": attempts, "limit": limit,
+                                 "retry_at": retry_at, "reason": reason, "owner": "scheduler",
+                                 "started": started, "last_run": run.run_id if run else ""}
+        self._queue_pending_reviews(st, [{"kind": "review", "count_round": count_round and not started}])
+        task.log(f"automatic review recovery {attempts}/{limit} queued for the current head: {reason}")
+        self.store.save(task)
+        self.events.emit("review_recovery", task.id, run=run.run_id if run else "", head=head,
+                         attempt=attempts, limit=limit, started=started, reason=reason)
+        rep.transitions.append(f"{task.id} review recovery queued ({attempts}/{limit})")
+        self.state.save()
+        return True
+
     def reap_review(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
         run_id = st.get("review_run")
@@ -591,8 +691,8 @@ class ReviewMixin:
             return False
         run = next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
         if run is None:
-            st["review_run"] = ""
-            return False
+            return self._queue_review_recovery(task, None, "review run record is missing", rep,
+                                               started=True, count_round=False)
         if self._verdict_is_moot(task) or not self._review_evidence_is_current(task, run):
             return self._close_obsolete_review(task, run, rep)
         if run.status != "running":
@@ -604,14 +704,36 @@ class ReviewMixin:
             # run_finished (both already happened before the crash); otherwise drop the pointer.
             # This is what lets a restart recover a review the old process reaped but never
             # persisted, instead of needing a fresh review (CG-198).
-            if st.get("last_review_run") == run_id or not run.result:
+            if st.get("last_review_run") == run_id:
                 st["review_run"] = ""
                 return False
+            if not run.result:
+                return self._queue_review_recovery(
+                    task, run, run.error or run.status, rep,
+                    started=self._review_execution_started(run),
+                    count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+                )
             return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
             return False
         review: dict[str, Any] = {}
+        if run.status == "timeout":
+            if self._review_execution_started(run):
+                collected = runner.collect(run)
+                run.usage = collected.get("usage") or {}
+                run.cost_usd = collected.get("cost_usd")
+                run.model = str(collected.get("model") or run.model)
+                run.error = collected.get("error") or run.error
+                final = collected.get("final_text") or ""
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
+                run.save()
+            return self._queue_review_recovery(
+                task, run, run.error or "timed out", rep,
+                started=self._review_execution_started(run),
+                count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+            )
         if run.status != "timeout":
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()
@@ -740,6 +862,8 @@ class ReviewMixin:
                              cost_usd=run.cost_usd, usage=run.usage, status=run.status,
                              obsolete=True)
         st["review_run"] = ""
+        st.pop("review_recovery", None)
+        st.pop("pending_reviews", None)
         note = "review verdict discarded because the task or reviewed head moved on"
         run.error = f"{run.error} ({note})" if run.error else note
         run.save()
@@ -777,6 +901,7 @@ class ReviewMixin:
         skips the run_finished emit, which the first pass already made)."""
         review = enforce_criteria_verdict(review)
         st = self.state.get(task.id)
+        st.pop("review_recovery", None)
         st["review_run"] = ""
         pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
