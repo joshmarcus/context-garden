@@ -188,12 +188,19 @@ def test_claim_preserves_scp_repository_over_served_http(garden, monkeypatch, re
         if destination := os.environ.get("GARDEN_SCP_CLAIM_INTERACTION_ARTIFACT"):
             artifact = Path(destination)
             artifact.parent.mkdir(parents=True, exist_ok=True)
+            head = gitops.git("rev-parse", "HEAD", cwd=Path.cwd()).strip()
             artifact.write_text(json.dumps({
-                "source_head": gitops.git("rev-parse", "HEAD", cwd=Path.cwd()).strip(),
+                "head": head,
+                "source_head": head,
                 "test": "tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
                 "transport": "real TCP HTTP", "environment": "disposable",
                 "command": "pytest tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
                 "reference": reference, "events": events,
+                "states": {
+                    "affected": "200 claim returns the configured remote unchanged",
+                    "empty": "204 after the queued run is claimed",
+                    "failure_recovery": "403 unknown bearer followed by a successful valid-bearer claim",
+                },
             }, indent=2) + "\n")
     finally:
         server.should_exit = True
