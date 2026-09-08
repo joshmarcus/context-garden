@@ -916,12 +916,17 @@ def triage(
     ready: bool = typer.Option(False, help="The draft PR is good enough for review: mark it ready"),
     changes: str = typer.Option("", help="Send it back with this feedback (a revise run follows)"),
     note: str = typer.Option("", help="Optional note for the log"),
+    supersede_review: bool = typer.Option(
+        False, "--supersede-review",
+        help="Explicitly replace the full automated review with --changes instead of supplementing it",
+    ),
 ):
     """Your first look at a draft PR: mark it ready for review, or send it back."""
     store = _store()
     t = _task(store, task_id)
     try:
-        _scheduler(store).triage(t, ready=ready, changes=changes, note=note)
+        _scheduler(store).triage(
+            t, ready=ready, changes=changes, note=note, supersede_review=supersede_review)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
