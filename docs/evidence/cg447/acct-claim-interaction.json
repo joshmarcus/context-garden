@@ -1,0 +1,46 @@
+{
+  "source_head": "87b983cc8174c5596efee67db0be2a2a80f0b77d",
+  "test": "tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+  "transport": "real TCP HTTP",
+  "environment": "disposable",
+  "command": "pytest tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+  "reference": "acct-1234@forge-one.test:team/repo.git",
+  "events": [
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "POST",
+      "url": "http://127.0.0.1:43057/api/runs/claim",
+      "status_code": 403,
+      "observed": "unknown bearer did not claim the queued run"
+    },
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:43057/api/runs/claim",
+      "status_code": 200,
+      "observed": "claim returned the exact configured remote acct-1234@forge-one.test:team/repo.git"
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:43057/api/runs/claim",
+      "status_code": 200,
+      "observed": "valid bearer claimed the run rejected for the unknown bearer"
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "POST",
+      "url": "http://127.0.0.1:43057/api/runs/claim",
+      "status_code": 204,
+      "observed": "no additional compatible queued run was available"
+    }
+  ]
+}
