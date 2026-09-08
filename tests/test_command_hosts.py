@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import replace
+
+import pytest
+
+from garden.hosts import (
+    CommandProvider,
+    CommandResult,
+    CommandTransport,
+    EnvironmentProfile,
+    EnvironmentStop,
+    HostLifecycle,
+    JsonStateStore,
+    PoolDeclaration,
+)
+
+
+class Wrapper:
+    def __init__(self):
+        self.hosts = []
+        self.calls = []
+        self.ready = True
+
+    def run(self, argv, stdin, *, timeout_seconds):
+        action = argv[-1]
+        request = json.loads(stdin)
+        self.calls.append((tuple(argv), request, timeout_seconds))
+        if action == "inspect":
+            value = self.hosts
+        elif action == "acquire":
+            value = {
+                **request,
+                "provider_id": "provider-1",
+                "state": "ready",
+            }
+            self.hosts[:] = [value]
+        elif action == "ready":
+            value = {
+                "workspace": self.ready,
+                "revision": self.ready,
+                "provisioned": self.ready,
+                "harness_login": self.ready,
+                "smoke_probe": self.ready,
+                "detail": "verified" if self.ready else "checkout reconciliation failed",
+            }
+        elif action == "retire":
+            value = {**self.hosts[0], "state": "terminated"}
+            self.hosts[:] = [value]
+        elif action == "release":
+            value = {**self.hosts[0], "state": "stopped"}
+            self.hosts[:] = [value]
+        else:
+            value = self.hosts[0]
+        output = json.dumps(value).encode()
+        return CommandResult(tuple(argv), stdin, output, b"", 0)
+
+
+def command_pool(**changes):
+    profile = EnvironmentProfile(
+        name="worker",
+        version="v1",
+        image="image-v1",
+        bootstrap_version="tools-v1",
+        cpu=2,
+        memory_mib=4096,
+        disk_gib=20,
+    )
+    value = PoolDeclaration(
+        name="workers",
+        owner="team",
+        purpose="worker",
+        provider="command",
+        profile=profile,
+        enabled=True,
+        desired=1,
+        maximum=1,
+        provider_options={"command": ["host-wrapper", "--profile", "worker"], "timeout_seconds": 7},
+    )
+    return replace(value, **changes)
+
+
+def test_command_transport_preserves_argv_stdin_exit_and_output(tmp_path):
+    script = tmp_path / "wrapper.py"
+    script.write_text(
+        "import sys\n"
+        "data=sys.stdin.buffer.read()\n"
+        "sys.stdout.buffer.write(data+b'\\x00out')\n"
+        "sys.stderr.buffer.write(b'err\\xff')\n"
+        "raise SystemExit(23)\n"
+    )
+    argv = [sys.executable, str(script), "argument with spaces"]
+    result = CommandTransport().run(argv, b"input\n", timeout_seconds=2)
+
+    assert result.argv == tuple(argv)
+    assert result.stdin == b"input\n"
+    assert result.stdout == b"input\n\x00out"
+    assert result.stderr == b"err\xff"
+    assert result.exit_code == 23
+
+
+def test_acquisition_is_durable_idempotent_and_warm_reuse_waits_for_terminal_run(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(path), retry_delay=lambda _: None
+    )
+    spec = command_pool()
+
+    first = lifecycle.acquire_ready(
+        spec, workspace="/work/product", revision="abc123", harness="codex",
+        process_terminal=lambda _: True,
+    )
+    lifecycle.attach_run(first.provider_id, "run-1")
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        lifecycle.acquire_ready(
+            spec, workspace="/work/product", revision="abc123", harness="codex",
+            process_terminal=lambda _: False,
+        )
+
+    restarted = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    reused = restarted.acquire_ready(
+        spec, workspace="/work/product", revision="def456", harness="codex",
+        process_terminal=lambda run_id: run_id == "run-1",
+    )
+
+    assert reused.provider_id == first.provider_id
+    assert [call[0][-1] for call in wrapper.calls].count("acquire") == 1
+    ready_request = [call[1] for call in wrapper.calls if call[0][-1] == "ready"][-1]
+    assert ready_request == {
+        "provider_id": "provider-1",
+        "workspace": "/work/product",
+        "revision": "def456",
+        "harness": "codex",
+        "read_only": True,
+    }
+    assert "provider-1" not in restarted.orphaned(process_terminal=lambda _: False)
+
+
+def test_readiness_stop_recovers_without_creating_another_host_and_can_cancel_or_retire(tmp_path):
+    wrapper = Wrapper()
+    wrapper.ready = False
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    spec = command_pool()
+    kwargs = {
+        "workspace": "/work/product",
+        "revision": "abc123",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    with pytest.raises(EnvironmentStop, match="checkout reconciliation failed"):
+        lifecycle.acquire_ready(spec, **kwargs)
+    wrapper.ready = True
+    host = lifecycle.acquire_ready(spec, **kwargs)
+    lifecycle.attach_run(host.provider_id, "terminal-run")
+    assert lifecycle.orphaned(process_terminal=lambda _: True) == ["provider-1"]
+    lifecycle.cancel_acquisition(host.provider_id)
+    assert lifecycle.orphaned(process_terminal=lambda _: True) == []
+    host = lifecycle.acquire_ready(spec, **kwargs)
+    lifecycle.attach_run(host.provider_id, "finished-run")
+    released = lifecycle.release(spec, host.provider_id)
+    assert released.state.value == "stopped"
+    assert lifecycle.orphaned(process_terminal=lambda _: True) == []
+    lifecycle.start(spec, host.provider_id)
+    retired = lifecycle.destroy(spec, host.provider_id, delete_storage=True)
+
+    assert retired.state.value == "terminated"
+    assert [call[0][-1] for call in wrapper.calls].count("acquire") == 1
+
+
+def test_pool_bounds_and_ttl_retire_expired_host(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    with pytest.raises(ValueError, match="capacity"):
+        lifecycle.plan(command_pool(desired=2))
+    spec = command_pool(maximum_age_minutes=1)
+    host = lifecycle.acquire_ready(
+        spec, workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, now=lambda: 0,
+    )
+    lifecycle.attach_run(host.provider_id, "old-run")
+    with pytest.raises(EnvironmentStop):
+        lifecycle.acquire_ready(
+            spec, workspace="/work", revision="def", harness="codex",
+            process_terminal=lambda _: True, now=lambda: 61,
+        )
+    assert "retire" in [call[0][-1] for call in wrapper.calls]
+    replacement = lifecycle.acquire_ready(
+        spec, workspace="/work", revision="def", harness="codex",
+        process_terminal=lambda _: True, now=lambda: 62,
+    )
+    assert replacement.state.value == "ready"
+    assert [call[0][-1] for call in wrapper.calls].count("acquire") == 2

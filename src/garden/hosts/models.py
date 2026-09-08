@@ -86,6 +86,24 @@ class HostFacts:
 
 
 @dataclass(frozen=True)
+class HostReadiness:
+    """Read-only evidence required before a host may run a process."""
+
+    workspace: bool
+    revision: bool
+    provisioned: bool
+    harness_login: bool
+    smoke_probe: bool
+    detail: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return all(
+            (self.workspace, self.revision, self.provisioned, self.harness_login, self.smoke_probe)
+        )
+
+
+@dataclass(frozen=True)
 class HostPlan:
     pool: str
     enabled: bool
