@@ -141,3 +141,12 @@ def test_wrong_package_manifest_is_rejected_before_install(bootstrap, monkeypatc
     with pytest.raises(ValueError, match="manifest"):
         bootstrap.install_codex(tmp_path / "codex", tmp_path / "package")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_clean_image_bootstrap_includes_full_test_environment():
+    source = (Path(__file__).resolve().parents[1] / "scripts/managed-worker-bootstrap").read_text()
+
+    for package in ("python3-pip", "gh", "make", "libnss3", "libgbm1", "libasound2"):
+        assert f'"{package}"' in source
+    assert '"-m", "playwright", "install", "chromium"' in source
+    assert "Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/garden-worker/browsers" in source
