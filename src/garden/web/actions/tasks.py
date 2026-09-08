@@ -114,6 +114,12 @@ def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor
     sched.retry(t, actor=actor)
 
 
+@action("take")
+def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    sched.take_manual(t)
+    return f"{t.id} claimed. Open the assigned task packet to begin."
+
+
 @action("recover")
 def recover(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.delegate_recovery(t)
