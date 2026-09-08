@@ -809,6 +809,12 @@ class ReapMixin:
                     rep.transitions.append(f"{task.id} -> changes_requested (rebase)")
                 return
             base = self.base_for(task)
+        if worktree.exists():
+            try:
+                run.env_snapshot["review_source_head"] = gitops.head_sha(worktree)
+                run.save()
+            except gitops.GitError:
+                pass
         stalled = False
         diff_h: str | None = None
         body_h: str | None = None

@@ -593,7 +593,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None, plan: dict[str, Any] | None = None,
-                 author_interaction: Any = None, clarify_unverified: list[str] | None = None) -> str:
+                 author_interaction: Any = None, clarify_unverified: list[str] | None = None,
+                 author_source_run: str = "", author_source_head: str = "") -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -665,8 +666,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                         f"request/response manifest at `{interaction_manifest}`.\n\n" if interaction_manifest else "")
                      + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
     if isinstance(author_interaction, dict):
+        provenance = (f"Source author run: `{author_source_run}`\n\n"
+                      f"Source head: `{author_source_head}`\n\n")
         parts.append("## Author's task-specific interaction evidence\n\n"
-                     "Reuse this evidence when its source and affected-flow provenance are valid; "
+                     + provenance
+                     + "Reuse this evidence when its source and affected-flow provenance are valid; "
                      "missing packaging metadata alone is advisory.\n\n```json\n"
                      + json.dumps(author_interaction, indent=2, sort_keys=True) + "\n```\n")
     if checks:

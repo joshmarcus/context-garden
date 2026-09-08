@@ -2032,6 +2032,7 @@ def test_current_task_specific_author_evidence_skips_generic_replay(sched, monke
     head = gitops.head_sha(wt)
     work = _writer_run(sched, task.id, "claude", "sonnet")
     work.result = {"interaction": {**_performed_interaction(head), "affected_flow": "harness-pause"}}
+    work.env_snapshot["review_source_head"] = head
     work.save()
 
     review = sched.dispatch_review(task, work_run=work)
@@ -2040,6 +2041,100 @@ def test_current_task_specific_author_evidence_skips_generic_replay(sched, monke
     assert review.env_snapshot["author_interaction_reused"] is True
     assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
     assert "Author's task-specific interaction evidence" in (review.path / "brief.md").read_text()
+
+
+def test_deferred_review_recovers_exact_external_author_result(sched, monkeypatch):
+    from garden import gitops
+
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    sched.cfg.data["review"]["enabled"] = True
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.com/pull/101"
+    task.status = Status.IN_REVIEW
+    monkeypatch.setattr(sched, "slug_for", lambda *_: "")
+    task.extra["interaction_replay"] = {"affected_flow": "harness-pause"}
+    sched.store.save(task)
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st["head_sha"] = head
+    st["review_rounds"] = 0
+    source = sched.runs.new_run(task.id, "manual", mode="revise")
+    source.harness = "human"
+    source.status = "done"
+    source.result = {
+        "head": head,
+        "pr_title": "External result title",
+        "pr_body": "External result body",
+        "pr_comment": "External operator context retained",
+        "verified": [{"criterion": "exact criterion", "evidence": "external result evidence"}],
+        "pre_flight": [{"item": "external preflight", "status": "pass", "evidence": "recorded"}],
+        "interaction": {**_performed_interaction(head), "affected_flow": "harness-pause"},
+    }
+    source.env_snapshot = {"criteria": ["exact criterion"]}
+    source.save()
+    # Force the real defer path, then drain without the in-memory work_run argument.
+    st["check_run"] = {"run_id": "busy-check"}
+    sched._maybe_review(task, source, TickReport())
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    persisted_source = sched._run_by_id(task, source.run_id)
+    assert persisted_source.env_snapshot["review_source_head"] == head
+    st["check_run"] = {}
+
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    review = sched.runs.latest(task.id)
+    assert review.mode == "review"
+    assert review.env_snapshot["author_source_run"] == source.run_id
+    assert review.env_snapshot["author_source_head"] == head
+    assert review.env_snapshot["author_interaction_reused"] is True
+    brief = (review.path / "brief.md").read_text()
+    assert f"Source author run: `{source.run_id}`" in brief
+    assert f"Source head: `{head}`" in brief
+    assert "External operator context retained" in brief
+    assert "external result evidence" in brief
+    assert "external preflight" in brief
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
+
+
+def test_deferred_review_refuses_stale_author_result(sched, monkeypatch):
+    from garden import gitops
+
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.extra["interaction_replay"] = {"affected_flow": "harness-pause"}
+    sched.store.save(task)
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st["head_sha"] = head
+    stale = sched.runs.new_run(task.id, "manual", mode="revise")
+    stale.status = "done"
+    stale.result = {
+        "head": "0" * 40,
+        "interaction": {**_performed_interaction("0" * 40), "affected_flow": "harness-pause"},
+    }
+    stale.save()
+    st["pending_reviews"] = [{"kind": "review", "count_round": True}]
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    runs = sched.runs.runs_for(task.id)
+    check = next((run for run in reversed(runs) if run.mode == "check"), None)
+    assert check is not None, ([(run.run_id, run.mode, run.status) for run in runs],
+                               rep.dispatched, rep.errors, dict(st))
+    assert submitted
+    assert not sched.state.get(task.id).get("review_run")
+    assert sched._review_source_for_head(task, head) is None
 
 
 def test_declared_affected_replay_module_is_selected_for_remote_author(sched, monkeypatch):
