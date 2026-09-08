@@ -17,7 +17,6 @@ from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
-from ..preflight import capture_infrastructure_reason
 from ..review import (
     ambiguous_unverified,
     enforce_criteria_verdict,
@@ -584,18 +583,23 @@ class ReviewMixin:
             check_results = list((current_check.result or {}).get("checks", []))
         capture_check = current_check or reusable_capture_check
         if capture_check is not None:
-            all_ui_results = [result for result in (capture_check.result or {}).get("checks", [])
-                              if result.get("name") == "ui"]
-            ui_results = [result for result in all_ui_results if result.get("status") == "pass"]
+            indexed_ui_results = [
+                (index, result)
+                for index, result in enumerate((capture_check.result or {}).get("checks", []))
+                if result.get("name") == "ui"
+            ]
+            ui_results = [
+                result for index, result in indexed_ui_results
+                if result.get("status") == "pass"
+                and self._trusted_generated_ui_result(capture_check, index)
+            ]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
             policy = str(plan.get("capture_infrastructure_policy") or "require")
-            trusted_generated_check = bool((capture_check.env_snapshot or {}).get("generated_ui_check"))
-            for result in all_ui_results:
-                reason = capture_infrastructure_reason(
-                    result, policy=policy, trusted_generated_check=trusted_generated_check
-                )
+            for index, result in indexed_ui_results:
+                reason = self._capture_infrastructure_advisory(
+                    capture_check, result, index, policy=policy)
                 if reason:
                     capture_advisories.append({
                         "diagnostic": reason,

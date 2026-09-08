@@ -97,11 +97,6 @@ class CheckRunMixin:
         for item in required_evidence(task.body, task.extra.get("requires")):
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
-            generated_ui_check = any(
-                spec.get("_garden_generated_ui_check") is True
-                and spec.get("python") == "garden.walkthrough:ui_check"
-                for spec in specs
-            )
             try:
                 changed = gitops.diff_names(worktree, base)
             except gitops.GitError as exc:
@@ -125,9 +120,16 @@ class CheckRunMixin:
                                   "changed": changed, "pages": plan["pages"],
                                   "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
                                   "_garden_generated_ui_check": True}]
-                generated_ui_check = True
+            generated_ui_check_indices = [
+                index for index, spec in enumerate(specs)
+                if spec.get("_garden_generated_ui_check") is True
+                and spec.get("python") == "garden.walkthrough:ui_check"
+            ]
             run.env_snapshot["validation_plan"] = plan
-            run.env_snapshot["generated_ui_check"] = generated_ui_check
+            # Results are emitted one-for-one in spec order by the trusted check runner.
+            # Persist the exact generated spec positions: a run-level boolean would let a
+            # sibling check call itself ``ui`` and borrow this trust classification.
+            run.env_snapshot["generated_ui_check_indices"] = generated_ui_check_indices
         run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
@@ -224,17 +226,21 @@ class CheckRunMixin:
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         plan = (run.env_snapshot or {}).get("validation_plan") or {}
         capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
-        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
-        for r in results:
+        for index, r in enumerate(results):
             name = str(r.get("name") or "")
             key = "capture:" if name == "ui" else f"check:{name}"
             if key in evidence:
-                if capture_infrastructure_reason(
-                    r, policy=capture_policy, trusted_generated_check=trusted_generated_check
-                ):
-                    evidence[key] = "advisory"
+                if self._capture_infrastructure_advisory(
+                    run, r, index, policy=capture_policy):
+                    outcome = "advisory"
                 else:
-                    evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
+                    outcome = ("posted" if r.get("status") in ("pass", "passed", "done")
+                               else "failed")
+                # More than one check can report the same display name. Never let a later
+                # passing or advisory result overwrite a sibling's blocking failure.
+                rank = {"queued": 0, "posted": 1, "advisory": 2, "failed": 3}
+                if rank[outcome] >= rank.get(str(evidence.get(key) or "queued"), 0):
+                    evidence[key] = outcome
         cont = dict(info.get("cont") or {})
         # `_dispatch_check_run` needs changed paths only to decide whether to add the UI
         # capture check. It records an inspection error instead of raising; every continuation
@@ -292,16 +298,34 @@ class CheckRunMixin:
                    for result in results)
 
     @staticmethod
+    def _trusted_generated_ui_result(run: Run, index: int) -> bool:
+        """Whether this result position belongs to an exact generated ui_check spec."""
+        raw = (run.env_snapshot or {}).get("generated_ui_check_indices")
+        return (isinstance(raw, list)
+                and index in {value for value in raw
+                              if isinstance(value, int) and not isinstance(value, bool)})
+
+    @staticmethod
+    def _capture_infrastructure_advisory(
+        run: Run, result: dict[str, Any], index: int, *, policy: str,
+    ) -> str:
+        """Classify capture transport failure only for its exact generated check spec."""
+        return capture_infrastructure_reason(
+            result, policy=policy,
+            trusted_generated_check=CheckRunMixin._trusted_generated_ui_result(run, index),
+        )
+
+    @staticmethod
     def _blocking_check_failures(run: Run, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Apply the frozen capture policy without changing any stored check result."""
         plan = (run.env_snapshot or {}).get("validation_plan") or {}
         policy = str(plan.get("capture_infrastructure_policy") or "require")
-        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
+        failed = {id(result) for result in check_failures(results)}
         return [
-            result for result in check_failures(results)
-            if not capture_infrastructure_reason(
-                result, policy=policy, trusted_generated_check=trusted_generated_check
-            )
+            result for index, result in enumerate(results)
+            if id(result) in failed
+            and not CheckRunMixin._capture_infrastructure_advisory(
+                run, result, index, policy=policy)
         ]
 
     def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
@@ -375,16 +399,17 @@ class CheckRunMixin:
         branch, base = cont["branch"], cont["base"]
         stalled = bool(cont.get("stalled"))
         worker_result = worker_run.result if worker_run is not None else self._last_worker_result(task)
-        ui = [item for item in results if item.get("name") == "ui"]
-        captures = [str(path) for item in ui for path in item.get("captures", [])]
+        indexed_ui = [(index, item) for index, item in enumerate(results)
+                      if item.get("name") == "ui"]
+        trusted_ui = [item for index, item in indexed_ui
+                      if self._trusted_generated_ui_result(run, index)]
+        captures = [str(path) for item in trusted_ui for path in item.get("captures", [])]
         plan = (run.env_snapshot or {}).get("validation_plan") or {}
         capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
-        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
         capture_advisories = {
-            id(item): reason for item in ui
-            if (reason := capture_infrastructure_reason(
-                item, policy=capture_policy, trusted_generated_check=trusted_generated_check
-            ))
+            id(item): reason for index, item in indexed_ui
+            if (reason := self._capture_infrastructure_advisory(
+                run, item, index, policy=capture_policy))
         }
         capture_advisory = "\n\n".join(dict.fromkeys(capture_advisories.values()))
         mechanical = mechanical_results(
