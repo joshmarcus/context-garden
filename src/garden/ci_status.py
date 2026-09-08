@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .validation import POLICY_SOURCE_SHA
+
 
 @dataclass(frozen=True)
 class CIStatus:
@@ -68,6 +70,15 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             mismatched = True
             continue
         if required_command and command != required_command:
+            continue
+        try:
+            receipt_policy = dict(row["policy"])
+        except (TypeError, KeyError):
+            malformed = True
+            continue
+        if (receipt_policy.get("source_sha") != POLICY_SOURCE_SHA
+                or row.get("source_dirty") or row.get("source_changed")):
+            malformed = True
             continue
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
