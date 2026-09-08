@@ -52,6 +52,7 @@ class EC2Provider:
         "bootstrap_url",
         "bootstrap_sha256",
         "shutdown_behavior",
+        "bootstrap_runtime_seconds",
     }
 
     def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
@@ -250,10 +251,15 @@ class EC2Provider:
         # Environment-specific setup belongs to the pinned image/profile, not the EC2
         # lifecycle. The executable verifies the image manifest and starts its service.
         # Only secret references cross userdata; never inline auth material.
+        runtime = options.get("bootstrap_runtime_seconds")
+        if runtime is not None and (isinstance(runtime, bool) or not isinstance(runtime, int)
+                                    or not 60 <= runtime <= 21600):
+            raise ValueError("bootstrap_runtime_seconds must be 60..21600")
         config = json.dumps({"contract_version": CONTRACT_VERSION, "host": declaration.host_id,
                              "endpoint": profile.endpoint, "secret_ref": profile.enrollment_secret_ref,
                              "profile_version": profile.version,
-                             "bootstrap_version": profile.bootstrap_version})
+                             "bootstrap_version": profile.bootstrap_version,
+                             **({"runtime_seconds": runtime} if runtime is not None else {})})
         return ("#!/bin/sh\nset -eu\numask 077\n"
                 + installer + "test -x " + shlex.quote(bootstrap_path) + "\n"
                 + "printf '%s' " + shlex.quote(config) + " > /run/host-bootstrap.json\n"

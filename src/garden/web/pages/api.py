@@ -232,7 +232,7 @@ def register(app: FastAPI, site: Site) -> None:
                     # Command arguments may contain inline API keys. Remote hosts use the
                     # built-in harness defaults; only inert executable/output settings cross.
                     "harness_config": {k: v for k, v in ((harness.cfg if harness else {}) or {}).items()
-                                       if k in {"bin", "max_turns", "output_format"}},
+                                       if k in {"bin", "max_turns", "output_format", "permission_mode"}},
                     "turn_cap": harness.max_turns_for(run.difficulty) if harness else 0,
                 }
                 checks = run.path / "checks_input.json"

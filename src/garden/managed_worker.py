@@ -79,6 +79,8 @@ def run(config: dict, *, once: bool = False):
                     return
                 time.sleep(3)
                 continue
+            # These are explicitly host-owned credential/configuration paths, not controller values.
+            claim["env_allowlist"] = [*claim.get("env_allowlist", []), *config.get("env_pass", [])]
             setup = dict(claim.get("setup") or {})
             execute_claim(claim, root, client, setup_command=str(setup.get("command") or ""))
             if once:
