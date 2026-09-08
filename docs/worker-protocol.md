@@ -124,6 +124,18 @@ Browser readiness is infrastructure evidence only. It is not application accepta
 current PR head must still produce every expected PNG and provide executed interaction and
 viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
 they are retained as diagnostics, never presented as successful captures.
+
+An owner can temporarily set `review.capture_infrastructure_policy: advisory` when the
+screenshot host path is unavailable. The default is `require`. Advisory mode skips the
+pre-dispatch browser hold but still runs the generated UI check. Its original failed result,
+diagnostic, and any HTML/text artifacts remain in the check record; the scheduler separately
+records that trusted browser-launch, capture-path, or clean-result-return failure as advisory
+and can admit a review using focused behavior and functional evidence. The setting does not
+cover an observed UI defect, an application or renderer traceback, incomplete interaction or
+viewport behavior, another failed functional check, or source/artifact evidence that
+contradicts the reviewed head. Those remain blocking, and a missing PNG is never reported as a
+pass. Restore `require` once capture infrastructure is available.
+
 The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox/model state,
 or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
 against a disposable garden and report the command, performed actions, observed consequences,

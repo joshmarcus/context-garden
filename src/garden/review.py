@@ -128,7 +128,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
                     check_specs: list[dict[str, Any]] | None = None,
-                    visual_scope: Any = None) -> dict[str, Any]:
+                    visual_scope: Any = None,
+                    capture_infrastructure_policy: str = "require") -> dict[str, Any]:
     """Return the head-bound functional and visual evidence decision for a change.
 
     A screenshot is evidence for a named visible behaviour, never a side effect of touching
@@ -196,7 +197,10 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
             "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons,
-            "visual_paths": sorted(visual_paths)}
+            "visual_paths": sorted(visual_paths),
+            "capture_infrastructure_policy": (
+                "advisory" if capture_infrastructure_policy == "advisory" else "require"
+            )}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
@@ -514,6 +518,7 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
+                 capture_advisories: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
@@ -535,7 +540,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         EVIDENCE_GUIDANCE,
-        preflight_section(),
+        preflight_section(str((plan or {}).get("capture_infrastructure_policy") or "require")),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
@@ -556,6 +561,22 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if capture_advisories:
+        advisory_lines = []
+        for advisory in capture_advisories:
+            diagnostic = str(advisory.get("diagnostic") or "capture infrastructure unavailable")
+            artifacts = [str(path) for path in advisory.get("artifacts", [])]
+            advisory_lines.append(f"- Failed capture attempt: {diagnostic}")
+            advisory_lines.extend(f"  - focused fallback artifact: `{path}`" for path in artifacts)
+        parts.append(
+            "## UI capture infrastructure advisory\n\n"
+            "The screenshot attempt remains recorded as failed; do not call it a pass. The "
+            "owner-selected policy permits review of this head with the focused HTML/text and "
+            "functional evidence below. Judge what that evidence proves. Observed UI defects, "
+            "application or renderer errors, incomplete interactions, failed functional checks, "
+            "and contradictory source or artifacts remain blocking.\n\n"
+            + "\n".join(advisory_lines) + "\n"
+        )
     if plan:
         parts.append("## Validation plan\n\n```json\n" + json.dumps(plan, indent=2, sort_keys=True) + "\n```\n")
     if interaction_required or scalability_required:

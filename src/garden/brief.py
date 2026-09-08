@@ -430,7 +430,7 @@ def build_brief(
         sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
                          "\n".join(f"- {item}" for item in frozen) + "\n"))
     if include_rules:
-        sections.append(("pre_flight", preflight_section()))
+        sections.append(("pre_flight", preflight_section(cfg.capture_infrastructure_policy())))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []

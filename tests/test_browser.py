@@ -123,6 +123,29 @@ def test_capture_hold_is_cached_recovers_once_and_does_not_hold_unrelated_work(s
     assert dispatched.count("DM-001") == 1
 
 
+def test_advisory_capture_policy_skips_browser_hold_without_claiming_readiness(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.extra["requires"] = ["captures"]
+    sched.store.save(task)
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    monkeypatch.setattr(
+        "garden.scheduler.browser.probe_browser_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("advisory admission must not probe")),
+    )
+    dispatched = []
+
+    def dispatch(candidate, **_kwargs):
+        dispatched.append(candidate.id)
+        candidate.status = Status.RUNNING
+
+    monkeypatch.setattr(sched, "dispatch", dispatch)
+    sched.dispatch_ready(TickReport())
+
+    assert "DM-001" in dispatched
+    assert not sched.capture_required(task)
+    assert "infrastructure_hold" not in sched.state.get(task.id)
+
+
 def test_timeout_failure_cache_survives_scheduler_restart(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["requires"] = ["captures"]

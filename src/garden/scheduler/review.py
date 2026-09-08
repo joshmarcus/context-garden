@@ -16,6 +16,7 @@ from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
+from ..preflight import capture_infrastructure_reason
 from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
@@ -440,7 +441,8 @@ class ReviewMixin:
             except GitHubError:
                 pass
         plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head,
-                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"))
+                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"),
+                               capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
         plan["visual_source"] = visual_source_digest(wt, plan)
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
@@ -448,6 +450,7 @@ class ReviewMixin:
                                    if row["item"] == "served interaction"), "non-UI change")
         capture_paths: list[str] = []
         capture_pages: list[str] = []
+        capture_advisories: list[dict[str, Any]] = []
         check_results: list[dict[str, Any]] = []
         current_check = None
         reusable_capture_check = None
@@ -470,11 +473,24 @@ class ReviewMixin:
             check_results = list((current_check.result or {}).get("checks", []))
         capture_check = current_check or reusable_capture_check
         if capture_check is not None:
-            ui_results = [result for result in (capture_check.result or {}).get("checks", [])
-                          if result.get("name") == "ui" and result.get("status") == "pass"]
+            all_ui_results = [result for result in (capture_check.result or {}).get("checks", [])
+                              if result.get("name") == "ui"]
+            ui_results = [result for result in all_ui_results if result.get("status") == "pass"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
+            policy = str(plan.get("capture_infrastructure_policy") or "require")
+            trusted_generated_check = bool((capture_check.env_snapshot or {}).get("generated_ui_check"))
+            for result in all_ui_results:
+                reason = capture_infrastructure_reason(
+                    result, policy=policy, trusted_generated_check=trusted_generated_check
+                )
+                if reason:
+                    capture_advisories.append({
+                        "diagnostic": reason,
+                        "artifacts": [str(path) for path in result.get("captures", [])
+                                      if not str(path).endswith(".png")],
+                    })
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
         interaction_reason = next((row["reason"] for row in plan["reasons"]
@@ -530,7 +546,8 @@ class ReviewMixin:
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
-                            checks=check_results, reask_missing_fixes=reask_missing_fixes,
+                            checks=check_results, capture_advisories=capture_advisories,
+                            reask_missing_fixes=reask_missing_fixes,
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
                             review_head=review_head, interaction_reason=interaction_reason,
                             interaction_manifest=(str(replay_manifest) if needs_interaction
@@ -542,6 +559,8 @@ class ReviewMixin:
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
         required_pages = set(plan["pages"])
+        if capture_advisories:
+            required_pages.clear()
         if "*" in required_pages:
             required_pages = set(capture_pages)
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),

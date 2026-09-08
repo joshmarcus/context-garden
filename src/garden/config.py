@@ -176,6 +176,10 @@ DEFAULTS: dict[str, Any] = {
     "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 600},
     "review": {
         "enabled": True,
+        # Temporary, owner-selected escape hatch for unavailable screenshot plumbing.
+        # The UI check still records a failure; only its trusted infrastructure cause becomes
+        # advisory. Visible/application/check failures remain blocking.
+        "capture_infrastructure_policy": "require",  # require | advisory
         "max_rounds": 2,          # positive automated-review cap per PR; null means unlimited
         "friction_after": 4,      # positive round count that records a non-blocking loop signal; null disables it
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
@@ -315,6 +319,13 @@ class Config:
     def review_friction_after(self) -> int | None:
         """The optional, non-blocking round count at which loop friction is recorded."""
         return self._positive_optional_int("review.friction_after")
+
+    def capture_infrastructure_policy(self) -> str:
+        """Whether trusted screenshot-infrastructure failures block visual review."""
+        value = str(self.get("review.capture_infrastructure_policy", "require") or "require")
+        if value not in ("require", "advisory"):
+            raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
+        return value
 
     def _positive_optional_int(self, dotted: str) -> int | None:
         value = self.get(dotted)
@@ -490,6 +501,12 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_product_policies(data: dict[str, Any]) -> None:
     """Reject ambiguous branch-ownership and protected-path configuration early."""
+    review = data.get("review") or {}
+    if not isinstance(review, dict):
+        raise ValueError("review must be a mapping")
+    capture_policy = review.get("capture_infrastructure_policy", "require")
+    if capture_policy not in ("require", "advisory"):
+        raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
     products = data.get("products") or {}
     if not isinstance(products, dict):
         raise ValueError("products must be a mapping")

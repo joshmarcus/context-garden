@@ -16,7 +16,11 @@ from ..model import Task, now_iso
 
 class BrowserMixin:
     def capture_required(self, task: Task) -> bool:
-        return any(item["kind"] == "capture" for item in required_evidence(task.body, task.extra.get("requires")))
+        required = any(item["kind"] == "capture"
+                       for item in required_evidence(task.body, task.extra.get("requires")))
+        # Advisory mode still runs and records the generated UI check. It only avoids holding
+        # the worker before that check can produce its preserved diagnostic/fallback artifacts.
+        return required and self.cfg.capture_infrastructure_policy() == "require"
 
     def _browser_probe_signature(self, task: Task) -> str:
         setup = self.cfg.product_setup(task.product)

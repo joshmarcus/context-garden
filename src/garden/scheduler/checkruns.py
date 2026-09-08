@@ -22,7 +22,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
-from ..preflight import mechanical_results
+from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
 from ..runs import Run
 from .report import TickReport
@@ -96,6 +96,11 @@ class CheckRunMixin:
         for item in required_evidence(task.body, task.extra.get("requires")):
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
+            generated_ui_check = any(
+                spec.get("_garden_generated_ui_check") is True
+                and spec.get("python") == "garden.walkthrough:ui_check"
+                for spec in specs
+            )
             try:
                 changed = gitops.diff_names(worktree, base)
             except gitops.GitError as exc:
@@ -108,15 +113,20 @@ class CheckRunMixin:
             plan = validation_plan(changed, task.title, task.body,
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
                                    head=gitops.head_sha(worktree), check_specs=specs,
-                                   visual_scope=task.extra.get("visual_scope"))
+                                   visual_scope=task.extra.get("visual_scope"),
+                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
             plan["visual_source"] = visual_source_digest(worktree, plan)
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
-                                  "changed": changed, "pages": plan["pages"]}]
+                                  "changed": changed, "pages": plan["pages"],
+                                  "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
+                                  "_garden_generated_ui_check": True}]
+                generated_ui_check = True
             run.env_snapshot["validation_plan"] = plan
+            run.env_snapshot["generated_ui_check"] = generated_ui_check
         run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
@@ -211,11 +221,19 @@ class CheckRunMixin:
             st["check_run"] = {}
             return False
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
+        plan = (run.env_snapshot or {}).get("validation_plan") or {}
+        capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
+        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
         for r in results:
             name = str(r.get("name") or "")
             key = "capture:" if name == "ui" else f"check:{name}"
             if key in evidence:
-                evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
+                if capture_infrastructure_reason(
+                    r, policy=capture_policy, trusted_generated_check=trusted_generated_check
+                ):
+                    evidence[key] = "advisory"
+                else:
+                    evidence[key] = "posted" if r.get("status") in ("pass", "passed", "done") else "failed"
         cont = dict(info.get("cont") or {})
         # `_dispatch_check_run` needs changed paths only to decide whether to add the UI
         # capture check. It records an inspection error instead of raising; every continuation
@@ -269,6 +287,19 @@ class CheckRunMixin:
         return any("check did not finish (killed" in str(result.get("summary") or "")
                    or "check run produced no results" in str(result.get("summary") or "")
                    for result in results)
+
+    @staticmethod
+    def _blocking_check_failures(run: Run, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Apply the frozen capture policy without changing any stored check result."""
+        plan = (run.env_snapshot or {}).get("validation_plan") or {}
+        policy = str(plan.get("capture_infrastructure_policy") or "require")
+        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
+        return [
+            result for result in check_failures(results)
+            if not capture_infrastructure_reason(
+                result, policy=policy, trusted_generated_check=trusted_generated_check
+            )
+        ]
 
     def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
                              specs: list[dict[str, Any]], retries: int, rep: TickReport,
@@ -337,17 +368,29 @@ class CheckRunMixin:
         worker_result = worker_run.result if worker_run is not None else self._last_worker_result(task)
         ui = [item for item in results if item.get("name") == "ui"]
         captures = [str(path) for item in ui for path in item.get("captures", [])]
+        plan = (run.env_snapshot or {}).get("validation_plan") or {}
+        capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
+        trusted_generated_check = bool((run.env_snapshot or {}).get("generated_ui_check"))
+        capture_advisories = {
+            id(item): reason for item in ui
+            if (reason := capture_infrastructure_reason(
+                item, policy=capture_policy, trusted_generated_check=trusted_generated_check
+            ))
+        }
+        capture_advisory = "\n\n".join(dict.fromkeys(capture_advisories.values()))
         mechanical = mechanical_results(
             worktree, base, str(worker_result.get("pr_body") or ""),
             require_description=not bool(task.pr), ui_changed=False, captures=captures,
             inspection_error=str(cont.get("mechanical_inspection_error") or ""),
-            required_ui=(bool(run.env_snapshot["validation_plan"].get("pages"))
-                         if "validation_plan" in run.env_snapshot else None),
+            required_ui=(bool(plan.get("pages")) if plan else None),
+            capture_infrastructure_advisory=capture_advisory,
         )
         results.extend(mechanical)
         run.result = {"checks": results}
         run.save()
-        failed = check_failures(results)
+        # Keep the original failed UI result in the run record and event history. Only the
+        # scheduler-owned effective gate omits a trusted infrastructure failure in advisory mode.
+        failed = self._blocking_check_failures(run, results)
         if failed and not stalled:
             mechanical_failed = check_failures(mechanical)
             if mechanical_failed:
@@ -400,7 +443,7 @@ class CheckRunMixin:
                   "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed})
 
     def _after_base_probe_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
-        base_failures = check_failures(results)
+        base_failures = self._blocking_check_failures(run, results)
         probe = Path(cont["probe"])
         try:
             gitops.remove_worktree(self.repo_for(task), probe)
@@ -442,7 +485,7 @@ class CheckRunMixin:
                   "base_sha": base_sha, "names": names, "failed": failed})
 
     def _after_rebase_recheck(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
-        rerun = check_failures(results)
+        rerun = self._blocking_check_failures(run, results)
         worker_run = self._run_by_id(task, cont.get("worker_run_id", ""))
         branch, base, cost = cont["branch"], cont["base"], cont["cost"]
         base_sha, names = cont["base_sha"], cont["names"]
@@ -467,7 +510,7 @@ class CheckRunMixin:
         branch, base = cont["branch"], cont["base"]
         tip = cont.get("base_sha", "")
         st = self.state.get(task.id)
-        failed = check_failures(results)
+        failed = self._blocking_check_failures(run, results)
         if failed:
             self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=False)
             st.pop("needs_human", None)
@@ -489,7 +532,7 @@ class CheckRunMixin:
         base = cont["base"]
         st = self.state.get(task.id)
         st.pop("needs_human", None)
-        failed = check_failures(results)
+        failed = self._blocking_check_failures(run, results)
         self._start_check_revise(task, failed, rep, "", note=f" (rebase onto `{base}` did not apply cleanly)")
         rep.transitions.append(f"{task.id} base moved but rebase conflicted; revise")
 
@@ -550,7 +593,7 @@ class CheckRunMixin:
                 pass
         st = self.state.get(task.id)
         diff_h = str(cont.get("diff_h") or "")
-        failed = check_failures(results)
+        failed = self._blocking_check_failures(run, results)
         if failed:
             names = ", ".join(str(f.get("name")) for f in failed) or "checks"
             st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": names}
@@ -571,7 +614,7 @@ class CheckRunMixin:
         rollup goes green (see RebaseMixin._merge_candidate)."""
         worker_run = self._run_by_id(task, cont.get("worker_run_id", ""))
         base = cont["base"]
-        failed = check_failures(results)
+        failed = self._blocking_check_failures(run, results)
         if failed:
             self._start_check_revise(task, failed, rep, "")
             return
