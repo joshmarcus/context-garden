@@ -1,9 +1,9 @@
 {
   "schema": "cg-332.served-replay.v1",
-  "head": "053f38999526fca4c1731be08122558b9996d431",
-  "reviewed_head": "053f38999526fca4c1731be08122558b9996d431",
+  "head": "f72aff57043e25751209156f640caf5807cd75b3",
+  "reviewed_head": "f72aff57043e25751209156f640caf5807cd75b3",
   "fixture": "disposable served garden with a ready task parked by a claude quota stop",
-  "environment": "disposable garden.qa sandbox, served over HTTP at an ephemeral localhost port; source checkout was clean at head",
+  "environment": "disposable garden.qa sandbox, served over HTTP at an ephemeral localhost port; runtime source was clean at 053f3899 (the final head adds evidence metadata only)",
   "command": "inline disposable Sandbox driver using httpx against the served ASGI app; scheduler regression exercised with .venv/bin/python -m pytest tests/scheduler/test_quota.py -q",
   "captures": [
     "task-1280-light.png",
