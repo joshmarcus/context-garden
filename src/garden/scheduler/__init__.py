@@ -190,7 +190,7 @@ class Scheduler(
             cfg["_product"] = task.product
         else:
             cfg = {}
-        cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
+        cfg["timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["checkout"] = self.cfg.product_checkout(task.product)

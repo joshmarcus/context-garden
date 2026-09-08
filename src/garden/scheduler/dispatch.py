@@ -103,6 +103,8 @@ class DispatchMixin:
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
         for task, mode, _why in queue:
+        blocked_local: list[Task] = []
+        max_bypasses = max(0, int(self.cfg.get("resources.max_bypasses", 3)))
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
@@ -115,8 +117,19 @@ class DispatchMixin:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
-            if not runner.remote and self.local_slots_free() <= 0:
-                continue  # remote candidates may still run while the operator host drains
+            if runner.name == "local":
+                resource = self.resource_status()
+                weight = self.resource_weight(task.id)
+                if resource.pressured:
+                    continue  # remote candidates may still run while the operator host drains
+                if resource.active + weight > resource.limit:
+                    blocked_local.append(task)
+                    continue
+                # Once an older heavy task has been bypassed enough times, hold the
+                # remaining units for it. Remote work uses another host and may proceed.
+                if any(int(self.state.get(old.id).get("resource_bypasses", 0)) >= max_bypasses
+                       for old in blocked_local):
+                    continue
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
@@ -126,6 +139,13 @@ class DispatchMixin:
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
+                if runner.name == "local":
+                    self.state.get(task.id).pop("resource_bypasses", None)
+                    for old in blocked_local:
+                        old_state = self.state.get(old.id)
+                        old_state["resource_bypasses"] = int(old_state.get("resource_bypasses", 0)) + 1
+                    if blocked_local:
+                        self.state.save()
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
@@ -414,8 +434,8 @@ class DispatchMixin:
         # quota env_error on this very run can put it back (see reap._handle_quota_env_error):
         # the point is not to burn the round's context on the harness's own account trouble.
         if mode == "revise":
-            run.env_snapshot = {"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
-                                "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))}
+            run.env_snapshot.update({"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
+                                     "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))})
             from ..suggestions import pending_suggestions
 
             pend = pending_suggestions(task.body)
@@ -425,7 +445,7 @@ class DispatchMixin:
                           + "\n".join(f"- {s.text}" for s in pend))
                 feedback = f"{feedback}\n\n{sug_fb}".strip() if feedback else sug_fb
         elif mode == "rebase":
-            run.env_snapshot = {"rebase_pending": True}
+            run.env_snapshot.update({"rebase_pending": True})
         qa = list(st.get("qa") or [])
         # List any commits already on the branch in the brief, so a re-dispatched worker
         # builds on the prior attempt instead of reverse-engineering it from git. This
@@ -525,6 +545,9 @@ class DispatchMixin:
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
+        run.env_snapshot["product"] = task.product
+        run.env_snapshot["execution_timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
+        run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot

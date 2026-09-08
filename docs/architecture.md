@@ -365,9 +365,13 @@ candidate is skipped when no worker slot is free (`max_parallel` minus active wo
 review and persona runs use their separate `review_parallel` pool), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
 
-When configured, local admission is also host-wide: `resources.max_parallel` counts workers,
-reviews, personas and checks together, including automatic base probes and direct CLI dispatches.
-The default `null` preserves the separate worker and review pools described above.
+When configured, local admission is also host-wide: `resources.max_parallel` is a capacity-unit budget shared
+by workers, reviews, personas and checks, including automatic base probes and direct CLI
+dispatches. The default `null` preserves the separate worker and review pools described above.
+Each product may set `products.<name>.resources.weight` to a positive integer;
+it inherits `resources.weight` (default one unit). First-fit admission lets cheaper work use
+remaining units beside heavier work, while `resources.max_bypasses` bounds how often an older
+heavy run may be passed before capacity is reserved for it.
 Optional available-memory and work-dir temp-free thresholds defer every new local launch.
 The capacity check and new running record are published under one filesystem lock, so a
 service action and concurrent CLI commands cannot all claim the final slot.
@@ -696,6 +700,9 @@ hand a held reload's executable fields a route around the gate.
 
 Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+`products.<name>.timeout_minutes` overrides the worker, revision and review execution budget
+for that product and otherwise inherits the top-level value. Check commands remain governed
+separately by `checks.timeout_seconds`.
 `review.max_rounds` defaults to two but accepts a positive cap or `null` for unlimited review
 rounds; its separate `review.friction_after` threshold emits one non-blocking loop record.
 Stall handling still stops unchanged paid attempts.
