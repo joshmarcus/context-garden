@@ -116,7 +116,11 @@ class CheckRunMixin:
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
-                                  "out_dir": str(run.path / "ui"), "worktree": str(worktree),
+                                  # Keep the check specification portable across runner hosts.
+                                  # Its shared context already identifies the worktree, while
+                                  # this relative sibling stays writable whether the check runs
+                                  # beside the controller checkout or an independent host clone.
+                                  "out_dir": f"../{run.run_id}-ui", "worktree": str(worktree),
                                   "changed": changed, "pages": plan["pages"],
                                   "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
                                   "_garden_generated_ui_check": True}]
