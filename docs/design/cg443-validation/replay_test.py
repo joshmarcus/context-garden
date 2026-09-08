@@ -32,14 +32,6 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
     pr = fake_github.create_pr("test/demo", "garden/dm-001", "main", "First task", "Review fixture")
     task.pr = pr.url
     store.save(task)
-    scheduler = Scheduler(store, github=fake_github)
-    scheduler.state.get(task.id)["needs_human"] = {
-        "kind": "review_clarification",
-        "reason": "reviewer clarification remained malformed",
-        "owner": "reviewer",
-    }
-    scheduler.state.save()
-
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -62,6 +54,22 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
     events = []
     try:
         with httpx.Client(base_url=base_url, follow_redirects=False) as client:
+            empty = client.get("/inbox")
+            assert empty.status_code == 200
+            assert "Reviewer clarification needs attention" not in empty.text
+            events.append({
+                "kind": "http_request", "state": "empty", "outcome": "empty",
+                "method": "GET", "url": f"{base_url}/inbox", "status_code": 200,
+                "observed": "Inbox has no reviewer-clarification attention card.",
+            })
+
+            scheduler = Scheduler(Store(garden), github=fake_github)
+            scheduler.state.get(task.id)["needs_human"] = {
+                "kind": "review_clarification",
+                "reason": "reviewer clarification remained malformed",
+                "owner": "reviewer",
+            }
+            scheduler.state.save()
             affected = client.get("/inbox")
             assert affected.status_code == 200
             assert "Reviewer clarification needs attention" in affected.text
@@ -117,7 +125,10 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
                 "the served app then received an invalid request before the valid recovery action."
             ),
             "states": {
-                "empty": manifest["states"]["empty"],
+                "empty": {
+                    "status": "pass", "actions": ["GET /inbox before reviewer-owned stop"],
+                    "observed": "Inbox has no reviewer-clarification attention card.",
+                },
                 "affected": {
                     "status": "pass", "actions": ["GET /inbox after reviewer-owned stop"],
                     "observed": "Inbox explains the stop and offers One more automated review.",
@@ -128,7 +139,7 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
                     "observed": "HTTP 404 is followed by successful reviewer-owned recovery; no author revision is queued.",
                 },
             },
-            "events": [manifest["events"][0], *events],
+            "events": events,
             "automated_checks": [
                 "served replay test passed on the recorded source head",
                 "focused review and web tests run separately",
