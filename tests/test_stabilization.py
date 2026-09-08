@@ -244,6 +244,7 @@ def test_distinct_same_second_owner_events_are_each_retained_and_reset_once(gard
 
 
 def test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery(garden):
+    import hashlib
     import httpx
 
     phase = protected_phase(garden)
@@ -306,6 +307,13 @@ def test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery(gar
         ("retry", "delegated_operator"),
         ("retry", "delegated_operator"),
     ]
+    artifact = json.loads(
+        (Path(__file__).parents[1] / "docs" / "stabilization" / "artifacts" / "cg-375-served-app.json").read_text()
+    )
+    assert artifact["source_test"] == "tests.test_stabilization.test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery"
+    for path, expected in artifact["component_provenance"].items():
+        actual = hashlib.sha256((Path(__file__).parents[1] / path).read_bytes()).hexdigest()
+        assert actual == expected, f"served replay provenance is stale for {path}"
 
 
 def test_unknown_nonoperative_event_log_entries_do_not_block_a_passing_window(garden):
