@@ -410,6 +410,22 @@ def no_change_on_revise(call: Call) -> bool:
     return True
 
 
+def no_change_decision_on_revise(call: Call) -> bool:
+    if not call.revise:
+        return False
+    result = {
+        "status": "no_change",
+        "reason": "The remaining suggestion changes the promised outcome.",
+        "pr_title": "Keep the existing outcome",
+        "pr_body": "## What\n\nKeeps the already-correct outcome unchanged.",
+        "improvements_declined": [{"suggestion": "change the outcome", "reason": "not needed"}],
+        "pre_flight": preflight_rows(),
+    }
+    final = "The code is already correct.\nGARDEN_RESULT: " + json.dumps(result)
+    print(result_json(final, {"input_tokens": 210, "output_tokens": 18}, 0.01))
+    return True
+
+
 def collide_with_main(call: Call) -> None:
     (call.cwd / "README.md").write_text("# demo\n\nchanged by worker\n")
 
@@ -573,6 +589,7 @@ WORKERS: dict[str, Worker] = {
     "rebase-resolve": Worker(early=resolve_rebase),
     "wont_do": Worker(early=wont_do_first),
     "no_change": Worker(early=no_change_on_revise),
+    "no_change_decision": Worker(early=no_change_decision_on_revise),
     "friction": Worker(tweak=add_friction),
     "omit-body": Worker(tweak=drop_body_on_revise),
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),

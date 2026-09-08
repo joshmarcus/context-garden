@@ -30,6 +30,7 @@ from pathlib import Path
 from .browser import browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
+from .scheduler import State
 from .store import Store
 
 Log = Callable[[str], None]
@@ -89,28 +90,50 @@ def _task_and_run(store: Store, phase: Phase) -> tuple[str, str]:
     return task_id, run_id
 
 
+def _decision_task(store: Store, phase: Phase) -> str:
+    """Choose an open task whose page renders the same decision card a person must act on."""
+    state = State(store.config.garden_dir / "state.json")
+    fallback = ""
+    for task in phase.tasks:
+        if task.status.terminal:
+            continue
+        fallback = fallback or task.id
+        facts = state.get(task.id)
+        if (facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human")):
+            return task.id
+    return fallback
+
+
+def _has_live_decision(store: Store, phase: Phase, task_id: str) -> bool:
+    """Return whether a task already has decision state that the page can render."""
+    task = next((task for task in phase.tasks if task.id == task_id), None)
+    if task is None:
+        return False
+    facts = State(store.config.garden_dir / "state.json").get(task_id)
+    return bool(facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human"))
+
+
 def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     """The pages to capture, in the order a person uses them, with the data this phase has."""
     key = phase.key
     specs = [
-        PageSpec("now2", "/now2", "Now 2",
-                 "Live work, dispatch and merge queues, phase progress and windowed outcomes.",
-                 "Can you see what is running and what that work adds up to?"),
-        PageSpec("now", "/", "Now",
+        PageSpec("inbox", "/", "Inbox",
                  "The first page: everything that needs the operator now.",
                  "Can a person immediately tell what needs action?"),
-        PageSpec("now1", "/now1", "Now 1",
+        PageSpec("now", "/now", "Now",
                  "What is running, what is next, where the phase is and the last period, live from the events stream.",
                  "Can you say what the garden is doing and what comes next within five seconds?"),
-        PageSpec("inbox", "/inbox", "Inbox",
-                 "What needs a decision and what is only a notice; the rail badge counts decisions only.",
-                 "Is the split between a decision and a notice clear, and is the empty state designed?"),
         PageSpec("board", "/board", "Board (columns)",
                  "The board in columns, one per status in the loop's order.",
                  "Do the columns read left to right as the loop moves work?"),
         PageSpec("board-list", "/board?view=list", "Board (list)",
                  "The board as a list grouped by status, with a per-state fact on each row.",
                  "Does each row say enough to act without opening the task?"),
+        PageSpec("backlog", "/board?view=backlog", "Backlog",
+                 "The backlog view of work that is not yet ready to run.",
+                 "Can you see what is waiting for approval or dependencies?"),
         PageSpec("trellis", "/trellis", "Trellis",
                  "The dependency and stacking graph with growth-stage glyphs and the hide-done control.",
                  "Can you follow what blocks what, and what the glyphs mean?"),
@@ -127,9 +150,22 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
+    decision_id = _decision_task(store, phase)
+    if decision_id:
+        has_live_decision = _has_live_decision(store, phase, decision_id)
+        decision_url = f"/tasks/{decision_id}"
+        if not has_live_decision:
+            decision_url += "?walkthrough=decision"
+        specs.append(PageSpec("task-decision", decision_url, "Task decision",
+                              "A task page with an active worker decision or needs-you card.",
+                              "Does the page explain the decision and give the person a clear recovery action?"))
     if task_id:
         specs.append(PageSpec("task", f"/tasks/{task_id}", "Task",
                               "A task page: state, tier and priority controls, runs, the live log, the actions.",
+                              "Are the controls and the run history legible, and is it clear what happens next?"))
+    if decision_id and decision_id != task_id:
+        specs.append(PageSpec("task-ordinary", f"/tasks/{task_id}", "Task",
+                              "An ordinary task page: state, runs, the live log and actions.",
                               "Are the controls and the run history legible, and is it clear what happens next?"))
     if task_id and run_id:
         specs.append(PageSpec("run", f"/runs/{task_id}/{run_id}", "Run",
@@ -138,6 +174,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("runs", "/runs", "Runs",
                           "Every run with its cost and tokens.",
                           "Is cost easy to total and attribute?"))
+    specs.append(PageSpec("costs", "/costs", "Costs",
+                          "Spend and accepted-task outcomes by activity, tier, model and harness.",
+                          "Can you read what an accepted task costs and which route produced it?"))
     specs.append(PageSpec("herbarium", "/herbarium", "Herbarium",
                           "A plate per phase; closed phases live here.",
                           "Does a closed phase read as a finished, catalogued thing?"))
@@ -155,6 +194,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("events", "/events", "Events",
                           "The event timeline.",
                           "Can you reconstruct what happened from the timeline alone?"))
+    specs.append(PageSpec("retro", f"/phases/{key}/retro", "Retro",
+                          "The phase retrospective, persona reports and filed follow-ups.",
+                          "Can you see what the phase learned and what it carries forward?"))
     return specs
 
 
@@ -549,8 +591,13 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                                     evidence.append({"page": s.slug, "action": "frame", "viewport": width,
                                                      "color_scheme": scheme, **measurements})
                             else:
-                                page.goto(url, wait_until="networkidle", timeout=30000)
-                                viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
+                                response = page.goto(url, wait_until="networkidle", timeout=30000)
+                                if response is None or not 200 <= response.status < 300:
+                                    raise RuntimeError(f"HTTP {response.status if response else 'no response'}")
+                                viewport = page.evaluate("""() => {
+                                    if (!document.body || !document.body.innerHTML.trim()) throw new Error('empty document');
+                                    return {clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth};
+                                }""")
                                 page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
                                 evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
                                                  "color_scheme": scheme, **viewport})
@@ -681,7 +728,10 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
             page = _scrub_stderr(page)
         (out_dir / f"{s.slug}.html").write_text(page)
         (out_dir / f"{s.slug}.txt").write_text(html_to_text(page))
-        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot))
+        note = ""
+        if not (200 <= status < 300) or not page.strip():
+            note = "empty or unsuccessful document"
+        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot, note=note))
         log(f"  {s.slug:<14} {s.url}  ({status}, {len(page.encode()) // 1024} KB){'  +png' if s.slug in shot else ''}")
 
     (out_dir / "index.md").write_text(_index_md(phase, result))
@@ -733,13 +783,28 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
 def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
     from .qa.sandbox import make_garden
+    from .scheduler import State
 
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
         store = Store(garden_root)
+        # Keep the visual fixture representative even before a worker has run: the
+        # walkthrough must always give personas a real decision card to inspect.
+        state = State(store.config.garden_dir / "state.json")
+        state.get("DM-001")["decision"] = {
+            "kind": "changed_outcome",
+            "reason": "The worker needs a product decision before it can continue.",
+        }
+        state.save()
         logs: list[str] = []
         result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
                          log=logs.append, pages=pages)
+    decision = next((page for page in result.pages if page.spec.slug == "task-decision"), None)
+    decision_html = (out_dir / "task-decision.html").read_text() if decision else ""
+    if decision is None or "class=\"panel decision-card\"" not in decision_html:
+        return {"status": "fail", "summary": "decision-card walkthrough page is missing",
+                "failure_kind": "product", "details": "task-decision.html must contain .decision-card",
+                "captures": [], "interaction_evidence": [], "pages": [p.spec.slug for p in result.pages]}
     expected = {
         f"{page.spec.slug}-{width}-{scheme}.png"
         for page in result.pages

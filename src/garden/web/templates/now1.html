@@ -3,7 +3,7 @@
 {% block body_class %}page-now{% endblock %}
 {% block head %}
 <style>
-/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+/* ---- the Now page (docs/design/now-1.md) ------------------------------------------- */
 .now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
 .now-five a { text-decoration-color:var(--line-strong); }
 .now-five .pause { color:var(--stamp); }
@@ -241,7 +241,7 @@ body.page-now .rail-running { display:none; }
   // ---- the regions: each re-fetches its partial and swaps the one element that holds it
   var regions = {
     head: async function () {
-      var frag = parse(await fetchText("/partials/now1/head?window=" + win));
+      var frag = parse(await fetchText("/partials/now/head?window=" + win));
       var five = frag.getElementById("now-five"), slots = frag.getElementById("now-slots");
       var lost = document.querySelector("[data-lost]");
       if (five) document.getElementById("now-five").replaceWith(five);
@@ -251,19 +251,19 @@ body.page-now .rail-running { display:none; }
       }
     },
     now: async function () {
-      var frag = parse(await fetchText("/partials/now1/now?window=" + win));
+      var frag = parse(await fetchText("/partials/now/now?window=" + win));
       document.getElementById("now-body").replaceWith(frag.getElementById("now-body"));
       countdown();
     },
     next: async function () {
-      var frag = parse(await fetchText("/partials/now1/next?window=" + win));
+      var frag = parse(await fetchText("/partials/now/next?window=" + win));
       var fresh = frag.getElementById("next-body"), old = document.getElementById("next-body");
       moveLines(old, fresh);
       old.replaceWith(fresh);
       countdown();
     },
     where: async function () {
-      var frag = parse(await fetchText("/partials/now1/where?window=" + win));
+      var frag = parse(await fetchText("/partials/now/where?window=" + win));
       var fresh = frag.getElementById("where-body"), old = document.getElementById("where-body");
       var was = parseFloat(old.dataset.fraction), now = parseFloat(fresh.dataset.fraction);
       var inked = old.querySelector(".sheet.big .inked"), mount = old.querySelector(".sheet.big .mount");
@@ -277,7 +277,7 @@ body.page-now .rail-running { display:none; }
       }
     },
     period: async function () {
-      var frag = parse(await fetchText("/partials/now1/period?window=" + win));
+      var frag = parse(await fetchText("/partials/now/period?window=" + win));
       document.getElementById("period-body").replaceWith(frag.getElementById("period-body"));
     }
   };
@@ -307,7 +307,7 @@ body.page-now .rail-running { display:none; }
   function strips() { return document.getElementById("now-strips"); }
   function stripFor(run) { return document.querySelector('.strip[data-run="' + run + '"]'); }
   async function arrive(ev) {
-    var html = await fetchText("/partials/now1/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run));
+    var html = await fetchText("/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run));
     var strip = parse(html).firstElementChild;
     if (!strip || stripFor(ev.run)) return;
     strip.dataset.started = ev.at || strip.dataset.started;  // counts up from the dispatch moment
@@ -324,7 +324,7 @@ body.page-now .rail-running { display:none; }
   }
   async function finish(ev) {
     var old = stripFor(ev.run);
-    var html = await fetchText("/partials/now1/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run)).catch(function () { return ""; });
+    var html = await fetchText("/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run)).catch(function () { return ""; });
     var fresh = html ? parse(html).firstElementChild : null;
     if (old && fresh) { fade(old.querySelector(".glyphs")); old.replaceWith(fresh); old = fresh; }
     say(ev.task + " finished: " + (ev.status || ""));
@@ -379,7 +379,7 @@ body.page-now .rail-running { display:none; }
     if (PERIOD[k] || (k === "transition" && ev.to === "done")) periodSoon();
   }
   // ---- the stream
-  var source = new EventSource("/now1/stream");
+  var source = new EventSource("/now/stream");
   var dropped = null, wasDown = false;
   var interval = parseInt(root.dataset.tickInterval || "60", 10) * 1000;
   source.addEventListener("event", function (m) { try { onEvent(JSON.parse(m.data)); } catch (e) {} });

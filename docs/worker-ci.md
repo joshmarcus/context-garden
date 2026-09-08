@@ -16,6 +16,22 @@ exit nonzero; an unavailable GitHub service does not justify claiming tests pass
 It does not automatically rerun failed CI. Diagnose the log before requesting a rerun.
 The existing full PR CI still tests integration with the base and gates merging.
 
+## Public repository workers without `gh`
+
+An AWS worker with only this public repository's SSH deploy key may use the helper
+without an operator GitHub token or a `gh` installation. When authenticated `gh` is
+unavailable, the helper reads only the public `ci.yml` workflow's exact branch, commit,
+and push-event runs from `api.github.com`; it polls no more often than every 65 seconds.
+The official `ssh://git@ssh.github.com:443/OWNER/REPO.git` push transport is normalized
+to the `github.com` API identity. Other hosts, enterprise instances, custom HTTPS ports,
+and credential-bearing URLs still require authenticated `gh` and never use this fallback.
+
+The REST response, rate-limit header, workflow result, and remote branch tip are all
+validated. A malformed response, exhausted rate limit, API error, missing run, pending
+run, failed conclusion, changed checkout, or moved remote branch exits nonzero. The
+fallback grants no GitHub write access beyond the already-scoped deploy key used for the
+assigned-branch push.
+
 ## Enable in a garden
 
 Push permission is opt-in for each product; other products keep the no-push rule:

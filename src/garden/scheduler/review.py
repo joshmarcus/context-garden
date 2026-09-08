@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import shlex
 import sys
@@ -406,12 +407,15 @@ class ReviewMixin:
         review_head = gitops.head_sha(wt)
         changed = gitops.diff_names(wt, base)
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
+        author_interaction: dict[str, Any] | None = None
         if work_run is not None:
             pr_title = str(work_run.result.get("pr_title") or task.title)
             pr_body = str(work_run.result.get("pr_body") or "")
             pr_comment = str(work_run.result.get("pr_comment") or "")
             verified = work_run.result.get("verified")
             pre_flight = work_run.result.get("pre_flight")
+            candidate = work_run.result.get("interaction")
+            author_interaction = candidate if isinstance(candidate, dict) else None
         criteria_snapshot: list[str] | None = None
         if work_run is not None and "criteria" in (work_run.env_snapshot or {}):
             criteria_snapshot = list((work_run.env_snapshot or {}).get("criteria") or [])
@@ -476,7 +480,17 @@ class ReviewMixin:
         interaction_reason = next((row["reason"] for row in plan["reasons"]
                                    if row["item"] == "served interaction"), "non-UI change")
         replay = self.state.get(task.id).get("interaction_replay") or {}
-        if needs_interaction and replay.get("head") != review_head:
+        replay_config = task.extra.get("interaction_replay")
+        replay_config = replay_config if isinstance(replay_config, dict) else {}
+        affected_flow = str(replay_config.get("affected_flow") or "").strip()
+        author_gaps = interaction_evidence_gaps(
+            {"interaction": author_interaction}, required=True, scalability=needs_scalability,
+            expected_head=review_head, affected_flow=affected_flow,
+        ) if needs_interaction and author_interaction is not None else ["not reported"]
+        reusable_author_interaction = needs_interaction and not author_gaps
+        replay_matches = (replay.get("head") == review_head
+                          and str(replay.get("affected_flow") or "") == affected_flow)
+        if needs_interaction and not reusable_author_interaction and not replay_matches:
             # The replay is an ordinary detached check, with the same scrubbed
             # environment, heavy-work lease and resource limits as other validation.
             # A later tick collects its digest before the reviewer process can start.
@@ -489,20 +503,26 @@ class ReviewMixin:
                     return existing
             nonce = secrets.token_urlsafe(24)
             out = self.cfg.garden_dir / "interaction-replays" / task.id / nonce
+            module = str(replay_config.get("module") or (
+                "garden.invalid_interaction_replay_selection" if affected_flow
+                else "garden.interaction_replay"
+            ))
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", module):
+                module = "garden.invalid_interaction_replay_selection"
             command = shlex.join([
                 "env", f"PYTHONPATH={wt / 'src'}", sys.executable,
-                "-m", "garden.interaction_replay", "--out", str(out),
+                "-m", module, "--out", str(out),
                 "--head", review_head, "--nonce", nonce,
             ])
             return self._dispatch_check_run(
                 task, worktree=wt, branch=branch, base=base,
                 specs=[{"name": "interaction replay", "command": command}],
                 stage="interaction_replay", extra={"timeout": 180},
-                cont={"head": review_head, "nonce": nonce,
+                cont={"head": review_head, "nonce": nonce, "affected_flow": affected_flow,
                       "manifest": str(out / "interaction-manifest.json"),
                       "worktree": str(wt), "branch": branch, "base": base}, rep=TickReport(),
             )
-        replay_nonce = str(replay.get("nonce") or "") if needs_interaction else ""
+        replay_nonce = str(replay.get("nonce") or "") if needs_interaction and not reusable_author_interaction else ""
         replay_manifest = Path(str(replay.get("manifest") or "."))
         replay_digest = str(replay.get("digest") or "") if needs_interaction else ""
         run = (self.runs.new_run(task.id, "remote", mode="review")
@@ -513,8 +533,10 @@ class ReviewMixin:
                             checks=check_results, reask_missing_fixes=reask_missing_fixes,
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
                             review_head=review_head, interaction_reason=interaction_reason,
-                            interaction_manifest=str(replay_manifest) if needs_interaction else "",
-                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan)
+                            interaction_manifest=(str(replay_manifest) if needs_interaction
+                                                  and not reusable_author_interaction else ""),
+                            criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
+                            author_interaction=author_interaction)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
@@ -529,6 +551,8 @@ class ReviewMixin:
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
+                            "affected_flow": affected_flow,
+                            "author_interaction_reused": reusable_author_interaction,
                             "reask_missing_fixes": reask_missing_fixes,
                             "criteria": criteria_snapshot, "validation_plan": plan}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
@@ -570,6 +594,7 @@ class ReviewMixin:
         self.state.get(task.id)["interaction_replay"] = {
             "head": cont["head"], "nonce": cont["nonce"], "manifest": str(path),
             "digest": digest, "run_id": run.run_id,
+            "affected_flow": str(cont.get("affected_flow") or ""),
         }
         self.state.save()
 
@@ -683,6 +708,7 @@ class ReviewMixin:
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
                                                           "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
+            metadata_warnings: list[str] = []
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
@@ -690,7 +716,16 @@ class ReviewMixin:
                 replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
                 replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
                 replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
+                affected_flow=str((run.env_snapshot or {}).get("affected_flow") or ""),
+                metadata_warnings=metadata_warnings,
             ) if review else []
+            if metadata_warnings:
+                review.setdefault("findings", []).append({
+                    "severity": "nit", "file": "", "line": None,
+                    "summary": "Evidence metadata advisory: " + "; ".join(metadata_warnings),
+                    "fix": "Attach available source, command and artifact references; reuse inspected evidence. "
+                           "Do not rerun implementation or passing verification solely for metadata.",
+                })
             if gaps:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({

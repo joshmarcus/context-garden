@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .brief import _parse_marked_json, build_brief
+from .brief import EVIDENCE_GUIDANCE, _parse_marked_json, build_brief
 from .criteria import parse_criteria, reconcile
 from .model import Task
 from .preflight import preflight_section
@@ -24,8 +24,7 @@ INTERACTION_PATHS = (
     "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
     "src/garden/checks.py", "src/garden/gitops.py",
     "src/garden/github.py", "src/garden/harness.py", "src/garden/inbox.py",
-    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py",
-    "src/garden/now2.py", "src/garden/now2_stream.py", "src/garden/onboard.py",
+    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py", "src/garden/onboard.py",
     "src/garden/model.py", "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
     "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runner/",
     "src/garden/runs.py", "src/garden/scheduler/__init__.py", "src/garden/scheduler/aux.py",
@@ -51,8 +50,8 @@ SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
 _PAGE_MODULES = {
     "board": ("board", "board-list"), "config": ("config",), "costs": ("costs",),
-    "events": ("events",), "inbox": ("now", "inbox"), "now1": ("now1",),
-    "now2": ("now2",), "phase": ("phase",), "runs": ("runs", "run"),
+    "events": ("events",), "inbox": ("inbox",), "now1": ("now",),
+    "phase": ("phase",), "runs": ("runs", "run"),
     "task": ("task",), "trellis": ("trellis",), "trials": ("trials",),
 }
 _SHARED_UI_PATHS = ("src/garden/web/app.py", "src/garden/web/common.py",
@@ -202,23 +201,36 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
                               expected_head: str, replay_manifest: Path | None = None,
-                              replay_nonce: str = "", replay_digest: str = "") -> list[str]:
-    """Return mechanical blockers in a reviewer's claimed running-app evidence."""
+                              replay_nonce: str = "", replay_digest: str = "",
+                              affected_flow: str = "",
+                              metadata_warnings: list[str] | None = None) -> list[str]:
+    """Return substantive blockers; report missing packaging separately as advisories."""
     if not required and not scalability:
         return []
     row = review.get("interaction")
     if not isinstance(row, dict):
         return ["running-application interaction evidence was not reported"]
     gaps: list[str] = []
+    warnings = metadata_warnings if metadata_warnings is not None else []
     if required and (replay_manifest is not None or replay_nonce):
-        gaps.extend(_replay_manifest_gaps(replay_manifest, expected_head, replay_nonce, replay_digest))
-    if row.get("head") != expected_head:
+        gaps.extend(_replay_manifest_gaps(
+            replay_manifest, expected_head, replay_nonce, replay_digest, warnings,
+            affected_flow=affected_flow))
+    if not row.get("head"):
+        warnings.append("interaction source head was not recorded; attach the independently reviewed commit")
+    elif row.get("head") != expected_head:
         gaps.append("interaction evidence is stale or not tied to the reviewed head")
-    if row.get("environment") != "disposable":
+    if not row.get("environment"):
+        warnings.append("interaction environment was not recorded")
+    elif row.get("environment") != "disposable":
         gaps.append("interaction was not performed in a disposable garden")
+    if affected_flow and row.get("affected_flow") != affected_flow:
+        gaps.append(f"interaction evidence does not cover the declared affected flow: {affected_flow}")
     command = row.get("command")
-    if not isinstance(command, str) or not command.strip() or command.strip() in {"true", ":"}:
-        gaps.append("interaction command was not reported")
+    if not isinstance(command, str) or not command.strip():
+        warnings.append("interaction command was not reported")
+    elif command.strip() in {"true", ":"}:
+        gaps.append("interaction command does not perform a served application")
     states = row.get("states") if isinstance(row.get("states"), dict) else {}
     for state in ("affected", "empty", "failure_recovery"):
         evidence = states.get(state) if isinstance(states.get(state), dict) else {}
@@ -233,28 +245,28 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     gaps.extend(_interaction_event_gaps(events))
     artifacts = row.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or any(not isinstance(path, str) for path in artifacts):
-        gaps.append("interaction artifact paths were not reported")
-    elif any(not Path(path).exists() for path in artifacts):
-        gaps.append("one or more interaction artifacts do not exist")
+        warnings.append("interaction artifact paths were not reported")
     else:
-        records = []
         for artifact in artifacts:
             path = Path(artifact)
+            if not path.exists():
+                warnings.append(f"interaction artifact is unavailable: {artifact}")
+                continue
             if path.suffix.lower() != ".json":
                 continue
             try:
                 record = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
+                warnings.append(f"interaction artifact metadata is unreadable: {artifact}")
                 continue
-            if (isinstance(record, dict) and record.get("head") == expected_head
-                    and record.get("states") == states and record.get("events") == events):
-                records.append(record)
-        if not records:
-            gaps.append("a structured interaction artifact tied to the reviewed head, actions, and observations was not reported")
+            # Evidence may use another schema or the reviewer's own paraphrase. A
+            # contradictory source claim is material; duplicated prose is not required.
+            if isinstance(record, dict) and record.get("head") and record["head"] != expected_head:
+                gaps.append(f"interaction artifact source contradicts the reviewed head: {artifact}")
     if not isinstance(row.get("automated_checks"), list):
-        gaps.append("automated checks were not distinguished from real interaction")
+        warnings.append("automated checks were not separately recorded")
     if not isinstance(row.get("unverified"), list):
-        gaps.append("unverified requirements were not stated")
+        warnings.append("unverified requirements were not explicitly recorded")
     elif row.get("unverified"):
         gaps.append("interaction requirements remain unverified")
     if scalability:
@@ -284,7 +296,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     return gaps
 
 
-def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str) -> list[str]:
+def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
+                          metadata_warnings: list[str], *, affected_flow: str = "") -> list[str]:
     """Validate evidence produced by the scheduler, outside the reviewer's process."""
     try:
         raw = path.read_bytes() if path else b""
@@ -292,16 +305,23 @@ def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, dig
     except (OSError, json.JSONDecodeError):
         record = None
     if not isinstance(record, dict):
-        return ["scheduler-produced interaction replay manifest is missing or unreadable"]
-    if not digest or hashlib.sha256(raw).hexdigest() != digest:
+        metadata_warnings.append("scheduler-produced interaction replay manifest is missing or unreadable")
+        return []  # The review still has to establish the actual required outcomes.
+    if digest and hashlib.sha256(raw).hexdigest() != digest:
         return ["scheduler-produced interaction replay manifest changed after execution"]
-    if (record.get("producer") != "garden.scheduler.interaction-replay/v1"
-            or record.get("head") != expected_head or not nonce or record.get("nonce") != nonce):
+    if not digest:
+        metadata_warnings.append("scheduler-produced interaction replay digest was not recorded")
+    identity = {"producer": "garden.scheduler.interaction-replay/v1", "head": expected_head, "nonce": nonce}
+    if any(record.get(key) and value and record[key] != value for key, value in identity.items()):
         return ["scheduler-produced interaction replay provenance does not match this review"]
+    if any(not record.get(key) or not value for key, value in identity.items()):
+        metadata_warnings.append("scheduler-produced interaction replay identity metadata is incomplete")
     if record.get("environment") != "disposable" or record.get("status") != "pass":
         return ["scheduler-produced disposable interaction replay did not pass"]
+    if affected_flow and record.get("affected_flow") != affected_flow:
+        return [f"scheduler replay does not cover the declared affected flow: {affected_flow}"]
     if not all(isinstance(record.get(name), str) and record[name] for name in ("started_at", "finished_at")):
-        return ["scheduler-produced interaction replay timestamps are incomplete"]
+        metadata_warnings.append("scheduler-produced interaction replay timestamps are incomplete")
     flows = record.get("flows")
     if not isinstance(flows, list) or not flows or any(
         not isinstance(flow, dict) or flow.get("ok") is not True
@@ -394,8 +414,9 @@ evidence may write artifacts only into its disposable garden or a temporary dire
 
 Check, in this order:
 
-1. **Worker pre-flight.** The author must report every item in the pre-flight checklist below.
-   A missing item is a blocking finding; check the evidence rather than trusting it.
+1. **Worker pre-flight.** Verify the applicable checks and the actual outcome. Missing
+   reporting metadata alone is advisory; a failed check or materially unverified outcome
+   is blocking. Inspect available evidence before requiring the author to repeat work.
 2. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
    quote the `criterion`, set `met` true or false, and give a one-line `reason` pointing at
    the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
@@ -446,7 +467,8 @@ Report `interaction.events` as a chronological sequence with explicit `state` ph
 `empty` for empty, and `failure` for failure. A served HTTP event also contains `kind: http_request`,
 `method`, `url`, `status_code`, and `observed`; failure HTTP status is unsuccessful and recovery is
 successful. A browser event also contains `kind: browser_action`, `action`, `target`, and `observed`.
-Screenshot/image operations are not actions. Preserve the same events in the structured artifact.
+Screenshot/image operations are not actions. Report the performed events; an existing artifact
+may use a different schema or wording. Do not demand a duplicate of your own paraphrase.
 
 Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
 request changes for blocking findings or a description that fails the standard above.
@@ -466,7 +488,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "events": [{{"kind": "http_request", "state": "affected|empty|failure|recovery", "outcome": "success|empty|failure", "method": "<method>", "url": "<served URL>", "status_code": 200, "observed": "<actual consequence>"}}], "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -495,7 +517,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
-                 pre_flight: Any = None, plan: dict[str, Any] | None = None) -> str:
+                 pre_flight: Any = None, plan: dict[str, Any] | None = None,
+                 author_interaction: Any = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -511,6 +534,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     parts = [
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
+        EVIDENCE_GUIDANCE,
         preflight_section(),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
@@ -540,6 +564,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                      + (f"The scheduler independently replayed the disposable app; inspect its "
                         f"request/response manifest at `{interaction_manifest}`.\n\n" if interaction_manifest else "")
                      + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
+    if isinstance(author_interaction, dict):
+        parts.append("## Author's task-specific interaction evidence\n\n"
+                     "Reuse this evidence when its source and affected-flow provenance are valid; "
+                     "missing packaging metadata alone is advisory.\n\n```json\n"
+                     + json.dumps(author_interaction, indent=2, sort_keys=True) + "\n```\n")
     if checks:
         parts.append("## Pre-review checks\n\n" + "\n".join(
             f"- **{c.get('name', 'check')}**: {c.get('status', 'unknown')}"

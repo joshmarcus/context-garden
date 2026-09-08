@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .criteria import parse_criteria
+from .host_identity import scrub_shared_text
 from .model import Task, estimate_tokens, goals_text
 from .preflight import preflight_section
 from .store import Store
@@ -23,6 +24,35 @@ from .store import Store
 RESULT_MARKER = "GARDEN_RESULT:"
 REBASE_BRIEF_MAX_BYTES = 128 * 1024
 REBASE_INLINE_HUNK_MAX_BYTES = 16 * 1024
+
+EVIDENCE_GUIDANCE = """\
+## Verification evidence and implementation latitude
+
+Judge the requested outcome and explicit constraints. The implementer may choose the
+mechanism and equivalent meaningful verification; a suggested filename, helper or test
+sequence is guidance unless it carries a real compatibility or correctness constraint.
+A blocking finding must identify a concrete defect, failed check, contradictory source
+identity or materially unverified outcome. Missing artifact metadata alone is advisory.
+Never invent evidence or turn an unverified outcome into a pass.
+
+For every claimed outcome, record the actual source commit, command/check and result,
+observed actions and consequences, available artifact paths and material limitations.
+Authors put these references in `verified[].evidence`; reviewers inspect them and report
+what they established. Verify paths and results before finishing. Save new evidence only
+inside the allowed worktree/disposable output area, and use durable paths when available;
+never write into the live garden. A reviewer may paraphrase an existing record without
+creating an identical second JSON file or rerunning a passing check merely for packaging.
+
+When a served interaction is required, include `head`, `environment`, `command`, `states`
+and chronological `events` in a saved record when possible. Each event describes its
+state, actual HTTP method/URL/status or browser action/target, and observed consequence.
+Cover the affected outcome, an empty state and relevant failure followed by recovery.
+The reviewer reports those events in `interaction.events` and names the artifacts in
+`interaction.artifacts`; record separate `automated_checks` and any `unverified` outcomes.
+An existing record with equivalent content is sufficient. Explicit phase evidence holds
+and final current-head CI still apply.
+"""
+
 
 OPERATING_RULES = """\
 ## Operating rules
@@ -367,7 +397,7 @@ def build_brief(
             env_rule=_env_rule(cfg.product_setup(task.product)),
             push_rule=_push_rule(cfg.product_setup(task.product)),
         )
-        sections.append(("rules", rules))
+        sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
         if review_feedback:
             if task.pr:
                 sections.append(("revise", REVISE_RULES.format(pr=task.pr)))
@@ -476,7 +506,7 @@ def build_brief(
 
     return Brief(
         task=task,
-        text=text,
+        text=scrub_shared_text(text, cfg.data),
         sections={n: len(s) for n, s in sections},
         inlined=inlined,
         referenced=referenced,

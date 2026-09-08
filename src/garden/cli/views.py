@@ -242,10 +242,14 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         console.print(table)
 
 
-def render_now1(window: str) -> None:
-    """Render Now 1 for the shared ``garden now`` command."""
+@app.command(rich_help_panel=PANEL_BOARD)
+def now(window: str = typer.Option("hour", help="hour, today, 24h or phase")) -> None:
+    """Print the current work, queues, phase progress and recent outcomes."""
     store = _store()
-    from ..now1 import render_text, snapshot
+    from ..now1 import WINDOWS, render_text, snapshot
+
+    if window not in {key for key, _ in WINDOWS}:
+        raise typer.BadParameter("window must be hour, today, 24h or phase")
 
     print(render_text(snapshot(store, _scheduler(store), window=window)), end="")
 

@@ -551,6 +551,22 @@ PR retains its normal checks and review. If the external work cannot proceed bef
 use `garden finish WID-003 --blocked --summary '...'`; it follows ordinary manual blocked
 handling. Git and fence protections remain in force in all three cases.
 
+When the work was authored and pushed from a separate clone before a PR exists, use the
+explicit pushed-result contract. The repository, already-claimed branch, and full SHA are
+all required; the scheduler fetches the configured repository, requires that exact SHA at
+the remote branch tip, materialises it locally, and only then runs the ordinary checks, PR,
+and independent review path:
+
+```bash
+garden take WID-003 --branch operator/fix --pushed-result
+garden finish WID-003 --repository OWNER/REPO --branch operator/fix \
+  --pushed-sha 0123456789abcdef0123456789abcdef01234567 --summary '...'
+```
+
+A missing branch, repository mismatch, or stale SHA is refused without closing the manual
+run, so corrected evidence can be submitted after a controller restart. The result summary
+is provenance, not approval; checks and review remain authoritative.
+
 **the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
 model call that is not detached: it runs the harness synchronously with the planning prompt
 on stdin and imports the JSON array it prints as task files. Goals, specs and docs are
@@ -596,3 +612,41 @@ reach `ready`, whatever `plan.auto_approve` says.
   shows the same with the last run's log.
 - `garden brief WID-003 --stats` prints exactly what the next worker would receive and
   how big each section is.
+
+
+## Proportionate verification and evidence metadata
+
+Authors and reviewers receive the same verification guidance. Prove the requested
+outcome and explicit constraints; implementation details and equivalent meaningful
+checks may vary. Authors report source/command/result and artifact references in
+`verified[].evidence`; reviewers inspect existing evidence and report their conclusions.
+For served journeys, keep the actual actions and consequences in `interaction.events`
+and point to saved evidence where available. Check paths and facts before finishing.
+
+Missing metadata is an advisory, not another implementation round. A saved artifact
+may use a different schema or wording from the reviewer report. The controller no
+longer requires a JSON file whose states/events exactly equal the reviewer's paraphrase.
+The old author brief exposed per-criterion prose while the detailed interaction fields
+were only described to reviewers, and the review JSON example omitted the events it
+required. Both briefs now state the evidence contract and the example includes events.
+
+Actual failed checks, contradictory source identities, failed or materially unverified
+journeys, and explicit phase evidence holds still block. An unavailable reference is
+reported honestly; this policy does not manufacture a performed test or interaction.
+Final current-head checks and CI remain required. Reviewers should reuse inspectable
+passing evidence and identify the concrete defect or unmet outcome behind a send-back.
+
+
+### Remote model validation supervision
+
+Remote work, review and persona harnesses run through the same execution supervisor as
+local harnesses. The host creates a private per-claim metadata directory and a fresh owner
+identity; the supervisor supplies `GARDEN_VALIDATION_RUNNER` and `GARDEN_EXECUTION_RUN_DIR`.
+Workers can invoke `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` exactly as
+the brief says. Validation remains serialized per owner and uses the host's heavy-work
+admission and service limits. Controller paths and inherited execution ownership are not
+forwarded as a substitute. Nonzero command results propagate through the wrapper.
+
+This requires a versioned worker runtime update. Updating only the controller's briefs or
+exporting the interpreter variable on its own does not repair an already running worker.
+Stress/load experiments remain outside the ordinary suite and require separate opt-in.
