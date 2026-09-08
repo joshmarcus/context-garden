@@ -19,7 +19,7 @@ from ..model import (
     phase_refusal,
     priority_label,
 )
-from ..review import feedback_with_operator_note
+from ..review import feedback_with_operator_note, review_item_ids
 from ..runs import Run
 from ..stabilization import ACTORS
 from .report import TickReport
@@ -213,7 +213,8 @@ class HumanMixin:
 
     # ---- triage: the human's first look at a draft PR ----------------------
     def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "",
-               supersede_review: bool = False) -> None:
+               supersede_review: bool = False,
+               resolve_review_items: list[str] | None = None) -> None:
         """Record the human's initial review of a draft PR: mark it ready for review, or send
         it back with feedback (a revise run follows)."""
         ensure_open(task)
@@ -224,11 +225,19 @@ class HumanMixin:
         number = self._pr_number(task)
         if changes:
             previous = st.get("last_review")
+            resolved = list(dict.fromkeys(resolve_review_items or []))
+            if supersede_review and resolved:
+                raise RuntimeError("--supersede-review cannot be combined with --resolve-review-item")
+            if resolved and not isinstance(previous, dict):
+                raise RuntimeError("--resolve-review-item needs an applicable automated review")
             if isinstance(previous, dict):
+                unknown = sorted(set(resolved) - review_item_ids(previous))
+                if unknown:
+                    raise RuntimeError("unknown review item(s): " + ", ".join(unknown))
                 st["pending_feedback"] = feedback_with_operator_note(
                     previous, changes, kind="triage", run_id=str(st.get("last_review_run") or ""),
                     source_head=self._last_review_source_head(task, st),
-                    superseded=supersede_review,
+                    superseded=supersede_review, resolved_items=resolved,
                 )
             else:
                 st["pending_feedback"] = f"## Operator triage note\n\n{changes.strip()}"

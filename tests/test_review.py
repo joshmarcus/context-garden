@@ -19,6 +19,7 @@ from garden.review import (
     interaction_requirement,
     parse_review,
     review_brief,
+    review_item_id,
     review_to_markdown,
     validation_plan,
     visual_source_digest,
@@ -462,6 +463,43 @@ def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
     assert "Operator recovery note" in recovery
     assert "remains applicable and this note supplements it" in recovery
     assert "Original finding" in recovery and "review evidence" in recovery
+
+
+def test_operator_triage_resolves_selected_finding_and_keeps_unmatched_review(sched):
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    fixed = {"severity": "blocking", "file": "fixed.py", "line": 4,
+             "summary": "Already fixed", "fix": "Keep the correction."}
+    outstanding = {"severity": "blocking", "file": "open.py", "line": 9,
+                   "summary": "Still outstanding", "fix": "Implement this change."}
+    review = {"summary": "Mixed review", "criteria": [],
+              "findings": [fixed, outstanding]}
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run="review-1", last_review_head="a" * 40)
+    fixed_id = review_item_id("finding", fixed)
+    outstanding_id = review_item_id("finding", outstanding)
+
+    sched.triage(task, changes="The first finding is resolved.",
+                 resolve_review_items=[fixed_id])
+
+    feedback = st["pending_feedback"]
+    resolved, applicable = feedback.split("## Applicable automated review record", 1)
+    assert "Resolved automated review items" in resolved
+    assert "Already fixed" in resolved and fixed_id in resolved
+    assert "Still outstanding" not in resolved
+    assert "Still outstanding" in applicable and outstanding_id in applicable
+    assert "Already fixed" not in applicable
+    assert "Unmatched items remain applicable" in feedback
+
+    task.status = Status.AWAITING_TRIAGE
+    sched.store.save(task)
+    with pytest.raises(RuntimeError, match="unknown review item"):
+        sched.triage(task, changes="bad selection",
+                     resolve_review_items=["finding:000000000000"])
+    with pytest.raises(RuntimeError, match="cannot be combined"):
+        sched.triage(task, changes="ambiguous operation", supersede_review=True,
+                     resolve_review_items=[fixed_id])
 
 
 def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, fake_github):
