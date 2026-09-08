@@ -130,7 +130,7 @@ def run_state(source: Path, garden: Path, output: Path, slots: int) -> dict[str,
                 "pid": server.pid,
                 "cgroup": Path(f"/proc/{server.pid}/cgroup").read_text().strip(),
                 "command": command,
-                "log": str(server_log_path),
+                "log": server_log_path.name,
             },
             "replay_processes": [
                 {"pid": child.pid, "cgroup": Path(f"/proc/{child.pid}/cgroup").read_text().strip()}
