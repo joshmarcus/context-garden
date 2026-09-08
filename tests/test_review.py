@@ -503,6 +503,135 @@ def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypa
     assert run.env_snapshot["capture_pages"] == ["task"]
 
 
+def test_review_admits_trusted_capture_infrastructure_advisory_with_fallback_evidence(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    plan = validation_plan(
+        ["src/garden/web/pages/task.py"], task.title, head=head,
+        visual_scope=task.extra["visual_scope"], capture_infrastructure_policy="advisory",
+    )
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.result = {"checks": [{
+        "name": "ui", "status": "fail", "summary": "UI check did not produce all PNGs",
+        "captures": ["/tmp/task.html", "/tmp/task.txt"], "pages": ["task"],
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+            "diagnostic": "Chromium could not launch in the capture child",
+        },
+    }]}
+    check.save()
+    sched.state.get(task.id)["interaction_replay"] = {"head": head}
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
+                        lambda *_: ["src/garden/web/pages/task.py"])
+
+    review_run = sched.dispatch_review(task)
+    brief = (review_run.path / "brief.md").read_text()
+
+    assert review_run.env_snapshot["capture_pages"] == []
+    assert review_run.env_snapshot["validation_check_current"] is True
+    assert "UI capture infrastructure advisory" in brief
+    assert "screenshot attempt remains recorded as failed" in brief
+    assert "/tmp/task.html" in brief and "/tmp/task.txt" in brief
+    assert "**ui**: fail" in brief
+
+
+def test_review_keeps_application_ui_failure_blocking_under_advisory_policy(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
+                                 task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    plan = validation_plan(
+        ["src/garden/web/pages/task.py"], task.title, head=head,
+        visual_scope=task.extra["visual_scope"], capture_infrastructure_policy="advisory",
+    )
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.result = {"checks": [{
+        "name": "ui", "status": "fail", "failure_kind": "product",
+        "summary": "decision-card walkthrough page is missing", "captures": [], "pages": ["task"],
+    }]}
+    check.save()
+    sched.state.get(task.id)["interaction_replay"] = {"head": head}
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
+                        lambda *_: ["src/garden/web/pages/task.py"])
+
+    review_run = sched.dispatch_review(task)
+    brief = (review_run.path / "brief.md").read_text()
+
+    assert review_run.env_snapshot["capture_pages"] == ["task"]
+    assert "UI capture infrastructure advisory" not in brief
+    assert "decision-card walkthrough page is missing" in brief
+
+
+@pytest.mark.parametrize("functional_failure", [False, True])
+def test_pre_pr_collection_waives_only_trusted_capture_infrastructure(
+    sched, monkeypatch, functional_failure,
+):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    worktree = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task), task.default_branch(), sched.base_for(task)
+    )
+    worker = sched.runs.new_run(task.id, "local", mode="work")
+    worker.status = "done"
+    worker.result = {"pr_body": "Focused behavior is covered by the served fixture."}
+    worker.save()
+    plan = validation_plan(
+        ["src/garden/web/pages/task.py"], task.title, head=gitops.head_sha(worktree),
+        visual_scope={"behavior": "Tighter task layout"},
+        capture_infrastructure_policy="advisory",
+    )
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.save()
+    results = [{
+        "name": "ui", "status": "fail", "summary": "UI check did not produce all PNGs",
+        "captures": ["/tmp/task.html", "/tmp/task.txt"], "pages": ["task"],
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+            "diagnostic": "Chromium could not launch",
+        },
+    }]
+    if functional_failure:
+        results.append({"name": "focused behavior", "status": "fail", "summary": "served fixture returned 500"})
+    opened = []
+    blocked = []
+    monkeypatch.setattr(sched, "_open_pr_after_checks", lambda *args: opened.append(True))
+    monkeypatch.setattr(sched, "_handle_failed_checks", lambda *args: blocked.append(args[5]))
+
+    sched._after_pre_pr_check(
+        task, check, results,
+        {"worker_run_id": worker.run_id, "worktree": str(worktree),
+         "branch": task.default_branch(), "base": sched.base_for(task), "cost": "0"},
+        TickReport(),
+    )
+
+    stored = check.result["checks"]
+    assert next(row for row in stored if row["name"] == "ui")["status"] == "fail"
+    assert next(row for row in stored if row["name"] == "UI captures")["status"] == "advisory"
+    if functional_failure:
+        assert blocked and blocked[0][0]["name"] == "focused behavior"
+        assert not opened
+    else:
+        assert opened and not blocked
+
+
 def test_review_omits_artifacts_from_a_stale_head_check(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
@@ -1507,6 +1636,9 @@ def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, cha
     plan = run.env_snapshot["validation_plan"]
     assert plan["head"] == "planned-head"
     assert plan["checks"][0]["item"] == "focused lint"
+    assert run.env_snapshot["generated_ui_check"] is bool(pages)
+    if ui:
+        assert ui[0]["capture_infrastructure_policy"] == "require"
 
 
 def test_queued_replays_do_not_recursively_drain_or_duplicate_checks(sched, monkeypatch):

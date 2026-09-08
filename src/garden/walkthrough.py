@@ -27,7 +27,7 @@ from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .browser import browser_failure, classify_browser_failure
+from .browser import _probe_child, browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
 from .scheduler import State
@@ -818,18 +818,27 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
     pngs = [path for path in captures if path.endswith(".png")]
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
+    page_failures = [page for page in result.pages
+                     if not (200 <= page.status < 300) or page.note]
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
     details = "\n".join(filter(None, [result.browser_note, *logs]))
-    if not complete_pngs or missing:
+    product_failure = bool(page_failures)
+    if page_failures:
+        failed_pages = ", ".join(f"{page.spec.slug} (HTTP {page.status})" for page in page_failures)
+        summary = "UI application render failed for: " + failed_pages
+        details = "\n".join(filter(None, [details, "unsuccessful or empty rendered pages: " + failed_pages]))
+    elif not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
         if missing:
             details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and not missing and evidence_complete
+        product_failure = True
+    passed = complete_pngs and not missing and evidence_complete and not page_failures
     return {"status": "pass" if passed else "fail", "summary": summary,
-            "failure_kind": "infrastructure" if result.browser_failure_kind else
-                            ("product" if not passed else ""),
+            "failure_kind": ("product" if product_failure else
+                             "infrastructure" if result.browser_failure_kind else
+                             "product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
             "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
@@ -847,7 +856,15 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():
-        return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
+        return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source),
+                "capture_infrastructure": _trusted_capture_infrastructure(
+                    "capture_path_unavailable", f"UI check source path is unavailable: {source}"
+                )}
+    # This runs in the controller-owned wrapper and in the check's already scrubbed process
+    # environment. The worktree renderer cannot manufacture this classification: its returned
+    # dict is stripped below before trusted metadata is attached.
+    browser_probe = ({"ready": True} if spec.get("capture_infrastructure_policy") != "advisory"
+                     else _probe_child())
     env = dict(os.environ)
     env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
@@ -858,12 +875,41 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     try:
         result = json.loads(proc.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        return {"status": "error", "summary": "UI renderer did not return a result",
-                "details": (proc.stderr or proc.stdout)[-2000:]}
+        failed: dict[str, object] = {
+            "status": "error", "summary": "UI renderer did not return a result",
+            "details": (proc.stderr or proc.stdout)[-2000:],
+        }
+        # A traceback/non-zero child is an application or renderer failure and remains blocking.
+        # A clean child whose structured return was lost is capture-return infrastructure.
+        if proc.returncode == 0 and "traceback" not in str(proc.stderr or "").lower():
+            failed["capture_infrastructure"] = _trusted_capture_infrastructure(
+                "capture_result_unavailable", "UI renderer exited cleanly without a structured result"
+            )
+        return failed
+    if not isinstance(result, dict):
+        return {"status": "error", "summary": "UI renderer returned a non-object result",
+                "details": str(result)[:2000]}
+    # Never trust a classification emitted by the worktree process itself.
+    result.pop("capture_infrastructure", None)
     if proc.returncode:
         result["status"] = "error"
         result["details"] = (str(result.get("details") or "") + "\n" + proc.stderr).strip()[-2000:]
+    elif (result.get("status") in ("fail", "error") and not browser_probe.get("ready")
+          and result.get("failure_kind") != "product"):
+        result["capture_infrastructure"] = _trusted_capture_infrastructure(
+            "browser_unavailable", str(browser_probe.get("diagnostic") or "browser runtime unavailable"),
+            browser_kind=str(browser_probe.get("kind") or "launch_failure"),
+        )
     return result
+
+
+def _trusted_capture_infrastructure(kind: str, diagnostic: str, *,
+                                    browser_kind: str = "") -> dict[str, str]:
+    """Metadata written only by the installed UI-check wrapper, never accepted from its child."""
+    row = {"source": "garden.walkthrough:ui_check", "kind": kind, "diagnostic": diagnostic}
+    if browser_kind:
+        row["browser_kind"] = browser_kind
+    return row
 
 
 def _main() -> int:
