@@ -8,10 +8,12 @@ and quoted in the phase retro.
 
 File format — one JSON object per line at `docs/operator-spend.jsonl` (`default_path`):
 
-- a **spend** record, one per heartbeat, summing the Claude Code transcript from its start:
+- a **spend** record, one per heartbeat, summing a Claude Code or Codex transcript from
+  its start:
   `{"at", "session", "first_turn", "last_turn", "turns", "models": {model: turn_count},
   "tokens": {"input", "output", "cache_read", "cache_write"}, "list_price_usd", "avg_context"}`.
-  `list_price_usd` and `turns` are cumulative for the session, not incremental — a later
+  `list_price_usd` is `null` when the transcript has no known price; it is never guessed.
+  `turns` and known prices are cumulative for the session, not incremental — a later
   heartbeat for the same session repeats and extends the earlier one — so `to_cost_events`
   turns consecutive heartbeats into discrete deltas before anything sums them as a cost.
 - a **compacted** marker, written when the operator compacts its context at a boundary:
@@ -34,8 +36,6 @@ PRICES: dict[str, tuple[float, float, float, float]] = {
     "claude-opus-5": (5.0, 25.0, 0.5, 6.25), "claude-opus-4-8": (5.0, 25.0, 0.5, 6.25),
     "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5), "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
 }
-_DEFAULT_PRICE = PRICES["claude-fable-5-1"]
-
 DEFAULT_RELATIVE_PATH = Path("docs") / "operator-spend.jsonl"
 
 
@@ -50,6 +50,11 @@ def project_dir_for(root: Path) -> Path:
     return Path.home() / ".claude" / "projects" / encoded
 
 
+def codex_session_dir() -> Path:
+    """Codex CLI and desktop session transcripts, organized below this directory by date."""
+    return Path.home() / ".codex" / "sessions"
+
+
 def find_transcript(project_dir: Path, session: str = "") -> Path:
     """The newest transcript under `project_dir`, or the newest whose filename contains
     `session`. Raises FileNotFoundError (never returns a made-up path) when none match."""
@@ -62,20 +67,46 @@ def find_transcript(project_dir: Path, session: str = "") -> Path:
     return files[-1]
 
 
+def find_codex_transcript(session_dir: Path, session: str = "") -> Path:
+    """The newest Codex session transcript, optionally matched by its filename or thread id."""
+    files = sorted(session_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if session:
+        files = [f for f in files if session in f.stem or _codex_session_id(f) == session]
+    if not files:
+        where = f"under {session_dir}" + (f" matching session {session!r}" if session else "")
+        raise FileNotFoundError(f"no transcript found in Codex sessions {where}")
+    return files[-1]
+
+
 def record_from_transcript(path: Path) -> dict[str, Any]:
-    """One heartbeat record summing every assistant turn's usage in the transcript at `path`
-    (a Claude Code `.jsonl` session log) from its start, priced at list price. The session id
-    is the transcript's filename stem."""
+    """One cumulative heartbeat from a Claude Code or Codex transcript at ``path``."""
+    events = _events(path)
+    if any(e.get("type") == "session_meta" or (e.get("type") == "event_msg" and isinstance(e.get("payload"), dict)
+           and e["payload"].get("type") == "token_count") for e in events):
+        return _record_codex(path, events)
+    return _record_claude(path, events)
+
+
+def _events(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line in path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _record_claude(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     tot = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     turns = 0
     cost = 0.0
     models: dict[str, int] = {}
     first = last = ""
-    for line in path.read_text().splitlines():
-        try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    price_available = True
+    for e in events:
         m = e.get("message") if isinstance(e.get("message"), dict) else None
         if not m or m.get("role") != "assistant" or not m.get("usage"):
             continue
@@ -89,14 +120,73 @@ def record_from_transcript(path: Path) -> dict[str, Any]:
         tot["output"] += o
         tot["cache_read"] += cr
         tot["cache_write"] += cw
-        pi, po, pr, pw = PRICES.get(model, _DEFAULT_PRICE)
-        cost += (i * pi + o * po + cr * pr + cw * pw) / 1e6
+        price = PRICES.get(model)
+        if price is None:
+            price_available = False
+        else:
+            pi, po, pr, pw = price
+            cost += (i * pi + o * po + cr * pr + cw * pw) / 1e6
         ts = str(e.get("timestamp") or "")
         first = first or ts
         last = ts or last
-    return {"at": now_iso(), "session": path.stem, "first_turn": first, "last_turn": last, "turns": turns,
-           "models": models, "tokens": tot, "list_price_usd": round(cost, 2),
-           "avg_context": int(tot["cache_read"] / max(1, turns))}
+    return {"at": now_iso(), "harness": "claude", "session": path.stem,
+            "first_turn": first, "last_turn": last, "turns": turns, "models": models,
+            "tokens": tot, "list_price_usd": round(cost, 2) if price_available else None,
+            "price_status": "available" if price_available else "unavailable",
+            "usage_status": "available", "avg_context": int(tot["cache_read"] / max(1, turns))}
+
+
+def _codex_session_id(path: Path) -> str:
+    for event in _events(path):
+        if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
+            return str(event["payload"].get("id") or "")
+    return ""
+
+
+def _record_codex(path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Use Codex's latest cumulative ``token_count`` rather than summing its snapshots."""
+    total: dict[str, Any] | None = None
+    session = path.stem
+    turn_models: dict[str, int] = {}
+    first = last = ""
+    turns = 0
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event.get("type") == "session_meta":
+            session = str(payload.get("id") or session)
+        if event.get("type") == "turn_context":
+            # A turn can publish several cumulative token snapshots.  The context
+            # event is its boundary, so it alone owns turn/model attribution.
+            model = str(payload.get("model") or "")
+            turns += 1
+            if model:
+                turn_models[model] = turn_models.get(model, 0) + 1
+            timestamp = str(event.get("timestamp") or "")
+            first = first or timestamp
+            last = timestamp or last
+        if event.get("type") != "event_msg" or payload.get("type") != "token_count":
+            continue
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+        usage = info.get("total_token_usage")
+        if not isinstance(usage, dict):
+            continue
+        total = usage
+    if total is None:
+        return {"at": now_iso(), "harness": "codex", "session": session,
+                "first_turn": "", "last_turn": "", "turns": 0, "models": {}, "tokens": None,
+                "list_price_usd": None, "price_status": "unavailable", "usage_status": "unavailable",
+                "avg_context": None}
+    cached = int(total.get("cached_input_tokens", 0) or 0)
+    input_tokens = max(0, int(total.get("input_tokens", 0) or 0) - cached)
+    tokens = {"input": input_tokens,
+              "output": int(total.get("output_tokens", 0) or 0),
+              "cache_read": cached,
+              "cache_write": int(total.get("cache_write_input_tokens", 0) or 0)}
+    return {"at": now_iso(), "harness": "codex", "session": session,
+            "first_turn": first, "last_turn": last, "turns": turns,
+            "models": turn_models, "tokens": tokens,
+            "list_price_usd": None, "price_status": "unavailable", "usage_status": "available",
+            "avg_context": int(tokens["cache_read"] / max(1, turns))}
 
 
 def compacted_record(session: str) -> dict[str, Any]:
@@ -140,7 +230,10 @@ def to_cost_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows.sort(key=lambda r: str(r.get("at") or ""))
         prev = 0.0
         for r in rows:
-            total = float(r.get("list_price_usd") or 0.0)
+            reported_total = r.get("list_price_usd")
+            if not isinstance(reported_total, (int, float)):
+                continue
+            total = float(reported_total)
             delta = max(total - prev, 0.0)
             prev = total
             out.append({"kind": "run_finished", "at": str(r.get("at") or ""), "mode": "operator",
@@ -173,9 +266,12 @@ def session_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if sid not in latest or str(r.get("at") or "") > str(latest[sid].get("at") or ""):
             latest[sid] = r
-    rows = [{"session": sid, "at": str(r.get("at") or ""), "turns": int(r.get("turns") or 0),
-            "avg_context": int(r.get("avg_context") or 0),
-            "cost_usd": round(float(r.get("list_price_usd") or 0.0), 2),
+    rows = [{"session": sid, "harness": str(r.get("harness") or "claude"),
+            "at": str(r.get("at") or ""), "turns": int(r.get("turns") or 0),
+            "avg_context": r.get("avg_context"),
+            "cost_usd": round(float(r["list_price_usd"]), 2)
+            if isinstance(r.get("list_price_usd"), (int, float)) else None,
+            "usage_status": str(r.get("usage_status") or "available"),
             "compactions": compactions.get(sid, 0)}
            for sid, r in latest.items()]
     rows.sort(key=lambda r: r["at"], reverse=True)

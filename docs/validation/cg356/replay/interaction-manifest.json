@@ -1,0 +1,160 @@
+{
+  "producer": "garden.cg356.onboarding-replay/v1",
+  "head": "dac4a1630582fad42b6d4b0690443312f25bf42f",
+  "started_at": "2026-09-08T09:39:54.013573+00:00",
+  "environment": "disposable-served-http",
+  "status": "pass",
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/onboarding",
+      "url": "http://127.0.0.1:33387/onboarding",
+      "status_code": 200,
+      "observation": {
+        "product_exists": false,
+        "task_statuses": []
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding/reject",
+      "url": "http://127.0.0.1:33387/onboarding/reject",
+      "status_code": 422,
+      "observation": {
+        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T093639Z-revise/cg356-replay-sv2kktxs/sample-web --into /home/joshua/work/tmp-disk/20260908T093639Z-revise/cg356-replay-sv2kktxs/garden",
+        "preexisting_files_unchanged": true,
+        "product_exists": false,
+        "task_statuses": []
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding/retry",
+      "url": "http://127.0.0.1:33387/onboarding/retry",
+      "status_code": 201,
+      "observation": {
+        "created": [
+          "garden.yaml",
+          "principles/10-sample-web-conventions.md",
+          "sample-web/docs/onboarding.md",
+          "sample-web/phase-01/goals.md",
+          "sample-web/phase-01/specs/.gitkeep",
+          "sample-web/phase-01/tasks/.gitkeep",
+          "sample-web/phase-01/tasks/SW-001-add-health-endpoint.md",
+          "sample-web/product.md"
+        ],
+        "product_exists": true,
+        "task_statuses": [
+          "draft"
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/onboarding/collision",
+      "url": "http://127.0.0.1:33387/onboarding/collision",
+      "status_code": 409,
+      "observation": {
+        "error": "onboarding would overwrite an existing product: product 'sample-web' in garden.yaml, sample-web, principles/10-sample-web-conventions.md",
+        "files_unchanged": true,
+        "product_exists": true,
+        "task_statuses": [
+          "draft"
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:33387/onboarding",
+      "status_code": 200,
+      "observed": "The disposable garden contains no product or tasks."
+    },
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "POST",
+      "url": "http://127.0.0.1:33387/onboarding/reject",
+      "status_code": 422,
+      "observed": "Planner rejection leaves the pre-existing garden unchanged."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:33387/onboarding/retry",
+      "status_code": 201,
+      "observed": "A successful 201 retry creates draft-only onboarding output."
+    },
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:33387/onboarding/collision",
+      "status_code": 409,
+      "observed": "A collision response preserves the completed garden."
+    }
+  ],
+  "artifacts": [
+    "docs/validation/cg356/replay/interaction-manifest.json"
+  ],
+  "states": {
+    "empty": {
+      "status": "pass",
+      "action": "GET /onboarding",
+      "observed": {
+        "product_exists": false,
+        "task_statuses": []
+      }
+    },
+    "failure": {
+      "status": "pass",
+      "action": "POST /onboarding/reject",
+      "observed": {
+        "error": "planner task 'Replace the database engine' has no unambiguous backlog provenance; its title or body must identify one backlog item and discovered_from must name that source\nPlanner output was rejected. Draft scaffold recovery: garden.yaml: restored ; principles/10-sample-web-conventions.md: removed ; sample-web/phase-01/goals.md: removed ; sample-web/phase-01/specs/.gitkeep: removed ; sample-web/phase-01/tasks/.gitkeep: removed ; sample-web/product.md: removed. No tasks were imported or approved. Retry with: garden onboard /home/joshua/work/tmp/20260908T093639Z-revise/cg356-replay-sv2kktxs/sample-web --into /home/joshua/work/tmp-disk/20260908T093639Z-revise/cg356-replay-sv2kktxs/garden",
+        "preexisting_files_unchanged": true,
+        "product_exists": false,
+        "task_statuses": []
+      }
+    },
+    "recovery": {
+      "status": "pass",
+      "action": "POST /onboarding/retry",
+      "observed": {
+        "created": [
+          "garden.yaml",
+          "principles/10-sample-web-conventions.md",
+          "sample-web/docs/onboarding.md",
+          "sample-web/phase-01/goals.md",
+          "sample-web/phase-01/specs/.gitkeep",
+          "sample-web/phase-01/tasks/.gitkeep",
+          "sample-web/phase-01/tasks/SW-001-add-health-endpoint.md",
+          "sample-web/product.md"
+        ],
+        "product_exists": true,
+        "task_statuses": [
+          "draft"
+        ]
+      }
+    },
+    "collision": {
+      "status": "pass",
+      "action": "POST /onboarding/collision",
+      "observed": {
+        "error": "onboarding would overwrite an existing product: product 'sample-web' in garden.yaml, sample-web, principles/10-sample-web-conventions.md",
+        "files_unchanged": true,
+        "product_exists": true,
+        "task_statuses": [
+          "draft"
+        ]
+      }
+    }
+  }
+}

@@ -6,8 +6,8 @@ attached to it. This page walks through everything that passes between them.
 
 ## The short version
 
-There is no socket, no RPC and no shared memory. The two sides share a filesystem and use
-exactly these channels:
+Local and SSH-driven workers use the filesystem channels below. A pull-based `remote`
+runner instead uses HTTPS and shares no filesystem with the scheduler.
 
 | direction | channel | carries |
 |---|---|---|
@@ -17,6 +17,52 @@ exactly these channels:
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
 | worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
+
+## Independent hosts
+
+With `runner: remote`, dispatch queues a run without launching a process. An independent
+host runs `garden worker --garden https://garden.example --host build-1` and authenticates
+with the bearer token named by `workers.hosts[].token_env`.
+
+- `POST /api/runs/claim` leases one compatible work, review, persona, or check run and
+  returns its brief, mode, branch/base, repository URL, setup timeout, turn cap, and
+  environment-variable allowlist.
+- `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
+  returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from
+  an expired claim cannot affect a run after it has been reclaimed, even on the same host.
+- The worker pushes its commit to the claim's lease-specific staging ref, never directly to
+  the task branch. `POST /api/runs/<id>/finish` records the exit code, final message, result,
+  usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
+  the task branch with a git lease, then uses its ordinary
+  result, PR, review, check, and accounting paths.
+
+Expired leases are claimable again and do not fail the task. Each reclaim gets a different
+staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can
+only update its abandoned ref; it cannot overwrite the task branch. Browser origin checking still
+applies; only a correctly token-authenticated runs API request bypasses it. Claim responses
+contain no token or environment value. Repository URL user-info, query strings, and fragments
+are stripped. Of SCP-style remotes, only the conventional `git@host:path` form is accepted;
+other user identities and malformed URL-like remotes fail closed. Configured harness arguments
+are not transported because they may contain inline credentials. The product's trusted
+`setup.command` and timeout are transported so a managed consumer can prepare every execution
+mode inside its admitted host slot; `setup.env` values are not transported. Git, setup, and
+harness credentials belong to the host. A standalone `garden worker` continues to use
+`--setup-command ...` for host-owned preparation. That explicit command also overrides
+product setup for checks. The configured command is sent verbatim to the authenticated host;
+keep credentials in host-local environment/configuration, never inline in that command.
+
+```yaml
+runner: remote
+workers:
+  lease_seconds: 120
+  hosts:
+    - name: build-1
+      token_env: GARDEN_BUILD_1_TOKEN
+      max_parallel: 2
+```
+
+`garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
+the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
@@ -130,7 +176,7 @@ Before anything is started, the scheduler settles every choice a worker might ot
 have had to make:
 
 - **Runner**: the task's `runner:`, else the product's, else the garden's (`local`,
-  `ssh` or `manual`).
+  `ssh`, `remote` or `manual`).
 - **Harness and model**: the task's `harness:`, else the product's, else the garden's;
   the model is the task's explicit `model:` or the harness's map from the task's
   `difficulty` (`easy`, `medium`, `hard`) to a model name.
@@ -139,7 +185,9 @@ have had to make:
   whose PR is still open.
 - **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
   (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
-  creates or reuses its host-side worktree as described in its variant below. Remote runners beyond ssh are not implemented; the `runner: remote` claim, heartbeat and finish flow are deferred to CG-216.
+  creates or reuses its host-side worktree as described in its variant below. The pull-based
+  remote runner creates or reuses its independent host-side clone and pushes through the
+  lease-specific staging ref described above.
 - **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
