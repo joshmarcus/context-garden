@@ -161,8 +161,12 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
     """The evidence behind an attention card, as plain lines: recent runs, the last
     automated review, the PR state and the revision count."""
     out: list[str] = []
-    for r in (runs.runs_for(t.id) if runs else [])[-2:]:
+    task_runs = runs.runs_for(t.id) if runs else []
+    for r in task_runs[-3:]:
         line = f"run {r.run_id} ({r.mode}): {r.status}"
+        head = r.pushed_head or r.start_head
+        if head:
+            line += f" · head {head[:12]}"
         detail = (r.error or "").strip() or str((r.result or {}).get("summary") or "").strip()
         if detail:
             line += f" — {detail[:140]}"
@@ -183,6 +187,10 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
     rev = st.get("last_review") or {}
     if rev:
         out.append(f"last automated review: {str(rev.get('verdict', '')).replace('_', ' ')} — {str(rev.get('summary', ''))[:160]}")
+    feedback = [str(item).strip() for item in st.get("review_feedback_history", []) if str(item).strip()]
+    repeated = [(item, feedback.count(item)) for item in dict.fromkeys(feedback) if feedback.count(item) > 1]
+    for finding, count in repeated[-3:]:
+        out.append(f"repeated finding ({count} reviews): {finding[:160]}")
     if t.pr:
         bits = ["draft" if st.get("pr_draft") else str(st.get("pr_state") or "open").lower()]
         if st.get("review_decision"):
@@ -206,6 +214,9 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         and st["needs_human"].get("kind") in ("troubled_task", "investigation", "investigation_report")
     ):
         out.append(f"current owner: {str((st.get('investigation') or {}).get('owner') or 'product owner')}")
+    troubled = st.get("troubled")
+    if isinstance(troubled, dict) and troubled.get("recommendation"):
+        out.append(f"recommended next action: {troubled['recommendation']}")
     return out
 
 
@@ -306,8 +317,19 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if investigation.get("report"):
         report = investigation["report"]
         if isinstance(report, dict):
-            evidence.insert(0, f"investigation recommendation: {report.get('recommendation', 'not stated')}")
-            evidence.insert(0, f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}")
+            report_lines = [
+                f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}",
+                "unknowns: " + "; ".join(str(v) for v in report.get("unknowns", [])[:4]),
+                "evidence: " + "; ".join(str(v) for v in report.get("evidence", [])[:4]),
+                "attempted checks: " + "; ".join(str(v) for v in report.get("attempted_checks", [])[:4]),
+                f"retain earlier work: {'yes' if report.get('retain_work') else 'no'}",
+                "alternatives and tradeoffs: " + "; ".join(str(v) for v in report.get("alternatives", [])[:4]),
+                f"investigation recommendation: {report.get('recommendation', 'not stated')}",
+            ]
+            links = report.get("links") or report.get("evidence_links") or []
+            if links:
+                report_lines.append("evidence links: " + "; ".join(str(v) for v in links[:4]))
+            evidence[0:0] = report_lines
         else:
             evidence.insert(0, "investigation report: " + str(report))
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
