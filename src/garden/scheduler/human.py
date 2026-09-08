@@ -476,6 +476,7 @@ class HumanMixin:
             base=str(check.get("cont", {}).get("base") or self.base_for(task)),
             specs=list(check["specs"]), stage=str(check["stage"]),
             cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
+            backend=str(check.get("backend") or ""), provenance=str(check.get("provenance") or ""),
         )
         used.add(fingerprint)
         st["delegated_recovery_fingerprints"] = sorted(used)
