@@ -1,0 +1,20 @@
+{
+  "version": "0.3.0rc5",
+  "tag": "v0.3.0rc5",
+  "prior_deployed": "v0.3.0rc3/c8c661e8a1ba3bf69033edd517308f8c588d8e99",
+  "supersedes_uninstalled_candidate": "v0.3.0rc4/addb83a3ff6d29de0dac7a59cc365e15d2fb93b9",
+  "includes": [
+    "CG424/PR306 metadata-only advisory policy and consistent briefs",
+    "CG426/PR309 explicit opt-in stress tests",
+    "CG429 remote harness validation supervision",
+    "Package/runtime version consistency regression"
+  ],
+  "verification_policy": "Owner authorized exact-source ordinary full-suite execution on an AWS worker in place of duplicate GitHub full-suite validation. Record executed SHA, selection, full outcome and logs before publication. Stress is excluded.",
+  "compatibility": "No state schema migration. Update worker runtimes at a drained host boundary for the supervision fix; controller-only installation does not change active remote harnesses.",
+  "known_limits": [
+    "CG396 worker-result status provider and centralized remaining GitHub lookup integration are pending.",
+    "CG427 Codex transcript renderer and CG428 redeploy reconnect recovery are pending.",
+    "Phase05 stabilization and specific Phase07 evidence holds remain unproven."
+  ],
+  "rollback": "Install prior verified v0.3.0rc3/c8c661e8 through an accounted drain without reverting task state or run artifacts."
+}
