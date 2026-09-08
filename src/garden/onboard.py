@@ -556,6 +556,13 @@ def onboard_project(
     config_before = cfg_path.read_bytes() if cfg_path.exists() else None
     gitignore = garden / ".gitignore"
     gitignore_before = gitignore.read_bytes() if gitignore.exists() else None
+    transaction_files = {
+        path: path.read_bytes() if path.exists() else None
+        for path in (
+            garden / ".garden" / "tasks.lock",
+            garden / ".garden" / "reservations.json.lock",
+        )
+    }
 
     # GitHub is optional enrichment of the deterministic local result. It happens only in
     # the end-to-end command and every successful query is recorded in the report.
@@ -619,21 +626,33 @@ def onboard_project(
     try:
         items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
         provenances = [_backlog_provenance(item, backlog) for item in items]
+        tasks = import_plan(store, product, "phase-01", items, status="draft")
+        for task, provenance in zip(tasks, provenances, strict=False):
+            task.discovered_from = provenance
+            store.save(task)
+            created.append(task.path)
     except (RuntimeError, ValueError) as error:
+        # import_plan writes each task as it validates the batch.  Include every task it
+        # managed to create before an invalid later item raised, so recovery remains
+        # transactional instead of leaving a product collision behind.
+        task_dir = product_dir / "phase-01" / "tasks"
+        generated_bytes.update(
+            {path: path.read_bytes() for path in task_dir.glob("*.md") if path.is_file()}
+        )
         dispositions = _restore_onboarding_drafts(
             garden, product, config_before, gitignore_before, generated_bytes
         )
+        for path, before in transaction_files.items():
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(before)
         retry_source = repo_value or str(repo)
         retry = shlex.join(["garden", "onboard", retry_source, "--into", str(garden)])
         raise ValueError(
             f"{error}\nPlanner output was rejected. Draft scaffold recovery: "
             f"{' ; '.join(dispositions)}. No tasks were imported or approved. Retry with: {retry}"
         ) from error
-    tasks = import_plan(store, product, "phase-01", items, status="draft")
-    for task, provenance in zip(tasks, provenances, strict=False):
-        task.discovered_from = provenance
-        store.save(task)
-        created.append(task.path)
 
     report = product_dir / "docs" / "onboarding.md"
     report.parent.mkdir(exist_ok=True)

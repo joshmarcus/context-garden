@@ -385,6 +385,34 @@ def test_onboard_rolls_back_a_planner_failure(tmp_path):
     assert not (garden / "sample-web").exists()
 
 
+def test_onboard_rolls_back_partial_import_and_allows_a_clean_retry(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    write(garden / "notes.md", "An existing garden file.\n")
+    before = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+
+    def partially_invalid_plan(store: Store, prompt: str) -> str:
+        first = json.loads(_valid_plan(store, prompt))[0]
+        second = {**first, "title": "Add structured logging", "priority": "not-a-number"}
+        return json.dumps([first, second])
+
+    with pytest.raises(ValueError, match="invalid literal for int") as error:
+        onboard_project(repo, garden, planner=partially_invalid_plan)
+
+    assert "No tasks were imported or approved" in str(error.value)
+    after_failure = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+    assert after_failure == before
+    assert not (garden / "sample-web").exists()
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    tasks = Store(garden).product("sample-web").phases[0].tasks
+    assert [task.status.value for task in tasks] == ["draft"]
+
+
 def test_onboard_recovery_retry_command_quotes_paths_with_spaces(tmp_path):
     repo = _node_repo(tmp_path).rename(tmp_path / "source project")
     garden = tmp_path / "garden drafts"
