@@ -592,7 +592,7 @@ def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
     page = client(garden).get("/tasks/DM-001").text
     assert "exact-head CI" in page
     assert "worker_check · mismatched" in page
-    assert "abc123" in page and "stale" in page
+    assert "abc123" in page and "stale" in page and "absent for SHA" in page
 
 
 def test_read_generation_is_copy_on_write_across_an_action(garden):
