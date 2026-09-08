@@ -3,6 +3,12 @@
 The reviewed code was served from this worktree with `create_app(Store(...), watch=False)`
 against a disposable garden on `http://127.0.0.1:8874`.
 
+The current-head, disposable HTTP replay is retained in
+[`replay/interaction-manifest.json`](replay/interaction-manifest.json). It records the
+reviewed SHA, chronological requests and outcomes for the affected, failure, recovery,
+and empty states; its accompanying `result.json`, `tick-log.json`, and captured served
+pages are retained in the same directory.
+
 - Affected state: `GET /inbox` showed the operator-owned `/etc/demo/live.yaml` prerequisite,
   its explanation, and the evidence action. `GET /tasks/DM-001` showed the same scoped
   prerequisite and action beside the task's checkout work.
