@@ -120,6 +120,30 @@ def test_ssh_runner_end_to_end(sched, garden, fake_github, tmp_path, harness, ou
     assert fake_github.created[0]["head"] == "garden/dm-001-first-task"
 
 
+@pytest.mark.needs_remote_clone
+def test_ssh_dispatch_uses_an_alias_in_shared_evidence_and_keeps_target_local(garden, fake_github):
+    """The connection target is needed by the local SSH wrapper, never shared context."""
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    target = "operator@host-203-0-113-10.internal"
+    cfg["ssh"]["hosts"][0]["host"] = target
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github, log=print)
+    task = sched.store.task("DM-001")
+    task.runner = "ssh"
+    sched.store.save(task)
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+
+    assert run.host == "boxA"
+    assert target not in (run.path / "brief.md").read_text()
+    assert target not in (garden / "demo" / "p1" / "tasks" / "DM-001-first.md").read_text()
+    assert target not in (garden / ".garden" / "events.jsonl").read_text()
+    assert target in (run.path / "command.txt").read_text()  # ignored local diagnostic artifact
+
+
 def test_local_runner_doctor_windows():
     with patch("os.name", "nt"):
         runner = LocalRunner({}, None)

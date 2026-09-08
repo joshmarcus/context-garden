@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .criteria import parse_criteria
+from .host_identity import scrub_shared_text
 from .model import Task, estimate_tokens, goals_text
 from .preflight import preflight_section
 from .store import Store
@@ -476,7 +477,7 @@ def build_brief(
 
     return Brief(
         task=task,
-        text=text,
+        text=scrub_shared_text(text, cfg.data),
         sections={n: len(s) for n, s in sections},
         inlined=inlined,
         referenced=referenced,

@@ -35,6 +35,19 @@ def test_notify_test_returns_none_when_unconfigured():
     assert notify_test({}) is None
 
 
+def test_notify_replaces_configured_connection_targets_and_credentials(tmp_path):
+    out = tmp_path / "message.txt"
+    target = "operator@host-203-0-113-10.internal"
+    cfg = {
+        "ssh": {"hosts": [{"name": "build-a", "host": target}]},
+        "notify": {"command": f'printf %s "$GARDEN_MESSAGE" > {out}'},
+    }
+
+    notify(cfg, "T-1", "failed", f"lost {target}; token=not-for-sharing")
+
+    assert out.read_text() == "lost build-a; token=<redacted>"
+
+
 def test_notify_test_runs_with_the_synthetic_payload(tmp_path):
     out = tmp_path / "out.txt"
     cfg = {"notify": {"command": f'echo "$GARDEN_TASK_ID $GARDEN_STATUS" > {out}'}}
