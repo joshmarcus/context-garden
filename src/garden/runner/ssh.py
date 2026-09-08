@@ -45,11 +45,27 @@ if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then WT=$REPO; else WT=$REPO/.gar
 BRANCH={branch}
 BASE={base}
 cd "$REPO"
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ] && [ "$REPO" != "$(pwd -P)" ]; then
+  echo "canonical checkout root may not contain symlinks or relative components: $REPO" >&2; exit 4
+fi
 git fetch --prune origin >&2
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
   GARDEN_CANONICAL_LEASE="$REPO/.git/garden-canonical-lease"
-  if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then echo "canonical checkout is already leased" >&2; exit 4; fi
-  trap 'rmdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null || :' EXIT HUP INT TERM
+  GARDEN_ACTIVE_RUN_IDS={active_run_ids}
+  if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then
+    GARDEN_LEASE_OWNER=$(cat "$GARDEN_CANONICAL_LEASE/run-id" 2>/dev/null || :)
+    case " $GARDEN_ACTIVE_RUN_IDS " in
+      *" $GARDEN_LEASE_OWNER "*) echo "canonical checkout is leased by active run $GARDEN_LEASE_OWNER" >&2; exit 4;;
+    esac
+    if [ -z "$GARDEN_LEASE_OWNER" ]; then echo "canonical checkout has an unreadable lease" >&2; exit 4; fi
+    if [ -n "$(git status --porcelain)" ]; then echo "stale canonical lease $GARDEN_LEASE_OWNER preserves uncommitted work; refusing recovery" >&2; exit 4; fi
+    GARDEN_STALE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$GARDEN_STALE_BRANCH" != "$BRANCH" ] && [ "$GARDEN_STALE_BRANCH" != "$BASE" ]; then echo "stale canonical lease $GARDEN_LEASE_OWNER has branch drift: $GARDEN_STALE_BRANCH" >&2; exit 4; fi
+    rm -f "$GARDEN_CANONICAL_LEASE/run-id" && rmdir "$GARDEN_CANONICAL_LEASE"
+    if ! mkdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null; then echo "canonical checkout was claimed during recovery" >&2; exit 4; fi
+  fi
+  printf '%s\n' {run_id} > "$GARDEN_CANONICAL_LEASE/run-id"
+  trap 'rm -f "$GARDEN_CANONICAL_LEASE/run-id"; rmdir "$GARDEN_CANONICAL_LEASE" 2>/dev/null || :' EXIT HUP INT TERM
   if [ -n "$(git status --porcelain)" ]; then echo "canonical checkout has uncommitted work; refusing preparation" >&2; exit 4; fi
   GARDEN_CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
   if [ "$GARDEN_CURRENT_BRANCH" != "$BRANCH" ] && [ "$GARDEN_CURRENT_BRANCH" != "$BASE" ]; then echo "canonical checkout branch drift: $GARDEN_CURRENT_BRANCH" >&2; exit 4; fi
@@ -74,8 +90,13 @@ if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ] && git show-ref --verify --quiet 
   if [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ] && [ "$(git rev-list --count origin/$BRANCH..HEAD)" = "0" ]; then git merge -q --ff-only "origin/$BRANCH" >&2 || true; fi
   if [ "$(git rev-list --count origin/$BRANCH..HEAD)" != "0" ] && [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ]; then git reset -q --hard "origin/$BRANCH" >&2; fi
 fi
-mkdir -p .garden-run
-cat > .garden-run/brief.md <<'GARDEN_BRIEF_EOF'
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
+  GARDEN_RUN_DIR="$REPO/.git/garden-run-{run_id}"
+else
+  GARDEN_RUN_DIR="$WT/.garden-run"
+fi
+mkdir -p "$GARDEN_RUN_DIR"
+cat > "$GARDEN_RUN_DIR/brief.md" <<'GARDEN_BRIEF_EOF'
 {brief}
 GARDEN_BRIEF_EOF
 # The worker (harness) and its setup command run in an allowlisted environment, the same scrub
@@ -90,7 +111,11 @@ GARDEN_BRIEF_EOF
 # up from the worktree would otherwise accept the remote product repo's own garden.yaml.
 # `setup.env` rides on top, matching runner.base.scrubbed_env.
 GARDEN_ENV_ALLOW={env_allow}
-GARDEN_WORKER_HOME="$REPO/.garden-worktrees/.garden-home-{task}"
+if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
+  GARDEN_WORKER_HOME="$REPO/.git/garden-home-{task}"
+else
+  GARDEN_WORKER_HOME="$REPO/.garden-worktrees/.garden-home-{task}"
+fi
 garden_copy_config() {{
   source=$1 destination=$2 required=$3 current="$GARDEN_WORKER_HOME"
   [ ! -L "$current" ] || {{ echo "unsafe worker config HOME" >&2; exit 4; }}
@@ -138,7 +163,8 @@ garden_scrub() {{
 GARDEN_RECONCILE_CMD={reconcile_cmd}
 GARDEN_RECONCILE_TIMEOUT={reconcile_timeout}
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ] && [ -n "$GARDEN_RECONCILE_CMD" ]; then
-  if command -v timeout >/dev/null 2>&1; then GARDEN_RECONCILE_RUN="timeout $GARDEN_RECONCILE_TIMEOUT sh -c"; else GARDEN_RECONCILE_RUN="sh -c"; fi
+  if ! command -v timeout >/dev/null 2>&1 || ! timeout --version >/dev/null 2>&1; then echo "canonical reconciliation requires working timeout(1)" >&2; exit 4; fi
+  GARDEN_RECONCILE_RUN="timeout $GARDEN_RECONCILE_TIMEOUT sh -c"
   if ! ( garden_scrub; $GARDEN_RECONCILE_RUN "$GARDEN_RECONCILE_CMD" >&2 ); then echo "canonical reconciliation failed or timed out" >&2; exit 4; fi
   if [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]; then echo "canonical checkout not ready after reconciliation" >&2; exit 4; fi
 fi
@@ -154,10 +180,10 @@ if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" !
   if ( garden_scrub; $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2 ); then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
 fi
 set +e
-( garden_scrub; {harness} < .garden-run/brief.md )
+( garden_scrub; {harness} < "$GARDEN_RUN_DIR/brief.md" )
 RC=$?
 set -e
-rm -rf .garden-run
+rm -rf "$GARDEN_RUN_DIR"
 if [ -n "$(git status --porcelain)" ]; then git add -A >&2; git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >&2 || true; fi
 if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >&2; fi
 exit $RC
@@ -249,6 +275,8 @@ class SSHRunner(Runner):
             checkout_strategy=shlex.quote(str(checkout.get("strategy") or "worktree")),
             reconcile_cmd=shlex.quote(str(checkout.get("reconcile_command") or "").strip()),
             reconcile_timeout=shlex.quote(str(int(checkout.get("reconcile_timeout_seconds") or 600))),
+            active_run_ids=shlex.quote(" ".join(str(item) for item in
+                                                run.env_snapshot.get("canonical_active_run_ids", []))),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")

@@ -16,7 +16,7 @@ class AuxMixin:
         return self.state.get("_aux").setdefault("runs", [])
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
-                     harness_name: str = "", difficulty: str = "") -> Run:
+                     harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None) -> Run:
         self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
@@ -26,8 +26,8 @@ class AuxMixin:
         # have no task, and the old shared `_persona` bucket let reports from two phases
         # overwrite one another.
         run_task_id = probe.id if task or kind == "persona" else f"_{kind}"
-        run = (self.runs.new_run(run_task_id, runner_name, mode=kind)
-               if runner_name == "remote" else self._new_local_run(run_task_id, kind, kind))
+        run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind)
+                               if runner_name == "remote" else self._new_local_run(run_task_id, kind, kind))
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
         run.env_snapshot = {"product": probe.product}
