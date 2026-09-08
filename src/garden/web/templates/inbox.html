@@ -32,6 +32,7 @@
 {% endif %}
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
 <form method="get" action="/inbox" class="actions" style="margin:0 0 12px"><label class="muted" for="owner-filter">My work</label><input id="owner-filter" name="owner" value="{{ owner_filter or '' }}" placeholder="logical owner id"><button class="quiet">Filter</button>{% if owner_filter is not none %}<a class="btn quiet" href="/inbox">All work</a>{% endif %}</form>
+{% if owner_filter is not none and not owner_task_items %}<div class="inbox-zero"><b>No work assigned to {{ owner_filter or 'unassigned' }}</b>Task cards for other owners are hidden by this filter.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">
   <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no action needed{% endif %}</h2><p>{{ gdesc }}</p></header>

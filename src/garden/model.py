@@ -143,6 +143,7 @@ class Task:
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
     owner: str = ""  # stable logical owner id; never an execution or permission identity
+    owner_unassigned: bool = False  # explicit task-level opt-out of a phase default
     discovered_from: str = ""  # task id that reported this one as discovered work
     freeze_exception: bool = False  # with freeze_exception_reason, lets this task through a frozen phase
     freeze_exception_reason: str = ""
@@ -268,7 +269,8 @@ class Task:
             harness=str(data.get("harness") or ""),
             difficulty=str(data.get("difficulty") or "medium"),
             model=str(data.get("model") or ""),
-            owner=_owner_id(data.get("owner"), path),
+            owner="" if data.get("owner") == _UNASSIGNED_OWNER else _owner_id(data.get("owner"), path),
+            owner_unassigned=data.get("owner") == _UNASSIGNED_OWNER,
             discovered_from=str(data.get("discovered_from") or ""),
             freeze_exception=bool(data.get("freeze_exception") or False),
             freeze_exception_reason=str(data.get("freeze_exception_reason") or ""),
@@ -307,6 +309,8 @@ class Task:
             v = getattr(self, k)
             if v:
                 data[k] = v
+        if self.owner_unassigned:
+            data["owner"] = _UNASSIGNED_OWNER
         if self.freeze_exception:
             data["freeze_exception"] = True
             if self.freeze_exception_reason:
@@ -445,6 +449,7 @@ class Phase:
 
 
 _OWNER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_UNASSIGNED_OWNER = "unassigned"
 
 
 def _owner_id(value: Any, path: Path) -> str:
@@ -455,7 +460,7 @@ def _owner_id(value: Any, path: Path) -> str:
     """
     if value is None or value == "":
         return ""
-    if not isinstance(value, str) or not _OWNER_ID_RE.fullmatch(value):
+    if not isinstance(value, str) or not _OWNER_ID_RE.fullmatch(value) or value == _UNASSIGNED_OWNER:
         raise ValueError(f"{path}: owner must be a stable logical identifier")
     return value
 
@@ -466,6 +471,8 @@ def effective_owner(task: Task, phase: Phase | None = None) -> tuple[str, str]:
     Ownership is planning metadata only.  Callers must not use it to select credentials,
     runners, permissions, or approval gates.
     """
+    if task.owner_unassigned:
+        return "", "unassigned"
     if task.owner:
         return task.owner, "task"
     if phase and phase.owner:
