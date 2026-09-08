@@ -98,12 +98,26 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
     value = url.strip()
     patterns = (
         r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
-        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?P<port>:\d+)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
         r"(?:[^@:]+@)?(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
     )
     for pattern in patterns:
         match = re.fullmatch(pattern, value, flags=re.IGNORECASE)
-        if match and match["host"].lower().rstrip(".") == expected:
+        if not match:
+            continue
+        port = match.groupdict().get("port")
+        if port and not 0 < int(port[1:]) <= 65535:
+            continue
+        remote_host = match["host"].lower().rstrip(".")
+        if pattern.startswith("ssh://") and expected == "github.com":
+            # GitHub documents ssh.github.com:443 for networks where port 22 is
+            # blocked. It is the public github.com route, not a separate host.
+            valid_host = (
+                remote_host == "github.com" and (not port or port == ":22")
+            ) or (remote_host == "ssh.github.com" and port == ":443")
+        else:
+            valid_host = remote_host == expected
+        if valid_host:
             return f"{match['owner']}/{match['repo']}"
     return None
 

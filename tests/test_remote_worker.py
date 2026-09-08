@@ -330,6 +330,7 @@ def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch
     "acct-1234@example.test:team/repo.git",
     "ssh://git@example.test/team/repo.git",
     "ssh://acct-1234@example.test:443/team/repo.git",
+    "ssh://acct-1234@example.test:2222/team/repo.git",
 ])
 def test_claim_preserves_safe_ssh_transport_usernames(garden, monkeypatch, remote):
     client, store = remote_client(garden, monkeypatch)
