@@ -218,7 +218,7 @@ class PollMixin:
         validation = self.cfg.product_validation(task.product)
         provider = validation["provider"]
         expects_rollup = provider in ("actions", "status") or (
-            provider == "legacy" and bool(self.cfg.get("checks.ci", []))
+            provider == "legacy" and bool(self._check_settings(task, "ci")["specs"])
         )
         st["ci_missing"] = bool(expects_rollup and not pr.checks)
         if st["ci_missing"]:
@@ -351,7 +351,7 @@ class PollMixin:
                 pr.failed_checks if github_ci_failure else ci_status.failures
             ) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
-            specs = list(self.cfg.get("checks.ci", []) or [])
+            specs = self._check_settings(task, "ci")["specs"]
             phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
             if specs and phase_hold:
                 # Keep the CI facts and route the feedback into the held task, but do not

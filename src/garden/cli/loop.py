@@ -1025,10 +1025,10 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
     store = _store()
     t = _task(store, task_id)
     sched = _scheduler(store)
-    # pre_pr goes through the same resolver as the automated gate: it falls back to the
-    # product's setup.test/setup.lint and merges setup.env, so the manual command agrees
-    # with what the scheduler actually runs. Other stages read checks.<stage> directly.
-    specs = sched._pre_pr_specs(t) if stage == "pre_pr" else list(store.config.get(f"checks.{stage}", []) or [])
+    # The manual command uses the same product resolver as automated checks, including
+    # setup fallbacks, per-check environment overrides, and product-specific timeouts.
+    settings = sched._check_settings(t, stage)
+    specs = settings["specs"]
     if not specs:
         err.print(f"no checks configured under checks.{stage}")
         raise typer.Exit(1)
@@ -1041,8 +1041,7 @@ def check(task_id: str, stage: str = typer.Option("pre_pr", help="pre_pr | ci"))
     run.branch, run.base, run.worktree = t.branch or t.default_branch(), sched.base_for(t), str(wt)
     run.save()
     payload = {"specs": specs, "ctx": sched.check_ctx(t, run.branch, run.base, wt),
-               "cwd": str(wt) if wt.exists() else "", "setup": store.config.product_setup(t.product),
-               "timeout": int(store.config.get("checks.timeout_seconds", 600)), "config": store.config.data}
+               "cwd": str(wt) if wt.exists() else "", **settings}
     runner = sched.runner_for(t, "local")
     runner.start_checks(run, wt if wt.exists() else run.path, payload)
     while not run.process_finished():

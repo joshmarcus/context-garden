@@ -844,6 +844,32 @@ class Config:
             raise ValueError(f"products.{name}.resources.weight must be a positive integer (capacity units)")
         return value
 
+    def product_checks(self, name: str) -> dict[str, Any]:
+        """Return this product's effective check configuration.
+
+        ``products.<name>.checks`` inherits each omitted field from top-level ``checks``.
+        An explicitly empty ``pre_pr`` list disables the inherited pre-PR checks (including
+        the ``setup.test``/``setup.lint`` fallback); an explicitly empty ``ci`` list disables
+        CI analysis.  This makes an empty list a useful product boundary rather than an
+        indistinguishable spelling of an omitted override.
+        """
+        global_checks = self.get("checks", {}) or {}
+        product_checks = self.product(name).get("checks") or {}
+        if not isinstance(global_checks, dict):
+            global_checks = {}
+        if not isinstance(product_checks, dict):
+            product_checks = {}
+
+        effective: dict[str, Any] = {}
+        for key in ("pre_pr", "ci"):
+            source = product_checks if key in product_checks else global_checks
+            value = source.get(key, [])
+            effective[key] = deepcopy(value) if isinstance(value, list) else []
+            effective[f"{key}_overridden"] = key in product_checks
+        timeout = product_checks.get("timeout_seconds", global_checks.get("timeout_seconds", 600))
+        effective["timeout_seconds"] = int(timeout or 600)
+        return effective
+
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
 

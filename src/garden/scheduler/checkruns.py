@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import nullcontext
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,12 @@ class CheckRunMixin:
         run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
         run.save()
+        # Keep the complete resolved contract with the continuation.  A base probe, retry,
+        # or deferred recovery can happen after another product (or an operator) changes
+        # garden.yaml; it must validate against the settings that started this check flow.
+        settings = deepcopy(cont.get("check_settings") or self._check_settings(task, stage))
+        settings["specs"] = deepcopy(specs)
+        cont["check_settings"] = settings
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
@@ -175,8 +182,7 @@ class CheckRunMixin:
             run.env_snapshot["generated_ui_check_indices"] = generated_ui_check_indices
         run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
-                   "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
-                   "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
+                   "cwd": str(worktree), **settings,
                    "setup_cache_key": str(cont.get("setup_cache_key") or ""),
                    **(extra or {})}
         if runner_name == "local" and provenance.startswith("controller-owned"):
@@ -762,22 +768,13 @@ class CheckRunMixin:
                 prepared_run.status = "failed"
                 prepared_run.save()
             raise
-        try:
-            self._dispatch_check_run(
-                task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
-                cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
-                      "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed,
-                      # The sibling setup marker outlives this throwaway path. Bind it to this
-                      # materialisation so a later probe at the same path cannot reuse it. Check
-                      # retries retain the continuation and therefore reuse this exact generation.
-                      "setup_cache_key": uuid.uuid4().hex},
-                source_head=base_sha, backend=runner_name, provenance=provenance,
-                prepared_run=prepared_run)
-        except Exception:
-            if prepared_run is not None and prepared_run.status == "running":
-                prepared_run.status = "failed"
-                prepared_run.save()
-            raise
+        self._dispatch_check_run(
+            task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
+            cont={**cont, **self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
+                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed,
+                  "setup_cache_key": uuid.uuid4().hex},
+            source_head=base_sha, backend=runner_name, provenance=provenance,
+            prepared_run=prepared_run)
 
     def _after_base_probe_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
         base_sha = str(cont["base_sha"])
@@ -845,9 +842,9 @@ class CheckRunMixin:
         if outcome.status == "error":
             return  # push failure already logged by the helper
         self._dispatch_check_run(
-            task, worktree=worktree, branch=branch, base=base, specs=self._pre_pr_specs(task),
+            task, worktree=worktree, branch=branch, base=base, specs=cont["check_settings"]["specs"],
             stage="rebase_recheck", rep=rep,
-            cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
+            cont={**cont, **self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
                   "base_sha": base_sha, "names": names, "failed": failed})
 
     def _after_rebase_recheck(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
@@ -912,7 +909,7 @@ class CheckRunMixin:
         base = self.final_base_for(task)
         branch = task.branch or task.default_branch()
         diff_h = str(st.get("last_diff_hash") or "")
-        specs = self._pre_pr_specs(task)
+        specs = self._check_settings(task)["specs"]
         if not specs:
             st["scratch_merge"] = {"diff": diff_h, "ok": True}
             self.events.emit("scratch_merge", task.id, resolved=True, checks=0)

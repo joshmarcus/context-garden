@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -754,14 +755,17 @@ class ReapMixin:
                                           reason=f"push rejected; origin/{err.branch} moved during this run")
         return outcome.status == "clean"
 
-    def _pre_pr_specs(self, task: Task) -> list[dict[str, Any]]:
-        """The pre-PR checks for this product: the configured `checks.pre_pr`, or — when none
-        are configured — the product's own `setup.test` and `setup.lint` commands. Either way
-        `setup.env` is added so the checks run in the same prepared environment as the worker,
-        so the default no longer reaches into any particular venv."""
+    def _check_settings(self, task: Task, stage: str = "pre_pr") -> dict[str, Any]:
+        """Resolve and snapshot the check contract for one product and stage.
+
+        All callers use this instead of reading ``checks`` directly.  The detached runner and
+        every continuation receive this returned mapping, preserving the product setup
+        environment, a check's own environment overrides, and the timeout selected at start.
+        """
+        product_checks = self.cfg.product_checks(task.product)
         setup = self.cfg.product_setup(task.product)
-        specs = list(self.cfg.get("checks.pre_pr", []) or [])
-        if not specs:
+        specs = list(product_checks.get(stage, []) or [])
+        if stage == "pre_pr" and not specs and not product_checks["pre_pr_overridden"]:
             for name in ("test", "lint"):
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
@@ -781,7 +785,7 @@ class ReapMixin:
         from ..criteria import required_evidence
         required = {r["name"] for r in required_evidence(task.body, task.extra.get("requires")) if r["kind"] == "check"}
         if required:
-            configured = list(self.cfg.get("checks.pre_pr", []) or [])
+            configured = list(product_checks["pre_pr"] or [])
             known = {str(spec.get("name")) for spec in specs}
             for spec in configured:
                 if str(spec.get("name")) in required and str(spec.get("name")) not in known:
@@ -793,7 +797,12 @@ class ReapMixin:
         env = dict(setup.get("env") or {})
         if env:
             specs = [{**s, "env": {**env, **(s.get("env") or {})}} for s in specs]
-        return specs
+        return {"specs": specs, "setup": setup,
+                "timeout": product_checks["timeout_seconds"], "config": deepcopy(self.cfg.data)}
+
+    def _pre_pr_specs(self, task: Task) -> list[dict[str, Any]]:
+        """Compatibility wrapper for callers that need only the resolved pre-PR specs."""
+        return list(self._check_settings(task)["specs"])
 
     def _run_specs_in(self, task: Task, specs: list[dict[str, Any]], worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
         """Prepare `worktree`'s environment, then run `specs` there, synchronously — the same
@@ -804,9 +813,9 @@ class ReapMixin:
 
         if not specs or not worktree.exists():
             return []
+        settings = self._check_settings(task)
         return run_check_job({"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
-                              "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
-                              "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data})
+                              "cwd": str(worktree), **settings})
 
     def _pre_pr_checks(self, task: Task, worktree: Path, branch: str, base: str) -> list[dict[str, Any]]:
         results = self._run_specs_in(task, self._pre_pr_specs(task), worktree, branch, base)
