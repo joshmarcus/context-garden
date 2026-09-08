@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import threading
 import time
 from datetime import UTC, datetime
@@ -112,7 +113,9 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
         manifest = json.loads(output.read_text())
         manifest.update({
             "producer": "cg443.disposable-served-review-clarification/v2",
-            "head": "HEAD_REPLACED_BY_REPLAY_COMMAND",
+            "head": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True, timeout=10,
+            ).strip(),
             "command": (
                 "PYTHONPATH=src .venv/bin/python -m pytest "
                 "docs/design/cg443-validation/replay_test.py -q"
