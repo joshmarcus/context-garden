@@ -264,12 +264,13 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        ci_identity = f"{pr.head_sha}:{pr.checks}"
-        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
-            st["ci_failed_at"] = ci_identity
+        failure_key = (pr.updated_at if ci_status.provider == "github"
+                       else f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}")
+        if (provider in ("actions", "status", "legacy") and pr.checks == "FAILURE"
+                and st.get("ci_failed_at") != pr.updated_at):
+            st["ci_failed_at"] = pr.updated_at
             names = ", ".join(pr.failed_checks) or "unknown"
-        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
-        if ci_status.state == "failure" and st.get("ci_failed_at") not in (failure_key, pr.updated_at):
+        elif ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
             st["ci_failed_at"] = failure_key
             names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
