@@ -17,6 +17,7 @@ from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
 from ..review import (
+    ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
@@ -392,7 +393,8 @@ class ReviewMixin:
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
-                        reask_missing_fixes: bool = False) -> Run:
+                        reask_missing_fixes: bool = False,
+                        clarify_unverified: list[str] | None = None) -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
@@ -536,7 +538,8 @@ class ReviewMixin:
                             interaction_manifest=(str(replay_manifest) if needs_interaction
                                                   and not reusable_author_interaction else ""),
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
-                            author_interaction=author_interaction)
+                            author_interaction=author_interaction,
+                            clarify_unverified=clarify_unverified)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
@@ -554,6 +557,7 @@ class ReviewMixin:
                             "affected_flow": affected_flow,
                             "author_interaction_reused": reusable_author_interaction,
                             "reask_missing_fixes": reask_missing_fixes,
+                            "clarify_unverified": bool(clarify_unverified),
                             "criteria": criteria_snapshot, "validation_plan": plan}
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
@@ -709,6 +713,18 @@ class ReviewMixin:
                                                           "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
                                                           "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
             metadata_warnings: list[str] = []
+            ambiguous = ambiguous_unverified(review)
+            if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
+                # Preserve the original report, but spend one reviewer continuation to
+                # classify legacy prose. The implementation author is not involved.
+                run.result = review
+                run.status = "done"
+                run.save()
+                task.log("automated review clarification requested for ambiguous unverified observations")
+                self.store.save(task)
+                self.dispatch_review(task, count_round=False, clarify_unverified=ambiguous)
+                rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
+                return True
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
@@ -719,6 +735,8 @@ class ReviewMixin:
                 affected_flow=str((run.env_snapshot or {}).get("affected_flow") or ""),
                 metadata_warnings=metadata_warnings,
             ) if review else []
+            if ambiguous:
+                gaps.append("unverified observations remain unscoped after one reviewer clarification")
             if metadata_warnings:
                 review.setdefault("findings", []).append({
                     "severity": "nit", "file": "", "line": None,

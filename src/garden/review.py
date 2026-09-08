@@ -267,8 +267,28 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         warnings.append("automated checks were not separately recorded")
     if not isinstance(row.get("unverified"), list):
         warnings.append("unverified requirements were not explicitly recorded")
-    elif row.get("unverified"):
-        gaps.append("interaction requirements remain unverified")
+    else:
+        for item in row["unverified"]:
+            if not isinstance(item, dict):
+                continue  # Legacy strings are resolved by the scheduler's bounded re-ask.
+            if item.get("scope") != "required":
+                continue
+            criterion = str(item.get("criterion") or "").strip()
+            flow = str(item.get("affected_flow") or "").strip()
+            outcome = str(item.get("outcome") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            target = f"criterion: {criterion}" if criterion else f"affected flow: {flow}" if flow else ""
+            if not target or not outcome or not reason:
+                gaps.append("required unverified outcome must name its criterion or affected flow and explain the missing outcome")
+            elif criterion and criterion not in {
+                str(entry.get("criterion") or "").strip() for entry in review.get("criteria") or []
+                if isinstance(entry, dict)
+            }:
+                gaps.append(f"required unverified outcome names no frozen criterion: {criterion}")
+            elif flow and (not affected_flow or flow != affected_flow):
+                gaps.append(f"required unverified outcome names no justified affected flow: {flow}")
+            else:
+                gaps.append(f"required outcome remains unverified ({target}; {outcome}): {reason}")
     if scalability:
         load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
         if not isinstance(load.get("served_app"), str) or not load["served_app"].startswith(("http://", "https://")):
@@ -294,6 +314,16 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
             gaps.append("scalability load_kind must be controlled or real_model_harnesses")
     return gaps
+
+
+def ambiguous_unverified(review: dict[str, Any]) -> list[str]:
+    """Legacy/unscoped entries that need reviewer clarification, not an author revision."""
+    interaction = review.get("interaction")
+    values = interaction.get("unverified") if isinstance(interaction, dict) else None
+    if not isinstance(values, list):
+        return []
+    return [str(value).strip() for value in values
+            if not isinstance(value, dict) and str(value).strip()]
 
 
 def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
@@ -455,7 +485,13 @@ by recovery. Record actions and their observed consequences; screenshots and tes
 assertions are supporting artifacts, not performed interaction. Treat no_change reconciliation
 and attention prompts as user outcomes when they are affected. Never use the live operator
 garden. Report the exact command, artifact paths, separately named automated checks, and every
-unverified requirement. Use the reviewed full SHA supplied below as `interaction.head`.
+unverified outcome. Each `interaction.unverified` entry is an object. Use `scope: required`
+only for a failed or missing frozen acceptance outcome, naming either its exact `criterion`
+or a justified `affected_flow`, plus the missing `outcome` and `reason`. Use
+`scope: limitation` with an `observation` for honest out-of-scope uncertainty or follow-up;
+limitations remain visible but cannot request changes. Never hide an actual failed state,
+unmet criterion, affected-flow gap, or contradictory provenance by calling it a limitation.
+Use the reviewed full SHA supplied below as `interaction.head`.
 
 For a scalability claim, additionally use a served disposable app with representative and larger
 histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
@@ -518,7 +554,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None, plan: dict[str, Any] | None = None,
-                 author_interaction: Any = None) -> str:
+                 author_interaction: Any = None, clarify_unverified: list[str] | None = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -539,6 +575,14 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if clarify_unverified:
+        parts.append(
+            "## Clarification required\n\nThe prior review used ambiguous legacy strings in "
+            "`interaction.unverified`. Preserve each observation, but classify it under the "
+            "structured contract as a required gap or an out-of-scope limitation. Do not ask "
+            "the author to revise unless a required outcome actually failed. Prior entries:\n\n"
+            + "\n".join(f"- {item}" for item in clarify_unverified) + "\n"
+        )
     if criteria_note:
         parts.append(criteria_note)
     verification = _verification_brief(task, verified, frozen)
@@ -635,6 +679,14 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
         for c in criteria:
             mark = "✅" if c.get("met") is True else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
+    interaction = rev.get("interaction")
+    unverified = interaction.get("unverified") if isinstance(interaction, dict) else []
+    limitations = [str(item.get("observation") or "").strip() for item in unverified
+                   if isinstance(item, dict) and item.get("scope") == "limitation"
+                   and str(item.get("observation") or "").strip()]
+    if limitations:
+        out.append("\n**Limitations and follow-ups**")
+        out += [f"- {item}" for item in limitations]
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     high = [f for f in findings if f.get("severity") == "high"]
