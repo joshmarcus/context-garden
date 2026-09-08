@@ -1,5 +1,7 @@
 """What a person does to a task: retry past the cap, retry a capped pre-PR round."""
 
+import subprocess
+import sys
 
 import subprocess
 
@@ -644,6 +646,50 @@ def test_check_collection_discards_legacy_continuation_for_terminal_task(sched):
     assert not sched.state.get(task.id).get("check_run")
     assert sched.store.task(task.id).status == Status.DONE
     assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_task_keeps_check_ownership_when_run_record_is_missing(sched):
+    """Missing metadata cannot prove that the detached process behind it has stopped."""
+    task = sched.store.task("DM-001")
+    pointer = {"run_id": "missing-check-run", "stage": "base_probe", "collected": True}
+    sched.state.get(task.id)["check_run"] = pointer
+    sched.state.save()
+
+    sched._transition(task, Status.DONE, "terminal with incomplete run history")
+
+    assert sched.store.task(task.id).status == Status.DONE
+    assert sched.state.get(task.id)["check_run"] == pointer
+
+
+def test_terminal_task_stops_live_check_before_releasing_ownership(sched):
+    """A real detached child is confirmed dead before its continuation is retired."""
+    task = sched.store.task("DM-001")
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        run = sched.runs.new_run(task.id, "local", mode="check")
+        run.pid = child.pid
+        run.save()
+        sched.state.get(task.id)["check_run"] = {
+            "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        }
+        sched.state.save()
+
+        sched._transition(task, Status.CANCELLED, "terminal while check is live")
+
+        child.wait(timeout=10)
+        assert child.poll() is not None
+        assert not sched.state.get(task.id).get("check_run")
+        retired = sched._run_by_id(task, run.run_id)
+        assert retired is not None
+        assert retired.status == "cancelled"
+        assert retired.error == "task reached terminal status"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
 
 
 def test_cancel_refuses_an_already_cancelled_task(sched):
