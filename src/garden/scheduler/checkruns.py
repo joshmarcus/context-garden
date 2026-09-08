@@ -76,8 +76,12 @@ class CheckRunMixin:
         # Keep the complete resolved contract with the continuation.  A base probe, retry,
         # or deferred recovery can happen after another product (or an operator) changes
         # garden.yaml; it must validate against the settings that started this check flow.
-        settings = deepcopy(cont.get("check_settings") or self._check_settings(task, stage))
-        settings["specs"] = deepcopy(specs)
+        inherited_settings = cont.get("check_settings")
+        settings = deepcopy(inherited_settings or self._check_settings(task, stage))
+        # A base probe intentionally runs only the failed subset.  Its continuation still
+        # needs the complete original suite if the branch is rebased and checked again.
+        if not inherited_settings:
+            settings["specs"] = deepcopy(specs)
         cont["check_settings"] = settings
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):
@@ -104,8 +108,8 @@ class CheckRunMixin:
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
                                   "changed": changed, "pages": plan["pages"]}]
             run.env_snapshot = {"validation_plan": plan}
-        payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
-                   "cwd": str(worktree), **settings,
+        payload = {**settings, "specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
+                   "cwd": str(worktree),
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
