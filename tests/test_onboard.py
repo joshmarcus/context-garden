@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -333,6 +334,149 @@ def test_onboard_refuses_existing_product_without_changing_it(tmp_path):
 
     after = {p.relative_to(garden): p.read_bytes() for p in garden.rglob("*") if p.is_file()}
     assert after == before
+
+
+def test_onboard_rolls_back_rejected_plan_and_allows_a_clean_retry(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["custom_setting"] = "preserve me"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    write(garden / "notes.md", "An existing garden file.\n")
+    before = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+
+    def rejected_plan(store: Store, prompt: str) -> str:
+        item = json.loads(_valid_plan(store, prompt))[0]
+        item["title"] = "Replace the database engine"
+        item["body"] = "## Goal\n\nMigrate all persistence to a different vendor.\n"
+        item.pop("discovered_from")
+        return json.dumps([item])
+
+    with pytest.raises(ValueError, match="Planner output was rejected") as error:
+        onboard_project(repo, garden, planner=rejected_plan)
+
+    assert "No tasks were imported or approved" in str(error.value)
+    assert f"garden onboard {repo} --into {garden}" in str(error.value)
+    after_rejection = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+    assert after_rejection == before
+    assert not (garden / "sample-web").exists()
+
+    created = onboard_project(repo, garden, planner=_valid_plan)
+
+    assert (garden / "sample-web" / "product.md") in created
+    tasks = Store(garden).product("sample-web").phases[0].tasks
+    assert [task.status.value for task in tasks] == ["draft"]
+    assert yaml.safe_load(config_path.read_text())["custom_setting"] == "preserve me"
+
+
+def test_onboard_rolls_back_a_planner_failure(tmp_path):
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+
+    def failed_planner(_store: Store, _prompt: str) -> str:
+        raise RuntimeError("planner failed (1): unavailable")
+
+    with pytest.raises(ValueError, match=r"planner failed \(1\): unavailable") as error:
+        onboard_project(repo, garden, planner=failed_planner)
+
+    assert "No tasks were imported or approved" in str(error.value)
+    assert not (garden / "sample-web").exists()
+
+
+def test_onboard_rolls_back_partial_import_and_allows_a_clean_retry(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    write(garden / "notes.md", "An existing garden file.\n")
+    before = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+
+    def partially_invalid_plan(store: Store, prompt: str) -> str:
+        first = json.loads(_valid_plan(store, prompt))[0]
+        second = {**first, "title": "Add structured logging", "priority": "not-a-number"}
+        return json.dumps([first, second])
+
+    with pytest.raises(ValueError, match="invalid literal for int") as error:
+        onboard_project(repo, garden, planner=partially_invalid_plan)
+
+    assert "No tasks were imported or approved" in str(error.value)
+    after_failure = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
+    assert after_failure == before
+    assert not (garden / "sample-web").exists()
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    tasks = Store(garden).product("sample-web").phases[0].tasks
+    assert [task.status.value for task in tasks] == ["draft"]
+
+
+def test_onboard_recovery_retry_command_quotes_paths_with_spaces(tmp_path):
+    repo = _node_repo(tmp_path).rename(tmp_path / "source project")
+    garden = tmp_path / "garden drafts"
+
+    def failed_planner(_store: Store, _prompt: str) -> str:
+        raise RuntimeError("planner unavailable")
+
+    with pytest.raises(ValueError, match="Planner output was rejected") as error:
+        onboard_project(repo, garden, planner=failed_planner)
+
+    retry = str(error.value).rsplit("Retry with: ", 1)[1]
+    assert shlex.split(retry) == ["garden", "onboard", str(repo), "--into", str(garden)]
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    assert Store(garden).product("source-project").phases[0].tasks[0].status.value == "draft"
+
+
+def test_onboard_rejection_keeps_an_owner_edit_to_the_new_draft(tmp_path):
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+
+    def owner_edited_rejected_plan(store: Store, prompt: str) -> str:
+        (garden / "sample-web" / "product.md").write_text("Owner's draft edit.\n")
+        return "not a JSON plan"
+
+    with pytest.raises(ValueError, match="no JSON array found") as error:
+        onboard_project(repo, garden, planner=owner_edited_rejected_plan)
+
+    message = str(error.value)
+    recovery_draft = garden / "onboarding-recovery" / "sample-web" / "sample-web" / "product.md"
+    assert "garden.yaml: removed" in message
+    assert ".gitignore: removed" in message
+    assert "sample-web/product.md: owner edit retained at onboarding-recovery/sample-web/sample-web/product.md" in message
+    assert f"Retry with: garden onboard {repo} --into {garden}" in message
+    assert recovery_draft.read_text() == "Owner's draft edit.\n"
+    assert not (garden / "sample-web").exists()
+
+    onboard_project(repo, garden, planner=_valid_plan)
+
+    assert recovery_draft.read_text() == "Owner's draft edit.\n"
+    assert Store(garden).product("sample-web").phases[0].tasks[0].status.value == "draft"
+
+
+def test_onboard_recovery_restores_a_generated_file_deleted_by_the_planner(tmp_path):
+    from garden.scaffold import init_garden
+
+    repo = _node_repo(tmp_path)
+    garden = tmp_path / "garden"
+    init_garden(garden, "existing")
+    config_path = garden / "garden.yaml"
+    before = config_path.read_bytes()
+
+    def deleting_rejected_plan(_store: Store, _prompt: str) -> str:
+        config_path.unlink()
+        return "not a JSON plan"
+
+    with pytest.raises(ValueError, match="no JSON array found") as error:
+        onboard_project(repo, garden, planner=deleting_rejected_plan)
+
+    assert "garden.yaml: restored after planner removed it" in str(error.value)
+    assert config_path.read_bytes() == before
 
 
 def test_init_scaffolds_onboard_skill(tmp_path):

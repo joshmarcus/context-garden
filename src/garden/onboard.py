@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -451,6 +453,84 @@ def _backlog_provenance(item: dict[str, object], backlog: list[tuple[str, str]])
     )
 
 
+def _restore_onboarding_drafts(
+    garden: Path,
+    product: str,
+    config_before: bytes | None,
+    gitignore_before: bytes | None,
+    generated_bytes: dict[Path, bytes],
+) -> list[str]:
+    """Restore the garden and move owner-edited draft files out of a retry's way."""
+    cfg_path = garden / CONFIG_NAME
+    gitignore = garden / ".gitignore"
+    product_dir = garden / product
+
+    changed = [
+        path for path, contents in generated_bytes.items()
+        if path.is_file() and path.read_bytes() != contents
+    ]
+    generated = set(generated_bytes)
+    owner_files = [path for path in product_dir.rglob("*") if path.is_file() and path not in generated]
+    recovery_dir: Path | None = None
+    if changed or owner_files:
+        base = garden / "onboarding-recovery" / product
+        recovery_dir = base
+        suffix = 2
+        while recovery_dir.exists():
+            recovery_dir = base.with_name(f"{product}-{suffix}")
+            suffix += 1
+
+    def retain(path: Path) -> str:
+        assert recovery_dir is not None
+        destination = recovery_dir / path.relative_to(garden)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(destination))
+        return str(destination.relative_to(garden))
+
+    dispositions: list[str] = []
+    for path in sorted(generated_bytes, key=lambda item: str(item.relative_to(garden))):
+        relative = str(path.relative_to(garden))
+        before = config_before if path == cfg_path else gitignore_before if path == gitignore else None
+        if not path.is_file():
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: restored after planner removed it")
+            else:
+                dispositions.append(f"{relative}: already absent")
+        elif path.read_bytes() == generated_bytes[path]:
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: restored")
+            else:
+                path.unlink()
+                dispositions.append(f"{relative}: removed")
+        else:
+            retained_at = retain(path)
+            if path in {cfg_path, gitignore} and before is not None:
+                path.write_bytes(before)
+                dispositions.append(f"{relative}: owner edit retained at {retained_at}; original restored")
+            else:
+                dispositions.append(f"{relative}: owner edit retained at {retained_at}")
+
+    # A person may add a new file beside an edited generated draft while the planner runs.
+    # Preserve it too, so the product directory cannot make the documented retry collide.
+    for path in sorted(product_dir.rglob("*")) if product_dir.exists() else []:
+        if path.is_file():
+            dispositions.append(
+                f"{path.relative_to(garden)}: owner file retained at {retain(path)}"
+            )
+    for directory in sorted(
+        [path for path in product_dir.rglob("*") if path.is_dir()] + [product_dir] if product_dir.exists() else [],
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return dispositions
+
+
 def onboard_project(
     repo: Path,
     garden: Path,
@@ -472,6 +552,17 @@ def onboard_project(
         targets = [f"product {product!r} in garden.yaml"] if product in (existing_config.get("products") or {}) else []
         targets.extend(str(path.relative_to(garden)) for path in collisions)
         raise ValueError("onboarding would overwrite an existing product: " + ", ".join(targets))
+
+    config_before = cfg_path.read_bytes() if cfg_path.exists() else None
+    gitignore = garden / ".gitignore"
+    gitignore_before = gitignore.read_bytes() if gitignore.exists() else None
+    transaction_files = {
+        path: path.read_bytes() if path.exists() else None
+        for path in (
+            garden / ".garden" / "tasks.lock",
+            garden / ".garden" / "reservations.json.lock",
+        )
+    }
 
     # GitHub is optional enrichment of the deterministic local result. It happens only in
     # the end-to-end command and every successful query is recorded in the report.
@@ -526,17 +617,42 @@ def onboard_project(
         "## Non-goals\n\n- Work not represented in the discovered backlog.\n\n## Definition of done\n\n- The approved first-phase tasks are complete.\n"
     )
     store.invalidate()
+    generated_paths = set(created) | {goals}
+    generated_bytes = {path: path.read_bytes() for path in generated_paths if path.is_file()}
     guidance = (
         "All tasks are onboarding drafts. Use only backlog items stated in the goals. "
         "For each item add discovered_from as onboard:<source>, using its stated source."
     )
-    items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
-    provenances = [_backlog_provenance(item, backlog) for item in items]
-    tasks = import_plan(store, product, "phase-01", items, status="draft")
-    for task, provenance in zip(tasks, provenances, strict=False):
-        task.discovered_from = provenance
-        store.save(task)
-        created.append(task.path)
+    try:
+        items = parse_plan(planner(store, plan_prompt(store, product, "phase-01", extra=guidance)))
+        provenances = [_backlog_provenance(item, backlog) for item in items]
+        tasks = import_plan(store, product, "phase-01", items, status="draft")
+        for task, provenance in zip(tasks, provenances, strict=False):
+            task.discovered_from = provenance
+            store.save(task)
+            created.append(task.path)
+    except (RuntimeError, ValueError) as error:
+        # import_plan writes each task as it validates the batch.  Include every task it
+        # managed to create before an invalid later item raised, so recovery remains
+        # transactional instead of leaving a product collision behind.
+        task_dir = product_dir / "phase-01" / "tasks"
+        generated_bytes.update(
+            {path: path.read_bytes() for path in task_dir.glob("*.md") if path.is_file()}
+        )
+        dispositions = _restore_onboarding_drafts(
+            garden, product, config_before, gitignore_before, generated_bytes
+        )
+        for path, before in transaction_files.items():
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(before)
+        retry_source = repo_value or str(repo)
+        retry = shlex.join(["garden", "onboard", retry_source, "--into", str(garden)])
+        raise ValueError(
+            f"{error}\nPlanner output was rejected. Draft scaffold recovery: "
+            f"{' ; '.join(dispositions)}. No tasks were imported or approved. Retry with: {retry}"
+        ) from error
 
     report = product_dir / "docs" / "onboarding.md"
     report.parent.mkdir(exist_ok=True)
