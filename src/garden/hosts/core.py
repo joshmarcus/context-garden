@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -50,6 +52,17 @@ class JsonStateStore:
         temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
         temporary.replace(self.path)
 
+    @contextmanager
+    def locked(self):
+        """Serialize a read-modify-write transaction across controller processes."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(f"{self.path.suffix}.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
 
 class HostLifecycle:
     def __init__(
@@ -60,6 +73,7 @@ class HostLifecycle:
         health_check: Callable[[HostFacts, PoolDeclaration], tuple[bool, str]] | None = None,
         retry_attempts: int = 3,
         retry_delay: Callable[[float], None] = time.sleep,
+        reservation_seconds: float = 300,
     ):
         self.providers = providers
         self.state = state
@@ -67,6 +81,9 @@ class HostLifecycle:
         self.health_check = health_check
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
+        if reservation_seconds <= 0:
+            raise ValueError("reservation_seconds must be positive")
+        self.reservation_seconds = reservation_seconds
 
     def _provider(self, pool: PoolDeclaration) -> HostProvider:
         try:
@@ -275,8 +292,7 @@ class HostLifecycle:
             (
                 h
                 for h in provider.discover(pool.owner, pool.name)
-                if h.operation_id == declaration.operation_id
-                and h.state != HostState.TERMINATED
+                if h.operation_id == declaration.operation_id and h.state != HostState.TERMINATED
             ),
             None,
         )
@@ -324,14 +340,15 @@ class HostLifecycle:
     def _record(
         self, pool: PoolDeclaration, hosts: list[HostFacts], events: list[HostEvent], plan: HostPlan
     ) -> None:
-        data = self.state.read()
-        pools = data.setdefault("pools", {})
-        assert isinstance(pools, dict)
-        pools[pool.name] = {"plan": asdict(plan), "hosts": [asdict(h) for h in hosts]}
-        event_rows = data.setdefault("events", [])
-        assert isinstance(event_rows, list)
-        event_rows.extend(asdict(e) for e in events)
-        self.state.write(data)
+        with self.state.locked():
+            data = self.state.read()
+            pools = data.setdefault("pools", {})
+            assert isinstance(pools, dict)
+            pools[pool.name] = {"plan": asdict(plan), "hosts": [asdict(h) for h in hosts]}
+            event_rows = data.setdefault("events", [])
+            assert isinstance(event_rows, list)
+            event_rows.extend(asdict(e) for e in events)
+            self.state.write(data)
 
     def acquire_ready(
         self,
@@ -380,9 +397,15 @@ class HostLifecycle:
                         host.provider_id,
                         delete_storage=not pool.profile.persistent_workspace,
                     )
+                    self.cancel_acquisition(host.provider_id)
                     leases.pop(host.provider_id, None)
                     continue
                 previous = str(lease.get("run_id", ""))
+                reserved_until = float(lease.get("reserved_until", 0))
+                if not lease.get("released", False) and not previous:
+                    if current_time < reserved_until:
+                        continue
+                    leases.pop(host.provider_id, None)
                 if previous and not process_terminal(previous):
                     continue
             candidates.append(host)
@@ -407,71 +430,93 @@ class HostLifecycle:
                 )
             except ProviderError as exc:
                 detail = f"{host.host_id}: {exc}"
-                self._record_environment_stop(pool, detail, data=data)
+                self._record_environment_stop(pool, detail)
                 raise EnvironmentStop(detail) from exc
             if not evidence.ready:
                 failures.append(f"{host.host_id}: {evidence.detail or 'readiness checks failed'}")
                 continue
-            leases[host.provider_id] = {
-                "acquired_at": acquired_at,
-                "last_used_at": current_time,
-                "workspace": workspace,
-                "revision": revision,
-                "harness": harness,
-                "run_id": "",
-                "released": False,
-            }
-            stops = data.setdefault("environment_stops", {})
-            if isinstance(stops, dict):
-                stops.pop(pool.name, None)
-            self.state.write(data)
-            return host
+            # Read and claim again under the store lock. Another controller may have
+            # completed the same readiness probe while this one was in the wrapper.
+            with self.state.locked():
+                claimed = self.state.read()
+                claimed_leases = claimed.setdefault("leases", {})
+                assert isinstance(claimed_leases, dict)
+                existing = claimed_leases.get(host.provider_id)
+                if isinstance(existing, dict):
+                    existing_run = str(existing.get("run_id", ""))
+                    reserved_until = float(existing.get("reserved_until", 0))
+                    actively_reserved = (
+                        not existing.get("released", False)
+                        and not existing_run
+                        and current_time < reserved_until
+                    )
+                    active_run = bool(existing_run and not process_terminal(existing_run))
+                    if actively_reserved or active_run:
+                        continue
+                    acquired_at = float(existing.get("acquired_at", acquired_at))
+                claimed_leases[host.provider_id] = {
+                    "acquired_at": acquired_at,
+                    "last_used_at": current_time,
+                    "reserved_until": current_time + self.reservation_seconds,
+                    "workspace": workspace,
+                    "revision": revision,
+                    "harness": harness,
+                    "run_id": "",
+                    "released": False,
+                }
+                stops = claimed.setdefault("environment_stops", {})
+                if isinstance(stops, dict):
+                    stops.pop(pool.name, None)
+                self.state.write(claimed)
+                return host
         detail = "; ".join(failures) or "no ready host is available"
-        self._record_environment_stop(pool, detail, data=data)
+        self._record_environment_stop(pool, detail)
         raise EnvironmentStop(detail)
 
     def _record_environment_stop(
         self,
         pool: PoolDeclaration,
         detail: str,
-        *,
-        data: dict[str, object] | None = None,
     ) -> None:
-        value = data if data is not None else self.state.read()
-        stops = value.setdefault("environment_stops", {})
-        assert isinstance(stops, dict)
-        stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
-        self.state.write(value)
+        with self.state.locked():
+            value = self.state.read()
+            stops = value.setdefault("environment_stops", {})
+            assert isinstance(stops, dict)
+            stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
+            self.state.write(value)
 
     def attach_run(self, provider_id: str, run_id: str) -> None:
         """Persist the controller run identity after dispatch."""
-        data = self.state.read()
-        leases = data.setdefault("leases", {})
-        assert isinstance(leases, dict)
-        lease = leases.get(provider_id)
-        if not isinstance(lease, dict):
-            raise ValueError(f"host {provider_id!r} is not acquired")
-        lease["run_id"] = run_id
-        self.state.write(data)
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            lease = leases.get(provider_id)
+            if not isinstance(lease, dict):
+                raise ValueError(f"host {provider_id!r} is not acquired")
+            lease["run_id"] = run_id
+            self.state.write(data)
 
     def cancel_acquisition(self, provider_id: str) -> None:
-        data = self.state.read()
-        leases = data.setdefault("leases", {})
-        assert isinstance(leases, dict)
-        leases.pop(provider_id, None)
-        self.state.write(data)
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            leases.pop(provider_id, None)
+            self.state.write(data)
 
     def release(self, pool: PoolDeclaration, provider_id: str) -> HostFacts:
         """Release a warm host while retaining its age and prior process identity."""
         released = self.stop(pool, provider_id)
-        data = self.state.read()
-        leases = data.setdefault("leases", {})
-        assert isinstance(leases, dict)
-        lease = leases.get(provider_id)
-        if isinstance(lease, dict):
-            lease["released"] = True
-            lease["last_used_at"] = time.time()
-        self.state.write(data)
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            lease = leases.get(provider_id)
+            if isinstance(lease, dict):
+                lease["released"] = True
+                lease["last_used_at"] = time.time()
+            self.state.write(data)
         return released
 
     def orphaned(self, *, process_terminal: Callable[[str], bool]) -> list[str]:
