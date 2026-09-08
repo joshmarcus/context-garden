@@ -37,14 +37,22 @@ class HumanMixin:
         runner = self.runner_for(task)
         if runner.detached:
             raise RuntimeError(f"{task.id} is assigned to the {runner.name} runner, not manual work")
-        if task.status == Status.RUNNING or self.worker_run_in_flight(task.id):
+        # `worker_run_in_flight()` deliberately excludes manual runs because they do not
+        # occupy automated-worker capacity. A manual claim still owns its task, though:
+        # consult the complete run store so a stale READY task cannot be claimed twice.
+        if task.status == Status.RUNNING or any(run.task_id == task.id for run in self.runs.active()):
             raise RuntimeError(f"{task.id} is already claimed; its manual session is active")
         if task.status not in (Status.READY, Status.CHANGES_REQUESTED):
             raise RuntimeError(f"{task.id} is {task.status.value}, not ready to take")
         if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled):
             raise RuntimeError(f"{task.id} is waiting for dependencies and cannot be taken yet")
+        refusal = phase_refusal(self.store.phase(task.product, task.phase), task)
+        if refusal:
+            raise RuntimeError(f"{task.id} cannot be taken: {refusal}")
+        st = self.state.get(task.id)
+        if st.get("needs_human") or st.get("decision"):
+            raise RuntimeError(f"{task.id} is paused for an Inbox decision and cannot be taken yet")
         if task.status == Status.CHANGES_REQUESTED:
-            st = self.state.get(task.id)
             if not str(st.get("pending_feedback") or "").strip():
                 raise RuntimeError(f"{task.id} has no revision feedback to resume manually")
             if int(st.get("revisions", 0)) >= int(self.cfg.get("max_revisions", 3)):
