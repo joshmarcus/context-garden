@@ -106,8 +106,10 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
         if not match:
             continue
         port = match.groupdict().get("port")
-        if port and not 0 < int(port[1:]) <= 65535:
-            continue
+        if port:
+            port_number = port[1:].lstrip("0") or "0"
+            if len(port_number) > 5 or not 0 < int(port_number) <= 65535:
+                continue
         remote_host = match["host"].lower().rstrip(".")
         if pattern.startswith("ssh://") and expected == "github.com":
             # GitHub documents ssh.github.com:443 for networks where port 22 is
