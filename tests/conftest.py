@@ -420,6 +420,7 @@ class FakeGitHub:
 
     def __init__(self):
         self.available = True
+        self.remote: Path | None = None
         self.prs: dict[str, PRInfo] = {}  # branch -> PR
         self.created: list[dict] = []
         self.comments: list[str] = []
@@ -482,6 +483,12 @@ class FakeGitHub:
     def get_pr(self, slug, number):
         for pr in self.prs.values():
             if pr.number == number:
+                if self.remote is not None:
+                    found = subprocess.run(
+                        ["git", "ls-remote", str(self.remote), f"refs/heads/{pr.head}"],
+                        capture_output=True, text=True, check=False,
+                    ).stdout.split()
+                    pr.head_sha = found[0] if found else ""
                 left = self._check_pending.get(number, 0)
                 if left > 0:
                     self._check_pending[number] = left - 1
@@ -591,4 +598,5 @@ def fake_github():
 def sched(garden, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     store = Store(garden)
+    fake_github.remote = garden.parent / "remote.git"
     return Scheduler(store, github=fake_github, log=print)
