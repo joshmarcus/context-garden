@@ -155,15 +155,26 @@ def _set_execution_state(run_dir: Path, state: str) -> None:
     except (OSError, json.JSONDecodeError):
         return
     status["state"] = state
-    _write_execution_state(run_dir, status)
+    _write_execution_status(run_dir, status)
 
 
-def _write_execution_state(run_dir: Path, status: dict[str, object]) -> None:
-    """Publish a complete execution status for concurrent observers."""
+def _write_execution_status(run_dir: Path, status: dict[str, object]) -> None:
+    """Publish execution state as one complete JSON document.
+
+    The scheduler and web surfaces read this small status file while a supervisor is
+    running.  Replacing a sibling temporary file prevents them from observing the
+    empty interval created by an in-place truncate-and-write.
+    """
     path = run_dir / "execution.json"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(status))
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(status))
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = False) -> object:
@@ -173,7 +184,7 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
     if owner_scoped:
         owner = os.environ.get("GARDEN_EXECUTION_OWNER", "")
         if not owner:
-            _write_execution_state(run_dir, {
+            _write_execution_status(run_dir, {
                 "state": "unsupported", "limit": 1, "inherited": True, "pid": os.getpid(),
                 "reason": "inherited execution lease has no owner identity",
             })
@@ -188,7 +199,7 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
                 fcntl.flock(owner_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 owner_handle.close()
-                _write_execution_state(run_dir, {
+                _write_execution_status(run_dir, {
                     "state": "waiting", "reason": "another validation in this run is active",
                     "limit": 1, "inherited": True, "owner": owner,
                 })
@@ -196,12 +207,12 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
                 continue
             break
     if limit <= 0:
-        _write_execution_state(run_dir, {"state": "disabled", "limit": 0})
+        _write_execution_status(run_dir, {"state": "disabled", "limit": 0})
         return None
     try:
         lock_root = _private_runtime_dir()
     except RuntimeError as exc:
-        _write_execution_state(run_dir, {
+        _write_execution_status(run_dir, {
             "state": "unsupported", "limit": 0, "requested_limit": limit, "reason": str(exc),
         })
         raise
@@ -216,12 +227,12 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
             except BlockingIOError:
                 handle.close()
                 continue
-            _write_execution_state(run_dir, {
+            _write_execution_status(run_dir, {
                 "state": "running", "slot": slot, "limit": authoritative, "pid": os.getpid(),
                 "requested_limit": limit, "conflict": conflict, "owner_scoped": owner_scoped,
             })
             return handle, owner_handle
-        _write_execution_state(run_dir, {
+        _write_execution_status(run_dir, {
             "state": "waiting", "reason": conflict or f"heavy-test budget full (limit {authoritative})",
             "limit": authoritative, "requested_limit": limit, "conflict": conflict,
         })

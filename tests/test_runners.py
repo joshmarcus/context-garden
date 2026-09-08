@@ -601,13 +601,14 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
     brief = run_dir / "brief.md"
     brief.write_text("")
     run = Run(task_id="T-1", run_id="outer", dir=str(run_dir), runner="local")
-    inherited_execution = {
-        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
-        "GARDEN_OWNER_SCOPED",
-    }
-    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
-    env.update({"GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
-                "GARDEN_EXECUTION_CGROUP": "", "GARDEN_VALIDATION_RUNNER": sys.executable})
+    env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
+           "GARDEN_EXECUTION_CGROUP": ""}
+    # The test's outer runner must establish its own identity.  A worker may itself
+    # run this test under a supervisor, whose identity would otherwise make the nested
+    # validations write into that worker's run directory instead of this fixture.
+    for inherited in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR", "GARDEN_VALIDATION_RUNNER",
+                      "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED"):
+        env.pop(inherited, None)
     runner.launch(run, tmp_path, brief, env)
 
     os.waitpid(run.pid, 0)
