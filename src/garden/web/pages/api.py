@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...graph import effective_status
+from ...model import effective_owner
 from ...runs import Run
 from ..common import Site
 
@@ -115,7 +116,10 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
-        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack)} for t in tasks.values()])
+        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack),
+                              "effective_owner": effective_owner(t, s.phase(t.product, t.phase))[0],
+                              "owner_source": effective_owner(t, s.phase(t.product, t.phase))[1]}
+                             for t in tasks.values()])
 
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):

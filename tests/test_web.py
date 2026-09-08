@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from garden.gitops import head_sha
+from garden.model import Status
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
 from garden.scheduler.snapshot import _safe
@@ -47,6 +48,31 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_owner_inheritance_reassignment_and_inbox_filter(garden):
+    goals = garden / "demo" / "p1" / "goals.md"
+    goals.write_text("---\nowner: platform-team\n---\n\n# p1\n")
+    c = client(garden)
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["effective_owner"] == "platform-team" and task["owner_source"] == "phase"
+    response = c.post("/tasks/DM-001/owner", data={"note": "feature-team"},
+                      headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert response.status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["owner"] == task["effective_owner"] == "feature-team"
+    assert "owner feature-team" in c.get("/tasks/DM-001").text
+    # Both teams can own work in one product; the Inbox limits task cards to the selected ID.
+    store = Store(garden)
+    other = store.task("DM-002")
+    other.status = Status.DRAFT
+    store.save(other)
+    page = c.get("/inbox?owner=platform-team").text
+    assert 'href="/tasks/DM-002"' in page and 'href="/tasks/DM-001"' not in page
+    assert c.post("/tasks/DM-001/owner", data={"note": ""}, headers={"Origin": "http://testserver"},
+                  follow_redirects=False).status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["effective_owner"] == "platform-team" and task["owner_source"] == "phase"
 
 
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
