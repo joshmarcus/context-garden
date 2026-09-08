@@ -93,6 +93,7 @@ class DispatchMixin:
         # check.  Give queued validation its priority-ordered turn before this ready
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
+        self._dispatch_pending_investigations(tasks, rep)
         for task, mode, _why in self.dispatch_queue():
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
@@ -121,6 +122,71 @@ class DispatchMixin:
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 if not self.state.get(task.id).get("needs_human"):
                     self._transition(task, Status.FAILED, f"dispatch failed: {e}")
+
+    def _dispatch_pending_investigations(self, tasks: dict[str, Task], rep: TickReport) -> None:
+        """Admit agent diagnoses after the task's writer reaches a safe boundary."""
+        for task in tasks.values():
+            inv = self.state.get(task.id).get("investigation")
+            if not isinstance(inv, dict) or inv.get("owner") != "agent" or inv.get("status") not in ("requested", "draining"):
+                continue
+            if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
+                inv["status"] = "draining"
+                continue
+            if self.slots_free() <= 0:
+                continue
+            runner = self.runner_for(task)
+            if runner.name == "local" and self.local_slots_free() <= 0:
+                continue
+            try:
+                self.dispatch_investigation(task, runner=runner)
+                rep.dispatched.append(f"{task.id}(investigation)")
+            except Exception as exc:  # noqa: BLE001
+                inv.update({"status": "failed", "error": str(exc), "failed_at": now_iso()})
+                self._set_needs_human(task, "investigation", f"investigation agent failed to start: {exc}")
+                self.events.emit("investigation_failed", task.id, reason=str(exc))
+                self.state.save()
+
+    def _investigation_dossier(self, task: Task) -> str:
+        st = self.state.get(task.id)
+        inv = st["investigation"]
+        attempts = [
+            f"- {run.run_id}: {run.mode} {run.status}, head {run.pushed_head or run.start_head or 'unknown'}, "
+            f"cost {('$%.2f' % run.cost_usd) if run.cost_usd is not None else 'unknown'}"
+            for run in self.runs.runs_for(task.id)[-12:]
+        ]
+        escalations = [
+            f"- revision {row.get('counter')}: {row.get('from')} -> {row.get('to')} ({row.get('reason')})"
+            for row in st.get("difficulty_escalations", [])
+        ]
+        return "\n".join([
+            f"# Investigation of {task.id}: {task.title}", "",
+            "You are diagnosing only. Do not edit files, commit, push, update the PR, or implement a fix.",
+            f"Scope: {inv['scope']}", f"Budget: {inv['budget']}", f"Question: {inv['reason']}",
+            f"Task status before investigation: {inv['task_status']}",
+            f"Branch: {task.branch or task.default_branch()}", f"PR: {task.pr or 'none'}",
+            f"Pending feedback: {st.get('pending_feedback') or 'none'}",
+            f"Revision counts: substantive={st.get('substantive_revisions', 0)}, total={st.get('revisions', 0)}, reviews={st.get('review_rounds', 0)}",
+            "", "## Attempts", *(attempts or ["- none"]), "", "## Escalations", *(escalations or ["- none"]),
+            "", "Return one GARDEN_RESULT JSON object with status done and an investigation_report object containing: likely_cause, confidence, unknowns (list), evidence (list), attempted_checks (list), retain_work (boolean), alternatives (list), and recommendation. Recommendation must be one of: resume unchanged, raise difficulty, repair environment/verification, change scope/approach, defer, cancel.",
+        ])
+
+    def dispatch_investigation(self, task: Task, runner: Runner | None = None) -> Run:
+        ensure_open(task)
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("owner") != "agent" or inv.get("status") not in ("requested", "draining", "failed"):
+            raise RuntimeError(f"{task.id} has no agent investigation ready to dispatch")
+        if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
+            inv["status"] = "draining"
+            self.state.save()
+            raise RuntimeError(f"{task.id} is still draining active work")
+        inv["status"] = "active"
+        inv["started_at"] = now_iso()
+        run = self.dispatch(task, mode="investigation", runner=runner, worktree=False,
+                            prompt_override=self._investigation_dossier(task))
+        inv["run_id"] = run.run_id
+        self.state.save()
+        return run
 
     def _audit_stuck(self, rep: TickReport) -> None:
         """Backstop: any non-terminal task with no active run and no dispatchable next
@@ -358,12 +424,13 @@ class DispatchMixin:
                 if match:
                     st["pr_number"] = int(match.group(1))
             self.store.save(task)
-        st.pop("needs_human", None)
+        if mode != "investigation":
+            st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
         # worktree's stash (further below) can both name themselves after the run about to
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
-        run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
+        run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume", "investigation") else ""
         if reserved_run is not None:
             run = reserved_run
         elif runner.name == "local":
