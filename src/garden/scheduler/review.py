@@ -380,9 +380,26 @@ class ReviewMixin:
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
                 continue
             st = self.state.get(task.id)
+            head = str(st.get("head_sha") or "")
+            recovery = st.get("review_recovery") or {}
+            recovery_head = str(recovery.get("head") or "")
+            if recovery_head and head and recovery_head != head:
+                pending = [item for item in (st.get("pending_reviews") or [])
+                           if item.get("kind") != "review"]
+                if pending:
+                    st["pending_reviews"] = pending
+                else:
+                    st.pop("pending_reviews", None)
+                st.pop("review_recovery", None)
+                reason = f"review recovery for {recovery_head} discarded after head moved to {head}"
+                task.log(reason)
+                self.store.save(task)
+                self.events.emit("review_recovery_obsolete", task.id,
+                                 recovery_head=recovery_head, head=head)
+                rep.transitions.append(f"{task.id} stale review recovery discarded")
+                self.state.save()
             if st.get("review_run") or st.get("pending_reviews") or st.get("needs_human"):
                 continue
-            head = str(st.get("head_sha") or "")
             review_runs = [run for run in self.runs.runs_for(task.id) if run.mode == "review"]
             applied_run = str(st.get("last_review_run") or "")
             current_verdict = (bool(st.get("last_review")) and any(
