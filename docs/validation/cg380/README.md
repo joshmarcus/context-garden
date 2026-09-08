@@ -59,9 +59,12 @@ dominates. Serial GETs do not queue and handlers do not take Hub locks, so reque
 wait is zero by construction. Mean request wall and CPU agree within .5ms; filesystem
 syscall wait cannot be separated from Python parsing by these spans.
 
-Cold is the first request for a page after each cache-expiry sleep; warm is the remaining
-six requests in that same cycle. This zero-slot comparison avoids mixing cache state with
-replay contention:
+The table below preserves the ordered-sample comparison requested for cold/warm behavior:
+"cold" is the first request in each page's seven-request block and "warm" is the remaining
+six. Only Now 1's block-first request immediately follows the explicit 1.1-second expiry
+sleep. Inbox and Config follow the preceding page block, so their block-first values are
+cold proxies rather than proof that every in-process cache had expired. The zero-slot
+comparison avoids mixing this ordering effect with replay contention:
 
 <!-- report-cold-warm-start -->
 | tasks | page | cold (n/p50/p95/max) | warm (n/p50/p95/max) |
@@ -74,9 +77,11 @@ replay contention:
 | 1,000 | Config | 3/.291/.311/.311s | 18/.294/.338/.338s |
 <!-- report-cold-warm-end -->
 
-Cold samples are not consistently slower than warm samples: the dominant task scan runs
-on every request, so the measured in-process expiry does not provide a meaningful warm-page
-latency benefit.
+Block-first samples are not consistently slower than the following samples. Even the Now 1
+samples known to follow an expiry sleep show only a small, variable difference; the dominant
+task scan runs on every request, so this experiment finds no meaningful warm-page latency
+benefit. The verifier groups samples by their retained expiry period, checks the exact raw
+request order and seven-sample block size, and then recomputes this table.
 
 | tasks | page | task/product scan | event parse | run index | resource inspect | render |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |

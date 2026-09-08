@@ -37,9 +37,17 @@ def cold_warm_table(pages: dict[str, object]) -> str:
     for tasks in (100, 1000):
         case = pages[f"tasks-{tasks}:slots-0"]
         for path, label in (("/now1", "Now 1"), ("/inbox", "Inbox"), ("/config", "Config")):
-            samples = [row for row in case["rows"] if row["path"] == path]
-            cold = [row["elapsed_s"] for index, row in enumerate(samples) if index % 7 == 0]
-            warm = [row["elapsed_s"] for index, row in enumerate(samples) if index % 7 != 0]
+            blocks = []
+            for period in ("expiry_1", "expiry_2", "expiry_3"):
+                samples = [
+                    row
+                    for row in case["rows"]
+                    if row["period"] == period and row["path"] == path
+                ]
+                assert len(samples) == 7, f"{tasks} tasks {period} {path}: expected 7 samples"
+                blocks.append(samples)
+            cold = [block[0]["elapsed_s"] for block in blocks]
+            warm = [row["elapsed_s"] for block in blocks for row in block[1:]]
 
             def cell(values: list[float]) -> str:
                 return (
@@ -120,6 +128,16 @@ def main() -> None:
     report = json.loads((HERE / "report.json").read_text())
     readme = (HERE / "README.md").read_text()
     assert report["history_sizes"] == [100, 1000]
+    expected_order = [
+        (period, path)
+        for period in ("expiry_1", "expiry_2", "expiry_3")
+        for path in ("/now1", "/inbox", "/config")
+        for _ in range(7)
+    ]
+    for tasks in report["history_sizes"]:
+        for slots in (0, 1, 4):
+            rows = report["pages"][f"tasks-{tasks}:slots-{slots}"]["rows"]
+            assert [(row["period"], row["path"]) for row in rows] == expected_order
     assert latency_table(report["pages"]) in readme
     assert cold_warm_table(report["pages"]) in readme
     assert tick_table(report["pages"]) in readme
