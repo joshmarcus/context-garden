@@ -2,10 +2,11 @@
   "artifact": "docs/stabilization/artifacts/cg-375-served-app.json",
   "chronological": true,
   "component_provenance": {
-    "src/garden/scheduler/human.py": "724a68036b77ef08204c4931873241b8c41ab7e82f3e0930851ddeae9a33bd5d",
+    "src/garden/scheduler/human.py": "865938edfa67a9d2f4536d8b8d3c618126148abf6fa50fc2c99b6980c6c76925",
     "src/garden/stabilization.py": "cddad95709f8c858688709940c69a93fd8017954f33ece4b8af10e084d6d4e9e",
     "src/garden/web/actions/tasks.py": "3c534101af4f83aaf6cf986efbc9bfc73039a756d8e0dbfcd19ec8b5970dd474",
-    "tests/served_incident_app.py": "7600e4d2c5e165261b8f0cd7db5f355c49270692b9e5ae157291c3e93de44ae1"
+    "tests/served_incident_app.py": "7600e4d2c5e165261b8f0cd7db5f355c49270692b9e5ae157291c3e93de44ae1",
+    "tests/test_stabilization.py": "4809da402261d434f93fb0c478051136b12d3bc0737a0fc1873fa54806b2c662"
   },
   "disposable": true,
   "event_log": [
@@ -57,5 +58,10 @@
   "result": "PASS",
   "schema": "context-garden.served-interaction.v1",
   "server": "uvicorn via tests/served_incident_app.py",
-  "source_test": "tests.test_stabilization.test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery"
+  "source_test": "tests.test_stabilization.test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery",
+  "source_commit": "bd14e91970d9a69c044a048a71df70146cb28be5",
+  "verification_command": ".venv/bin/python -m pytest tests/test_stabilization.py::test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery -q",
+  "provenance_scope": "Historical served replay record for source_commit and the listed component hashes; subsequent checkout changes do not change what this record observed.",
+  "verified_at": "2026-09-08T19:35:53.379621+00:00",
+  "validation_result": "81 passed in21.78seconds including the actual served affected/empty/failure/recovery fixture; source files are identical to source_commit."
 }
