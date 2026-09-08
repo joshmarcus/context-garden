@@ -892,13 +892,18 @@ def triage(
         False, "--supersede-review",
         help="Explicitly replace the full automated review with --changes instead of supplementing it",
     ),
+    resolve_review_item: list[str] = typer.Option(
+        [], "--resolve-review-item",
+        help="Mark this stable finding:/criterion: ID resolved while retaining unmatched review items (repeatable)",
+    ),
 ):
     """Your first look at a draft PR: mark it ready for review, or send it back."""
     store = _store()
     t = _task(store, task_id)
     try:
         _scheduler(store).triage(
-            t, ready=ready, changes=changes, note=note, supersede_review=supersede_review)
+            t, ready=ready, changes=changes, note=note, supersede_review=supersede_review,
+            resolve_review_items=resolve_review_item)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None

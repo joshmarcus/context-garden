@@ -786,6 +786,27 @@ def review_is_description_only(rev: dict[str, Any]) -> bool:
     return not any(f.get("severity") == "blocking" for f in findings) and not rev.get("description_ok", True)
 
 
+def review_item_id(kind: str, item: dict[str, Any]) -> str:
+    """Stable operator-facing identity for one criterion or finding."""
+    if kind == "criterion":
+        identity = {"criterion": str(item.get("criterion") or "")}
+    elif kind == "finding":
+        identity = {name: item.get(name) for name in ("file", "line", "summary")}
+    else:
+        raise ValueError(f"unknown review item kind: {kind}")
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+    return f"{kind}:{digest}"
+
+
+def review_item_ids(rev: dict[str, Any]) -> set[str]:
+    """Every selectable item in a review record."""
+    out = {review_item_id("criterion", item) for item in rev.get("criteria") or []
+           if isinstance(item, dict)}
+    out.update(review_item_id("finding", item) for item in rev.get("findings") or []
+               if isinstance(item, dict))
+    return out
+
+
 def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: str = "") -> str:
     """Return the complete review record needed by the next revision author.
 
@@ -810,7 +831,8 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
             text = str(criterion.get("criterion") or "unnamed criterion")
             reason = str(criterion.get("reason") or "reviewer did not provide a reason")
             evidence = str(criterion.get("evidence") or "reviewer did not provide evidence")
-            items.append(f"- **{text}**\n  - **Reason:** {reason}\n  - **Evidence:** {evidence}")
+            item_id = review_item_id("criterion", criterion)
+            items.append(f"- **{text}** (`{item_id}`)\n  - **Reason:** {reason}\n  - **Evidence:** {evidence}")
     if rev.get("findings"):
         items.append("\n### Findings to address\n")
     for f in rev.get("findings") or []:
@@ -818,7 +840,9 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
             continue
         severity = str(f.get("severity") or "nit")
         fix = str(f.get("fix") or "").strip()
-        line = "- **automated review** " + severity + _where(f) + ": " + str(f.get("summary", ""))
+        item_id = review_item_id("finding", f)
+        line = ("- **automated review** " + severity + _where(f) + ": "
+                + str(f.get("summary", "")) + f" (`{item_id}`)")
         items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
     if not rev.get("description_ok", True):
         items.append("- **automated review** PR description: " + str(rev.get("description_feedback") or "rewrite it to give broader context and remove scar tissue") +
@@ -839,20 +863,42 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
 
 def feedback_with_operator_note(rev: dict[str, Any], note: str, *, kind: str,
                                 run_id: str = "", source_head: str = "",
-                                superseded: bool = False) -> str:
-    """Add an operator handoff without replacing the applicable review record."""
+                                superseded: bool = False,
+                                resolved_items: list[str] | None = None) -> str:
+    """Add an operator handoff while preserving item-level applicability and provenance."""
     label = "Operator triage note" if kind == "triage" else "Operator recovery note"
     handoff = f"## {label}\n\n{note.strip()}"
+    resolved = set(resolved_items or [])
     record = feedback_from_review(rev, run_id=run_id, source_head=source_head)
     if superseded:
         handoff += ("\n\nThe automated review record below is **superseded for this revision** "
                     "by this handoff. Retain it for provenance; do not repeat its requests "
                     "unless this note explicitly raises them again.")
-        heading = "## Superseded automated review record"
-    else:
+        return f"{handoff}\n\n## Superseded automated review record\n\n{record}"
+    if not resolved:
         handoff += "\n\nThe automated review record below remains applicable and this note supplements it."
-        heading = "## Applicable automated review record"
-    return f"{handoff}\n\n{heading}\n\n{record}"
+        return f"{handoff}\n\n## Applicable automated review record\n\n{record}"
+
+    applicable = dict(rev)
+    applicable["criteria"] = [item for item in rev.get("criteria") or []
+                              if not isinstance(item, dict)
+                              or review_item_id("criterion", item) not in resolved]
+    applicable["findings"] = [item for item in rev.get("findings") or []
+                              if not isinstance(item, dict)
+                              or review_item_id("finding", item) not in resolved]
+    selected = dict(rev)
+    selected["criteria"] = [item for item in rev.get("criteria") or []
+                            if isinstance(item, dict)
+                            and review_item_id("criterion", item) in resolved]
+    selected["findings"] = [item for item in rev.get("findings") or []
+                            if isinstance(item, dict)
+                            and review_item_id("finding", item) in resolved]
+    handoff += ("\n\nOnly the explicitly selected review items are resolved for this revision. "
+                "Unmatched items remain applicable.")
+    return (f"{handoff}\n\n## Resolved automated review items\n\n"
+            f"{feedback_from_review(selected, run_id=run_id, source_head=source_head)}\n\n"
+            "## Applicable automated review record\n\n"
+            f"{feedback_from_review(applicable, run_id=run_id, source_head=source_head)}")
 
 
 def _where(f: dict[str, Any]) -> str:
