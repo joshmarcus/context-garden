@@ -71,6 +71,7 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])
+@pytest.mark.stress
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")
     for n in range(history_size):
@@ -1957,6 +1958,7 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
     hub.action_lock = threading.Lock()
 
 
+@pytest.mark.stress
 def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
     """A bounded CPU/memory workload runs while a second validation waits."""
     import json
@@ -2206,6 +2208,7 @@ def test_timed_out_dispatch_retry_does_not_duplicate_preparing_work(garden, monk
     assert len(responses) == 2 and all(response.status_code == 303 for response in responses)
 
 
+@pytest.mark.stress
 def test_served_incident_controls_retry_and_restart_during_overload(garden, tmp_path):
     """Exercise the incident journey through a real socket and ASGI worker pool."""
     import concurrent.futures
