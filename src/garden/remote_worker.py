@@ -156,7 +156,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
                 transcript_offset = 0
+                timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
+                deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        stderr_file.write(f"\nworker timed out after {timeout_minutes:g} minutes\n")
+                        break
                     time.sleep(1)
                     stdout_file.flush()
                     with open(stdout_file.name) as transcript_file:

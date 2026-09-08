@@ -71,6 +71,8 @@ class CheckRunMixin:
         run = (self.runs.new_run(task.id, runner_name, mode="check")
                if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
+        run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
+                                 "resource_weight": self.cfg.product_resource_weight(task.product)})
         run.save()
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):

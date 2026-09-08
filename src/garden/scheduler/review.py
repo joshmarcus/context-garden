@@ -522,7 +522,7 @@ class ReviewMixin:
         required_pages = set(plan["pages"])
         if "*" in required_pages:
             required_pages = set(capture_pages)
-        run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
+        run.env_snapshot.update({"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
                             "validation_check_current": current_check is not None or (not stale_validation_check and not plan["pages"]),
@@ -530,7 +530,10 @@ class ReviewMixin:
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,
                             "reask_missing_fixes": reask_missing_fixes,
-                            "criteria": criteria_snapshot, "validation_plan": plan}
+                                 "criteria": criteria_snapshot, "validation_plan": plan})
+        run.env_snapshot.update({"product": task.product,
+                                 "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
+                                 "resource_weight": self.cfg.product_resource_weight(task.product)})
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"

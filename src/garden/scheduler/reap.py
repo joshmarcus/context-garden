@@ -176,7 +176,12 @@ class ReapMixin:
             return True
         if not runner.detached:
             return False
-        timeout_min = float(self.cfg.get("timeout_minutes", 90) or 0)
+        # The dispatch-time value survives config edits and scheduler restarts. Check
+        # commands have their own seconds-based timeout and never inherit this budget.
+        snapshot = run.env_snapshot or {}
+        timeout_min = float(snapshot.get("execution_timeout_minutes", 0 if run.mode == "check"
+                            else self.cfg.product_timeout_minutes(
+                                str(snapshot.get("product") or ""))) or 0)
         if timeout_min and run.elapsed_minutes() > timeout_min + 5:
             run.kill()
             run.status = "timeout"
