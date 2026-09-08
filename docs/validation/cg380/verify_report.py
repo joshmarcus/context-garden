@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -76,6 +77,45 @@ def tick_table(pages: dict[str, object]) -> str:
     return "\n".join(rows)
 
 
+def flat_cgroup_values(value: str) -> dict[str, int]:
+    result = {}
+    for line in value.splitlines():
+        parts = line.split()
+        if parts[0] in ("some", "full"):
+            result[parts[0]] = int(next(p for p in parts if p.startswith("total=")).split("=")[1])
+        elif len(parts) == 2 and parts[1].isdigit():
+            result[parts[0]] = int(parts[1])
+    return result
+
+
+def delta(report: dict[str, object], group: str, field: str) -> int:
+    before = flat_cgroup_values(report["caps_and_initial_cgroup"][group])
+    after = flat_cgroup_values(report["final_cgroup"][group])
+    return after[field] - before[field]
+
+
+def verify_resource_and_workload_summary(report: dict[str, object], readme: str) -> None:
+    cpu = delta(report, "cpu.stat", "usage_usec") / 1_000_000
+    elapsed = (
+        datetime.fromisoformat(report["finished_at"].replace("Z", "+00:00"))
+        - datetime.fromisoformat(report["started_at"].replace("Z", "+00:00"))
+    ).total_seconds()
+    peak_mib = int(report["final_cgroup"]["memory.peak"]) / 1024**2
+    assert f"used {cpu:.3f} CPU-seconds in {elapsed:.3f} seconds, peaked at {peak_mib:.1f} MiB" in readme
+
+    commands = report["commands"]
+
+    def cpu_for(name: str) -> float:
+        return commands[name]["descendant_user_cpu_s"] + commands[name]["descendant_system_cpu_s"]
+
+    expected = (
+        f"One/four CPU-active replays used {cpu_for('session:1'):.3f}/{cpu_for('session:4'):.3f} "
+        f"descendant CPU-seconds over {commands['session:1']['elapsed_s']:.3f}/"
+        f"{commands['session:4']['elapsed_s']:.3f}s"
+    )
+    assert expected in readme
+
+
 def main() -> None:
     report = json.loads((HERE / "report.json").read_text())
     readme = (HERE / "README.md").read_text()
@@ -83,6 +123,7 @@ def main() -> None:
     assert latency_table(report["pages"]) in readme
     assert cold_warm_table(report["pages"]) in readme
     assert tick_table(report["pages"]) in readme
+    verify_resource_and_workload_summary(report, readme)
     assert report["interaction"]["source_head"] == report["build"]
     assert report["interaction"]["actions"] and report["interaction"]["observations"]
     for observation in report["interaction"]["observations"].values():

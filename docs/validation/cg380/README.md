@@ -1,7 +1,7 @@
 # CG-380 controller, scheduler, and worker attribution
 
-Measured 2026-09-07 23:27:33Z–23:31:11Z against source commit
-`b701aa915271ab4152cfae8a04afc42230d1fe99`. `report.json` retains every request,
+Measured 2026-09-08 02:37:16Z–02:40:31Z against source commit
+`2ff015bb9a63877d8f9b0970611b551bc312eb54`. `report.json` retains every request,
 tick-phase sample, PID/cgroup identity, counter snapshot, and the structured served-app
 interaction (source head, actions, and observations).
 
@@ -31,13 +31,13 @@ result_dir=$(mktemp -d /tmp/cg380-final.XXXXXX)
   --source "$PWD" --output "$result_dir" --samples 7
 ```
 
-The unit used 259.808 CPU-seconds in 218.022 seconds, peaked at 357.3 MiB, and wrote
-19,724 KiB. One of 2,008 CPU periods throttled for .093s; CPU PSI some/full rose
-41.610/41.610ms, I/O PSI 22.614/22.614ms, and memory PSI rose 10.070/10.070ms. Memory
+The unit used 227.019 CPU-seconds in 195.000 seconds, peaked at 356.4 MiB, and wrote
+19,724 KiB. None of 1,800 CPU periods throttled; CPU PSI some/full rose
+25.976/25.976ms, I/O PSI .004/.004ms, and memory PSI did not rise. Memory
 high/max/OOM/OOM-kill deltas were zero. Initial/final `memory.current` was
-15,503,360/48,234,496 bytes; peak was 374,693,888. Final anon/file/shmem/inactive-file
-were 16,838,656/21,753,856/20,459,520/4,096 bytes. Temp headroom fell from
-2,135,285,760 to 2,115,231,744 bytes.
+15,294,464/46,968,832 bytes; peak was 373,706,752. Final anon/file/shmem/inactive-file
+were 16,863,232/20,463,616/20,459,520/4,096 bytes. Temp headroom fell from
+3,200,143,360 to 3,179,683,840 bytes.
 
 ## Served results
 
@@ -46,12 +46,12 @@ Pooled empirical p50/p95/max over 21 requests (raw samples retain each expiry cy
 <!-- report-latency-start -->
 | tasks | slots | Now 1 | Inbox | Config |
 | ---: | ---: | ---: | ---: | ---: |
-| 100 | 0 | .129/.182/.272s | .133/.180/.210s | .044/.058/.083s |
-| 100 | 1 | .133/.183/.222s | .127/.180/.184s | .044/.081/.082s |
-| 100 | 4 | .142/.182/.254s | .144/.291/.315s | .048/.083/.091s |
-| 1,000 | 0 | .733/.787/.793s | .783/1.041/1.179s | .331/.404/.406s |
-| 1,000 | 1 | .733/.801/.839s | .770/.904/1.006s | .321/.378/.382s |
-| 1,000 | 4 | .744/.800/.968s | .753/.848/.851s | .328/.393/.400s |
+| 100 | 0 | .125/.188/.230s | .124/.171/.187s | .043/.055/.081s |
+| 100 | 1 | .124/.161/.242s | .124/.161/.166s | .043/.052/.056s |
+| 100 | 4 | .128/.167/.232s | .122/.174/.186s | .044/.053/.083s |
+| 1,000 | 0 | .624/.676/.725s | .657/.680/.714s | .294/.337/.338s |
+| 1,000 | 1 | .719/.766/.786s | .751/.785/.790s | .320/.375/.383s |
+| 1,000 | 4 | .659/.730/.759s | .679/.713/.753s | .300/.350/.370s |
 <!-- report-latency-end -->
 
 All samples stayed below the owner's four-second tolerance. History size, not slot count,
@@ -66,12 +66,12 @@ replay contention:
 <!-- report-cold-warm-start -->
 | tasks | page | cold (n/p50/p95/max) | warm (n/p50/p95/max) |
 | ---: | --- | ---: | ---: |
-| 100 | Now 1 | 3/.182/.272/.272s | 18/.127/.143/.143s |
-| 100 | Inbox | 3/.146/.210/.210s | 18/.126/.180/.180s |
-| 100 | Config | 3/.045/.058/.058s | 18/.043/.083/.083s |
-| 1,000 | Now 1 | 3/.753/.780/.780s | 18/.731/.793/.793s |
-| 1,000 | Inbox | 3/.820/1.179/1.179s | 18/.754/1.041/1.041s |
-| 1,000 | Config | 3/.350/.406/.406s | 18/.330/.404/.404s |
+| 100 | Now 1 | 3/.188/.230/.230s | 18/.125/.138/.138s |
+| 100 | Inbox | 3/.127/.187/.187s | 18/.120/.171/.171s |
+| 100 | Config | 3/.044/.055/.055s | 18/.042/.081/.081s |
+| 1,000 | Now 1 | 3/.658/.725/.725s | 18/.620/.676/.676s |
+| 1,000 | Inbox | 3/.625/.660/.660s | 18/.657/.714/.714s |
+| 1,000 | Config | 3/.291/.311/.311s | 18/.294/.338/.338s |
 <!-- report-cold-warm-end -->
 
 Cold samples are not consistently slower than warm samples: the dominant task scan runs
@@ -80,15 +80,15 @@ latency benefit.
 
 | tasks | page | task/product scan | event parse | run index | resource inspect | render |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 100 | Now 1 | .055s | .017s | .006s | .0004s | .004s |
-| 100 | Inbox | .056s | .016s | .006s | .0004s | .005s |
-| 100 | Config | .027s | — | .002s | .0004s | .001s |
-| 1,000 | Now 1 | .603s | .017s | .037s | .0006s | .004s |
-| 1,000 | Inbox | .603s | .017s | .029s | .0005s | .055s |
-| 1,000 | Config | .298s | — | .012s | .0006s | .001s |
+| 100 | Now 1 | .054s | .017s | .006s | .0004s | .004s |
+| 100 | Inbox | .054s | .015s | .006s | .0004s | .005s |
+| 100 | Config | .026s | — | .002s | .0004s | .001s |
+| 1,000 | Now 1 | .514s | .017s | .026s | .0004s | .004s |
+| 1,000 | Inbox | .512s | .015s | .019s | .0004s | .035s |
+| 1,000 | Config | .261s | — | .013s | .0004s | .001s |
 
-Matched uninstrumented 100-task p50 was .139/.138/.048s versus .129/.133/.044s
-instrumented. The instrumented run was 10/5/4ms faster; p95 also varied bidirectionally,
+Matched uninstrumented 100-task p50 was .121/.122/.041s versus .125/.124/.043s
+instrumented. The instrumented run was 4/2/2ms slower; p95 varied bidirectionally,
 so overhead is below run variation and no correction is applied.
 
 ## Scheduler phases
@@ -100,12 +100,12 @@ PRs, so GitHub/network waits are unsupported; model/worker-completion waits are 
 <!-- report-tick-start -->
 | tasks | slots | tick wall min/p50/max | tick CPU p50 | controller-other wall/CPU p50 | scan wall p50 | reap wall p50 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 0 | .135/.143/.229s | .142s | .090/.090s | .053s | .052s |
-| 100 | 1 | .145/.153/.162s | .153s | .093/.093s | .056s | .057s |
-| 100 | 4 | .160/.184/.721s | .183s | .110/.110s | .060s | .073s |
-| 1,000 | 0 | .743/.828/1.000s | .827s | .706/.706s | .608s | .120s |
-| 1,000 | 1 | .713/.735/1.452s | .734s | .669/.669s | .594s | .064s |
-| 1,000 | 4 | .669/.683/.770s | .683s | .631/.630s | .570s | .051s |
+| 100 | 0 | .112/.120/.120s | .120s | .092/.091s | .053s | .027s |
+| 100 | 1 | .111/.113/.115s | .113s | .087/.087s | .051s | .026s |
+| 100 | 4 | .116/.116/.119s | .116s | .089/.089s | .052s | .027s |
+| 1,000 | 0 | .594/.621/.630s | .621s | .591/.590s | .536s | .027s |
+| 1,000 | 1 | .604/.675/.688s | .674s | .644/.643s | .577s | .029s |
+| 1,000 | 4 | .616/.621/.658s | .621s | .592/.591s | .536s | .028s |
 <!-- report-tick-end -->
 
 `controller-other` is measured total minus named phases. Every sample records exactly two
@@ -117,13 +117,13 @@ controller-other rather than falsely assigned.
 
 ## Worker and conclusion
 
-One/four CPU-active replays used 1.717/6.809 descendant CPU-seconds over 6.131/6.135s;
-CI-wait replays used .074/.372 CPU-seconds over 6.081/6.132s. Setup used .255 CPU/.265s
-wall; focused validation 1.327 CPU/1.368s wall. Short-lived descendants are included, and
+One/four CPU-active replays used 1.738/7.323 descendant CPU-seconds over 6.125/6.127s;
+CI-wait replays used .096/.463 CPU-seconds over 6.126/6.127s. Setup used .038 CPU/.064s
+wall; focused validation .528 CPU/.565s wall. Short-lived descendants are included, and
 parent controller CPU is not substituted for them.
 
 Confirmed bottleneck: scanning is the largest request span and dominant tick cost, growing
-from about .066s to .6s per full scan at ten times the tasks. Rendering, event parsing,
+from about .054s to .51s per full scan at ten times the tasks. Rendering, event parsing,
 run indexing, resource inspection, and lock wait are secondary. CPU-active occupants
 dominate total workload CPU but four replays did not systematically degrade latency under
 the 400% cap. Real model/network traffic and production tails remain unmeasured.
