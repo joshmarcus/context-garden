@@ -1932,6 +1932,20 @@ def test_failed_state_blocks_even_when_reviewer_calls_it_a_limitation():
     assert "affected interaction is missing or failed" in gaps
 
 
+def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
+    review = {"criteria": [{"criterion": "Recovery is demonstrated"}],
+              "interaction": _performed_interaction()}
+    review["interaction"]["unverified"] = [{
+        "scope": "limitation", "criterion": "Recovery is demonstrated",
+        "outcome": "recovery was not observed", "reason": "the fixture stopped",
+    }]
+
+    gaps = interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+    )
+    assert any("criterion: Recovery is demonstrated" in gap for gap in gaps)
+
+
 def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):
     from garden.brief import EVIDENCE_GUIDANCE, build_brief
 
