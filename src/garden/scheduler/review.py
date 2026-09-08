@@ -324,6 +324,8 @@ class ReviewMixin:
             return "worker", f"waits for its {run.mode} run to finish"
         if self.state.get(task.id).get("check_run"):
             return "check", "waits for its validation check to finish"
+        if not self._review_ci_ready(task):
+            return "ci", "waits for required exact-head CI evidence"
         pending = list(self.state.get(task.id).get("pending_reviews") or [{"kind": "review"}])
         item_reasons = [reason for item in pending if (reason := self._review_item_wait_reason(task, item))]
         harness_reason = next((reason for reason in item_reasons if reason[0] == "harness"), None)
@@ -416,7 +418,8 @@ class ReviewMixin:
                 if not self._review_ci_ready(task):
                     continue
             if self._review_item_wait_reason(task, item) is None:
-                return True
+                if self._review_ci_ready(task):
+                    return True
         return False
 
     def _queued_review_precedes(self, task: Task) -> bool:

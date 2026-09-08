@@ -15,6 +15,7 @@ from ..checks import failures as check_failures
 from ..checks import to_feedback
 from ..ci_status import CIStatus, resolve_status, status_reason
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
+from ..ci_status import CIStatus, resolve_status, status_reason
 from ..model import Status, Task, now_iso, phase_refusal
 from ..notify import notify
 from ..runs import Run
@@ -191,6 +192,8 @@ class PollMixin:
         if not number:
             return
         pr, observed_feedback = observed or (self.github.get_pr(slug, number), None)
+        if not pr.head_sha:
+            pr.head_sha = str(st.get("head_sha") or "")
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
