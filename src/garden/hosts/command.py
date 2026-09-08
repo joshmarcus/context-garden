@@ -74,8 +74,10 @@ class CommandProvider:
 
     def _invoke(self, action: str, payload: dict[str, Any], options: dict[str, Any]) -> Any:
         command = options.get("command")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(item, str) and item for item in command
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(item, str) and item for item in command)
         ):
             raise ValueError("command provider requires command as a nonempty argv list")
         timeout = float(options.get("timeout_seconds", 60))
@@ -131,7 +133,11 @@ class CommandProvider:
         return _BoundCommandProvider(self, declaration)
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
-        value = self._invoke("acquire", self._declaration_payload(declaration), self._options(declaration))
+        value = self._invoke(
+            "acquire", self._declaration_payload(declaration), self._options(declaration)
+        )
+        if not isinstance(value, dict):
+            raise ProviderError("command acquire returned invalid host facts")
         if value.get("uncertain"):
             raise ProvisioningUncertain(str(value.get("detail", "acquisition outcome uncertain")))
         facts = self._facts(value)
@@ -165,7 +171,9 @@ class _BoundCommandProvider(CommandProvider):
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
         rows = self._invoke(
-            "inspect", {"contract_version": CONTRACT_VERSION, "owner": owner, "pool": pool}, self.options
+            "inspect",
+            {"contract_version": CONTRACT_VERSION, "owner": owner, "pool": pool},
+            self.options,
         )
         return [self._facts(row) for row in rows]
 
@@ -173,7 +181,9 @@ class _BoundCommandProvider(CommandProvider):
         return self._facts(self._invoke("inspect-one", {"provider_id": provider_id}, self.options))
 
     def _change(self, action: str, provider_id: str, **extra: Any) -> HostFacts:
-        return self._facts(self._invoke(action, {"provider_id": provider_id, **extra}, self.options))
+        return self._facts(
+            self._invoke(action, {"provider_id": provider_id, **extra}, self.options)
+        )
 
     def stop(self, provider_id: str) -> HostFacts:
         return self._change("release", provider_id)

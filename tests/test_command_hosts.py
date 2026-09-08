@@ -17,6 +17,8 @@ from garden.hosts import (
     PoolDeclaration,
 )
 
+DEFAULT_ACQUIRE = object()
+
 
 class Wrapper:
     def __init__(self):
@@ -24,6 +26,7 @@ class Wrapper:
         self.calls = []
         self.ready = True
         self.ready_error = ""
+        self.acquire_response = DEFAULT_ACQUIRE
 
     def run(self, argv, stdin, *, timeout_seconds):
         action = argv[-1]
@@ -32,12 +35,17 @@ class Wrapper:
         if action == "inspect":
             value = self.hosts
         elif action == "acquire":
-            value = {
-                **request,
-                "provider_id": "provider-1",
-                "state": "ready",
-            }
-            self.hosts[:] = [value]
+            value = (
+                self.acquire_response
+                if self.acquire_response is not DEFAULT_ACQUIRE
+                else {
+                    **request,
+                    "provider_id": "provider-1",
+                    "state": "ready",
+                }
+            )
+            if isinstance(value, dict):
+                self.hosts[:] = [value]
         elif action == "ready":
             if self.ready_error == "provider":
                 return CommandResult(tuple(argv), stdin, b"", b"probe failed", 9)
@@ -118,19 +126,28 @@ def test_acquisition_is_durable_idempotent_and_warm_reuse_waits_for_terminal_run
     spec = command_pool()
 
     first = lifecycle.acquire_ready(
-        spec, workspace="/work/product", revision="abc123", harness="codex",
+        spec,
+        workspace="/work/product",
+        revision="abc123",
+        harness="codex",
         process_terminal=lambda _: True,
     )
     lifecycle.attach_run(first.provider_id, "run-1")
     with pytest.raises(EnvironmentStop, match="no ready host"):
         lifecycle.acquire_ready(
-            spec, workspace="/work/product", revision="abc123", harness="codex",
+            spec,
+            workspace="/work/product",
+            revision="abc123",
+            harness="codex",
             process_terminal=lambda _: False,
         )
 
     restarted = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
     reused = restarted.acquire_ready(
-        spec, workspace="/work/product", revision="def456", harness="codex",
+        spec,
+        workspace="/work/product",
+        revision="def456",
+        harness="codex",
         process_terminal=lambda run_id: run_id == "run-1",
     )
 
@@ -145,6 +162,50 @@ def test_acquisition_is_durable_idempotent_and_warm_reuse_waits_for_terminal_run
         "read_only": True,
     }
     assert "provider-1" not in restarted.orphaned(process_terminal=lambda _: False)
+
+
+def test_unbound_acquisition_is_exclusive_across_lifecycle_instances(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    first = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    second = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    kwargs = {
+        "workspace": "/work/product",
+        "revision": "abc123",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    host = first.acquire_ready(command_pool(), **kwargs)
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        second.acquire_ready(command_pool(), **kwargs)
+    lease = json.loads(path.read_text())["leases"][host.provider_id]
+    assert lease["run_id"] == "" and lease["released"] is False
+
+    first.cancel_acquisition(host.provider_id)
+    assert second.acquire_ready(command_pool(), **kwargs).provider_id == host.provider_id
+
+
+def test_stale_unbound_acquisition_recovers_after_bound(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(path), reservation_seconds=10
+    )
+    kwargs = {
+        "workspace": "/work/product",
+        "revision": "abc123",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    lifecycle.acquire_ready(command_pool(), now=lambda: 0, **kwargs)
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        lifecycle.acquire_ready(command_pool(), now=lambda: 9, **kwargs)
+    assert (
+        lifecycle.acquire_ready(command_pool(), now=lambda: 10, **kwargs).provider_id
+        == "provider-1"
+    )
 
 
 def test_readiness_stop_recovers_without_creating_another_host_and_can_cancel_or_retire(tmp_path):
@@ -205,7 +266,10 @@ def test_incompatible_warm_host_is_not_admitted(tmp_path):
 
     with pytest.raises(EnvironmentStop, match="no ready host"):
         lifecycle.acquire_ready(
-            command_pool(), workspace="/work", revision="abc", harness="codex",
+            command_pool(),
+            workspace="/work",
+            revision="abc",
+            harness="codex",
             process_terminal=lambda _: True,
         )
     assert not any(call[0][-1] == "ready" for call in wrapper.calls)
@@ -220,19 +284,31 @@ def test_pool_bounds_and_ttl_retire_expired_host(tmp_path):
         lifecycle.plan(command_pool(desired=2))
     spec = command_pool(maximum_age_minutes=1)
     host = lifecycle.acquire_ready(
-        spec, workspace="/work", revision="abc", harness="codex",
-        process_terminal=lambda _: True, now=lambda: 0,
+        spec,
+        workspace="/work",
+        revision="abc",
+        harness="codex",
+        process_terminal=lambda _: True,
+        now=lambda: 0,
     )
     lifecycle.attach_run(host.provider_id, "old-run")
     with pytest.raises(EnvironmentStop):
         lifecycle.acquire_ready(
-            spec, workspace="/work", revision="def", harness="codex",
-            process_terminal=lambda _: True, now=lambda: 61,
+            spec,
+            workspace="/work",
+            revision="def",
+            harness="codex",
+            process_terminal=lambda _: True,
+            now=lambda: 61,
         )
     assert "retire" in [call[0][-1] for call in wrapper.calls]
     replacement = lifecycle.acquire_ready(
-        spec, workspace="/work", revision="def", harness="codex",
-        process_terminal=lambda _: True, now=lambda: 62,
+        spec,
+        workspace="/work",
+        revision="def",
+        harness="codex",
+        process_terminal=lambda _: True,
+        now=lambda: 62,
     )
     assert replacement.state.value == "ready"
     assert [call[0][-1] for call in wrapper.calls].count("acquire") == 2
@@ -284,3 +360,27 @@ def test_readiness_wrapper_error_records_environment_stop_and_recovers(tmp_path,
     wrapper.ready_error = ""
     assert lifecycle.acquire_ready(spec, **kwargs).provider_id == "provider-1"
     assert "workers" not in json.loads(path.read_text())["environment_stops"]
+
+
+@pytest.mark.parametrize("payload", [[], None, "host", 7])
+def test_malformed_acquire_response_records_environment_stop_and_recovers(tmp_path, payload):
+    wrapper = Wrapper()
+    wrapper.acquire_response = payload
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    kwargs = {
+        "workspace": "/work",
+        "revision": "abc",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    with pytest.raises(EnvironmentStop, match="command acquire returned invalid host facts"):
+        lifecycle.acquire_ready(command_pool(), **kwargs)
+    assert (
+        "invalid host facts"
+        in json.loads(path.read_text())["environment_stops"]["workers"]["detail"]
+    )
+
+    wrapper.acquire_response = DEFAULT_ACQUIRE
+    assert lifecycle.acquire_ready(command_pool(), **kwargs).provider_id == "provider-1"
