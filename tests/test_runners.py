@@ -48,6 +48,19 @@ def test_private_runner_adapter_resolves_from_operator_configuration(tmp_path, m
     assert runner.capabilities == {"detached": True, "remote": False}
 
 
+def test_scheduler_routes_private_adapters_through_ordinary_runner_setup(sched, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+
+    runner = sched.runner_for(task)
+
+    assert runner.name == "synthetic"
+    assert runner.config["setup"] == sched.cfg.product_setup(task.product)
+    assert runner.config["resources"] == sched.cfg.get("resources")
+
+
 def test_private_runner_adapter_rejects_bad_contract_and_builtin_replacement(tmp_path, monkeypatch):
     from garden.runner import RunnerError, get_runner
 
