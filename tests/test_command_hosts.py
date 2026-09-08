@@ -23,6 +23,7 @@ class Wrapper:
         self.hosts = []
         self.calls = []
         self.ready = True
+        self.ready_error = ""
 
     def run(self, argv, stdin, *, timeout_seconds):
         action = argv[-1]
@@ -38,6 +39,10 @@ class Wrapper:
             }
             self.hosts[:] = [value]
         elif action == "ready":
+            if self.ready_error == "provider":
+                return CommandResult(tuple(argv), stdin, b"", b"probe failed", 9)
+            if self.ready_error == "json":
+                return CommandResult(tuple(argv), stdin, b"not-json", b"", 0)
             value = {
                 "workspace": self.ready,
                 "revision": self.ready,
@@ -51,6 +56,9 @@ class Wrapper:
             self.hosts[:] = [value]
         elif action == "release":
             value = {**self.hosts[0], "state": "stopped"}
+            self.hosts[:] = [value]
+        elif action == "start":
+            value = {**self.hosts[0], "state": "ready"}
             self.hosts[:] = [value]
         else:
             value = self.hosts[0]
@@ -169,7 +177,18 @@ def test_readiness_stop_recovers_without_creating_another_host_and_can_cancel_or
     released = lifecycle.release(spec, host.provider_id)
     assert released.state.value == "stopped"
     assert lifecycle.orphaned(process_terminal=lambda _: True) == []
-    lifecycle.start(spec, host.provider_id)
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        lifecycle.acquire_ready(
+            spec,
+            workspace="/work/product",
+            revision="abc123",
+            harness="codex",
+            process_terminal=lambda _: False,
+        )
+    assert not any(call[0][-1] == "start" for call in wrapper.calls)
+    reused = lifecycle.acquire_ready(spec, **kwargs)
+    assert reused.provider_id == host.provider_id
+    assert [call[0][-1] for call in wrapper.calls].count("start") == 1
     retired = lifecycle.destroy(spec, host.provider_id, delete_storage=True)
 
     assert retired.state.value == "terminated"
@@ -217,3 +236,51 @@ def test_pool_bounds_and_ttl_retire_expired_host(tmp_path):
     )
     assert replacement.state.value == "ready"
     assert [call[0][-1] for call in wrapper.calls].count("acquire") == 2
+
+
+def test_repeated_warm_reuse_preserves_original_ttl(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    spec = command_pool(maximum_age_minutes=1)
+    kwargs = {
+        "workspace": "/work",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+    host = lifecycle.acquire_ready(spec, revision="one", now=lambda: 0, **kwargs)
+    lifecycle.attach_run(host.provider_id, "run-one")
+    lifecycle.release(spec, host.provider_id)
+    lifecycle.acquire_ready(spec, revision="two", now=lambda: 30, **kwargs)
+    lifecycle.attach_run(host.provider_id, "run-two")
+    lifecycle.release(spec, host.provider_id)
+
+    with pytest.raises(EnvironmentStop, match="no ready host"):
+        lifecycle.acquire_ready(spec, revision="three", now=lambda: 60, **kwargs)
+
+    assert [call[0][-1] for call in wrapper.calls].count("retire") == 1
+
+
+@pytest.mark.parametrize("failure", ["provider", "json"])
+def test_readiness_wrapper_error_records_environment_stop_and_recovers(tmp_path, failure):
+    wrapper = Wrapper()
+    wrapper.ready_error = failure
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    spec = command_pool()
+    kwargs = {
+        "workspace": "/work",
+        "revision": "abc",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    with pytest.raises(EnvironmentStop, match="workers-0: command ready"):
+        lifecycle.acquire_ready(spec, **kwargs)
+    detail = json.loads(path.read_text())["environment_stops"]["workers"]["detail"]
+    assert "command ready" in detail
+
+    wrapper.ready_error = ""
+    assert lifecycle.acquire_ready(spec, **kwargs).provider_id == "provider-1"
+    assert "workers" not in json.loads(path.read_text())["environment_stops"]

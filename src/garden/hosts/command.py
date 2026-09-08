@@ -198,6 +198,8 @@ class _BoundCommandProvider(CommandProvider):
             },
             self.options,
         )
+        if not isinstance(value, dict):
+            raise ProviderError("command ready returned invalid readiness evidence")
         return HostReadiness(
             workspace=value.get("workspace") is True,
             revision=value.get("revision") is True,

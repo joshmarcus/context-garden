@@ -364,7 +364,7 @@ class HostLifecycle:
         current_time = now()
         candidates: list[HostFacts] = []
         for host in checked:
-            if host.state != HostState.READY:
+            if host.state not in {HostState.READY, HostState.STOPPED}:
                 continue
             if (host.image, host.bootstrap_version) != (
                 pool.profile.image,
@@ -374,7 +374,7 @@ class HostLifecycle:
             lease = leases.get(host.provider_id, {})
             if isinstance(lease, dict):
                 acquired = float(lease.get("acquired_at", current_time))
-                if current_time - acquired > pool.maximum_age_minutes * 60:
+                if current_time - acquired >= pool.maximum_age_minutes * 60:
                     self.destroy(
                         pool,
                         host.provider_id,
@@ -388,19 +388,38 @@ class HostLifecycle:
             candidates.append(host)
         failures: list[str] = []
         for host in candidates:
-            evidence = readiness(
-                host.provider_id, workspace=workspace, revision=revision, harness=harness
-            )
+            lease = leases.get(host.provider_id, {})
+            assert isinstance(lease, dict)
+            acquired_at = float(lease.get("acquired_at", current_time))
+            try:
+                if host.state == HostState.STOPPED:
+                    if not provider.capabilities.stop_start:
+                        failures.append(f"{host.host_id}: stopped host cannot be restarted")
+                        continue
+                    host = provider.start(host.provider_id)
+                    if host.state != HostState.READY:
+                        failures.append(
+                            f"{host.host_id}: start completed in state {host.state.value}"
+                        )
+                        continue
+                evidence = readiness(
+                    host.provider_id, workspace=workspace, revision=revision, harness=harness
+                )
+            except ProviderError as exc:
+                detail = f"{host.host_id}: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
             if not evidence.ready:
                 failures.append(f"{host.host_id}: {evidence.detail or 'readiness checks failed'}")
                 continue
             leases[host.provider_id] = {
-                "acquired_at": current_time,
+                "acquired_at": acquired_at,
                 "last_used_at": current_time,
                 "workspace": workspace,
                 "revision": revision,
                 "harness": harness,
                 "run_id": "",
+                "released": False,
             }
             stops = data.setdefault("environment_stops", {})
             if isinstance(stops, dict):
@@ -443,9 +462,16 @@ class HostLifecycle:
         self.state.write(data)
 
     def release(self, pool: PoolDeclaration, provider_id: str) -> HostFacts:
-        """Release a warm host and remove its durable process lease."""
+        """Release a warm host while retaining its age and prior process identity."""
         released = self.stop(pool, provider_id)
-        self.cancel_acquisition(provider_id)
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        lease = leases.get(provider_id)
+        if isinstance(lease, dict):
+            lease["released"] = True
+            lease["last_used_at"] = time.time()
+        self.state.write(data)
         return released
 
     def orphaned(self, *, process_terminal: Callable[[str], bool]) -> list[str]:
@@ -457,6 +483,7 @@ class HostLifecycle:
             provider_id
             for provider_id, lease in leases.items()
             if isinstance(lease, dict)
+            and not lease.get("released", False)
             and (run_id := str(lease.get("run_id", "")))
             and process_terminal(run_id)
         )
