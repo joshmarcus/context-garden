@@ -1,6 +1,7 @@
 """Remote checks must never confuse an old green build with this checkout."""
 import importlib.util
 import json
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,18 @@ SHA = "a" * 40
 BRANCH = "garden/test-worker"
 
 
+class PublicResponse(StringIO):
+    def __init__(self, payload, headers):
+        super().__init__(json.dumps(payload))
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return None
+
+
 def run(**overrides):
     return {"databaseId": 12, "headSha": SHA, "headBranch": BRANCH, "event": "push",
             "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/12",
@@ -29,6 +42,8 @@ def fake(monkeypatch):
 
     def command(*args):
         state["calls"].append(args)
+        if args[:3] == ("gh", "auth", "status"):
+            return "github.com\n  ✓ Logged in"
         if "status" in args:
             return state["dirty"]
         if "symbolic-ref" in args:
@@ -135,9 +150,85 @@ def test_api_failure_cannot_pass(fake, monkeypatch):
         ci.check_ci()
 
 
+def test_public_rest_path_handles_the_official_ssh_alias(fake, monkeypatch, capsys):
+    def no_gh(*args):
+        if args[:3] == ("gh", "auth", "status"):
+            raise ci.CIError("gh could not finish: not logged in")
+        return fake_command(*args)
+
+    fake_command = ci.command
+    monkeypatch.setattr(ci, "command", no_gh)
+    monkeypatch.setattr(ci, "public_workflow_runs", lambda repo, branch, sha: fake["runs"])
+    # The production deploy-key transport has no authenticated gh identity.
+    original = fake_command
+
+    def ssh_remote(*args):
+        if "get-url" in args:
+            return "ssh://git@ssh.github.com:443/o/r.git"
+        return original(*args)
+
+    monkeypatch.setattr(ci, "command", lambda *args: no_gh(*args) if "get-url" not in args else ssh_remote(*args))
+    ci.check_ci()
+    assert "public GitHub Actions metadata" in capsys.readouterr().out
+
+
+def test_public_rest_rate_limit_and_malformed_results_cannot_pass(fake, monkeypatch):
+    monkeypatch.setattr(ci, "authenticated_gh", lambda _: False)
+    monkeypatch.setattr(ci, "public_workflow_runs", lambda *_: (_ for _ in ()).throw(
+        ci.CIError("public GitHub Actions API rate limit is exhausted")))
+    with pytest.raises(ci.CIError, match="rate limit"):
+        ci.check_ci()
+
+
+def test_public_rest_normalizes_and_validates_github_response(monkeypatch):
+    response = PublicResponse({"workflow_runs": [{
+        "id": 12, "head_sha": SHA, "head_branch": BRANCH, "event": "push",
+        "status": "completed", "conclusion": "success", "html_url": "https://github.com/o/r/actions/runs/12",
+        "run_attempt": 2,
+    }]}, {"X-RateLimit-Remaining": "59"})
+    seen = []
+    monkeypatch.setattr(ci, "urlopen", lambda request, timeout: seen.append((request, timeout)) or response)
+    assert ci.public_workflow_runs("github.com/o/r", BRANCH, SHA) == [
+        {"databaseId": 12, "headSha": SHA, "headBranch": BRANCH, "event": "push",
+         "status": "completed", "conclusion": "success",
+         "url": "https://github.com/o/r/actions/runs/12", "attempt": 2}
+    ]
+    assert "head_sha=" + SHA in seen[0][0].full_url
+    assert seen[0][1] == 30
+
+
+@pytest.mark.parametrize("payload,headers", [
+    ({"workflow_runs": [{}]}, {"X-RateLimit-Remaining": "59"}),
+    ({"workflow_runs": []}, {"X-RateLimit-Remaining": "not-a-number"}),
+    ({"workflow_runs": []}, {"X-RateLimit-Remaining": "0"}),
+])
+def test_public_rest_malformed_or_limited_response_fails(monkeypatch, payload, headers):
+    response = PublicResponse(payload, headers)
+    monkeypatch.setattr(ci, "urlopen", lambda *_, **__: response)
+    with pytest.raises(ci.CIError):
+        ci.public_workflow_runs("github.com/o/r", BRANCH, SHA)
+
+
+def test_public_rest_uses_conservative_poll_floor(fake, monkeypatch):
+    monkeypatch.setattr(ci, "authenticated_gh", lambda _: False)
+    monkeypatch.setattr(ci, "public_workflow_runs", lambda *_: [])
+    ticks = iter([0, 0, 0, 1])
+    sleeps = []
+    monkeypatch.setattr(ci.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(ci.time, "sleep", sleeps.append)
+    with pytest.raises(ci.CIError, match="Timed out"):
+        ci.check_ci(timeout=1, poll=1)
+    assert sleeps == [1]
+
+
 def test_repository_uses_explicit_push_host():
     assert ci.repository("git@ghe.example:team/repo.git") == "ghe.example/team/repo"
     assert ci.repository("https://github.com/team/repo.git") == "github.com/team/repo"
+    assert ci.repository("ssh://git@ssh.github.com:443/team/repo.git") == "github.com/team/repo"
+    for remote in ["ssh://git@ssh.github.com:22/team/repo.git", "https://token@github.com/team/repo.git",
+                   "ssh://alice@ssh.github.com:443/team/repo.git"]:
+        with pytest.raises(ci.CIError):
+            ci.repository(remote)
     with pytest.raises(ci.CIError):
         ci.repository("/tmp/unrelated.git")
 

@@ -1,7 +1,9 @@
 """Push this repository's worker branch and await its exact-commit GitHub CI.
 
-No dependencies beyond Python, git and authenticated gh. This is repository tooling,
-not a provider dependency of the garden package. Keep full PR CI as the merge gate.
+Uses authenticated ``gh`` where it is available.  Public github.com repositories can
+read Actions metadata through the bounded unauthenticated REST API when workers only
+have their repository deploy key.  This is repository tooling, not a provider
+dependency of the garden package. Keep full PR CI as the merge gate.
 """
 from __future__ import annotations
 
@@ -12,7 +14,11 @@ import re
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
+
+PUBLIC_API_POLL_SECONDS = 60
 
 
 class CIError(RuntimeError):
@@ -41,6 +47,14 @@ def repository(remote: str) -> str:
     if (url.scheme not in {"https", "ssh"} or not url.hostname or url.password
             or url.query or url.fragment or len(path.split("/")) != 2):
         raise CIError("origin must have one HTTPS or SSH GitHub repository push URL")
+    if url.scheme == "https" and (url.username or url.port not in {None, 443}):
+        raise CIError("origin HTTPS push URL must not contain credentials or a custom port")
+    if url.scheme == "ssh" and url.username != "git":
+        raise CIError("origin SSH push URL must use the git account")
+    if url.hostname == "ssh.github.com":
+        if url.scheme != "ssh" or url.port != 443:
+            raise CIError("ssh.github.com must use its official SSH transport on port 443")
+        return f"github.com/{path}"
     return f"{url.hostname}/{path}"
 
 
@@ -59,7 +73,65 @@ def checkout() -> tuple[str, str]:
 def latest_run(runs: list[dict], branch: str, sha: str) -> dict | None:
     exact = [r for r in runs if r.get("headSha") == sha and r.get("headBranch") == branch
              and r.get("event") == "push"]
-    return max(exact, key=lambda r: int(r["databaseId"]), default=None)
+    return max(exact, key=lambda r: (int(r["databaseId"]), int(r.get("attempt", 1))), default=None)
+
+
+def authenticated_gh(repo: str) -> bool:
+    """Return whether the configured gh CLI can read this repository's API host."""
+    host = repo.partition("/")[0]
+    try:
+        command("gh", "auth", "status", "--hostname", host)
+    except CIError:
+        if host == "github.com":
+            return False
+        raise CIError(f"authenticated gh is required for non-public API host {host}") from None
+    return True
+
+
+def public_workflow_runs(repo: str, branch: str, sha: str) -> list[dict]:
+    """Read one small, public github.com Actions listing without credentials."""
+    if not repo.startswith("github.com/"):
+        raise CIError("unauthenticated Actions polling is limited to public github.com repositories")
+    owner_repo = repo.removeprefix("github.com/")
+    query = urlencode({"head_sha": sha, "branch": branch, "event": "push", "per_page": "20"})
+    request = Request(
+        f"https://api.github.com/repos/{owner_repo}/actions/workflows/ci.yml/runs?{query}",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "context-garden-worker-ci"},
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+            remaining = response.headers.get("X-RateLimit-Remaining")
+    except HTTPError as exc:
+        raise CIError(f"public GitHub Actions API returned HTTP {exc.code}") from exc
+    except (URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
+        raise CIError(f"public GitHub Actions API could not provide runs: {exc}") from exc
+    if remaining is not None:
+        try:
+            if int(remaining) <= 0:
+                raise CIError("public GitHub Actions API rate limit is exhausted")
+        except ValueError as exc:
+            raise CIError("public GitHub Actions API returned a malformed rate-limit header") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("workflow_runs"), list):
+        raise CIError("public GitHub Actions API returned malformed workflow runs")
+    runs: list[dict] = []
+    for item in payload["workflow_runs"]:
+        if not isinstance(item, dict):
+            raise CIError("public GitHub Actions API returned a malformed workflow run")
+        required = ("id", "head_sha", "head_branch", "event", "status", "html_url", "run_attempt")
+        if any(key not in item for key in required) or not isinstance(item["id"], int):
+            raise CIError("public GitHub Actions API returned a malformed workflow run")
+        if not all(isinstance(item[key], str) for key in ("head_sha", "head_branch", "event", "status", "html_url")):
+            raise CIError("public GitHub Actions API returned a malformed workflow run")
+        if item.get("conclusion") is not None and not isinstance(item["conclusion"], str):
+            raise CIError("public GitHub Actions API returned a malformed workflow run")
+        if not isinstance(item["run_attempt"], int):
+            raise CIError("public GitHub Actions API returned a malformed workflow run")
+        runs.append({"databaseId": item["id"], "headSha": item["head_sha"],
+                     "headBranch": item["head_branch"], "event": item["event"],
+                     "status": item["status"], "conclusion": item.get("conclusion"),
+                     "url": item["html_url"], "attempt": item["run_attempt"]})
+    return runs
 
 
 def check_ci(timeout: float = 1200, poll: float = 15) -> None:
@@ -75,19 +147,27 @@ def check_ci(timeout: float = 1200, poll: float = 15) -> None:
     # GH_CONFIG_DIR/GH_TOKEN without writing shared git config or changing tracking refs.
     command(*git_auth, "push", "origin", f"{sha}:refs/heads/{branch}")
     print(f"CI commit {sha} on {repo}:{branch}", flush=True)
+    use_gh = authenticated_gh(repo)
+    if not use_gh:
+        print(f"Using public GitHub Actions metadata with at least {PUBLIC_API_POLL_SECONDS}s between requests", flush=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        runs = json.loads(command(
-            "gh", "run", "list", "--repo", repo, "--workflow", "ci.yml", "--commit", sha,
-            "--branch", branch, "--event", "push", "--limit", "20", "--json",
-            "databaseId,headSha,headBranch,event,status,conclusion,url",
-        ))
+        if use_gh:
+            runs = json.loads(command(
+                "gh", "run", "list", "--repo", repo, "--workflow", "ci.yml", "--commit", sha,
+                "--branch", branch, "--event", "push", "--limit", "20", "--json",
+                "databaseId,headSha,headBranch,event,status,conclusion,url",
+            ))
+        else:
+            runs = public_workflow_runs(repo, branch, sha)
         run = latest_run(runs, branch, sha)
         if run:
             print(f"CI {run['status']} {run.get('conclusion') or ''}: {run['url']}", flush=True)
             if run["status"] == "completed":
                 if run.get("conclusion") != "success":
                     try:
+                        if not use_gh:
+                            raise CIError("failed public CI logs require authenticated gh")
                         log = command("gh", "run", "view", str(run["databaseId"]),
                                       "--repo", repo, "--log-failed")
                         print("\n".join(log.splitlines()[-100:]), file=sys.stderr)
@@ -104,7 +184,8 @@ def check_ci(timeout: float = 1200, poll: float = 15) -> None:
                 return
         else:
             print("Waiting for this commit's push CI to register (no result yet)", flush=True)
-        time.sleep(min(poll, max(0, deadline - time.monotonic())))
+        interval = max(poll, PUBLIC_API_POLL_SECONDS) if not use_gh else poll
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
     raise CIError(f"Timed out awaiting CI for {sha}; missing or pending is not a pass")
 
 
