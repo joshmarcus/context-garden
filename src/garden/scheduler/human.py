@@ -25,6 +25,117 @@ from .state import _TaskState
 
 
 class HumanMixin:
+    def _apply_revision_policy(self, task: Task, st: _TaskState) -> None:
+        """Raise the implementation floor at each durable substantive threshold.
+
+        Explicit task models are never replaced: the conflict becomes an owner decision.
+        The operation runs only at a dispatch boundary, so an active run keeps its model.
+        """
+        policy = self.cfg.revision_policy()
+        if not policy["enabled"]:
+            return
+        count = int(st.get("substantive_revisions", st.get("revisions", 0)))
+        every, decision_after = int(policy["every"]), int(policy["decision_after"])
+        thresholds = list(st.get("revision_thresholds") or [])
+        if st.get("troubled_decisions") and int(st.get("revision_allowance", 0)) <= 0:
+            reason = f"the granted revision allowance is exhausted after {count} substantive revisions"
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "investigate before granting more revisions"}
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=task.difficulty, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        if count < every or count % every or count in thresholds:
+            return
+        levels = ("easy", "medium", "hard")
+        current = task.difficulty if task.difficulty in levels else "medium"
+        if count >= decision_after or current == "hard" or task.model:
+            reason = (f"{count} substantive revision rounds reached the decision threshold"
+                      if not task.model else
+                      f"{count} substantive revision rounds reached an escalation threshold, but explicit model {task.model} is protected")
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "pause and investigate the repeated findings"}
+            thresholds.append(count)
+            st["revision_thresholds"] = thresholds
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=current, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        new = levels[levels.index(current) + 1]
+        runner = self.runner_for(task)
+        old_model = self.model_for(task, runner)
+        task.difficulty = new
+        new_model = self.model_for(task, runner)
+        at = now_iso()
+        event = {"from": current, "to": new, "prior_model": old_model, "model": new_model,
+                 "trigger": "substantive_revision_threshold", "reason": f"{count} substantive revisions",
+                 "at": at, "counter": count}
+        st.setdefault("difficulty_escalations", []).append(event)
+        thresholds.append(count)
+        st["revision_thresholds"] = thresholds
+        st["difficulty_floor"] = new
+        task.log(f"difficulty {current} -> {new} after {count} substantive revisions; model {old_model or '(runner default)'} -> {new_model or '(runner default)'}")
+        self.store.save(task)
+        self.events.emit("difficulty_escalated", task.id, **event)
+
+    def pause_for_investigation(self, task: Task, reason: str, requester: str = "operator",
+                                owner: str = "operator", scope: str = "read-only diagnosis",
+                                budget: str = "one bounded investigation") -> None:
+        """Request an idempotent safe-boundary investigation without touching live work."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        existing = st.get("investigation")
+        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
+            return
+        active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
+        status = "draining" if active else "requested"
+        st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
+            "requester": requester, "owner": owner, "scope": scope, "budget": budget,
+            "requested_at": now_iso(), "task": task.id}
+        self._set_needs_human(task, "investigation", f"investigation {status}: {reason.strip() or 'troubled task'}")
+        self.events.emit("investigation_requested", task.id, status=status, owner=owner, scope=scope, budget=budget)
+        self.state.save()
+
+    def complete_investigation(self, task: Task, report: str) -> None:
+        ensure_open(task)
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") not in ("requested", "active"):
+            raise RuntimeError(f"{task.id} has no active investigation")
+        if not report.strip():
+            raise RuntimeError("investigation report is required")
+        inv.update({"status": "report_ready", "report": report.strip(), "completed_at": now_iso()})
+        self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
+        self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
+        self.state.save()
+
+    def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
+        """Idempotently grant bounded preserved revisions without erasing lifetime history."""
+        ensure_open(task)
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
+        st = self.state.get(task.id)
+        raw = st.get("needs_human")
+        if not raw or (isinstance(raw, dict) and raw.get("kind") not in ("revision_cap", "troubled_task", "investigation_report")):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
+        if difficulty:
+            levels = ("easy", "medium", "hard")
+            if difficulty not in levels or levels.index(difficulty) < levels.index(task.difficulty):
+                raise RuntimeError("difficulty must preserve or raise the current floor")
+            task.difficulty = difficulty
+        decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
+                    "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
+        st.setdefault("troubled_decisions", []).append(decision)
+        st["revision_allowance"] = int(st.get("revision_allowance", 0)) + allowance
+        st.pop("needs_human", None)
+        st.pop("troubled", None)
+        st.pop("investigation", None)
+        self._grant_one_more_round(st)
+        self._transition(task, Status.CHANGES_REQUESTED, f"troubled task continued with {allowance} bounded revision(s) at {task.difficulty}")
+        self.events.emit("troubled_continued", task.id, **decision)
+        self.state.save()
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a

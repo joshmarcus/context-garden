@@ -136,7 +136,7 @@ class PollMixin:
             rep.transitions.append(f"{task.id} -> changes_requested")
             return
         max_rev = int(self.cfg.get("max_revisions", 3))
-        if int(st.get("revisions", 0)) >= max_rev:
+        if not self.cfg.revision_policy()["enabled"] and int(st.get("revisions", 0)) >= max_rev:
             reason = f"{max_rev} revision rounds used"
             self._set_needs_human(task, "revision_cap", reason,
                                   delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))

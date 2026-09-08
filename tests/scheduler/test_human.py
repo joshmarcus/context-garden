@@ -25,6 +25,89 @@ def test_retry_grants_one_more_round_past_cap(sched, fake_github):
     assert int(st["revisions"]) == 1  # cap (2) minus one -> one more round dispatchable
 
 
+def test_revision_policy_escalates_each_substantive_threshold_once(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 2
+    sched._apply_revision_policy(task, st)
+    assert task.difficulty == "medium"
+    assert st["difficulty_floor"] == "medium"
+    assert st["difficulty_escalations"][0]["counter"] == 2
+    sched._apply_revision_policy(task, st)
+    assert len(st["difficulty_escalations"]) == 1
+    st["substantive_revisions"] = 4
+    sched._apply_revision_policy(task, st)
+    assert task.difficulty == "hard"
+
+
+def test_revision_policy_protects_explicit_model_and_stops(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    task.model = "owner-model"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 2
+    with pytest.raises(RuntimeError, match="explicit model owner-model is protected"):
+        sched._apply_revision_policy(task, st)
+    assert task.difficulty == "easy"
+    assert st["needs_human"]["kind"] == "troubled_task"
+
+
+def test_investigation_is_idempotent_preserves_work_and_report_waits_for_decision(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.pr = "https://example.com/pull/101"
+    task.branch = "garden/preserved"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- repeated finding"
+    sched.pause_for_investigation(task, "find the root cause", owner="agent", budget="$2")
+    first = dict(st["investigation"])
+    sched.pause_for_investigation(task, "duplicate click", owner="operator")
+    assert st["investigation"] == first
+    assert task.pr.endswith("/101") and task.branch == "garden/preserved"
+    assert st["pending_feedback"] == "- repeated finding"
+    with pytest.raises(RuntimeError, match="paused for investigation"):
+        sched.dispatch(task, mode="revise")
+    sched.complete_investigation(task, "Likely cause: stale fixture. Confidence: medium. Retain the branch; repair verification.")
+    assert st["investigation"]["status"] == "report_ready"
+    assert task.status == Status.CHANGES_REQUESTED
+
+
+def test_troubled_continue_preserves_lifetime_counter_and_rejects_double_action(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["revisions"] = 2
+    st["substantive_revisions"] = 7
+    st["pending_feedback"] = "- retain me"
+    st["needs_human"] = {"kind": "troubled_task", "reason": "not converging"}
+    sched.continue_troubled(task, allowance=1, difficulty="hard")
+    assert st["substantive_revisions"] == 7
+    assert st["pending_feedback"] == "- retain me"
+    assert st["revision_allowance"] == 1
+    with pytest.raises(RuntimeError, match="no troubled-task decision"):
+        sched.continue_troubled(task)
+
+
+def test_exhausted_troubled_allowance_stops_before_another_dispatch(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({"substantive_revisions": 7, "troubled_decisions": [{"allowance": 1}],
+               "revision_allowance": 0})
+    with pytest.raises(RuntimeError, match="allowance is exhausted"):
+        sched._apply_revision_policy(task, st)
+    assert st["needs_human"]["kind"] == "troubled_task"
+
+
 def test_retry_of_changes_requested_without_pr_is_a_revise(sched, fake_github):
     """A pre-PR check that failed at the cap leaves the task in changes_requested with no
     PR. `garden retry` must continue the revise loop (keep the feedback, roll the cap back),

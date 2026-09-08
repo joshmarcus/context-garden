@@ -677,6 +677,15 @@ Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 rounds; its separate `review.friction_after` threshold emits one non-blocking loop record.
 Stall handling still stops unchanged paid attempts.
 
+Substantive implementation revisions also follow the live `revision_policy`. It defaults
+to `enabled: true`, `every: 2`, and `decision_after: 6`: at each two-round threshold the
+implementation floor moves easy → medium → hard, once per durable lifetime counter. At
+the decision threshold, at hard, or when a task names an explicit `model`, dispatch stops
+on a Troubled task decision instead of silently replacing the model. Set `enabled: false`
+to opt out. Rebase, description-only, infrastructure, admission, and evidence-recovery
+rounds do not advance this ladder. Policy reloads affect only a future dispatch boundary;
+they never change the model of a run already in flight.
+
 **Restart recovery timing (CG-198).** Restart the controller only at a tick boundary. On
 startup, `reap_on_start` runs before the first tick and reaps every finished-but-unreaped run,
 including reviews, so completed work is applied exactly once; the normal tick then continues
