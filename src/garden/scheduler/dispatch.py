@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import gitops
 from ..brief import build_brief
+from ..canonical import configured_root
 from ..criteria import parse_criteria
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
@@ -32,6 +33,8 @@ class DispatchMixin:
         for task in self.store.tasks().values():
             if task.status not in (Status.DONE, Status.CANCELLED) or task.id in active_task_ids:
                 continue
+            if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
+                continue  # canonical checkouts are provisioned assets, never disposable caches
             worktree = self.worktree_for(task)
             if not worktree.exists():
                 continue
@@ -409,10 +412,14 @@ class DispatchMixin:
         # (CG-125). A truly clean start has no commits ahead of base, so the section is
         # omitted and nothing changes.
         wt_path = worktree_override or self.worktree_for(task)
+        checkout_config = self.cfg.product_checkout(task.product)
+        canonical_root = configured_root(checkout_config, self.store.root) if not runner.remote else None
+        if canonical_root is not None:
+            canonical_root = self.prepare_canonical_run(task, run, runner, branch, base)
         # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
         # below as a commit) before anything else touches the worktree, so they are recovered
         # by `git stash apply`, not buried in a backup branch's synthetic commit.
-        if worktree and not runner.remote:
+        if worktree and not runner.remote and canonical_root is None:
             self._stash_dirty_worktree(task, wt_path, run)
         # A revise, rebase or resume run writes to a branch another writer may have just moved
         # (a prior revise round's push, the merge queue's own rebase): sync the worktree to
@@ -420,7 +427,7 @@ class DispatchMixin:
         # local copy toward a rejected push (CG-220). Any commits sitting only in the worktree —
         # a killed prior run's progress — are kept on `backup/<run-id>`, never silently dropped.
         # run_id was reserved above, alongside the run itself (see RunStore.next_run_id).
-        if run_id and worktree and not runner.remote:
+        if run_id and worktree and not runner.remote and canonical_root is None:
             backed_up = gitops.sync_to_origin_head(wt_path, branch, f"backup/{run_id}")
             if backed_up:
                 note = (f"kept {len(backed_up)} local-only commit(s) on `backup/{run_id}` before "
@@ -442,7 +449,8 @@ class DispatchMixin:
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
         if worktree and not runner.remote:
-            wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+            wt = (canonical_root if canonical_root is not None else
+                  gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base))
             from .snapshot import write_snapshot
             write_snapshot(self, task, wt)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):

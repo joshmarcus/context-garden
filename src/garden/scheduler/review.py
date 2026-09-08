@@ -630,6 +630,10 @@ class ReviewMixin:
             run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
                                      "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
         run.brief_tokens = max(1, len(text) // 4)
+        canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+        if canonical is not None:
+            wt = canonical
+            run.worktree = str(canonical)
         run.save()
         runner.start(run, wt, text)
         st = self.state.get(task.id)

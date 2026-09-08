@@ -193,6 +193,7 @@ class Scheduler(
         cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
+        cfg["checkout"] = self.cfg.product_checkout(task.product)
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
         return get_runner(name, cfg, harness)
@@ -264,10 +265,36 @@ class Scheduler(
         return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
     def worktree_for(self, task: Task) -> Path:
+        from ..canonical import configured_root
+
+        canonical = configured_root(self.cfg.product_checkout(task.product), self.store.root)
+        if canonical is not None:
+            return canonical
         override = self.state.get(task.id).get("worktree")
         if override:
             return Path(override)
         return self.cfg.worktree_path(task.id)
+
+    def prepare_canonical_run(self, task: Task, run: Run, runner: Runner, branch: str, base: str) -> Path | None:
+        """Claim and reconcile an in-place checkout for any execution mode."""
+        from ..canonical import claim, configured_root, preflight, reconcile
+        from ..runner.base import scrubbed_env
+
+        checkout = self.cfg.product_checkout(task.product)
+        root = configured_root(checkout, self.store.root) if not runner.remote else None
+        if root is None:
+            return None
+        active_ids = {
+            item.run_id for item in self.runs.active()
+            if item.run_id != run.run_id and item.worktree
+            and Path(item.worktree).resolve() == root.resolve()
+        }
+        claim(root, run.run_id, active_ids)
+        preflight(root, branch, base)
+        reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
+                  run.path / "reconcile.log")
+        preflight(root, branch, base)
+        return root
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
         """Context passed to check commands as GARDEN_* env vars. `exec_root` (GARDEN_EXEC_ROOT)
