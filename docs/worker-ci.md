@@ -21,7 +21,7 @@ The existing full PR CI still tests integration with the base and gates merging.
 An AWS worker with only this public repository's SSH deploy key may use the helper
 without an operator GitHub token or a `gh` installation. When authenticated `gh` is
 unavailable, the helper reads only the public `ci.yml` workflow's exact branch, commit,
-and push-event runs from `api.github.com`; it polls no more often than once per minute.
+and push-event runs from `api.github.com`; it polls no more often than every 65 seconds.
 The official `ssh://git@ssh.github.com:443/OWNER/REPO.git` push transport is normalized
 to the `github.com` API identity. Other hosts, enterprise instances, custom HTTPS ports,
 and credential-bearing URLs still require authenticated `gh` and never use this fallback.

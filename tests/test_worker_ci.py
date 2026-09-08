@@ -210,6 +210,7 @@ def test_public_rest_malformed_or_limited_response_fails(monkeypatch, payload, h
 
 
 def test_public_rest_uses_conservative_poll_floor(fake, monkeypatch):
+    assert ci.PUBLIC_API_POLL_SECONDS == 65
     monkeypatch.setattr(ci, "authenticated_gh", lambda _: False)
     monkeypatch.setattr(ci, "public_workflow_runs", lambda *_: [])
     ticks = iter([0, 0, 0, 1])

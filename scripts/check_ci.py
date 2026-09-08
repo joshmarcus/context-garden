@@ -18,7 +18,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-PUBLIC_API_POLL_SECONDS = 60
+# Unauthenticated GitHub REST permits 60 requests/hour. Leave room for the initial
+# lookup and unrelated metadata reads from the same worker address.
+PUBLIC_API_POLL_SECONDS = 65
 
 
 class CIError(RuntimeError):
