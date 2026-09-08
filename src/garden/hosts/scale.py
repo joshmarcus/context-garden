@@ -178,6 +178,7 @@ class ScaleOperation:
                 "deadline": deadline.astimezone(dt.UTC).isoformat(),
                 "exact_version": f"{pool.profile.image}/{pool.profile.version}/{pool.profile.bootstrap_version}",
                 "retained_resources": current.get("retained_resources", []) if current else [],
+                "ephemeral_credentials_pending_revocation": [],
             }
             self._write(value)
         return self.status(pool)
