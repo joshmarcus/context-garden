@@ -15,6 +15,19 @@ from garden.store import Store
 from tests.scheduler.conftest import statuses
 
 
+def test_take_manual_refuses_a_stale_ready_task_with_an_active_manual_claim(sched):
+    """A manual run owns its task even if an interrupted state write left it READY."""
+    task = sched.store.task("DM-001")
+    task.runner = "manual"
+    sched.store.save(task)
+    claimed = sched.runs.new_run(task.id, "manual", "work")
+
+    with pytest.raises(RuntimeError, match="already claimed"):
+        sched.take_manual(sched.store.task(task.id))
+
+    assert sched.runs.runs_for(task.id) == [claimed]
+
+
 def test_retry_grants_one_more_round_past_cap(sched, fake_github):
     """Resuming a capped task rolls the revision counter back one so a revise run runs."""
     t = sched.store.task("DM-001")

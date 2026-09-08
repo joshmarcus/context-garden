@@ -67,6 +67,15 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert "Take task" in inbox and "assignment: unclaimed manual session" in inbox
     assert "Manual work waiting" in inbox
     assert "dependencies must finish" in inbox
+    blocked_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in blocked_page
+    assert "waiting for its dependencies" in blocked_page
+
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen_page = c.get("/tasks/DM-001").text
+    assert 'action="/tasks/DM-001/take"' not in frozen_page
+    assert "cannot be claimed while demo/p1 is frozen" in frozen_page
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
 
     # Manual claims are independent of full automated-worker capacity.
     runs = RunStore(garden / ".garden")
@@ -84,6 +93,7 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     task_page = c.get("/tasks/DM-001").text
     assert "Manual session claimed" in task_page and "Finish manual session" in task_page
     assert "Mark done without merging" not in task_page
+    assert 'action="/tasks/DM-001/take"' not in task_page
 
     # Replaying a rendered-but-stale take form cannot create a second run.
     stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
@@ -108,6 +118,20 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     sched.state.save()
     paused = c.get("/inbox").text
     assert "paused for a person" in paused and "Resume task" in paused
+    # Revision feedback missing, an Inbox decision, and the revision cap are all waiting
+    # states on the task page too; none retains the second claim surface.
+    sched.state.get("DM-002")["pending_feedback"] = ""
+    sched.state.save()
+    paused_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in paused_page
+    assert "needs revision feedback" in paused_page
+
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.get("DM-002")["revisions"] = 999
+    sched.state.save()
+    capped_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in capped_page
+    assert "reached its revision limit" in capped_page
 
     # A malformed completion stays recoverable; the valid result finalizes the assigned run.
     unsafe_done = c.post("/tasks/DM-001/done", headers={"referer": "http://testserver/tasks/DM-001"},

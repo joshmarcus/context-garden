@@ -8,22 +8,29 @@ real garden or starting a scheduler loop.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, build_opener
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from garden.model import Status
 from garden.qa.sandbox import make_garden
 from garden.runs import RunStore
 from garden.store import Store
-from garden.walkthrough import _serve, capture
+from garden.walkthrough import _serve
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURES = ROOT / "docs" / "design" / "captures"
 EVIDENCE = ROOT / "docs" / "evidence" / "cg410-manual-inbox-interaction.json"
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Expose the action response before a browser follows its redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
 
 
 def _request(opener: object, base_url: str, method: str, path: str, data: dict[str, str] | None = None) -> int:
@@ -34,18 +41,11 @@ def _request(opener: object, base_url: str, method: str, path: str, data: dict[s
         method=method,
         headers={"Origin": base_url, "Referer": base_url + "/inbox"},
     )
-    with opener.open(request) as response:  # type: ignore[attr-defined]
-        return response.status
-
-
-def _copy_captures(source: Path, page: str, name: str) -> list[str]:
-    artifacts: list[str] = []
-    for width in (1280, 390):
-        for scheme in ("light", "dark"):
-            target = CAPTURES / f"cg-410-manual-{name}-{width}-{scheme}.png"
-            shutil.copy2(source / f"{page}-{width}-{scheme}.png", target)
-            artifacts.append(target.relative_to(ROOT).as_posix())
-    return artifacts
+    try:
+        with opener.open(request) as response:  # type: ignore[attr-defined]
+            return response.status
+    except HTTPError as error:
+        return error.code
 
 
 def main() -> int:
@@ -68,16 +68,24 @@ def main() -> int:
 
         base_url, stop = _serve(store)
         try:
-            inbox = capture(store, store.phase("demo", "p1"), Path(scratch) / "inbox",
-                            base_url=base_url, pages=["inbox"])
-            if not inbox.screenshots:
-                raise RuntimeError(inbox.browser_note or "Inbox screenshots were not captured")
+            opener = build_opener(_NoRedirect())
             events = [
                 {"kind": "http_request", "state": "affected", "outcome": "success", "method": "GET",
-                 "url": "/inbox", "status_code": _request(build_opener(), base_url, "GET", "/inbox"),
+                 "url": "/inbox", "status_code": _request(opener, base_url, "GET", "/inbox"),
                  "observed": "manual work is actionable despite full automated capacity; dependent work waits"},
             ]
-            opener = build_opener()
+            events.append(
+                {"kind": "http_request", "state": "blocked", "outcome": "safe_waiting", "method": "GET",
+                 "url": "/tasks/DM-002", "status_code": _request(opener, base_url, "GET", "/tasks/DM-002"),
+                 "observed": "dependency-blocked manual task page offers no Take action"}
+            )
+            store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+            events.append(
+                {"kind": "http_request", "state": "frozen", "outcome": "safe_waiting", "method": "GET",
+                 "url": "/tasks/DM-001", "status_code": _request(opener, base_url, "GET", "/tasks/DM-001"),
+                 "observed": "frozen manual task page offers no Take action"}
+            )
+            store.set_phase_frozen(store.phase("demo", "p1"), "")
             events.append(
                 {"kind": "http_request", "state": "affected", "outcome": "success", "method": "POST",
                  "url": "/tasks/DM-001/take", "status_code": _request(opener, base_url, "POST", "/tasks/DM-001/take"),
@@ -88,14 +96,10 @@ def main() -> int:
                  "url": "/tasks/DM-001/packet", "status_code": _request(opener, base_url, "GET", "/tasks/DM-001/packet"),
                  "observed": "the assigned packet is available"}
             )
-            task = capture(Store(garden_root), Store(garden_root).phase("demo", "p1"), Path(scratch) / "task",
-                           base_url=base_url, pages=["task"])
-            if not task.screenshots:
-                raise RuntimeError(task.browser_note or "Task screenshots were not captured")
             events.append(
                 {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "POST",
                  "url": "/tasks/DM-001/take", "status_code": _request(opener, base_url, "POST", "/tasks/DM-001/take"),
-                 "observed": "a stale take is refused and does not create another run"}
+                 "observed": "a stale take returns its refusal redirect and does not create another run"}
             )
             events.append(
                 {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "POST",
@@ -117,17 +121,16 @@ def main() -> int:
         finally:
             stop()
 
-        artifacts = _copy_captures(Path(scratch) / "inbox", "inbox", "inbox")
-        artifacts += _copy_captures(Path(scratch) / "task", "task", "task")
+        artifacts = [path.relative_to(ROOT).as_posix() for path in sorted(CAPTURES.glob("cg-410-manual-*.png"))]
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         EVIDENCE.write_text(json.dumps({
             "head": head,
             "environment": "disposable local garden fixture served at an ephemeral 127.0.0.1 port",
-            "command": "python scripts/capture_cg410.py",
-            "states": ["affected", "empty", "failure", "recovery"],
+            "command": "python scripts/capture_cg410.py (served interaction; preserves existing inspected captures)",
+            "states": ["affected", "blocked", "frozen", "empty", "failure", "recovery"],
             "events": events,
             "artifacts": artifacts,
-            "render": inbox.interaction_evidence + task.interaction_evidence,
+            "render": "Existing 1280px and 390px Inbox/task captures are preserved; this replay records only the revised served interaction.",
         }, indent=2) + "\n")
     return 0
 
