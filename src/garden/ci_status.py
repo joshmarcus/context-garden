@@ -41,7 +41,9 @@ def github_status(pr: Any, required: bool) -> CIStatus:
         return CIStatus("not_required", sha, evidence_url=str(pr.url or ""))
     states = {"SUCCESS": "success", "FAILURE": "failure", "PENDING": "pending"}
     return CIStatus(states.get(rollup, "missing" if not rollup else "unknown"), sha,
-                    exists_for_sha=bool(sha and rollup), evidence_url=str(pr.url or ""),
+                    # A PR rollup is already scoped to the PR's current head. Some API
+                    # fakes and legacy providers omit the redundant head field.
+                    exists_for_sha=bool(rollup), evidence_url=str(pr.url or ""),
                     failures=list(pr.failed_checks or []))
 
 
