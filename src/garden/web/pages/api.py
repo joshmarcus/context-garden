@@ -340,14 +340,19 @@ def register(app: FastAPI, site: Site) -> None:
         with hub.action_lock:
             run = run_for(run_id)
             token = str(body.get("lease_token") or "")
+            final = str(body.get("final_text") or "")
+            posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
+                      "cost_usd": body.get("cost_usd"), "final_text": final,
+                      "error": str(body.get("error") or ""),
+                      "session_id": str(body.get("session_id") or "")}
             if run.host != host.get("name") or not token or not secrets.compare_digest(run.lease_token, token):
                 raise HTTPException(409, "run lease has been replaced")
             if run.process_finished():
-                posted = run.path / "remote_result.json"
-                prior = json.loads(posted.read_text()) if posted.exists() else {}
+                result_path = run.path / "remote_result.json"
+                prior = json.loads(result_path.read_text()) if result_path.exists() else {}
                 same = (run.pushed_head == str(body.get("pushed_head") or "")
                         and run.read_exit_code() == int(body.get("exit_code") or 0)
-                        and prior.get("result", {}) == (body.get("result") or {}))
+                        and prior == posted)
                 if not same:
                     raise HTTPException(409, "completed run result is immutable")
                 return {"ok": True, "already_finished": True}
@@ -355,11 +360,7 @@ def register(app: FastAPI, site: Site) -> None:
                 raise HTTPException(409, "run lease has been revoked")
             run = claimed_run(run_id, host, token)
             run.pushed_head = str(body.get("pushed_head") or "")
-            final = str(body.get("final_text") or "")
             (run.path / "final.md").write_text(final)
-            posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
-                      "cost_usd": body.get("cost_usd"), "final_text": final,
-                      "error": str(body.get("error") or ""), "session_id": str(body.get("session_id") or "")}
             (run.path / "remote_result.json").write_text(json.dumps(posted))
             if run.mode == "check":
                 (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
