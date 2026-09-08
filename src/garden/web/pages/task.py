@@ -16,7 +16,7 @@ from ...criteria import (
     worker_verified,
 )
 from ...events import EventLog
-from ...graph import blockers, dependents, deps_in_later_phase, effective_status
+from ...graph import blockers, dependency_after, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...review import review_to_markdown
 from ...runs import RunStore
@@ -36,7 +36,7 @@ def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
         names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
     except Exception:  # noqa: BLE001
         return []
-    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}"}
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}&product={task.product}"}
             for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
 
 
@@ -91,6 +91,7 @@ def register(app: FastAPI, site: Site) -> None:
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
+            dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,

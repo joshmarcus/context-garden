@@ -1,0 +1,240 @@
+{
+  "source_head": "045e555847bf6cbd5a790d0cd05284653cd6fe0c",
+  "test": "tests/test_remote_worker.py::test_remote_lifecycle_over_served_http",
+  "transport": "real TCP HTTP",
+  "worker_process": "separate python -m garden.managed_worker process",
+  "worker_command": "python -m garden.managed_worker --config isolated-config --once",
+  "actions": [
+    "reject unauthenticated and cross-origin claims",
+    "claim then expire a work lease and reject its stale heartbeat",
+    "reclaim and finish work, check, review, PR persona, and phase persona runs",
+    "open the run page and drain the queue"
+  ],
+  "observations": {
+    "setup_environment_absent_from_claim": true,
+    "managed_setup_once_inside_host_lock": true,
+    "managed_host_attribution_persisted": true,
+    "stale_heartbeat_status": 409,
+    "review_verdict": "approve",
+    "pr_opened": true,
+    "run_page_host": "build-1",
+    "final_claim_status": 204
+  },
+  "runs": [
+    {
+      "mode": "work",
+      "run": "20260908T033739Z-work",
+      "host": "build-1",
+      "setup_count": 1,
+      "managed": true
+    },
+    {
+      "mode": "check",
+      "run": "20260908T033740Z-check",
+      "host": "build-1",
+      "setup_count": 2,
+      "managed": true
+    },
+    {
+      "mode": "review",
+      "run": "20260908T033740Z-review",
+      "host": "build-1",
+      "setup_count": 3,
+      "managed": true
+    },
+    {
+      "mode": "persona",
+      "run": "20260908T033741Z-persona",
+      "host": "build-1",
+      "setup_count": 4,
+      "managed": true
+    },
+    {
+      "mode": "persona",
+      "run": "20260908T033742Z-persona",
+      "host": "build-1",
+      "setup_count": 1,
+      "managed": true
+    }
+  ],
+  "http": [
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 401
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 403
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033739Z-work/heartbeat",
+      "status": 409
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033739Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033739Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033739Z-work/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033739Z-work/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-check/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-check/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-check/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-review/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033740Z-review/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033741Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033741Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033741Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033741Z-persona/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033742Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033742Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033742Z-persona/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/20260908T033742Z-persona/finish",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/claim",
+      "status": 204
+    },
+    {
+      "method": "GET",
+      "path": "/runs/DM-001/20260908T033739Z-work",
+      "status": 200
+    }
+  ],
+  "verification_at": "2026-09-08T03:38:46.137407+00:00",
+  "command": "PYTHONPATH=src TMPDIR=/home/joshua/work/tmp-disk PYTHONDONTWRITEBYTECODE=1 GARDEN_REMOTE_INTERACTION_ARTIFACT=OUT /home/joshua/garden/.venv/bin/python -m pytest tests/test_managed_worker.py tests/test_remote_worker.py tests/test_hosts.py -q",
+  "limits": {
+    "cpu_percent": 200,
+    "memory_high_mib": 768,
+    "memory_max_mib": 1024,
+    "swap_max_bytes": 0,
+    "runtime_seconds": 240
+  },
+  "result": {
+    "passed": 39,
+    "elapsed_seconds": 21.03,
+    "service_memory_peak_mib": 177,
+    "swap_bytes": 0
+  },
+  "limitations": [
+    "Disposable local HTTP server with separate real managed worker subprocesses; not new EC2 execution.",
+    "GitHub and model harness are deterministic fakes. Host resource numbers are measured; provider/profile/source attribution values are fixture declarations.",
+    "Historical real EC2 canary stays valid for its recorded source only; production auth and clean-image replay remain unproven."
+  ],
+  "tested_file_sha256": {
+    "src/garden/managed_worker.py": "1de7a08986b7fb6313143485b50a37000c8982698e11283036440cf59e16809f",
+    "src/garden/remote_worker.py": "9ae969bbdb383a124f83307b3c267151825df83dfb310a5c27f807b99f2ad773",
+    "src/garden/web/pages/api.py": "3b139fec71652587887c833c551cc305a5bca79f286e208964e73c4a9a2da091",
+    "tests/test_remote_worker.py": "5eb798d8cb12ae870b8d12f214117443c69a585cbb30f57ba73c87c8807f0e9c",
+    "tests/test_managed_worker.py": "894af1d76bd938024adb47fad79c8d97d4be07c6e71446153195bd8bdbe061a5",
+    "scripts/managed-worker-bootstrap": "e81cacaf2156eb7d1f7563c7e79ccbbfc2be8e81e14a7f2b25c32432bc489a0e"
+  }
+}

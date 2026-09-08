@@ -33,7 +33,6 @@ from .runs import Run, RunStore
 from .store import Store
 
 WORKER_MODES = {"work", "revise", "resume", "trial", "rebase"}
-CHECK_MODES = {"check"}
 REVIEW_MODES = {"review", "persona", "compare"}
 # The design's mode -> growth-stage glyph table (docs/design/now-1.md, Visual system): the
 # glyph is a task-state name `plants.stage_svg` knows; the dot is the state colour.
@@ -329,7 +328,8 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in strips if s.get("mode") in REVIEW_MODES}
-    max_rounds = int(store.config.get("review.max_rounds", 2))  # the scheduler's own default
+    configured_cap = store.config.review_max_rounds()
+    max_rounds = configured_cap if configured_cap is not None else "unlimited"
     last_moved: dict[str, str] = {}
     for e in events:
         if e.get("task"):
@@ -566,8 +566,8 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
             spent[tasks[r.task_id].key] += float(r.cost_usd or 0.0)
 
     strips = strips_in_flight(runs, tasks, events, store, now)
-    worker_busy = sum(1 for s in strips if s["mode"] in WORKER_MODES | CHECK_MODES)
-    worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES | CHECK_MODES and s["no_process"])
+    worker_busy = sum(1 for s in strips if s["mode"] in WORKER_MODES)
+    worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES and s["no_process"])
     review_busy = sum(1 for s in strips if s["mode"] in REVIEW_MODES)
     max_parallel = sched.effective_max_parallel()
     review_parallel = sched.review_parallel_limit()

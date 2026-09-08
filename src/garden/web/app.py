@@ -8,12 +8,13 @@ loop runs in a background thread when `watch=True` (the `garden serve` default).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import jinja2
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -64,7 +65,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     # The allowlist is the bound address plus any web.trusted_origins; the request's Host is
     # never trusted, so a DNS-rebound page is refused even when its Host and Origin agree.
     allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
-    app.add_middleware(OriginCheck, allowed_origins=allowed)
+    tokens = [os.environ.get(str(h.get("token_env") or ""), "")
+              for h in (store.config.get("workers.hosts") or [])]
+    app.add_middleware(OriginCheck, allowed_origins=allowed, worker_tokens=tokens)
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
     templates = Jinja2Templates(directory=str(TEMPLATES))
@@ -113,6 +116,21 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     @app.get("/favicon.svg", include_in_schema=False)
     def favicon() -> Response:
         return Response(favicon_svg(), media_type="image/svg+xml")
+
+    @app.get("/healthz", include_in_schema=False)
+    async def health() -> PlainTextResponse:
+        """Process liveness only: deliberately no Store, Scheduler, or history reads."""
+        return PlainTextResponse("ok")
+
+    @app.get("/api/control/status", include_in_schema=False)
+    async def control_status() -> JSONResponse:
+        """Bounded incident status from the small side-store, without task/history reads."""
+        from ..scheduler.state import State
+
+        ctrl = State(store.config.garden_dir / "state.json").get("_control")
+        return JSONResponse({"ok": True, "dispatch": ctrl.get("dispatch", "running"),
+                             "by": ctrl.get("by", ""), "at": ctrl.get("at", ""),
+                             "reason": ctrl.get("reason", "")})
 
     site = Site(hub, templates, plates)
     pages.register(app, site)

@@ -40,11 +40,58 @@ def test_record_from_transcript_sums_usage_and_prices_by_model(tmp_path):
     assert rec["last_turn"] == "2026-09-05T10:01:00+00:00"
 
 
-def test_record_from_transcript_unknown_model_falls_back_to_a_default_price(tmp_path):
+def test_record_from_transcript_unknown_model_marks_pricing_unavailable(tmp_path):
     path = tmp_path / "sess-x.jsonl"
     _write_transcript(path, [("some-future-model", 1000, 1000)])
     rec = ops.record_from_transcript(path)
-    assert rec["list_price_usd"] > 0
+    assert rec["list_price_usd"] is None
+    assert rec["price_status"] == "unavailable"
+
+
+def test_record_from_codex_transcript_uses_latest_cumulative_usage_without_double_counting(tmp_path):
+    path = tmp_path / "rollout-2026-09-06-operator.jsonl"
+    path.write_text("\n".join(json.dumps(event) for event in [
+        {"timestamp": "2026-09-06T10:00:00Z", "type": "session_meta",
+         "payload": {"id": "codex-operator"}},
+        {"timestamp": "2026-09-06T10:00:30Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol"}},
+        {"timestamp": "2026-09-06T10:01:00Z", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 1_000, "cached_input_tokens": 400, "output_tokens": 50,
+                "reasoning_output_tokens": 10, "total_tokens": 1_050}}}},
+        {"timestamp": "2026-09-06T10:02:00Z", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 2_000, "cached_input_tokens": 900, "output_tokens": 120,
+                "reasoning_output_tokens": 30, "cache_write_input_tokens": 20, "total_tokens": 2_120}}}},
+        {"timestamp": "2026-09-06T10:03:00Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-terra"}},
+        {"timestamp": "2026-09-06T10:04:00Z", "type": "event_msg", "payload": {
+            "type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 3_000, "cached_input_tokens": 1_000, "output_tokens": 180,
+                "reasoning_output_tokens": 50, "cache_write_input_tokens": 30, "total_tokens": 3_180}}}},
+    ]) + "\n")
+    rec = ops.record_from_transcript(path)
+    assert rec["harness"] == "codex"
+    assert rec["session"] == "codex-operator"
+    assert rec["turns"] == 2
+    assert rec["models"] == {"gpt-5.6-sol": 1, "gpt-5.6-terra": 1}
+    assert rec["tokens"] == {"input": 2_000, "cache_read": 1_000, "cache_write": 30, "output": 180}
+    assert rec["tokens"]["input"] + rec["tokens"]["cache_read"] + rec["tokens"]["output"] == 3_180
+    assert rec["first_turn"] == "2026-09-06T10:00:30Z"
+    assert rec["last_turn"] == "2026-09-06T10:03:00Z"
+    assert rec["list_price_usd"] is None
+    assert rec["price_status"] == "unavailable"
+    assert rec["usage_status"] == "available"
+    assert ops.to_cost_events([rec]) == []
+
+
+def test_record_from_codex_transcript_without_usage_marks_usage_unavailable(tmp_path):
+    path = tmp_path / "rollout-empty.jsonl"
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": "codex-empty"}}) + "\n")
+    rec = ops.record_from_transcript(path)
+    assert rec["harness"] == "codex"
+    assert rec["tokens"] is None
+    assert rec["usage_status"] == "unavailable"
 
 
 def test_find_transcript_picks_newest_and_can_match_a_session(tmp_path):
@@ -68,6 +115,14 @@ def test_find_transcript_raises_when_nothing_matches(tmp_path):
     (tmp_path / "sess-aaa.jsonl").write_text("")
     with pytest.raises(FileNotFoundError):
         ops.find_transcript(tmp_path, session="zzz")
+
+
+def test_find_codex_transcript_searches_dated_sessions_and_matches_thread_id(tmp_path):
+    path = tmp_path / "2026" / "09" / "06" / "rollout-operator.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": "thread-operator"}}) + "\n")
+    assert ops.find_codex_transcript(tmp_path).name == path.name
+    assert ops.find_codex_transcript(tmp_path, "thread-operator") == path
 
 
 def test_project_dir_for_encodes_the_path_like_claude_code():

@@ -50,6 +50,13 @@ def _no_ambient_garden_root(monkeypatch):
     monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_harness_config(monkeypatch):
+    """Tests must not read a developer's real Claude or Codex configuration."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+
 def git(*args: str, cwd: Path, timeout: float = 30) -> None:
     """Run a fixture Git command with a bounded wait and no leaked pipe holders.
 
@@ -124,6 +131,10 @@ def garden(tmp_path: Path) -> Path:
     write(repo / "README.md", "# demo\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
+    # pytest's numbered temporary-directory cleanup can remove an older sibling while
+    # this fixture is being assembled. Ensure the bare remote's parent still exists
+    # immediately before Git creates it.
+    remote.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)

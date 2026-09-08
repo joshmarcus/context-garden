@@ -15,7 +15,11 @@ from garden.scheduler.report import TickReport
 from garden.store import Store
 from garden.walkthrough import (
     COLOR_SCHEMES,
+    NARROW_FRAME_HEIGHT,
+    NARROW_OUTER_WIDTH,
     VIEWPORTS,
+    NarrowViewportError,
+    _narrow_frame,
     _prepare_browser,
     _redact_home,
     _scrub_stderr,
@@ -88,6 +92,75 @@ def test_ui_path_detection():
     assert not _is_ui_path("src/garden/model.py")
     assert VIEWPORTS == (1280, 390)
     assert COLOR_SCHEMES == ("light", "dark")
+    assert NARROW_OUTER_WIDTH == 600
+    assert NARROW_FRAME_HEIGHT == 5400
+
+
+def test_narrow_frame_uses_a_390px_content_viewport():
+    class Page:
+        def __init__(self):
+            self.wrapper = ""
+            self.scripts = []
+
+        def set_content(self, wrapper, **_kwargs):
+            self.wrapper = wrapper
+
+        def frame(self, **_kwargs):
+            return self
+
+        def locator(self, _selector):
+            return self
+
+        def evaluate(self, script, *_args):
+            self.scripts.append(script)
+            if "scrollHeight" in script:
+                return {"clientWidth": 390, "scrollWidth": 390, "scrollHeight": 5400}
+            return None
+
+    page = Page()
+    measurements = _narrow_frame(page, "http://localhost:8765/inbox")
+
+    assert 'src="http://localhost:8765/inbox"' in page.wrapper
+    assert 'width:390px;height:5400px;border:0' in page.wrapper
+    assert any("clientWidth" in script and "scrollWidth" in script for script in page.scripts)
+    assert measurements == {"clientWidth": 390, "scrollWidth": 390}
+
+
+def test_narrow_frame_executes_measurement_in_chromium():
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 - local hosts may lack system libraries
+            pytest.skip(f"Chromium unavailable in this environment: {exc}")
+        page = browser.new_page(viewport={"width": NARROW_OUTER_WIDTH, "height": 900})
+        measurements = _narrow_frame(
+            page,
+            "data:text/html,<html><body style='margin:0;width:390px'>fixture</body></html>",
+        )
+        browser.close()
+
+    assert measurements == {"clientWidth": 390, "scrollWidth": 390}
+
+
+def test_narrow_frame_rejects_content_overflow_after_measuring_it():
+    class Page:
+        def set_content(self, _wrapper, **_kwargs):
+            pass
+
+        def frame(self, **_kwargs):
+            return self
+
+        def locator(self, _selector):
+            return self
+
+        def evaluate(self, script, *_args):
+            if "scrollHeight" in script:
+                return {"clientWidth": 390, "scrollWidth": 646, "scrollHeight": 5400}
+            return None
+
+    with pytest.raises(NarrowViewportError, match="scrollWidth 646"):
+        _narrow_frame(Page(), "http://localhost:8765/runs")
 
 
 def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
@@ -157,6 +230,34 @@ def test_ui_check_rejects_pngs_without_executed_interaction_evidence(tmp_path, m
     assert "interaction/viewport evidence is incomplete" in result["summary"]
 
 
+def test_ui_check_fails_when_browser_cannot_capture(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
+        "ready": False, "kind": "launch_failure", "diagnostic": "Chromium unavailable"})
+
+    result = _seeded_ui_capture(tmp_path / "ui")
+
+    assert result["status"] == "fail"
+    assert "Chromium unavailable" in result["details"]
+
+
+def test_ui_check_fails_when_a_color_capture_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    if not (spec.slug == "now" and scheme == "dark"):
+                        (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        return {spec.slug for spec in specs}, None, []
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui")
+
+    assert result["status"] == "fail"
+    assert "now-1280-dark.png" in result["details"]
+
+
 def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch):
     worktree = tmp_path / "proposed"
     (worktree / "src").mkdir(parents=True)
@@ -201,7 +302,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monkeypatch):
+def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     task = sched.store.task("DM-001")
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
@@ -217,6 +318,7 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
     assert ui["worktree"] == str(worktree)
     assert "garden_root" not in ui
+    assert ui["pages"] == ["inbox", "now"]
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
@@ -224,16 +326,88 @@ def test_scheduler_adds_ui_check_for_ui_changes_or_required_captures(sched, monk
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
     assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
 
+    # A generic criterion can preserve milestone validation, but does not make this
+    # backend-only PR capture the walkthrough inventory.
     task.extra["requires"] = ["captures"]
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+
+    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
+                        lambda _worktree, _base: ["src/garden/web/static/site.css"])
+    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
+    assert ui["pages"] == ["*"]
+
+
+def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):
+    store = Store(garden)
+    result = capture(store, store.phase("demo", "p1"), tmp_path, screenshots=False, pages=[])
+
+    assert result.pages == []
 
 
 def test_html_to_text_strips_tags_and_scripts():
     txt = html_to_text("<style>x{}</style><h1>Title</h1><p>One</p><script>bad()</script><p>Two &amp; more</p>")
     assert "Title" in txt and "One" in txt and "Two & more" in txt
     assert "bad()" not in txt and "<" not in txt
+
+
+def test_html_to_text_omits_hidden_panels_and_attributes():
+    txt = html_to_text(
+        '<main><h1 title="tasks&quot;-&gt;Plan phase">Visible</h1>'
+        '<div hidden>Hidden attribute</div>'
+        '<aside style="display: none">Display hidden</aside>'
+        '<aside style="display: none !important">Important hidden</aside>'
+        '<section aria-hidden="true">ARIA hidden</section></main>'
+    )
+    assert "Visible" in txt
+    assert "Hidden attribute" not in txt
+    assert "Display hidden" not in txt
+    assert "Important hidden" not in txt
+    assert "ARIA hidden" not in txt
+    assert "tasks\"-&gt;Plan phase" not in txt
+    assert "tasks\"->Plan phase" not in txt
+
+
+def test_html_to_text_omits_stylesheet_hidden_panels():
+    txt = html_to_text(
+        '<style>.panel { display: none; } #secret { display:none !important; }</style>'
+        '<div class="panel">Hidden by class</div><p id="secret">Hidden by id</p>'
+        '<p>Visible</p>'
+    )
+    assert "Hidden by class" not in txt
+    assert "Hidden by id" not in txt
+    assert "Visible" in txt
+
+
+def test_html_to_text_does_not_overmatch_unsupported_or_nested_selectors():
+    txt = html_to_text(
+        '<style>[hidden] { display:none } details:not([open]) > summary { display:none }</style>'
+        '<p>Visible sibling</p><div hidden>Hidden attribute</div>'
+        '<details open><summary>Visible summary</summary><p>Visible details</p></details>'
+    )
+    assert "Hidden attribute" not in txt
+    assert "Visible sibling" in txt
+    assert "Visible summary" in txt
+    assert "Visible details" in txt
+
+
+def test_html_to_text_respects_child_selector_combinators():
+    txt = html_to_text(
+        '<style>.outer > .target { display:none }</style>'
+        '<div class="outer"><div class="intermediate"><p class="target">Visible text</p></div></div>'
+    )
+    assert "Visible text" in txt
+
+
+def test_html_to_text_applies_later_display_rule():
+    txt = html_to_text(
+        '<style>.panel { display:none } .panel { display:block }</style>'
+        '<div class="panel">Restored text</div>'
+    )
+    assert "Restored text" in txt
 
 
 def test_persona_phase_brief_includes_newest_walkthrough(garden):
@@ -353,3 +527,22 @@ def test_capture_redacts_the_home_directory(garden, monkeypatch):
     assert fake_home not in run_html
     assert "~/work/checkout/src/thing.py" in run_html
     assert "paths are redacted" in (out / "index.md").read_text()
+
+
+def test_ui_check_entrypoint_accepts_new_controller_page_argument(monkeypatch, capsys, tmp_path):
+    import json
+
+    import garden.walkthrough as walkthrough
+
+    calls = []
+
+    def capture(path, pages):
+        calls.append((path, pages))
+        return {"status": "pass", "out_dir": str(path)}
+
+    monkeypatch.setattr(walkthrough, "_seeded_ui_capture", capture)
+    for selection, expected in [([], []), (['["*"]'], ["*"])]:
+        monkeypatch.setattr(walkthrough.sys, "argv", ["garden.walkthrough", "--ui-check", str(tmp_path), *selection])
+        assert walkthrough._main() == 0
+        assert json.loads(capsys.readouterr().out) == {"status": "pass", "out_dir": str(tmp_path)}
+        assert calls[-1] == (tmp_path, expected)

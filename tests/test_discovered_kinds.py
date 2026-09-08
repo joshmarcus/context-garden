@@ -170,10 +170,10 @@ def test_normalise_title_ignores_case_and_punctuation():
 
 
 def test_same_finding_needs_both_a_shared_file_and_a_shared_symptom():
-    a = "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."
-    same_file_same_error = "Under load, `src/garden/scheduler/poll.py` throws `TimeoutError: retry exceeded`."
-    same_file_only = "`src/garden/scheduler/poll.py` is slow but does not error."
-    unrelated = "`src/garden/web/app.py` raises `ValueError: bad config`."
+    a = {"file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"}
+    same_file_same_error = {"file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"}
+    same_file_only = {"file": "src/garden/scheduler/poll.py", "error": "connection reset"}
+    unrelated = {"file": "src/garden/web/app.py", "error": "ValueError: bad config"}
     assert _same_finding(a, same_file_same_error)
     assert not _same_finding(a, same_file_only)
     assert not _same_finding(a, unrelated)
@@ -215,18 +215,21 @@ def test_same_discovery_from_three_workers_files_one_draft(sched, fake_github, m
     assert all(e["task"] == draft.id for e in dups)
 
 
-def test_dedup_matches_by_file_and_symptom_even_with_a_different_title(sched, fake_github, monkeypatch):
-    """A discovery with a different title still attaches to an open task that names the same
-    file and error, instead of filing a near-duplicate draft."""
+def test_dedup_matches_structured_file_and_error_even_with_a_different_title(sched, fake_github, monkeypatch):
+    """A discovery with a different title still attaches to an open task with the same
+    structured file and error, instead of filing a near-duplicate draft."""
     existing = sched.store.create_task(
-        "demo", "p1", "Scheduler retries never give up", "## Goal\n\n"
-        "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load.\n",
+        "demo", "p1", "Scheduler retries never give up", "## Goal\n\nA retry loop needs a bound.\n",
         status="ready", task_id="DM-350")
+    existing.extra.update({"file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"})
+    sched.store.save(existing)
 
     def add_variant(call, result):
         result["discovered"] = [{
             "title": "Runner keeps retrying a dead worker",
-            "body": "Under load, `src/garden/scheduler/poll.py` throws `TimeoutError: retry exceeded`.",
+            "body": "Under load, a worker retry never completes.",
+            "file": "src/garden/scheduler/poll.py",
+            "error": "TimeoutError: retry exceeded",
         }]
 
     from tests.fake_claude import WORKERS, Worker

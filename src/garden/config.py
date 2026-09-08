@@ -148,6 +148,7 @@ DEFAULTS: dict[str, Any] = {
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
     },
     "max_attempts": 2,
+    "max_consecutive_env_errors": 3,
     "max_revisions": 3,
     "timeout_minutes": 90,
     "idle_minutes": 10,           # warn: show "idle N min" once a running worker has gone this long with no output or file change
@@ -165,7 +166,8 @@ DEFAULTS: dict[str, Any] = {
     "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 600},
     "review": {
         "enabled": True,
-        "max_rounds": 2,          # automated review rounds per PR
+        "max_rounds": 2,          # positive automated-review cap per PR; null means unlimited
+        "friction_after": 4,      # positive round count that records a non-blocking loop signal; null disables it
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
         "harness": "",            # empty = default harness
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
@@ -186,6 +188,7 @@ DEFAULTS: dict[str, Any] = {
                                # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
                                # the codex defaults and docs/codex.md for where the numbers came from
     "ssh": {"hosts": []},
+    "workers": {"lease_seconds": 120, "poll_seconds": 5, "hosts": []},
     "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined
@@ -288,6 +291,26 @@ class Config:
                 return default
             cur = cur[part]
         return cur
+
+    def review_max_rounds(self) -> int | None:
+        """The optional hard automated-review cap.
+
+        Existing gardens retain the default of two rounds.  ``null`` deliberately means no
+        cap; zero is rejected rather than becoming an ambiguous synonym for either setting.
+        """
+        return self._positive_optional_int("review.max_rounds")
+
+    def review_friction_after(self) -> int | None:
+        """The optional, non-blocking round count at which loop friction is recorded."""
+        return self._positive_optional_int("review.friction_after")
+
+    def _positive_optional_int(self, dotted: str) -> int | None:
+        value = self.get(dotted)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{dotted} must be null or a positive integer")
+        return value
 
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})

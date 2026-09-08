@@ -71,6 +71,29 @@ def test_default_branch():
     assert t.default_branch() == "garden/cg-007-add-an-automated-review-pass"
 
 
+def test_dependency_forms_round_trip_and_reject_malformed_entries(tmp_path):
+    text = """---
+id: X-001
+title: Build it
+status: ready
+depends_on:
+  - X-000
+  - id: X-002
+    after: merge
+---
+
+## Goal
+
+Build.
+"""
+    t = Task.parse(tmp_path / "x.md", text)
+    assert t.depends_on == ["X-000", "X-002"]
+    assert t.dependency_after == {"X-002": "merge"}
+    assert Task.parse(tmp_path / "x.md", t.render()).dependency_after == {"X-002": "merge"}
+    with pytest.raises(ValueError, match="malformed depends_on"):
+        Task.parse(tmp_path / "x.md", text.replace("- X-000", "- after: merge"))
+
+
 def test_elapsed_minutes_never_negative(tmp_path):
     from garden.runs import Run
 

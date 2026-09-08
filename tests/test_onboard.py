@@ -158,7 +158,7 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
     assert all(task.status.value == "draft" for task in tasks)
 
 
-def test_onboard_this_repository_uses_documented_development_commands(tmp_path, monkeypatch):
+def test_onboard_this_repository_uses_documented_setup_and_ci_tests(tmp_path, monkeypatch):
     repo = Path(__file__).parents[1]
     garden = tmp_path / "garden"
     info = discover_project(repo)
@@ -177,7 +177,9 @@ def test_onboard_this_repository_uses_documented_development_commands(tmp_path, 
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     assert config["products"]["context-garden"]["setup"] == {
         "command": 'uv venv && uv pip install -e ".[dev]"',
-        "test": "PYTHONPATH=src .venv/bin/pytest -q",
+        # The README directs full validation to the CI helper, which discovery
+        # does not recognize; its current fallback is the workflow's pytest step.
+        "test": "pytest -q",
         "lint": ".venv/bin/ruff check src tests",
         "env": {},
     }

@@ -13,12 +13,16 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .criteria import parse_criteria
 from .model import Task, estimate_tokens, goals_text
+from .preflight import preflight_section
 from .store import Store
 
 RESULT_MARKER = "GARDEN_RESULT:"
+REBASE_BRIEF_MAX_BYTES = 128 * 1024
+REBASE_INLINE_HUNK_MAX_BYTES = 16 * 1024
 
 OPERATING_RULES = """\
 ## Operating rules
@@ -34,13 +38,14 @@ OPERATING_RULES = """\
 - In a supervised local run, launch each potentially heavy validation as
   `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
   within its execution budget. Run ordinary lightweight inspection commands directly.
+ - The run ends when you stop: run long commands in the foreground, never background a command to await a notification, and write your result only after the checks have returned.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
 - Speak to every acceptance criterion. In `verified`, give one entry per criterion in the task's **Acceptance criteria** list, in order: quote the `criterion` and give its `evidence` — the test that proves it (by name), the command and its output, or the page and what it shows. A criterion you did not meet is `{{"criterion": "...", "not_done": true, "reason": "<why>"}}`, never a silent omission. Do not write a Verification section in `pr_body`: the garden builds one from `verified`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "criteria_amended": [{{"index": 0, "text": "<replacement criterion>", "reason": "<why the original was false or missing>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "criteria_amended": [{{"index": 0, "text": "<replacement criterion>", "reason": "<why the original was false or missing>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "file": "<affected path>", "error": "<symptom>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
   The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty; each item carries a `kind` (default `task`):
 
@@ -327,6 +332,8 @@ def build_brief(
     stack: dict | None = None,
     qa: list[dict] | None = None,
     commits_ahead: list[str] | None = None,
+    validation_plan: dict[str, Any] | None = None,
+    criteria_snapshot: list[str] | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -388,6 +395,12 @@ def build_brief(
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
+    frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
+    if frozen:
+        sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
+                         "\n".join(f"- {item}" for item in frozen) + "\n"))
+    if include_rules:
+        sections.append(("pre_flight", preflight_section()))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []
@@ -438,6 +451,8 @@ def build_brief(
                          + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
+    if validation_plan is not None:
+        sections.append(("validation_plan", "## Validation plan\n\nThis frozen, head-bound plan is shared with the pre-check and reviewer. Keep its acceptance claims and valid current-head evidence; report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
     if qa:
         lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
         for i, item in enumerate(qa, 1):
@@ -477,18 +492,40 @@ def rebase_brief(
     base: str,
     hunks: dict[str, str],
     files: list[str] | None = None,
+    artifacts: dict[str, dict[str, object]] | None = None,
 ) -> str:
     """A minimal brief for an agent that only resolves a rebase conflict: the task's goal for
     intent, the rule "resolve the conflict, change nothing else", and the conflicting hunks.
     Deliberately small — a rebase is not a fresh worker round and gets no reading list."""
+    artifacts = artifacts or {}
     if hunks:
-        parts = []
+        parts: list[str] = []
+        goal = _truncate_utf8(task.body.strip(), REBASE_BRIEF_MAX_BYTES // 4)
         for path, content in hunks.items():
+            artifact_path = _conflict_artifact_locations(artifacts.get(path, {}))
+            content_bytes = len(content.encode("utf-8", "replace"))
+            if content_bytes > REBASE_INLINE_HUNK_MAX_BYTES:
+                parts.append(_rebase_hunk_summary(path, content_bytes, artifact_path))
+                continue
             fence = "````" if "```" in content else "```"
-            parts.append(f"\n### {path}\n\n{fence}\n{content.rstrip()}\n{fence}\n")
+            candidate = f"\n### {path}\n\n{fence}\n{content.rstrip()}\n{fence}\n"
+            rendered = REBASE_BRIEF.format(task_id=task.id, title=task.title, branch=branch,
+                                           base=base, goal=goal, hunks="\n".join([*parts, candidate]),
+                                           marker=RESULT_MARKER)
+            if len(rendered.encode("utf-8", "replace")) > REBASE_BRIEF_MAX_BYTES:
+                parts.append(_rebase_hunk_summary(path, content_bytes, artifact_path))
+            else:
+                parts.append(candidate)
         hunks_text = "\n".join(parts)
     elif files:
-        hunks_text = "\nConflicting files: " + ", ".join(f"`{f}`" for f in files) + "\n"
+        parts = []
+        for path in files:
+            artifact_path = _conflict_artifact_locations(artifacts.get(path, {}))
+            if artifact_path:
+                parts.append(_rebase_hunk_summary(path, 0, artifact_path))
+            else:
+                parts.append(f"\n### {path}\n\nConflict hunk unavailable; re-run the rebase to inspect it.\n")
+        hunks_text = "".join(parts)
     else:
         hunks_text = "\n(The conflicting hunks were not captured; run the rebase to see them.)\n"
     return REBASE_BRIEF.format(
@@ -496,10 +533,32 @@ def rebase_brief(
         title=task.title,
         branch=branch,
         base=base,
-        goal=task.body.strip(),
+        goal=_truncate_utf8(task.body.strip(), REBASE_BRIEF_MAX_BYTES // 4),
         hunks=hunks_text,
         marker=RESULT_MARKER,
     )
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) <= max_bytes:
+        return text
+    marker = "\n[truncated for the bounded rebase prompt]\n"
+    return encoded[:max_bytes - len(marker.encode())].decode("utf-8", "ignore") + marker
+
+
+def _conflict_artifact_locations(artifact: dict[str, object]) -> str:
+    stages = artifact.get("stages")
+    if not isinstance(stages, list):
+        return ""
+    paths = [str(stage.get("path")) for stage in stages if isinstance(stage, dict) and stage.get("path")]
+    return ", ".join(paths)
+
+
+def _rebase_hunk_summary(path: str, size: int, artifact_path: str) -> str:
+    location = f" Preserved Git-stage artifacts: `{artifact_path}`." if artifact_path else ""
+    return (f"\n### {path}\n\nLarge conflict omitted from this prompt ({size:,} bytes)."
+            f" Re-run the rebase to inspect Git's conflict stages.{location}\n")
 
 
 def estimate_brief_tokens(store: Store, task: Task) -> tuple[int, int]:

@@ -41,7 +41,7 @@ EDGE="/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
   --screenshot="C:\\Users\\joshm\\AppData\\Local\\Temp\\captures\\inbox-1280.png" "http://localhost:8765/inbox"
 ```
 
-Add `--force-dark-mode` for dark, `--window-size=390,2400` for the phone width. For a static mock, copy it under `/mnt/c/...` first and pass a `file:///C:/...` URL, since Edge reads and writes Windows paths only; then copy the PNGs from the Windows temp folder into your worktree (for example `docs/design/captures/`) so they travel with the PR and stay inside the fence. Say in the PR which captures you looked at. CG-315 makes this a check the garden runs itself.
+Add `--force-dark-mode` for dark. Edge's outer window has a minimum width of about 496px, so a 390px window does not produce a 390px page viewport. For a narrow capture, write a temporary wrapper such as `<html><body style="margin:0"><iframe src="http://localhost:8765/inbox" style="width:390px;height:5400px;border:0"></iframe></body></html>`, open that wrapper at an outer width of 600, and inspect the embedded page's `clientWidth` and `scrollWidth`; both must be 390. For a static mock, copy it under `/mnt/c/...` first and pass a `file:///C:/...` URL, since Edge reads and writes Windows paths only; then copy the PNGs from the Windows temp folder into your worktree (for example `docs/design/captures/`) so they travel with the PR and stay inside the fence. Preserve light and dark captures and record the measured widths. CG-315's check uses this same framed capture for its narrow screenshots.
 
 ## The run ends when you stop
 
