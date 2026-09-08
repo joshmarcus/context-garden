@@ -797,17 +797,55 @@ def test_active_worker_completes_once_across_controller_stop_start(
     server.should_exit = True
     controller_thread.join(timeout=5)
     assert not controller_thread.is_alive() and worker.is_alive()
+    with pytest.raises(httpx.ConnectError):
+        httpx.post(f"{url}/api/runs/claim", json={"host": "build-1"}, headers=auth, timeout=0.5)
     time.sleep(1.0)
     server, controller_thread = start_controller()
     worker.join(timeout=15)
-    server.should_exit = True
-    controller_thread.join(timeout=5)
 
     assert not worker.is_alive() and not worker_errors
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.process_finished() and saved.read_exit_code() == 0
     assert json.loads((saved.path / "remote_result.json").read_text())["result"]["status"] == "done"
     assert len(list(saved.path.glob("remote_result.json"))) == 1
+    empty = httpx.post(f"{url}/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+    }, headers=auth)
+    assert empty.status_code == 204
+    artifact = {
+        "head": subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+            cwd=Path(__file__).resolve().parents[1],
+        ).stdout.strip(),
+        "environment": "disposable FastAPI/uvicorn controller and real fake-harness child over TCP",
+        "command": (
+            ".venv/bin/python -m pytest "
+            "tests/test_remote_worker.py::test_active_worker_completes_once_across_controller_stop_start -q"
+        ),
+        "states": ["active", "controller_down", "reconnecting", "completed", "empty"],
+        "events": [
+            {"state": "active", "method": "POST", "url": "/api/runs/claim", "status": 200,
+             "consequence": "one worker generation started a live harness child"},
+            {"state": "controller_down", "action": "stop disposable controller",
+             "outcome": "connection refused", "consequence": "the harness child remained active"},
+            {"state": "reconnecting", "action": "restart controller on the same port",
+             "outcome": "heartbeat accepted", "consequence": "the original generation retained authority"},
+            {"state": "completed", "method": "POST", "url": f"/api/runs/{saved.run_id}/finish",
+             "status": 200, "consequence": "one durable result completed with exit code 0"},
+            {"state": "empty", "method": "POST", "url": "/api/runs/claim", "status": 204,
+             "consequence": "no duplicate work remained to claim"},
+        ],
+        "automated_checks": [
+            "one remote_result.json exists", "saved exit code is 0", "worker thread exited without error",
+        ],
+        "unverified": [],
+    }
+    if destination := os.environ.get("GARDEN_REMOTE_RESTART_ARTIFACT"):
+        output = Path(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(artifact, indent=2) + "\n")
+    server.should_exit = True
+    controller_thread.join(timeout=5)
 
 
 def test_worker_cli_setup_option(monkeypatch, tmp_path):
