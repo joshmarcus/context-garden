@@ -119,6 +119,61 @@ def test_lease_rejected_push_recovers_by_rebasing_onto_the_new_head(sched, fake_
     assert (other2 / "worker-output.txt").exists()
 
 
+def test_external_stack_owner_holds_a_stale_head_without_rewriting_it(sched, fake_github, tmp_path):
+    """An external stack tool wins a stale-head race; garden records it and asks a person."""
+    sched.cfg.data["products"]["demo"]["stack_owner"] = "external"
+    sched.tick()
+    sched.tick()  # DM-001 -> in_review with a PR
+    pr = fake_github.prs[BRANCH]
+    pr.updated_at = "t2"
+    fake_github.feedback[pr.number] = Feedback(items=[{
+        "kind": "comment", "author": "josh", "body": "fix this", "created": "2099-01-01T00:00:00Z"}])
+    sched.tick()  # dispatch revise
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "revise" and run.start_head
+
+    remote = sched.repo_for(sched.store.task("DM-001")).parent / "remote.git"
+    interloper_sha = _clone_and_push(remote, tmp_path, "external-tool", BRANCH, "external.txt")
+    rep = sched.tick()  # stale lease: do not rebase or force-push someone else's branch
+
+    task = sched.store.task("DM-001")
+    assert task.status == Status.WAITING_HUMAN
+    assert "external head changed" in " ".join(rep.transitions)
+    assert not [r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]
+    event = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["lease_rejected"])[-1]
+    assert event["owner"] == "external" and event["actual"] == interloper_sha
+
+    verify = tmp_path / "external-verify"
+    subprocess.run(["git", "clone", "-q", str(remote), str(verify)], check=True)
+    git("checkout", BRANCH, cwd=verify)
+    assert (verify / "external.txt").exists()
+    assert _sha(verify) == interloper_sha
+
+
+def test_external_stack_owner_blocks_dependency_dispatch(sched, fake_github):
+    """An external owner keeps a dependent blocked until its dependency reaches the base."""
+    sched.cfg.data["products"]["demo"]["stack_owner"] = "external"
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-002(work)" not in rep.dispatched
+    assert "stack_parent" not in sched.state.get("DM-002")
+
+
+
+def test_external_stack_owner_does_not_claim_an_empty_branch_shipped(sched, fake_github):
+    """A finished worker whose branch becomes empty cannot open a PR or become done."""
+    sched.cfg.data["products"]["demo"]["stack_owner"] = "external"
+    sched.tick()  # worker commits, but has not been reaped yet
+    task = sched.store.task("DM-001")
+    worktree = sched.worktree_for(task)
+    git("reset", "--hard", "origin/main", cwd=worktree)
+
+    sched.tick()
+
+    assert not task.pr and task.status != Status.DONE
+    assert any("no commits" in run.error for run in sched.runs.runs_for(task.id))
+
+
 # ---- rule 3: the mechanical rebase paths skip a task with a worker run in flight ----
 def test_merge_queue_skips_a_task_with_a_worker_run_in_flight(sched, fake_github):
     """A revise round leaves `automerge_candidate` set (it can resume its queue place once the

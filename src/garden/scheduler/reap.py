@@ -502,6 +502,16 @@ class ReapMixin:
             if note:
                 self.log(f"{task.id}: {note}")
         except gitops.LeaseRejected as e:
+            if self.external_stack_owner(task):
+                reason = (f"external stack owner changed `{e.branch}` while this run was active "
+                          f"(expected {e.expected[:12] or '?'}, now {e.actual[:12] or '?'}); "
+                          "garden did not rebase or force-push it")
+                self.events.emit("lease_rejected", task.id, run=run.run_id, branch=e.branch,
+                                 expected=e.expected, actual=e.actual, owner="external")
+                self._set_needs_human(task, "external_head_changed", reason)
+                self._transition(task, Status.WAITING_HUMAN, reason)
+                rep.transitions.append(f"{task.id} waiting_human (external head changed)")
+                return
             if not self._retry_lease_push(task, run, worktree, base, e):
                 self._transition(task, Status.FAILED, f"push failed: {e}{cost}")
                 rep.transitions.append(f"{task.id} -> failed (push)")

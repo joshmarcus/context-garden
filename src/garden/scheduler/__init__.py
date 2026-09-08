@@ -158,6 +158,13 @@ class Scheduler(
     def stack_enabled(self) -> bool:
         return bool(self.cfg.get("stack", True))
 
+    def external_stack_owner(self, task: Task) -> bool:
+        """Whether another tool, rather than garden, owns this product's stack history."""
+        return self.cfg.product_stack_owner(task.product) == "external"
+
+    def stack_enabled_for(self, task: Task) -> bool:
+        return self.stack_enabled and not self.external_stack_owner(task)
+
     def runner_for(self, task: Task, name: str = "", harness_name: str = "") -> Runner:
         name = name or task.runner or self.cfg.product_runner(task.product)
         if name == "claude-local":
