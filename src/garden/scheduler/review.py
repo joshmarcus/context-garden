@@ -394,7 +394,8 @@ class ReviewMixin:
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
                         reask_missing_fixes: bool = False,
-                        clarify_unverified: list[str] | None = None) -> Run:
+                        clarify_unverified: list[str] | None = None,
+                        clarifies_review_run: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
@@ -583,6 +584,8 @@ class ReviewMixin:
                             "reask_missing_fixes": reask_missing_fixes,
                             "clarify_unverified": bool(clarify_unverified),
                             "criteria": criteria_snapshot, "validation_plan": plan}
+        if clarifies_review_run:
+            run.env_snapshot["clarifies_review_run"] = clarifies_review_run
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -637,6 +640,27 @@ class ReviewMixin:
         st.pop("needs_human", None)
         return self.dispatch_review(task)
 
+    def _resume_review_clarification(self, task: Task, source: Run, entries: list[str],
+                                     rep: TickReport) -> bool:
+        """Restore or create the one reviewer-only clarification for a terminal result."""
+        st = self.state.get(task.id)
+        existing = next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                         if candidate.mode == "review"
+                         and str((candidate.env_snapshot or {}).get("clarifies_review_run") or "")
+                         == source.run_id
+                         and candidate.status != "superseded"), None)
+        if existing is not None:
+            st["review_run"] = existing.run_id
+            self.state.save()
+            rep.transitions.append(f"{task.id} review clarification continuation restored")
+            return True
+        self.dispatch_review(
+            task, count_round=False, clarify_unverified=entries,
+            clarifies_review_run=source.run_id,
+        )
+        rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
+        return True
+
     def reap_review(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
         run_id = st.get("review_run")
@@ -660,6 +684,10 @@ class ReviewMixin:
             if st.get("last_review_run") == run_id or not run.result:
                 st["review_run"] = ""
                 return False
+            pending_clarification = (run.env_snapshot or {}).get("clarification_pending")
+            if isinstance(pending_clarification, list) and pending_clarification:
+                return self._resume_review_clarification(
+                    task, run, [str(entry) for entry in pending_clarification], rep)
             return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
@@ -744,15 +772,15 @@ class ReviewMixin:
                 review, expected_criteria=frozen_criteria, affected_flow=affected_flow)
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
-                # classify legacy prose. The implementation author is not involved.
+                # classify legacy prose. Persist the continuation on this result first so a
+                # restart cannot apply the malformed verdict or launch two clarifications.
                 run.result = review
                 run.status = "done"
+                run.env_snapshot["clarification_pending"] = ambiguous
                 run.save()
                 task.log("automated review clarification requested for ambiguous unverified observations")
                 self.store.save(task)
-                self.dispatch_review(task, count_round=False, clarify_unverified=ambiguous)
-                rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
-                return True
+                return self._resume_review_clarification(task, run, ambiguous, rep)
             if ambiguous:
                 reason = ("reviewer clarification remained malformed or targeted requirements "
                           "outside the frozen criteria and declared affected flow")

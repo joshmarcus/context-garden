@@ -2041,6 +2041,58 @@ def test_fabricated_required_target_gets_one_reviewer_clarification_then_operato
     assert "One more automated review" in page.text
 
 
+def test_reviewer_clarification_survives_restart_and_reconnects_saved_continuation(
+        sched, fake_github, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    writer = sched.runs.new_run(task.id, "local", mode="work")
+    writer.status = "done"
+    writer.env_snapshot = {"criteria": ["Frozen task criterion"]}
+    writer.save()
+    source = _review_after_completed_empty_replay(sched, task)
+    source.env_snapshot["validation_check_current"] = True
+    entry = {"scope": "required", "criterion": "Invented by reviewer",
+             "outcome": "was not observed", "reason": "the reviewer expanded scope"}
+    source.result = {"verdict": "approve", "summary": "Everything passed", "pages_seen": [],
+                     "criteria": [{"criterion": "Invented by reviewer", "met": True,
+                                   "evidence": "reviewer assertion"}],
+                     "description_ok": True, "findings": [], "improvements": [],
+                     "interaction": {**_performed_interaction(source.env_snapshot["review_head"]),
+                                     "unverified": [entry]}}
+    source.status = "done"
+    source.env_snapshot["clarification_pending"] = [json.dumps(entry, sort_keys=True)]
+    source.save()
+    sched.state.save()
+
+    # Restart after the malformed result was saved but before its clarification dispatched.
+    fresh = Scheduler(Store(sched.store.root), github=fake_github)
+    restarted_task = fresh.store.task(task.id)
+    rep = TickReport()
+    assert fresh.reap_review(restarted_task, rep)
+    clarification = fresh.runs.latest(task.id)
+    assert clarification.run_id != source.run_id
+    assert clarification.env_snapshot["clarifies_review_run"] == source.run_id
+    assert clarification.env_snapshot["count_round"] is False
+    assert fresh.state.get(task.id)["review_run"] == clarification.run_id
+    assert not fresh.state.get(task.id).get("pending_feedback")
+    assert not [run for run in fresh.runs.runs_for(task.id) if run.mode == "revise"]
+    assert rep.transitions == ["DM-001 review re-asked to classify unverified observations"]
+
+    # Simulate the narrower crash after the clarification run was saved but before its pointer
+    # replaced the source pointer. The next process reconnects that exact run, not a duplicate.
+    fresh.state.get(task.id)["review_run"] = source.run_id
+    fresh.state.save()
+    run_ids = [run.run_id for run in fresh.runs.runs_for(task.id)]
+    restarted_again = Scheduler(Store(sched.store.root), github=fake_github)
+    rep = TickReport()
+    assert restarted_again.reap_review(restarted_again.store.task(task.id), rep)
+    assert restarted_again.state.get(task.id)["review_run"] == clarification.run_id
+    assert [run.run_id for run in restarted_again.runs.runs_for(task.id)] == run_ids
+    assert rep.transitions == ["DM-001 review clarification continuation restored"]
+
+
 def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):
     from garden.brief import EVIDENCE_GUIDANCE, build_brief
 
