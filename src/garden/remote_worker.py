@@ -100,6 +100,9 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     env.update(GARDEN_TASK_ID=run["task_id"], GARDEN_RUN_ID=run["id"],
                GARDEN_ROOT=str(worktree / ".garden-no-live-garden"))
     env.pop("CLAUDECODE", None)
+    from .validation import enforce_validation_policy_env
+
+    enforce_validation_policy_env(env)
     return env
 
 
