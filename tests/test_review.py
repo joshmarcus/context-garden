@@ -294,6 +294,64 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     assert rep.transitions == ["DM-001 missing review continuation restored"]
 
 
+def test_review_audit_replaces_stale_head_recovery_with_a_fresh_counted_round(sched, fake_github):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = fake_github.create_pr(
+        "test/demo", task.branch or task.default_branch(), task.default_branch(), task.title, "").url
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 2})
+    wt = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task),
+        task.branch or task.default_branch(), sched.base_for(task))
+    current = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": current,
+        "review_rounds": 0,
+        "pending_reviews": [{"kind": "review", "count_round": False}],
+        "review_recovery": {
+            "head": "obsolete-head",
+            "attempts": 1,
+            "limit": 2,
+            "retry_at": "2999-01-01T00:00:00+00:00",
+            "reason": "old head review was lost",
+            "owner": "scheduler",
+            "started": True,
+            "last_run": "old-review",
+        },
+    })
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["head"] == current
+    assert st["review_recovery"]["attempts"] == 0
+    assert rep.transitions == [
+        "DM-001 stale review recovery discarded",
+        "DM-001 missing review continuation restored",
+    ]
+
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+    fresh = sched._run_by_id(task, st["review_run"])
+    assert fresh is not None
+    assert fresh.env_snapshot["review_head"] == current
+    assert fresh.env_snapshot["count_round"] is True
+    assert st["review_rounds"] == 1
+    assert not st.get("pending_reviews")
+    assert not any(str((run.env_snapshot or {}).get("review_head") or "") == "obsolete-head"
+                   for run in sched.runs.runs_for(task.id))
+
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+    assert st["review_run"] == fresh.run_id
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
+
+
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
     """A review uses the next configured harness:model pair, not the PR's harness."""
     _review_ladder(sched)
