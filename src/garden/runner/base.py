@@ -276,6 +276,9 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
+    from ..validation import enforce_validation_policy_env
+
+    enforce_validation_policy_env(env)
     return env
 
 
