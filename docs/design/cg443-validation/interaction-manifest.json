@@ -1,17 +1,19 @@
 {
-  "producer": "cg443.disposable-served-review-clarification/v1",
-  "head": "c1b4d88330c6e64938f77f2a459d1f8bc721735d",
+  "producer": "cg443.disposable-served-review-clarification/v2",
+  "head": "d5fe50d4e09417152d438c9ea366859220758672",
+  "application_source_head": "c1b4d88330c6e64938f77f2a459d1f8bc721735d",
+  "source_note": "The replay head contains the unchanged application tree from c1b4d883 plus evidence-only commits under docs/design/cg443-validation.",
   "environment": "disposable garden with MemoryGitHub and QA harness",
-  "command": "PYTHONPATH=src .venv/bin/python <inline served replay driver>",
-  "started_at": "2026-09-08T22:12:07.784283+00:00",
-  "finished_at": "2026-09-08T22:12:13.169026+00:00",
+  "command": "timeout --signal=TERM --kill-after=10s 900 $GARDEN_VALIDATION_RUNNER -m garden.validation -- .venv/bin/python -m pytest --timeout=120 --timeout-method=thread docs/design/cg443-validation/replay_test.py -q",
+  "started_at": "2026-09-08T22:41:52.663476+00:00",
+  "finished_at": "2026-09-08T22:41:53.101110+00:00",
   "status": "pass",
-  "fixture_setup": "Seeded needs_human.review_clarification after two malformed reviewer classifications; no claimed HTTP event is synthesized.",
+  "fixture_setup": "A disposable garden was seeded with a reviewer-owned clarification stop; the served app then received an invalid request before the valid recovery action.",
   "states": {
     "empty": {
       "status": "pass",
       "actions": [
-        "GET /inbox before fixture stop"
+        "GET /inbox before reviewer-owned stop"
       ],
       "observed": "Inbox has no reviewer-clarification attention card."
     },
@@ -20,68 +22,63 @@
       "actions": [
         "GET /inbox after reviewer-owned stop"
       ],
-      "observed": "Inbox explains the reviewer-owned stop, withholds author retry/resume, and offers One more automated review."
+      "observed": "Inbox explains the stop and offers One more automated review."
     },
     "failure_recovery": {
       "status": "pass",
       "actions": [
-        "restart Scheduler and GET /inbox",
+        "GET an invalid task URL",
         "POST /tasks/DM-001/review",
         "GET /inbox"
       ],
-      "observed": "Malformed clarification stop survives restart; the operator action clears it and dispatches reviewer-owned validation without queuing author revision."
+      "observed": "HTTP 404 is followed by successful reviewer-owned recovery; no author revision is queued."
     }
   },
   "events": [
     {
-      "at": "2026-09-08T22:12:08.613309+00:00",
       "kind": "http_request",
       "state": "empty",
-      "method": "GET",
-      "url": "http://127.0.0.1:45379/inbox",
-      "status_code": 200,
       "outcome": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:55441/inbox",
+      "status_code": 200,
       "observed": "Inbox has no reviewer-clarification attention card."
     },
     {
-      "at": "2026-09-08T22:12:08.651081+00:00",
       "kind": "http_request",
       "state": "affected",
-      "method": "GET",
-      "url": "http://127.0.0.1:45379/inbox",
-      "status_code": 200,
       "outcome": "success",
-      "observed": "Inbox explains the reviewer-owned stop, withholds author retry/resume, and offers One more automated review."
+      "method": "GET",
+      "url": "http://127.0.0.1:55441/inbox",
+      "status_code": 200,
+      "observed": "Reviewer-owned clarification stop is visible with its recovery action."
     },
     {
-      "at": "2026-09-08T22:12:08.674267+00:00",
       "kind": "http_request",
       "state": "failure",
-      "method": "GET",
-      "url": "http://127.0.0.1:45379/inbox",
-      "status_code": 200,
       "outcome": "failure",
-      "observed": "Reviewer-owned malformed clarification stop remained visible after Scheduler restart."
-    },
-    {
-      "at": "2026-09-08T22:12:12.955629+00:00",
-      "kind": "http_request",
-      "state": "recovery",
-      "method": "POST",
-      "url": "http://127.0.0.1:45379/tasks/DM-001/review",
-      "status_code": 303,
-      "outcome": "success",
-      "observed": "Operator review action returned 303 and created reviewer-owned work without an author revise run."
-    },
-    {
-      "at": "2026-09-08T22:12:12.990031+00:00",
-      "kind": "http_request",
-      "state": "recovery",
       "method": "GET",
-      "url": "http://127.0.0.1:45379/inbox",
-      "status_code": 200,
+      "url": "http://127.0.0.1:55441/tasks/NOT-A-TASK",
+      "status_code": 404,
+      "observed": "An invalid task request is rejected with HTTP 404; the clarification stop remains intact."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
       "outcome": "success",
-      "observed": "Recovered Inbox no longer shows the clarification stop."
+      "method": "POST",
+      "url": "http://127.0.0.1:55441/tasks/DM-001/review",
+      "status_code": 303,
+      "observed": "The valid operator action dispatches reviewer-owned work without an author revision."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "GET",
+      "url": "http://127.0.0.1:55441/inbox",
+      "status_code": 200,
+      "observed": "The recovered Inbox no longer shows the clarification stop."
     }
   ],
   "viewports": [
@@ -122,7 +119,8 @@
     "docs/design/cg443-validation/inbox-review-clarification-390-dark.png"
   ],
   "automated_checks": [
-    "253 focused tests passed at source head before served replay"
+    "served replay test passed on the recorded source head",
+    "focused review and web tests run separately"
   ],
   "unverified": []
 }
