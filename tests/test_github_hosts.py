@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from garden.github import GitHub, GitHubError, GitHubRouter, repo_slug_from_remote
+from garden.github import GitHub, GitHubError, GitHubRouter, RepositorySlug, repo_slug_from_remote
 
 
 @pytest.mark.parametrize("remote", [
     "https://forge-one.test/team/repo.git",
     "ssh://git@forge-one.test/team/repo.git",
     "git@forge-one.test:team/repo.git",
+    "ssh://acct-1234@forge-one.test/team/repo.git",
+    "acct-1234@forge-one.test:team/repo.git",
+    "forge-one.test:team/repo.git",
 ])
 def test_enterprise_remote_forms_require_the_configured_host(remote: str):
     assert repo_slug_from_remote(remote, "forge-one.test") == "team/repo"
@@ -19,7 +22,6 @@ def test_enterprise_remote_forms_require_the_configured_host(remote: str):
 
 @pytest.mark.parametrize("remote", [
     "https://token@forge-one.test/team/repo.git",
-    "ssh://alice@forge-one.test/team/repo.git",
     "git@forge-one.test:team/repo/extra.git",
 ])
 def test_ambiguous_enterprise_remotes_are_rejected(remote: str):
@@ -93,6 +95,58 @@ def test_missing_scoped_token_never_falls_back_to_the_ambient_token(monkeypatch)
     assert not gh.available
     with pytest.raises(GitHubError, match="no GitHub token"):
         gh.find_pr("team/repo", "branch")
+
+
+@pytest.mark.parametrize("api_base", [
+    "https://forge-two.test/api/v3",
+    "https://token@forge-one.test/api/v3",
+    "https://forge-one.test:8443/api/v3",
+    "https://forge-one.test/api/v3?token=wrong",
+    "https://forge-one.test/api/v3#wrong",
+])
+def test_explicit_api_base_cannot_redirect_a_scoped_token(api_base: str):
+    with pytest.raises(ValueError, match="configured GitHub host"):
+        GitHub(use_gh=False, host="forge-one.test", api_base=api_base, token="one")
+
+
+def test_same_slug_on_two_hosts_keeps_rest_tokens_isolated(monkeypatch):
+    one = GitHub(use_gh=False, host="forge-one.test", token="one")
+    two = GitHub(use_gh=False, host="forge-two.test", token="two")
+    router = GitHubRouter(GitHub(use_gh=False), {
+        ("forge-one.test", "team/repo"): one,
+        ("forge-two.test", "team/repo"): two,
+    })
+    requests = []
+
+    class Response:
+        status_code = 200
+        content = b"[]"
+        text = "[]"
+        def json(self):
+            return []
+
+    def fake_request(method, url, **kwargs):
+        requests.append((url, kwargs["headers"]["Authorization"]))
+        return Response()
+
+    monkeypatch.setattr("garden.github.httpx.request", fake_request)
+    assert router.find_pr(RepositorySlug("team/repo", "forge-one.test"), "branch") is None
+    assert router.find_pr(RepositorySlug("team/repo", "forge-two.test"), "branch") is None
+    assert requests == [
+        ("https://forge-one.test/api/v3/repos/team/repo/pulls", "Bearer one"),
+        ("https://forge-two.test/api/v3/repos/team/repo/pulls", "Bearer two"),
+    ]
+
+
+def test_config_accepts_a_service_account_scp_repository(tmp_path):
+    from garden.config import Config
+
+    (tmp_path / "garden.yaml").write_text("""
+products:
+  enterprise:
+    repo: acct-1234@forge-one.test:team/repo.git
+""")
+    assert Config.load(tmp_path).product_repo("enterprise") == "acct-1234@forge-one.test:team/repo.git"
 
 
 def test_two_host_routes_keep_nondefault_pr_bases_separate(monkeypatch):

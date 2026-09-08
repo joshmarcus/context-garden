@@ -868,6 +868,29 @@ def test_take_rejects_external_pr_outside_the_configured_repository(garden, fake
     assert not called
 
 
+def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_github, monkeypatch):
+    """Manual adoption validates the product route, rather than github.com's ambient host."""
+    import yaml
+
+    import garden.cli.loop as loop
+    from garden.github import PRInfo
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["demo"]["github"] = {"slug": "test/demo", "host": "forge-one.test"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    monkeypatch.setattr(fake_github, "get_pr", lambda slug, number: PRInfo(
+        number=number, url="https://forge-one.test/test/demo/pull/71", state="OPEN", head="operator/work",
+    ))
+
+    result = run(garden, "take", "DM-001", "--pr", "https://forge-one.test/test/demo/pull/71", "-q")
+
+    assert result.exit_code == 0, result.output
+
+
 def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
     """CG-238: `garden take` used to flip a draft straight to ready by hand, skipping the
     approve gate; a placeholder acceptance criterion (or an unresolved reading path) must

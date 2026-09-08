@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
+from ...github import is_git_remote_url
 from ...graph import effective_status
 from ...runs import Run
 from ..common import Site
@@ -88,10 +89,10 @@ def register(app: FastAPI, site: Site) -> None:
     def credential_free_repo_url(value: str) -> str:
         """Return a clone URL without credentials; reject ambiguous git URL syntax."""
         if "://" not in value:
-            # The only user-bearing SCP form we expose is git's conventional, inert
-            # transport identity. Other identities can encode passwords (for example
-            # oauth2:secret@host:path), and malformed URL-like values fail closed.
-            if re.fullmatch(r"git@[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
+            # SCP syntax permits an arbitrary transport username. It cannot contain a
+            # colon, so this preserves service-account identities without accepting a
+            # password-bearing URL form.
+            if re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
                 return value
             if "@" in value or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
                 raise HTTPException(409, "repository remote is not a safe clone URL")
@@ -192,7 +193,7 @@ def register(app: FastAPI, site: Site) -> None:
                 configured_repo = (task.repo if task is not None else "") or hub.store.config.product_repo(product)
                 repo_value = str(configured_repo)
                 repo_path = Path(repo_value)
-                if not repo_path.is_absolute() and not repo_value.startswith(("http://", "https://", "git@", "ssh://")):
+                if not repo_path.is_absolute() and not is_git_remote_url(repo_value):
                     repo_value = str((hub.store.root / repo_path).resolve())
                     repo_path = Path(repo_value)
                 if repo_path.exists():
@@ -209,7 +210,7 @@ def register(app: FastAPI, site: Site) -> None:
                 try:
                     source = str(configured_repo)
                     scheduler_repo = gitops.ensure_repo(
-                        source if "://" in source or source.startswith("git@") else repo_path,
+                        source if is_git_remote_url(source) else repo_path,
                         hub.store.config.repos_dir,
                     )
                     gitops.fetch(scheduler_repo)

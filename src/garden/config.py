@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -347,7 +348,7 @@ class Config:
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")
-        if "://" in str(repo) or str(repo).startswith("git@"):
+        if "://" in str(repo) or re.match(r"^[^@/:\s]+@[^/:\s]+:", str(repo)):
             return str(repo)
         return (self.root / str(repo)).resolve()
 

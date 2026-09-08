@@ -25,7 +25,7 @@ from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub, GitHubRouter, repo_slug_from_remote
+from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
 from ..model import Status, Task
 from ..notify import notify, should_notify
@@ -149,9 +149,10 @@ class Scheduler(
             for product in (self.cfg.data.get("products") or {}):
                 route = self.cfg.product_github(str(product))
                 if isinstance(self.cfg.product(str(product)).get("github"), dict):
-                    routes[route["slug"]] = GitHub(**common, host=route["host"],
-                                                     api_base=route.get("api_base", ""),
-                                                     token_env=route.get("token_env", ""))
+                    routes[(route["host"], route["slug"])] = GitHub(
+                        **common, host=route["host"], api_base=route.get("api_base", ""),
+                        token_env=route.get("token_env", ""),
+                    )
             self.github = GitHubRouter(default, routes)
         self._runner_factory = runner_factory
         if upgrader is None:
@@ -251,7 +252,7 @@ class Scheduler(
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
         git_name, git_email = self.git_identity()
-        if isinstance(repo, str) and ("://" in repo or repo.startswith("git@")):
+        if isinstance(repo, str) and is_git_remote_url(repo):
             return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
         return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
@@ -286,13 +287,13 @@ class Scheduler(
             configured = self.cfg.product(task.product).get("github")
             if isinstance(configured, dict):
                 remote = gitops.remote_url(self.repo_for(task))
-                if remote and ("://" in remote or remote.startswith("git@")):
+                if remote and is_git_remote_url(remote):
                     actual = repo_slug_from_remote(remote, route["host"])
                     if actual != route["slug"]:
                         raise gitops.GitError(
                             f"product {task.product} remote does not match configured GitHub host and repository"
                         )
-            return route["slug"]
+            return RepositorySlug(route["slug"], route["host"])
         return gitops.slug(self.repo_for(task))
 
     def active_runs(self) -> list[Run]:

@@ -97,14 +97,19 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
     value = url.strip()
     patterns = (
         r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
-        r"ssh://git@(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
-        r"git@(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"(?:[^@:]+@)?(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
     )
     for pattern in patterns:
         match = re.fullmatch(pattern, value, flags=re.IGNORECASE)
         if match and match["host"].lower().rstrip(".") == expected:
             return f"{match['owner']}/{match['repo']}"
     return None
+
+
+def is_git_remote_url(value: str) -> bool:
+    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes."""
+    return bool(re.match(r"^(?:[a-z][a-z0-9+.-]*://|[^@/:\s]+@[^/:\s]+:)", value, re.IGNORECASE))
 
 
 def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | None:
@@ -199,6 +204,11 @@ class GitHub:
         parsed_api = urlparse(self.api_base)
         if parsed_api.scheme != "https" or not parsed_api.netloc:
             raise ValueError("github api_base must be an HTTPS URL")
+        if api_base and (
+            parsed_api.hostname != self.host or parsed_api.username or parsed_api.password
+            or parsed_api.query or parsed_api.fragment or parsed_api.port not in (None, 443)
+        ):
+            raise ValueError("github api_base must be an HTTPS URL for the configured GitHub host")
         # A product that names a token environment has deliberately scoped its
         # credential. Do not fall through to a public/default token if it is missing.
         self.token = token or (os.environ.get(token_env) if token_env else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")))
@@ -589,6 +599,15 @@ class GitHub:
             self._rest("POST", f"/repos/{slug}/issues/{number}/comments", json={"body": body})
 
 
+class RepositorySlug(str):
+    """A repository slug that carries its configured GitHub host for routing."""
+
+    def __new__(cls, slug: str, host: str):
+        value = super().__new__(cls, slug)
+        value.host = host.lower().rstrip(".")
+        return value
+
+
 class GitHubRouter:
     """Route repository operations to the GitHub client configured for that repository.
 
@@ -597,9 +616,24 @@ class GitHubRouter:
     back to whichever host happens to be active in ``gh``.
     """
 
-    def __init__(self, default: GitHub, routes: dict[str, GitHub]):
+    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, GitHub]):
         self.default = default
-        self.routes = {slug.lower(): client for slug, client in routes.items()}
+        self.routes = {
+            ((key[0] if isinstance(key, tuple) else client.host).lower().rstrip("."),
+             (key[1] if isinstance(key, tuple) else key).lower()): client
+            for key, client in routes.items()
+        }
+        self._legacy_routes = {
+            slug: clients[0]
+            for slug, clients in self._routes_by_slug().items()
+            if len(clients) == 1
+        }
+
+    def _routes_by_slug(self) -> dict[str, list[GitHub]]:
+        grouped: dict[str, list[GitHub]] = {}
+        for (_, slug), client in self.routes.items():
+            grouped.setdefault(slug, []).append(client)
+        return grouped
 
     @property
     def available(self) -> bool:
@@ -621,7 +655,8 @@ class GitHubRouter:
             return default_method
 
         def routed(slug: str, *args: Any, **kwargs: Any) -> Any:
-            client = self.routes.get(slug.lower(), self.default)
+            host = getattr(slug, "host", "")
+            client = self.routes.get((host, slug.lower())) if host else self._legacy_routes.get(slug.lower(), self.default)
             return getattr(client, name)(slug, *args, **kwargs)
 
         return routed

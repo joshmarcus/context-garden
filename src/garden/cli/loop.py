@@ -354,7 +354,7 @@ def take(
     external = bool(branch or external_worktree or pr_url)
     if pr_url:
         slug = sched.slug_for(t)
-        pr_number = pull_request_number(pr_url, slug) if slug else None
+        pr_number = pull_request_number(pr_url, slug, getattr(slug, "host", "github.com")) if slug else None
         if not pr_number or not sched.github.available:
             err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
             raise typer.Exit(1)
