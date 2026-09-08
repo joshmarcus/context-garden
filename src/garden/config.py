@@ -321,6 +321,29 @@ class Config:
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})
 
+    def product_github(self, name: str) -> dict[str, str]:
+        """Return the product's explicitly scoped GitHub route.
+
+        ``github: owner/repo`` remains the compact public-GitHub spelling. Enterprise
+        products use a mapping so their web host, API base, and token source travel
+        together instead of relying on ambient ``gh`` configuration.
+        """
+        value = self.product(name).get("github")
+        if isinstance(value, str):
+            return {"slug": value, "host": "github.com"}
+        if not isinstance(value, dict):
+            return {}
+        slug = str(value.get("slug") or "")
+        host = str(value.get("host") or "github.com")
+        if not slug:
+            raise ValueError(f"products.{name}.github.slug is required when github is a mapping")
+        return {
+            "slug": slug,
+            "host": host,
+            "api_base": str(value.get("api_base") or value.get("api_url") or ""),
+            "token_env": str(value.get("token_env") or ""),
+        }
+
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")

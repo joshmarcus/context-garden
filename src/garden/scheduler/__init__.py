@@ -25,7 +25,7 @@ from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub
+from ..github import GitHub, GitHubRouter, repo_slug_from_remote
 from ..harness import DIFFICULTIES
 from ..model import Status, Task
 from ..notify import notify, should_notify
@@ -134,13 +134,25 @@ class Scheduler(
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
         trusted = [*(self.cfg.get("github.trusted_authors") or []), *(self.cfg.get("github.reviewers") or [])]
-        self.github = github if github is not None else GitHub(
-            use_gh=bool(self.cfg.get("github.use_gh", True)),
-            bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
-            bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
-            trusted_authors=[str(a) for a in trusted],
-            trusted_bots=[str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
-        )
+        if github is not None:
+            self.github = github
+        else:
+            common = {
+                "use_gh": bool(self.cfg.get("github.use_gh", True)),
+                "bot_logins": [str(b) for b in (self.cfg.get("github.bot_logins") or [])],
+                "bot_notice_patterns": [str(p) for p in notice_patterns] if notice_patterns is not None else None,
+                "trusted_authors": [str(a) for a in trusted],
+                "trusted_bots": [str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
+            }
+            default = GitHub(**common)
+            routes = {}
+            for product in (self.cfg.data.get("products") or {}):
+                route = self.cfg.product_github(str(product))
+                if isinstance(self.cfg.product(str(product)).get("github"), dict):
+                    routes[route["slug"]] = GitHub(**common, host=route["host"],
+                                                     api_base=route.get("api_base", ""),
+                                                     token_env=route.get("token_env", ""))
+            self.github = GitHubRouter(default, routes)
         self._runner_factory = runner_factory
         if upgrader is None:
             from ..upgrade import Upgrader
@@ -269,9 +281,18 @@ class Scheduler(
         return self.cfg.product_base_branch(task.product)
 
     def slug_for(self, task: Task) -> str | None:
-        override = self.cfg.product(task.product).get("github")
-        if override:
-            return str(override)
+        route = self.cfg.product_github(task.product)
+        if route:
+            configured = self.cfg.product(task.product).get("github")
+            if isinstance(configured, dict):
+                remote = gitops.remote_url(self.repo_for(task))
+                if remote and ("://" in remote or remote.startswith("git@")):
+                    actual = repo_slug_from_remote(remote, route["host"])
+                    if actual != route["slug"]:
+                        raise gitops.GitError(
+                            f"product {task.product} remote does not match configured GitHub host and repository"
+                        )
+            return route["slug"]
         return gitops.slug(self.repo_for(task))
 
     def active_runs(self) -> list[Run]:

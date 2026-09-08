@@ -200,6 +200,18 @@ def doctor():
     else:
         console.print(f"[red]{gh_line}[/red]")
         fail("github")
+    for product in (store.config.data.get("products") or {}):
+        route = store.config.product_github(str(product))
+        if not isinstance(store.config.product(str(product)).get("github"), dict):
+            continue
+        enterprise = GitHub(use_gh=bool(store.config.get("github.use_gh", True)), host=route["host"],
+                            api_base=route.get("api_base", ""), token_env=route.get("token_env", ""))
+        line = f"github ({product}): {enterprise.describe()}"
+        if enterprise.available and enterprise.is_authenticated():
+            console.print(line)
+        else:
+            console.print(f"[red]{line} [NOT LOGGED IN][/red]")
+            fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
     runner_names = {str(store.config.get("runner") or "local")} | {
