@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
     PANEL_BOARD,
@@ -111,6 +112,42 @@ def unpause():
     store = _store()
     _scheduler(store).resume(by="cli")
     console.print("[green]dispatch resumed[/green]")
+
+
+@app.command("maintenance-pause", rich_help_panel=PANEL_LOOP)
+def maintenance_pause(reason: str = typer.Option("", "--reason", "-r", help="Optional reason to record")):
+    """Request a full scheduler freeze for reinstall or restart.
+
+    This differs from ``pause``: ordinary pause blocks new dispatch only, while
+    maintenance pause also stops result collection after the current pass reaches a
+    transaction boundary.  Run ``garden maintenance-status`` to see quiescence.
+    """
+    store = _store()
+    sched = _scheduler(store)
+    sched.request_maintenance_pause(by="cli", reason=reason)
+    console.print("[yellow]maintenance pause requested; wait for maintenance-status to report quiesced[/yellow]")
+
+
+@app.command("maintenance-resume", rich_help_panel=PANEL_LOOP)
+def maintenance_resume():
+    """Explicitly resume collection and scheduling after maintenance."""
+    store = _store()
+    _scheduler(store).resume_maintenance(by="cli")
+    console.print("[green]maintenance resumed[/green]")
+
+
+@app.command("maintenance-status", rich_help_panel=PANEL_LOOP)
+def maintenance_status():
+    """Show quiescence and concrete runtime-dependent reinstall blockers."""
+    store = _store()
+    status = _scheduler(store).maintenance_readiness()
+    state = "quiesced" if status["quiesced"] else "requested" if status["requested"] else "running"
+    console.print(f"maintenance: {state}")
+    for run in status["live"]:
+        console.print(f"blocker {run['task']}/{run['run']} ({run['mode']}, {run['state']}): {run['blocker']}")
+    if status["finished_uncollected"]:
+        console.print("finished but uncollected (safe to reinstall): " + ", ".join(status["finished_uncollected"]))
+    console.print("reinstall ready" if status["ready"] else "reinstall not ready")
 
 
 @app.command(rich_help_panel=PANEL_DECIDE)
@@ -284,6 +321,9 @@ def redispatch(task_id: str = typer.Argument(..., help="The task whose current w
 def take(
     task_id: str,
     worktree: bool = typer.Option(False, help="Also create the git worktree and print its path"),
+    branch: str = typer.Option("", "--branch", help="Existing branch for externally implemented work"),
+    external_worktree: Path | None = typer.Option(None, "--external-worktree", help="Existing operator-owned checkout (never managed by garden)"),
+    pr_url: str = typer.Option("", "--pr", help="Existing PR; records its actual branch"),
     quiet: bool = typer.Option(False, "-q", help="Only print the brief path"),
 ):
     """Claim a task for a human-driven session and print its brief (manual runner)."""
@@ -307,9 +347,34 @@ def take(
             raise typer.Exit(1) from None
         if warning:
             err.print(f"[yellow]{warning}[/yellow]")
+    if worktree and external_worktree:
+        err.print("[red]--worktree and --external-worktree are mutually exclusive[/red]")
+        raise typer.Exit(1)
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
+    external = bool(branch or external_worktree or pr_url)
+    if pr_url:
+        slug = sched.slug_for(t)
+        pr_number = pull_request_number(pr_url, slug) if slug else None
+        if not pr_number or not sched.github.available:
+            err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
+            raise typer.Exit(1)
+        try:
+            info = sched.github.get_pr(slug, pr_number)
+        except Exception as e:  # GitHub clients expose provider-specific errors
+            err.print(f"[red]could not read PR: {e}[/red]")
+            raise typer.Exit(1) from None
+        if branch and branch != info.head:
+            err.print(f"[red]--branch {branch} does not match PR head {info.head}[/red]")
+            raise typer.Exit(1)
+        branch = info.head
+    if external and not branch:
+        err.print("[red]external work needs --branch or --pr[/red]")
+        raise typer.Exit(1)
     try:
-        run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree)
+        run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
+                             branch_override=branch, worktree_override=external_worktree,
+                             completion_mode="external" if external else "managed",
+                             external_pr=pr_url)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -321,7 +386,8 @@ def take(
     if worktree:
         console.print(f"worktree: {run.worktree} (branch {run.branch})")
     else:
-        console.print(f"work on branch [bold]{run.branch}[/bold] from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
+        where = f" in external worktree {run.worktree}" if external_worktree else ""
+        console.print(f"work on branch [bold]{run.branch}[/bold]{where} from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
     print()
     print(brief_path.read_text())
 
@@ -349,7 +415,6 @@ def finish(
         result["summary"] = summary
     if pr_url:
         result["pr"] = pr_url
-        t.pr = pr_url
     if cost is not None:
         result["cost_usd"] = cost
     rep = _scheduler(store).finish_manual(t, result)
@@ -493,6 +558,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
             since: str = typer.Option("", help="Window for difficulty/model matrices, e.g. 1h"),
             until: str = typer.Option("", help="Exclusive ISO end for the matrices")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
+    from .. import operator_spend as ops
     from ..events import EventLog, parse_since, with_run_records
     from ..events import metrics as _metrics
     from ..runs import RunStore
@@ -504,7 +570,18 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
     events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
+    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
     m = _metrics(events, tasks, parse_since(since) if since else "", until)
+    timing = m["tick_duration"]
+    console.print(f"Merged PRs: {m['merges']} (queue: {m['queue_merges']}, hand: {m['hand_merges']})")
+    console.print("Tick duration: " + (f"mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)"
+                                       if timing["count"] else "no tick records"))
+    operator = m["operator"]
+    console.print("Operator spend: " + (f"${operator['spend']:.2f} ({operator['share']:.0%} of recorded spend)"
+                                         if operator["share"] is not None else "no ledger entries"))
+    rb = m["rebase"]
+    console.print(f"Rebases per merge: {rb['mechanical'] / rb['merges']:.2f} mechanical, "
+                  f"{rb['agent'] / rb['merges']:.2f} agent" if rb["merges"] else "Rebases per merge: no merges")
     from ..outcomes import format_cell
 
     for matrix in m["difficulty_by_model"]["metrics"].values():

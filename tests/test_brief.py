@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 from garden.brief import (
     RESULT_MARKER,
     build_brief,
@@ -20,6 +22,21 @@ def test_brief_sections(garden):
     assert "garden/x" in b.text and RESULT_MARKER in b.text
     assert set(b.sections) >= {"head", "rules", "principles", "product", "goals", "task", "reading"}
     assert b.tokens > 100
+
+
+def test_brief_replaces_configured_connection_targets_and_credentials_with_safe_text(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    target = "operator@host-203-0-113-10.internal"
+    config["ssh"]["hosts"][0]["host"] = target
+    config_path.write_text(yaml.safe_dump(config))
+    task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"
+    task_path.write_text(task_path.read_text() + f"\nConnection {target}; token=not-for-sharing.\n")
+
+    brief = build_brief(Store(garden), Store(garden).task("DM-001"))
+
+    assert target not in brief.text and "not-for-sharing" not in brief.text
+    assert "boxA" in brief.text and "token=<redacted>" in brief.text
 
 
 def test_brief_cost_breakdown(garden):
@@ -97,6 +114,14 @@ def test_brief_states_the_pr_body_contract(garden):
     assert '"friction"' in b.text and "`friction` items" in b.text
     # the JSON schema line advertises the friction field
     assert '"friction": ["<short friction item>"]' in b.text
+
+
+def test_brief_states_that_headless_runs_must_finish_before_reporting(garden):
+    store = Store(garden)
+    text = build_brief(store, store.task("DM-001"), branch="garden/x", base="main").text
+    assert "The run ends when you stop" in text
+    assert "never background a command" in text
+    assert "only after the checks have returned" in text
 
 
 def test_brief_pre_pr_revision(garden):

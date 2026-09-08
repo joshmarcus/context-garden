@@ -34,4 +34,4 @@ replanning after failures. Every task in that phase is meant to ship through
 
 ## Explicitly not planned
 
-Hosted service, accounts, automatic merging, or an LLM acting as the scheduler.
+Hosted service, accounts, or an LLM acting as the scheduler.

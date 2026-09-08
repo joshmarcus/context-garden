@@ -431,7 +431,7 @@ def test_metrics_reports_rebases_per_merge_and_cost(sched, fake_github, tmp_path
         {"at": "2026-09-05T03:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
         {"at": "2026-09-05T03:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
         {"at": "2026-09-05T03:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.5},
-        {"at": "2026-09-05T03:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-05T03:03:00+00:00", "kind": "transition", "task": "DM-001", "to": "done", "base_merged": True},
     ]
     tasks = {"DM-001": SimpleNamespace(difficulty="medium", status="done", key="p/ph", product="p", phase="ph")}
     m = _metrics(events, tasks)
@@ -450,7 +450,7 @@ def test_metrics_rebase_block_is_scoped_to_the_phase_filter(sched, fake_github, 
     events = [
         {"at": "2026-09-05T03:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
         {"at": "2026-09-05T03:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
-        {"at": "2026-09-05T03:02:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-05T03:02:00+00:00", "kind": "transition", "task": "DM-001", "to": "done", "base_merged": True},
         {"at": "2026-09-05T03:03:00+00:00", "kind": "run_finished", "task": "OTHER-001", "mode": "rebase", "cost_usd": 0.0, "how": "mechanical"},
         {"at": "2026-09-05T03:04:00+00:00", "kind": "transition", "task": "OTHER-001", "to": "done"},
     ]

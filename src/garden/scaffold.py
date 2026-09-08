@@ -148,6 +148,15 @@ own the code change.
 
 Run `garden take <ID>` without `--worktree`, create the branch it names from the base
 branch, work, push, open the PR yourself, then `garden finish <ID> --pr <url> --summary "..."`.
+For work already implemented outside the scheduler, claim the real identity first:
+
+```
+garden take <ID> --pr <url>
+garden finish <ID> --pr <url> --summary "..."
+```
+
+Or use `--branch <name> --external-worktree <path>` when the PR is not open yet. Garden
+records that checkout as external and never infers managed-worktree behaviour from its path.
 
 ## Rules
 
@@ -284,8 +293,9 @@ every gap as a task so the loop needs you less next time. Written from the first
 
 ## Where the truth is
 
-- `garden.yaml` (plus `garden.<env>.yaml`, `garden.local.yaml`): read once at start.
-  **Any config change needs a restart.**
+- `garden.yaml` (plus `garden.<env>.yaml`, `garden.local.yaml`): re-read when it changes,
+  at the start of each tick. Most configuration changes take effect within that tick; only
+  keys in `RESTART_KEYS` need a restart.
 - `.garden/state.json`: per-task scheduler state (`revisions`, `review_rounds`,
   `pending_feedback`, `needs_human`, `automerge_blocked`, `last_review`), plus `_control`
   (pause) and `_phase:*`. Re-read by every tick; written at the end of every tick, so its
@@ -355,7 +365,7 @@ green-but-stale branch (2026-09-05: two such merges a minute apart left main red
 | what you see | what it is | what to do |
 |---|---|---|
 | `no active run found; back to ready` right after a run finished | the run was swept or its reap was interrupted; the worker's commits are in the worktree | read `final.md`; if the work is done and committed, push the branch, `triage-ready`, then `review`; if not, let it re-run (it reuses the worktree) |
-| `2 automated review round(s) used; this PR is yours` | review cap (`review.max_rounds`); happens after rebases too | if the last verdict was approve or the code is fine: `triage-ready` + `review`; a description-only verdict is rewritten by the reviewer without a round |
+| `2 automated review round(s) used; this PR is yours` | finite review cap (`review.max_rounds`); set it to `null` for unlimited reviews, with `review.friction_after` recording long loops | if the last verdict was approve or the code is fine: `triage-ready` + `review`; a description-only verdict is rewritten by the reviewer without a round |
 | `revision cap reached; needs a human` on a conflict | rebase rounds counted against `max_revisions` | `reset-revisions` + `retry` |
 | `worker says nothing to change` card | the failure was not the branch's (usually the base) | check main is green on a clean checkout first; if the branch is behind, rebase it, then `accept`; accepting on a stale base fails the checks again |
 | pre-PR `test` failing on every branch at once | main is red, or the check environment is wrong | run the suite on a clean checkout of main; if red, `POST /pause`, dispatch the fix with `dispatch`, resume when it merges; if green, read the check command and the worktree's env |
@@ -473,7 +483,7 @@ def init_garden(directory: Path, name: str) -> list[Path]:
             "stack": True,
             "stall": {"enabled": True},
             "budgets": {},
-            "review": {"enabled": True, "max_rounds": 2, "personas": []},
+            "review": {"enabled": True, "max_rounds": 2, "friction_after": 4, "personas": []},
             "checks": {"pre_pr": [], "ci": []},
             "github": {"draft_pr": True},
             "harnesses": {

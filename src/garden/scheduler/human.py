@@ -259,7 +259,7 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
-        self._transition(task, Status.DONE, note or "marked done")
+        self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""
@@ -390,8 +390,8 @@ class HumanMixin:
         """When a human asks for one more automated review after the review cap stopped it,
         roll the counter back one so exactly one more review round is dispatchable. Returns
         True if the cap was raised."""
-        max_rounds = int(self.cfg.get("review.max_rounds", 2))
-        if int(st.get("review_rounds", 0)) >= max_rounds:
+        max_rounds = self.cfg.review_max_rounds()
+        if max_rounds is not None and int(st.get("review_rounds", 0)) >= max_rounds:
             st["review_rounds"] = max_rounds - 1
             return True
         return False
@@ -440,6 +440,60 @@ class HumanMixin:
             self._cancel_active_run(task)
         self._transition(task, Status.READY, "reset to ready by hand")
         self.state.save()
+
+    def delegate_recovery(self, task: Task, rep: TickReport | None = None) -> str:
+        """Spend one explicitly delegated recovery continuation.
+
+        This is intentionally narrower than ``retry``: it may resume a capped revision
+        with its existing feedback, or replay the exact interrupted check continuation.
+        A fingerprint is consumed before the continuation is queued, so an unchanged stop
+        cannot loop indefinitely under delegated authority.
+        """
+        ensure_open(task)
+        if not bool(self.cfg.get("recovery.delegated", False)):
+            raise RuntimeError("delegated recovery is disabled; an owner must choose a retry")
+        st = self.state.get(task.id)
+        raw = st.get("needs_human")
+        info = raw if isinstance(raw, dict) else {}
+        kind = str(info.get("kind") or "")
+        if kind not in {"revision_cap", "check_did_not_run"}:
+            raise RuntimeError(f"{task.id} has no delegated recovery for {kind or 'this stop'}")
+        feedback = str(st.get("pending_feedback") or "")
+        check = dict(st.get("recovery_check") or {})
+        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""), str(check.get("cause") or "")))
+        used = set(str(item) for item in (st.get("delegated_recovery_fingerprints") or []))
+        if fingerprint in used:
+            raise RuntimeError("this unchanged recovery has already used its delegated continuation")
+        rep = rep or TickReport()
+        if kind == "revision_cap":
+            if not feedback:
+                raise RuntimeError("a capped revision has no feedback to retain")
+            used.add(fingerprint)
+            st["delegated_recovery_fingerprints"] = sorted(used)
+            st.pop("needs_human", None)
+            self._grant_one_more_round(st)
+            self._transition(task, Status.CHANGES_REQUESTED,
+                             "delegated operator recovery: one retained-feedback revise round queued")
+            self.events.emit("delegated_recovery", task.id, stop_kind=kind, action="revise")
+            self.state.save()
+            return "one retained-feedback revise round queued"
+
+        if not check.get("specs"):
+            raise RuntimeError("the interrupted check has no preserved continuation")
+        self._dispatch_check_run(
+            task, worktree=Path(str(check.get("cont", {}).get("worktree") or self.worktree_for(task))),
+            branch=str(check.get("cont", {}).get("branch") or task.branch),
+            base=str(check.get("cont", {}).get("base") or self.base_for(task)),
+            specs=list(check["specs"]), stage=str(check["stage"]),
+            cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
+        )
+        used.add(fingerprint)
+        st["delegated_recovery_fingerprints"] = sorted(used)
+        st.pop("needs_human", None)
+        st.pop("recovery_check", None)
+        self.events.emit("delegated_recovery", task.id, stop_kind=kind, action="check")
+        self.state.save()
+        return "one preserved check continuation queued"
 
     def resume_task(self, task: Task) -> None:
         """'Nothing to fix': clear the needs-human stop and return the task to the state it
@@ -512,8 +566,109 @@ class HumanMixin:
         run = self.runs.latest(task.id)
         if run is None or run.status != "running":
             raise RuntimeError(f"{task.id} has no active run to finish")
+        if run.completion_mode == "external":
+            # A branch-first external session can truthfully end blocked before a PR
+            # exists. Its outcome is still guarded and finalized exactly like an
+            # ordinary manual run; only successful external work needs PR reconciliation.
+            if result.get("status") == "blocked":
+                ManualRunner.finish(run, result)
+                rep = TickReport()
+                self.finalize(task, run, self.runner_for(task, run.runner), rep)
+                self.state.save()
+                return rep
+            return self._finish_external_manual(task, run, result)
         ManualRunner.finish(run, result)
         rep = TickReport()
         self.finalize(task, run, self.runner_for(task, run.runner), rep)
+        self.state.save()
+        return rep
+
+    def _finish_external_manual(self, task: Task, run: Run, result: dict[str, Any]) -> TickReport:
+        """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
+        from ..runner.manual import ManualRunner
+
+        url = str(result.get("pr") or run.external_pr or task.pr or "")
+        match = re.search(r"/pull/(\d+)", url)
+        pr_number = int(match.group(1)) if match else None
+
+        def record_refusal(reason: str) -> None:
+            attempt = {"at": now_iso(), "status": "refused", "reason": reason,
+                       "cost_usd": None, "pr_url": url, "pr_number": pr_number}
+            run.completion_attempts.append(attempt)
+            run.save()
+            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
+                             cost_usd=None, supervised=True, pr_url=url, pr_number=pr_number)
+
+        def refuse(reason: str) -> None:
+            record_refusal(reason)
+            raise RuntimeError(reason)
+
+        # An external claim still shares the dispatch's live-garden and Git-internals
+        # protection.  Check Git first: the ordinary fence invokes git against the clone,
+        # which must never happen after its metadata has changed.
+        rep = TickReport()
+        git_guard_violations = self._git_guard_check(task, run)
+        if git_guard_violations:
+            record_refusal("external completion refused: clone git internals changed since dispatch")
+            self._release_fence_bookkeeping(task)
+            self._git_guard_fail(task, run, git_guard_violations, rep)
+            self.state.save()
+            return rep
+        violations = self._fence_check(task, run)
+        self._release_fence_bookkeeping(task)
+        if violations:
+            record_refusal("external completion refused: worktree fence violation")
+            self._fence_fail(task, run, violations, rep)
+            self.state.save()
+            return rep
+
+        slug = self.slug_for(task)
+        if not match or not slug or not self.github.available:
+            refuse("external completion needs an accessible PR URL")
+        try:
+            pr = self.github.get_pr(slug, pr_number)
+        except (GitHubError, KeyError) as e:
+            refuse(f"could not read external PR: {e}")
+        if not run.branch or pr.head != run.branch:
+            refuse(
+                f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
+                "claim it again with `garden take ID --pr URL`"
+            )
+        if pr.state == "MERGED":
+            head = pr.head_sha or f"origin/{pr.head}"
+            try:
+                repo = self.repo_for(task)
+                gitops.fetch(repo)
+                merged = gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
+            except gitops.GitError as e:
+                refuse(f"could not verify merged PR ancestry: {e}")
+            if not merged:
+                refuse(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
+        elif pr.state != "OPEN":
+            refuse(f"external PR is {pr.state.lower()}, not open or merged")
+        st = self.state.get(task.id)
+        task.pr, task.branch = pr.url, pr.head
+        st.update({"pr_number": pr.number, "pr_state": pr.state, "pr_base": pr.base,
+                   "head_sha": pr.head_sha, "checks": pr.checks,
+                   "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
+        ManualRunner.finish(run, {**result, "pr": pr.url})
+        run.result = {**result, "pr": pr.url}
+        run.finished_at = now_iso()
+        run.cost_usd = float(result["cost_usd"]) if isinstance(result.get("cost_usd"), (int, float)) else None
+        run.status = "done"
+        run.save()
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
+                         harness="human", status="done", cost_usd=run.cost_usd,
+                         external=True, supervised=True)
+        if pr.state == "MERGED":
+            self._transition(task, Status.DONE, f"external PR merged and verified on {self.final_base_for(task)}")
+            rep.transitions.append(f"{task.id} -> done (external merged PR)")
+            # This follows the ordinary merged-PR lifecycle, but deliberately leaves the
+            # operator-owned checkout alone rather than calling `_cleanup`.
+            self._on_merged(task, rep, head_sha=pr.head_sha)
+        elif pr.state == "OPEN":
+            self._transition(task, Status.IN_REVIEW, f"external PR attached at {pr.head}; existing CI is {pr.checks or 'unknown'}")
+            rep.transitions.append(f"{task.id} -> in_review (external PR)")
+            self._maybe_review(task, run, rep)
         self.state.save()
         return rep

@@ -30,13 +30,14 @@ goals, the task body, and the files on the task's reading list. Write tasks acco
 Rules:
 - 3-12 tasks. Each should be completable in one focused session (roughly 1-3 hours of agent work) and result in ONE pull request.
 - Prefer vertical slices that leave the product working after every merge.
-- Use `depends_on` only for real ordering constraints (a task needs another's code). Fewer dependencies = more parallelism.
+- Use `depends_on` only for real ordering constraints. Link tasks that serve one goal when one task's design assumes the other has merged, even if it does not directly need the other's code. Fewer dependencies = more parallelism.
 - `reading` is a list of paths relative to the garden root (specs, docs) the agent must read. Keep it minimal; the digest/product/goals are included automatically.
+- When a task cites a retro finding from a garden document (for example `docs/friction.md` or `docs/retro.md`), include that path in its body. Import expands the cited evidence into the task body so the worker does not have to chase it through the garden.
 - The body must contain: `## Goal` (1-2 sentences), `## Context` (what the agent needs to know that isn't in the reading list), `## Acceptance criteria` (checklist, testable), `## Out of scope`.
 - Do not include tasks that already exist (see existing task list). You may depend on existing ids.
 - `difficulty` picks the model tier: "easy" (mechanical, well-specified, small blast radius), "medium" (typical feature work), "hard" (design judgment, cross-cutting, subtle correctness). Be honest; it controls cost.
 - Output ONLY a JSON array (no prose, no fences) of objects with keys:
-  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard"), depends_on (list of ids or titles from this batch), reading (list of paths), body (markdown string).
+  title, priority (1-5, 1 highest), estimate ("S"|"M"|"L"), difficulty ("easy"|"medium"|"hard), kind (optional: design|spec|document), depends_on (list of ids or titles, or {id, after: stack|merge}), reading (list of paths), body (markdown string).
   When additional guidance supplies a provenance value, also return it unchanged in the
   optional `discovered_from` key.
   Reference batch-internal dependencies by exact title; they are resolved to ids on import.
@@ -48,6 +49,50 @@ def _read(p: Path) -> str:
         return p.read_text().strip()
     except OSError:
         return ""
+
+
+_RETRO_EVIDENCE_PATH = re.compile(
+    r"(?<![\w/])((?:[\w.-]+/)*docs/(?:friction|retro)\.md)(?=$|[\s\])},.;:!?`'\"])"
+)
+
+
+def _retro_evidence(store: Store, phase_path: Path, text: str) -> list[tuple[str, str]]:
+    """Return cited friction/retro documents, resolving short paths from the phase.
+
+    Planner output commonly cites ``docs/friction.md`` while a human may give its full
+    garden-relative path. Both forms name garden evidence, not a product checkout file.
+    """
+    evidence: list[tuple[str, str]] = []
+    seen: set[Path] = set()
+    for match in _RETRO_EVIDENCE_PATH.finditer(text):
+        rel = Path(match.group(1))
+        for candidate in (phase_path / rel, store.root / rel):
+            try:
+                path = candidate.resolve()
+            except OSError:
+                continue
+            if not path.is_relative_to(store.root.resolve()) or not path.is_file():
+                continue
+            # A citation names its nearest existing garden document. Once that document
+            # has been included, do not fall through to a root-level document with the
+            # same short path on a later citation.
+            if path in seen:
+                break
+            contents = _read(path)
+            if contents:
+                evidence.append((match.group(1), contents))
+                seen.add(path)
+            break
+    return evidence
+
+
+def _inline_retro_evidence(store: Store, phase_path: Path, body: str) -> str:
+    """Append the text behind cited retro evidence paths to a planned task body."""
+    evidence = _retro_evidence(store, phase_path, body)
+    if not evidence:
+        return body
+    entries = [f"### {path}\n\n{contents}" for path, contents in evidence]
+    return body.rstrip() + "\n\n## Inlined retro evidence\n\n" + "\n\n".join(entries) + "\n"
 
 
 def _task_log_lines(task: Task, n: int = 3) -> list[str]:
@@ -118,6 +163,10 @@ def plan_prompt(store: Store, product: str, phase: str, extra: str = "", replan:
             parts.append(replan_text)
     if extra:
         parts.append("## Additional guidance from the human\n\n" + extra.strip())
+        evidence = _retro_evidence(store, ph.path, extra)
+        if evidence:
+            entries = [f"### {path}\n\n{contents}" for path, contents in evidence]
+            parts.append("## Retro evidence cited in additional guidance\n\n" + "\n\n".join(entries))
     parts.append("Now output the JSON array.")
     return "\n\n".join(parts) + "\n"
 
@@ -139,13 +188,33 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("title"):
             raise ValueError(f"bad task item: {item!r}")
         out.append(item)
+    _validate_dependency_rules(out)
     return out
+
+
+def _validate_dependency_rules(items: list[dict[str, Any]]) -> None:
+    """Reject dependency rules before a planner result can create any task files."""
+    for item in items:
+        raw_deps = item.get("depends_on") or []
+        if not isinstance(raw_deps, list):
+            raise ValueError(f"depends_on must be a list for task {item.get('title')!r}")
+        for raw_dep in raw_deps:
+            if isinstance(raw_dep, str):
+                continue
+            if not isinstance(raw_dep, dict) or set(raw_dep) not in ({"id"}, {"id", "after"}):
+                raise ValueError(f"malformed depends_on entry {raw_dep!r}")
+            dep_id = raw_dep.get("id")
+            if not isinstance(dep_id, str) or not dep_id.strip():
+                raise ValueError(f"depends_on entry has a missing or non-string id: {raw_dep!r}")
+            if "after" in raw_dep and raw_dep["after"] not in ("stack", "merge"):
+                raise ValueError(f"invalid dependency rule {raw_dep['after']!r}")
 
 
 def import_plan(
     store: Store, product: str, phase: str, items: list[dict[str, Any]], status: str | None = None, reopen: bool = False
 ) -> list[Task]:
     """Create task files; resolve batch-internal dependencies by title."""
+    _validate_dependency_rules(items)
     ph = store.phase(product, phase)
     if ph.closed:
         if not reopen:
@@ -171,13 +240,14 @@ def import_plan(
         # Let create_task allocate the id under its reservation lock: it writes the file at once
         # and, holding that lock, is atomic against a concurrent retro reserving branch-filed ids.
         t = store.create_task(
-            product, phase, title, str(item.get("body") or ""),
+            product, phase, title, _inline_retro_evidence(store, ph.path, str(item.get("body") or "")),
             priority=int(item.get("priority", 3) or 3),
             estimate=str(item.get("estimate") or ""),
             reading=[str(r) for r in (item.get("reading") or [])],
             status="draft",
             difficulty=str(item.get("difficulty") or "medium"),
         )
+        t.kind = str(item.get("kind") or "")
         title_to_id[title.lower()] = t.id
         pending.append((t, item))
         created.append(t)
@@ -185,14 +255,18 @@ def import_plan(
     all_ids = {t.id for t in store.tasks().values()}
     for t, item in pending:
         deps = []
-        for d in item.get("depends_on") or []:
-            d = str(d).strip()
-            if d in all_ids:
-                deps.append(d)
-            elif d.lower() in title_to_id:
-                deps.append(title_to_id[d.lower()])
-            elif d.lower() in existing_titles:
-                deps.append(existing_titles[d.lower()])
+        for raw_d in item.get("depends_on") or []:
+            rule = ""
+            if isinstance(raw_d, dict):
+                d = raw_d["id"].strip()
+                rule = raw_d.get("after", "")
+            else:
+                d = raw_d.strip()
+            resolved = d if d in all_ids else title_to_id.get(d.lower(), existing_titles.get(d.lower()))
+            if resolved:
+                deps.append(resolved)
+                if rule:
+                    t.dependency_after[resolved] = rule
             else:
                 t.log(f"planner referenced unknown dependency {d!r}; dropped")
         t.depends_on = deps

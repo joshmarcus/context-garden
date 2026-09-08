@@ -54,6 +54,7 @@ from .report import TickReport
 from .resources import ResourceMixin
 from .retro import RetroMixin
 from .review import ReviewMixin
+from .scope import ScopeMixin
 from .state import State, _TaskState
 from .trials import TrialsMixin
 from .upgrades import UpgradeMixin
@@ -75,7 +76,7 @@ __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
-CHECK_MODES = frozenset({"check"})  # a detached pre-PR/base-probe/pre-merge check; also holds a slot
+CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
 
 
 class Scheduler(
@@ -92,6 +93,7 @@ class Scheduler(
     EditsMixin,
     PollMixin,
     UpgradeMixin,
+    ScopeMixin,
     DispatchMixin,
     HumanMixin,
     AuxMixin,
@@ -163,8 +165,8 @@ class Scheduler(
         if self._runner_factory:
             return self._runner_factory(name, task)
         harness = self.cfg.harness(harness_name or task.harness or self.cfg.product_harness(task.product))
-        if name == "ssh":
-            cfg = dict(self.cfg.get("ssh", {}) or {})
+        if name in {"ssh", "remote"}:
+            cfg = dict(self.cfg.get("ssh" if name == "ssh" else "workers", {}) or {})
             cfg["_product"] = task.product
         else:
             cfg = {}
@@ -276,7 +278,7 @@ class Scheduler(
         return [r for r in self.runs.active() if r.runner != "manual"]
 
     def worker_runs_active(self) -> list[Run]:
-        """Active runs that occupy a `max_parallel` slot: work, revise, resume, trial."""
+        """Active runs that occupy a `max_parallel` slot: worker modes only."""
         return [r for r in self.active_runs() if r.mode in WORKER_MODES]
 
     def worker_run_in_flight(self, task_id: str) -> bool:
@@ -307,13 +309,16 @@ class Scheduler(
         return [r for r in self.active_runs() if r.mode in REVIEW_MODES]
 
     def check_runs_active(self) -> list[Run]:
-        """Active check runs (pre-PR, base probe, pre-merge). Like a worker run, one runs a
-        product's suite, so it holds a `max_parallel` slot until it is reaped (CG-182)."""
+        """Active check runs (pre-PR, base probe, pre-merge).
+
+        Checks are deliberately visible as runs but do not occupy worker slots: they are
+        short, machine-bound work and have no worker-mode concurrency cap.
+        """
         return [r for r in self.active_runs() if r.mode in CHECK_MODES]
 
     def slots_free(self) -> int:
-        queue_free = self.effective_max_parallel() - len(self.worker_runs_active()) - len(self.check_runs_active())
-        return max(0, queue_free)
+        """Worker slots available to dispatch; checks and edit runs are excluded."""
+        return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
 
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")
@@ -349,7 +354,8 @@ class Scheduler(
                 out.add(review.run_id)
         return out
 
-    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False, notify_now: bool = True) -> None:
+    def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False,
+                    notify_now: bool = True, base_merged: bool | None = None) -> None:
         old = task.status.value
         task.status = status
         task.log(note)
@@ -369,7 +375,10 @@ class Scheduler(
             changed = self._queue_drop_head(task) or changed
         if changed:
             self.state.save()
-        self.events.emit("transition", task.id, **{"from": old, "to": status.value, "note": note})
+        transition = {"from": old, "to": status.value, "note": note}
+        if status == Status.DONE and base_merged is not None:
+            transition["base_merged"] = base_merged
+        self.events.emit("transition", task.id, **transition)
         self.log(f"{task.id}: {old} -> {status.value} ({note})")
         if notify_now and should_notify(status.value, needs_human=needs_human):
             notify(self.cfg.data, task.id, status.value, note, task.pr or "")
@@ -475,6 +484,8 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        if self.maintenance_requested():
+            return TickReport()
         rep = TickReport()
         started = time.monotonic()
         self.store.invalidate_tasks()
@@ -505,6 +516,12 @@ class Scheduler(
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
+        if self.maintenance_requested():
+            # A prior transaction has completed before this locked pass observes the
+            # request.  Do no collection or mutation in the acknowledgement pass.
+            self._quiesce_for_maintenance()
+            self.state.save()
+            return rep
         try:
             # Re-reads garden.yaml when it changed on disk (CG-192), holding an executable-field
             # change against an in-flight run's fence manifest until it's safe or an operator
@@ -522,6 +539,8 @@ class Scheduler(
         self.state = State(self.state.path)
         self.maybe_auto_upgrade(rep)
         rep.duration_s = time.monotonic() - started
+        self.events.emit("tick", "", duration_s=rep.duration_s, steps=rep.steps,
+                         summary=rep.summary())
         budget = float(self.cfg.get("tick.warn_seconds", 10) or 0)
         if budget and rep.duration_s > budget:
             self.log(f"tick pass {rep.timing()} exceeded {budget:.0f}s budget")

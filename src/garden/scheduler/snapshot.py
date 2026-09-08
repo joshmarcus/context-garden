@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..events import EventLog, metrics, parse_since
+from ..host_identity import scrub_shared_text
 from ..runs import RunStore
 
 _ABSOLUTE_PATH = re.compile(r"(?<![\w])(?:/|[A-Za-z]:[\\/])(?:[^\s'\"<>]+)")
@@ -19,15 +20,16 @@ _BEARER = re.compile(r"(?i)(\bbearer\s+)([^\s]+)")
 _TOKEN_SHAPES = re.compile(r"\b(?:gh[pousr]_\w+|sk-[A-Za-z0-9_-]+)\b")
 
 
-def _scrub_text(value: str) -> str:
+def _scrub_text(value: str, config: dict[str, Any] | None = None) -> str:
     value = _BEARER.sub(r"\1<redacted>", value)
     value = _SENSITIVE_VALUE.sub(r"\1<redacted>", value)
     value = _TOKEN_SHAPES.sub("<redacted>", value)
     value = _WINDOWS_HOME.sub("<path>", value)
-    return _ABSOLUTE_PATH.sub("<path>", value)
+    value = _ABSOLUTE_PATH.sub("<path>", value)
+    return scrub_shared_text(value, config or {})
 
 
-def _safe(value: Any, key: str = "") -> Any:
+def _safe(value: Any, key: str = "", config: dict[str, Any] | None = None) -> Any:
     """Drop filesystem and credential-shaped values from copied garden data."""
     lowered = key.lower()
     if any(word in lowered for word in ("secret", "token", "password", "credential", "api_key")):
@@ -35,11 +37,11 @@ def _safe(value: Any, key: str = "") -> Any:
     if lowered in {"path", "dir", "worktree", "root", "cwd", "command"}:
         return None
     if isinstance(value, dict):
-        return {k: _safe(v, str(k)) for k, v in value.items() if _safe(v, str(k)) is not None}
+        return {k: _safe(v, str(k), config) for k, v in value.items() if _safe(v, str(k), config) is not None}
     if isinstance(value, list):
-        return [_safe(v, key) for v in value]
+        return [_safe(v, key, config) for v in value]
     if isinstance(value, str):
-        return _scrub_text(value)
+        return _scrub_text(value, config)
     return value
 
 
@@ -62,11 +64,28 @@ def write_snapshot(scheduler: Any, task: Any, worktree: Path) -> None:
         "tasks": tasks,
         "runs": run_rows,
         "control": {k: v for k, v in scheduler.control().items() if k not in {"token", "secret"}},
-        "queue": {k: v for k, v in state.get("_queue", {}).items() if k in {"head", "order"}},
+        # Queue facts are per task, not in a synthetic ``_queue`` state entry.  Keep the
+        # merge and dispatch views separate so a design worker sees both kinds of waiting
+        # work without reconstructing scheduler policy from task status.
+        "queue": {
+            "merge": [
+                {"task": task.id, "candidate": bool(state.get(task.id, {}).get("automerge_candidate")),
+                 "head": bool(state.get(task.id, {}).get("merge_head")),
+                 "ready_at": state.get(task.id, {}).get("automerge_ready_at", ""),
+                 "blocked": state.get(task.id, {}).get("automerge_blocked", "")}
+                for task in store.tasks().values()
+                if any(state.get(task.id, {}).get(key) for key in
+                       ("automerge_candidate", "merge_head", "automerge_blocked"))
+            ],
+            "dispatch": [
+                {"task": task.id, "mode": mode, "reason": reason}
+                for task, mode, reason in scheduler.dispatch_queue()
+            ],
+        },
         "phases": phases,
         "events": EventLog(store.config.garden_dir / "events.jsonl").read(since=parse_since("24h")),
         "metrics": metrics(EventLog(store.config.garden_dir / "events.jsonl").read(), store.tasks()),
     }
     out = worktree / "docs" / "design" / "snapshot.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(_safe(payload), indent=2, sort_keys=True) + "\n")
+    out.write_text(json.dumps(_safe(payload, config=store.config.data), indent=2, sort_keys=True) + "\n")

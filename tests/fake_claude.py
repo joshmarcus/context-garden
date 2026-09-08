@@ -384,7 +384,11 @@ def ask_once(call: Call) -> bool:
 def nothing_to_change(call: Call) -> bool:
     if not call.revise:
         return False
-    print(result_json('Nothing to change.\nGARDEN_RESULT: {"status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b"}', {}, 0.01))
+    result = {
+        "status": "done", "summary": "no change", "pr_title": "t", "pr_body": "b",
+        "pre_flight": preflight_rows(),
+    }
+    print(result_json("Nothing to change.\nGARDEN_RESULT: " + json.dumps(result), {}, 0.01))
     return True
 
 
@@ -426,15 +430,33 @@ def resolve_rebase(call: Call) -> bool:
     # runner force-pushes the rebased branch; no extra commit is made.
     m = re.search(r"git rebase origin/(\S+)", call.brief)
     base = m.group(1) if m else "main"
-    subprocess.run(["git", "fetch", "origin"], check=False, capture_output=True)
-    env = {**os.environ, "GIT_EDITOR": "true"}
+    env = {**call.env, "GIT_EDITOR": "true"}
+    subprocess.run(["git", "fetch", "origin"], cwd=call.cwd, check=False, capture_output=True, env=env)
     r = subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
-                        "rebase", "-X", "theirs", f"origin/{base}"], capture_output=True, text=True, env=env)
+                        "rebase", "-X", "theirs", f"origin/{base}"], cwd=call.cwd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
-        subprocess.run(["git", "rebase", "--abort"], check=False, capture_output=True)
-        print(result_json('Stuck.\nGARDEN_RESULT: {"status": "needs_input", "question": "How should this conflict be resolved?", "summary": "cannot resolve"}',
-                          {"input_tokens": 400, "output_tokens": 20}, 0.01))
-        return True
+        # Binary generated files do not have mergeable hunks, so Git's strategy option leaves
+        # them unmerged. The fixture's deterministic resolver takes the rebased commit's stage
+        # and continues; production agents receive the same Git stages and make that choice.
+        unresolved = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
+                                    cwd=call.cwd, capture_output=True, text=True).stdout.splitlines()
+        if not unresolved:
+            # Some strategy-resolved binary rebases report a non-zero status while already
+            # completing the sequencer; there is no continuation left to run.
+            print(result_json('Resolved the conflict.\nGARDEN_RESULT: {"status": "done", "summary": "resolved the rebase conflict, changed nothing else"}',
+                              {"input_tokens": 500, "output_tokens": 40}, 0.02))
+            return True
+        for path in unresolved:
+            blob = subprocess.run(["git", "show", f":3:{path}"], cwd=call.cwd, check=False, capture_output=True).stdout
+            (call.cwd / path).write_bytes(blob)
+            subprocess.run(["git", "add", "--", path], cwd=call.cwd, check=False, capture_output=True)
+        r = subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
+                            "rebase", "--continue"], cwd=call.cwd, capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], cwd=call.cwd, check=False, capture_output=True)
+            print(result_json('Stuck.\nGARDEN_RESULT: {"status": "needs_input", "question": "How should this conflict be resolved?", "summary": "cannot resolve"}',
+                              {"input_tokens": 400, "output_tokens": 20}, 0.01))
+            return True
     print(result_json('Resolved the conflict.\nGARDEN_RESULT: {"status": "done", "summary": "resolved the rebase conflict, changed nothing else"}',
                       {"input_tokens": 500, "output_tokens": 40}, 0.02))
     return True
@@ -500,7 +522,8 @@ def add_discovered_same(call: Call, result: dict) -> None:
     # workers hitting the same bug should file one draft, not three (CG-199).
     result["discovered"] = [
         {"title": "Retry loop spins forever on a dead runner",
-         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load."},
+         "body": "`src/garden/scheduler/poll.py` raises `TimeoutError: retry exceeded` under load.",
+         "file": "src/garden/scheduler/poll.py", "error": "TimeoutError: retry exceeded"},
     ]
 
 
@@ -537,6 +560,9 @@ def amend_a_criterion(call: Call, result: dict) -> None:
         "reason": "The original outcome was false.",
     }]
 
+def omit_preflight(call: Call, result: dict) -> None:
+    result.pop("pre_flight", None)
+
 
 WORKERS: dict[str, Worker] = {
     "done": Worker(),
@@ -564,6 +590,7 @@ WORKERS: dict[str, Worker] = {
     "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
     "criteria-amend": Worker(tweak=amend_a_criterion),
+    "omit-preflight": Worker(tweak=omit_preflight),
 }
 
 
@@ -581,6 +608,16 @@ def commit_counter(call: Call) -> None:
     git_commit(f"fake change {n} ({tag})", call.cwd, call.env)
 
 
+def preflight_rows() -> list[dict[str, str]]:
+    pre_flight_items = [
+        "A test or stated reason for every acceptance criterion", "Lint is clean",
+        "No conflict markers remain", "UI changes have 1280px and 390px captures",
+        "The PR description states the goal and outcome without process history",
+        "Every acceptance criterion is addressed by name",
+    ]
+    return [{"item": item, "status": "pass", "evidence": "fake check"} for item in pre_flight_items]
+
+
 def done_result(call: Call) -> dict:
     return {
         "status": "done",
@@ -588,6 +625,7 @@ def done_result(call: Call) -> dict:
         "pr_title": "Fake: implemented the thing",
         "pr_body": "## What\n\nA fake change.\n\n## Friction\n\nNone.",
         "verified": verified_for(call),
+        "pre_flight": preflight_rows(),
         "notes": "",
     }
 

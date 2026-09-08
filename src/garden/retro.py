@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,14 @@ PHASE_VERDICTS: dict[str, str] = {
     "close_with_followups": "Close with follow-ups",
     "reopen": "Reopen",
 }
+
+
+def normalize_question(text: str) -> str:
+    """Return the stable text key used to deduplicate owner questions."""
+    text = unicodedata.normalize("NFKC", str(text or "")).lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    words = [word for word in text.split() if word not in {"a", "an", "the"}]
+    return " ".join(words)
 
 
 def normalize_verdict(v: Any) -> str:
@@ -216,16 +225,28 @@ def parse_retro(text: str) -> dict[str, Any]:
 
 
 def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
-                    outcomes: dict[str, Any] | None = None) -> str:
+                    outcomes: dict[str, Any] | None = None, operator_turns: int | None = None,
+                    operator_ledger_path: Path | str | None = None) -> str:
     """The phase's spend, workers against the operator watching them (CG-223): what the
     "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
     loop's most expensive seat is compared against the workers', not guessed at."""
     total = worker_cost_usd + operator_cost_usd
     share = operator_cost_usd / total if total else None
-    lines = [f"- workers: ${worker_cost_usd:.2f}",
-             f"- operator: ${operator_cost_usd:.2f}" + (f" — {share:.0%} of total" if share is not None else ""),
-             f"- total: ${total:.2f}"]
+    operator = f"- operator: ${operator_cost_usd:.2f}"
+    if operator_ledger_path is not None and not Path(operator_ledger_path).exists():
+        operator += f" — ledger not found ({operator_ledger_path})"
+    else:
+        if operator_turns is not None:
+            operator += f" — {operator_turns} turns"
+        if share is not None:
+            operator += f" — {share:.0%} of total"
+    lines = [f"- workers: ${worker_cost_usd:.2f}", operator, f"- total: ${total:.2f}"]
     outcomes = outcomes or {}
+    if outcomes.get("hand_merges") is not None:
+        lines.append(f"- hand merges: {outcomes['hand_merges']} (of {outcomes.get('merges', 0)} merged PRs)")
+    timing = outcomes.get("tick_duration") or {}
+    if timing.get("count"):
+        lines.append(f"- tick duration: mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)")
     for dimension, label in (("by_difficulty", "tier"), ("by_model", "model"), ("by_harness", "harness")):
         rows = outcomes.get(dimension) or {}
         if not rows:
@@ -280,6 +301,8 @@ def questions_section(filed: list[dict[str, Any]]) -> str:
         if item.get("blocking"):
             suffix += " (blocking)"
         out.append(f"- **{question}**{suffix}")
+        if item.get("answer"):
+            out.append(f"  - answered: {item['answer']}")
         if item.get("context"):
             out.append(f"  - {item['context']}")
         if item.get("options"):
@@ -552,9 +575,12 @@ def render_retro_doc(phase: Phase, rev: dict[str, Any], reports: dict[str, Path]
                      followups: list[dict[str, Any]] | None = None,
                      blocking: list[dict[str, Any]] | None = None,
                      next_phase: str = "",
-                     difficulty: str = "", model: str = "", numbers: str = "") -> str:
+                     difficulty: str = "", model: str = "", numbers: str = "",
+                     no_file: bool = False) -> str:
     tier = f" · {difficulty} tier ({model})" if difficulty else ""
     out = [f"# Retrospective: {phase.key}", "", f"_{now_iso()}{tier}_", ""]
+    if no_file:
+        out += ["> Task filing is disabled for this judge-only retro; no features, follow-ups, blocking tasks, or persona findings are filed.", ""]
     summary = str(rev.get("summary", "")).strip()
     if summary:
         out += ["## What changed", "", summary, ""]

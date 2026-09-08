@@ -270,6 +270,7 @@ def retro(
     target: str = typer.Argument(..., help="product/phase"),
     personas: list[str] = typer.Option([], "--persona", "-p", help="Persona name (repeat); default: all configured/built-in"),
     skip_personas: bool = typer.Option(False, "--skip-personas", help="Reuse persona reports that already exist instead of running them"),
+    no_file: bool = typer.Option(False, "--no-file", help="Judge only: write the retro and goals without filing task drafts"),
     next_phase: str = typer.Option("", "--next-phase", help="Name for the next phase's goals draft (default: next number up)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan and the estimated cost, then exit"),
 ):
@@ -311,7 +312,7 @@ def retro(
             err.print("[yellow]no product has `self: true`; retro cannot open a PR to the garden repo (see docs/architecture.md)[/yellow]")
         return
     try:
-        entry = sched.start_retro(ph, names, skip_personas=skip_personas, next_phase=next_phase)
+        entry = sched.start_retro(ph, names, skip_personas=skip_personas, next_phase=next_phase, no_file=no_file)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -418,8 +419,11 @@ def usage(
 
 @app.command(rich_help_panel=PANEL_REVIEW)
 def review(task_id: str):
-    """Start an automated review run for a task's open PR now. If the task's review cap
-    was already reached, this raises it by one round and clears the needs-human stop."""
+    """Start an automated review run for a task's open PR now.
+
+    With a finite cap this raises the task's cap by one round when necessary; with an
+    unlimited cap it simply starts the review.
+    """
     store = _store()
     t = _task(store, task_id)
     if not t.pr:

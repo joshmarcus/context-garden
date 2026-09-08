@@ -20,6 +20,27 @@ FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-stress", action="store_true", default=False,
+        help="Opt in to stress/load experiments (excluded from ordinary test runs and CI)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Deselect stress before fixtures run, even for explicit node or -m selections."""
+    if config.getoption("--run-stress"):
+        return
+    selected = []
+    deselected = []
+    for item in items:
+        target = deselected if item.get_closest_marker("stress") is not None else selected
+        target.append(item)
+    if deselected:
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
+
+
 @pytest.fixture(autouse=True)
 def in_process_workers(monkeypatch):
     """No test drives a subprocess worker: for the whole suite the `local` runner (and its
@@ -48,6 +69,13 @@ def _no_ambient_garden_root(monkeypatch):
     """
     monkeypatch.delenv("GARDEN_ROOT", raising=False)
     monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_harness_config(monkeypatch):
+    """Tests must not read a developer's real Claude or Codex configuration."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
 
 
 def git(*args: str, cwd: Path, timeout: float = 30) -> None:
@@ -124,6 +152,10 @@ def garden(tmp_path: Path) -> Path:
     write(repo / "README.md", "# demo\n")
     git("add", "-A", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
+    # pytest's numbered temporary-directory cleanup can remove an older sibling while
+    # this fixture is being assembled. Ensure the bare remote's parent still exists
+    # immediately before Git creates it.
+    remote.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)

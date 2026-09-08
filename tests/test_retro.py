@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from garden.retro import (
     features_section,
+    normalize_question,
     numbers_section,
     reconcile_brief,
     render_retro_doc,
@@ -36,6 +37,38 @@ def test_numbers_section_handles_zero_total():
     text = numbers_section(0.0, 0.0)
     assert "$0.00" in text
     assert "%" not in text  # no share line when there is nothing to divide
+
+
+def test_persona_revs_rejects_unsafe_or_escaping_footer_run_ids(sched, tmp_path):
+    """Retro persona report footers are untrusted and cannot select an arbitrary final.md."""
+    phase = sched.store.phase("demo", "p1")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    unsafe = reports_dir / "unsafe.md"
+    unsafe.write_text("_garden persona run bad.run_")
+    escaping = reports_dir / "escaping.md"
+    escaping.write_text("_garden persona run escape_")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "final.md").write_text('GARDEN_PERSONA: {"persona": "security", "score": 10}')
+    phase_runs = sched.runs.dir / "_demo-p1"
+    phase_runs.mkdir(parents=True)
+    unsafe_run = phase_runs / "bad.run"
+    unsafe_run.mkdir()
+    (unsafe_run / "final.md").write_text(
+        'GARDEN_PERSONA: {"persona": "security", "score": 10}'
+    )
+    (phase_runs / "escape").symlink_to(outside, target_is_directory=True)
+
+    assert sched._persona_revs(phase, {"unsafe": unsafe}) == {}
+    assert sched._persona_revs(phase, {"escaping": escaping}) == {}
+
+
+def test_numbers_section_reports_missing_operator_ledger(tmp_path):
+    text = numbers_section(8.0, 0.0, operator_ledger_path=tmp_path / "missing.jsonl")
+    assert "ledger not found" in text
+    assert "missing.jsonl" in text
 
 
 def test_numbers_section_includes_accepted_cost_and_first_pass_by_routing_dimension():
@@ -80,6 +113,48 @@ def test_resolve_features_flags_a_title_match_and_an_explicit_duplicate():
 def test_resolve_features_empty():
     assert resolve_features({}, {}) == []
     assert resolve_features({"features": []}, {}) == []
+
+
+def test_retro_question_normalization_ignores_case_articles_and_punctuation():
+    assert normalize_question("Which rollout should the next phase use?") == normalize_question(
+        "which rollout should next phase use"
+    )
+
+
+def test_retro_questions_reuse_an_answered_card_across_runs(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    sched = Scheduler(Store(root), github=fake_github, log=print)
+    phase = sched.store.phase("gdn", "p1")
+    first = sched._file_question(phase, {"question": "Which rollout should the next phase use?"}, 0,
+                                 "retro-one", source="retro:gdn/p1")
+    sched.answer_question(first["decision_id"], "gradual")
+    second = sched._file_question(phase, {"question": "Which rollout should next phase use"}, 0,
+                                  "retro-two", source="retro:gdn/p1")
+    assert second["decision_id"] == first["decision_id"]
+    assert second["answer"] == "gradual"
+    assert sched.pending_decisions() == []
+
+
+def test_retro_question_deduplication_is_scoped_to_the_phase(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    _write(root / "gdn" / "p2" / "goals.md", "# p2\n\nClose the phase.\n")
+    sched = Scheduler(Store(root), github=fake_github, log=print)
+    first_phase = sched.store.phase("gdn", "p1")
+    second_phase = sched.store.phase("gdn", "p2")
+
+    first = sched._file_question(first_phase, {"question": "Which rollout should the next phase use?"}, 0,
+                                 "retro-one", source="retro:gdn/p1")
+    sched.answer_question(first["decision_id"], "gradual")
+    second = sched._file_question(second_phase, {"question": "Which rollout should next phase use"}, 0,
+                                  "retro-two", source="retro:gdn/p2")
+
+    assert second["decision_id"] != first["decision_id"]
+    assert "duplicate" not in second
+    assert {d["phase"] for d in sched.pending_decisions()} == {"gdn/p2"}
 
 
 def test_features_section_renders_rank_ids_and_skips():
@@ -263,7 +338,7 @@ def test_retro_reconciles_friction_and_opens_a_pr_to_the_garden_repo(tmp_path, f
 
 
 def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_github, monkeypatch):
-    """CG-223: docs/operator-spend.jsonl in the live garden feeds the retro's own '## Numbers'
+    """CG-223: the product's docs/operator-spend.jsonl feeds the retro's own '## Numbers'
     section, so the operator's spend and its share of the phase's total are quoted, not
     guessed at — no run_finished events exist for this phase's tasks here, so the whole
     total is the operator's."""
@@ -272,8 +347,8 @@ def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_gith
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     repo = _garden_repo(tmp_path)
     root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
-    (root / "docs").mkdir(parents=True, exist_ok=True)
-    with (root / "docs" / "operator-spend.jsonl").open("w") as f:
+    (root / "gdn" / "docs").mkdir(parents=True, exist_ok=True)
+    with (root / "gdn" / "docs" / "operator-spend.jsonl").open("w") as f:
         f.write(json.dumps({"at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "list_price_usd": 3.5}) + "\n")
     store = Store(root)
     sched = Scheduler(store, github=fake_github, log=print)
@@ -292,6 +367,56 @@ def test_retro_document_reports_operator_spend_and_its_share(tmp_path, fake_gith
     assert "## Numbers" in retro_md
     assert "$3.50" in retro_md
     assert "100%" in retro_md  # no worker run_finished events recorded here, so it's all operator
+
+
+def test_retro_document_uses_configured_operator_ledger_and_reports_turns(tmp_path, fake_github, monkeypatch):
+    import json
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    config = yaml.safe_load((root / "garden.yaml").read_text())
+    config["operator_spend"] = {"path": "ledger/operator-spend.jsonl"}
+    (root / "garden.yaml").write_text(yaml.safe_dump(config))
+    ledger = root / "ledger" / "operator-spend.jsonl"
+    ledger.parent.mkdir()
+    ledger.write_text(json.dumps({
+        "at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "turns": 7,
+        "list_price_usd": 3.5,
+    }) + "\n")
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+    _friction_run(sched, "GD-002", "The check command references $GARDEN_ROOT.")
+
+    sched.start_retro(store.phase("gdn", "p1"), ["designer"], skip_personas=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    retro_md = (store.config.worktree_path("_retro-gdn-p1") / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "$3.50" in retro_md and "7 turns" in retro_md and "100%" in retro_md
+
+
+def test_retro_default_operator_ledger_is_product_relative(tmp_path, fake_github, monkeypatch):
+    import json
+
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    ledger = root / "gdn" / "docs" / "operator-spend.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "at": "2026-01-01T00:00:00+00:00", "session": "sess-a", "turns": 4,
+        "list_price_usd": 3.5,
+    }) + "\n")
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "A friction item.")
+    sched.start_retro(store.phase("gdn", "p1"), ["designer"], skip_personas=True)
+    assert not sched.tick().errors
+    retro_md = (store.config.worktree_path("_retro-gdn-p1") / "gdn" / "p1" / "docs" / "retro.md").read_text()
+    assert "$3.50" in retro_md and "4 turns" in retro_md
 
 
 def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, fake_github, monkeypatch):
@@ -342,6 +467,25 @@ def test_retro_files_features_in_the_next_phase_and_skips_a_duplicate(tmp_path, 
 
     pr = fake_github.created[-1]
     assert "2 feature(s) filed" in pr["body"] and "1 duplicate(s) skipped" in pr["body"]
+
+
+def test_retro_no_file_writes_only_the_judge_documents(tmp_path, fake_github, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    phase = store.phase("gdn", "p1")
+    sched.start_retro(phase, ["designer"], skip_personas=True, no_file=True)
+    rep = sched.tick()
+    assert not rep.errors, rep.errors
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    assert "Task filing is disabled" in (wt / "gdn/p1/docs/retro.md").read_text()
+    assert not (wt / "gdn/p2/tasks").exists()
+    assert not (root / "gdn/p2").exists()
+    assert not store.phase("gdn", "p1").closed
 
 
 def test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collides(tmp_path, fake_github, monkeypatch):

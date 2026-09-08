@@ -4,10 +4,12 @@ import multiprocessing
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from garden.observe import resolve, status_line
 from garden.scheduler import State
 from garden.scheduler.resources import ResourcePressureError
+from garden.web.app import create_app
 
 
 def _set_resource_limit(sched, key: str, value: int) -> None:
@@ -37,7 +39,7 @@ def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sch
     assert sched.local_slots_free() == 0
     task = sched.store.task("DM-002")
     before = len(sched.runs.runs_for(task.id))
-    with pytest.raises(ResourcePressureError, match="local execution limit reached"):
+    with pytest.raises(ResourcePressureError, match="waits for a local execution slot"):
         sched.dispatch(task)  # the same method used by `garden dispatch`
     assert len(sched.runs.runs_for(task.id)) == before
     assert task.status.value == "ready"
@@ -45,6 +47,25 @@ def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sch
     worker.status = "done"
     worker.save()
     assert sched.local_slots_free() == 1
+
+
+def test_worker_admission_keeps_worker_count_separate_from_shared_host_limit(sched):
+    """Checks and edits are absent from max_parallel occupancy, but still reserve host capacity."""
+    _set_resource_limit(sched, "max_parallel", 2)
+    check = sched.runs.new_run("DM-001", "local", mode="check")
+    check.save()
+    edit = sched.runs.new_run("DM-002", "local", mode="edit")
+    edit.save()
+
+    assert len(sched.worker_runs_active()) == 0
+    assert sched.slots_free() == 2
+    assert sched.local_slots_free() == 0
+
+    task = sched.store.task("DM-001")
+    with pytest.raises(ResourcePressureError, match="waits for a local execution slot"):
+        sched.dispatch(task)
+    assert len(sched.worker_runs_active()) == 0
+    assert len(sched.runs.runs_for(task.id)) == 1
 
 
 def test_concurrent_launchers_atomically_claim_the_last_host_slot(sched):
@@ -99,6 +120,85 @@ def test_effective_memory_uses_tighter_cgroup_headroom(sched, monkeypatch):
     assert "available memory 900 MiB is below 1500 MiB" in status.reasons
 
 
+def test_configured_execution_cgroup_is_the_admission_boundary(sched, monkeypatch, tmp_path):
+    """A roomy controller cannot admit work beyond the configured execution budget."""
+    import garden.scheduler.resources as resources
+
+    execution = tmp_path / "execution"
+    execution.mkdir()
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: {
+        "resources.min_memory_available_mb": 1500,
+        "resources.execution_cgroup": str(execution),
+    }.get(key, default))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 7000)
+
+    def cgroup_status(path):
+        return (900, {"high": 3, "max": 0, "oom": 0, "oom_kill": 0}) if path == execution else (7000, {})
+
+    monkeypatch.setattr(resources, "_cgroup_memory_status", cgroup_status)
+    status = sched.resource_status()
+
+    assert status.memory_available_mb == 900
+    assert status.cgroup_boundary == "execution cgroup"
+    assert status.cgroup_events == (("high", 3), ("max", 0), ("oom", 0), ("oom_kill", 0))
+    assert "execution cgroup available memory 900 MiB is below 1500 MiB" in status.reasons
+    with pytest.raises(ResourcePressureError, match="execution cgroup available memory"):
+        sched._admit_local_launch("work")
+
+
+def test_resource_status_reports_authoritative_capacity_conflict(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
+    _set_resource_limit(sched, "heavy_test_parallel", 1)
+    assert sched.resource_status().heavy_limit == 1
+    _set_resource_limit(sched, "heavy_test_parallel", 2)
+    status = sched.resource_status()
+    assert status.requested_heavy_limit == 2
+    assert status.heavy_limit == 1
+    assert status.heavy_conflict == "configured limit 2 conflicts with authoritative limit 1"
+
+
+def test_authoritative_capacity_conflict_agrees_across_operator_surfaces(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
+    _set_resource_limit(sched, "heavy_test_parallel", 1)
+    assert sched.resource_status().heavy_limit == 1
+    _set_resource_limit(sched, "heavy_test_parallel", 2)
+
+    def rendered() -> tuple[str, str, str]:
+        app = TestClient(create_app(sched.store, watch=False))
+        return status_line(sched.store, sched, resolve(sched.cfg, sched)), app.get("/").text, app.get("/config").text
+
+    conflict = "configured limit 2 conflicts with authoritative limit 1"
+    observe, rail, config = rendered()
+    assert "heavy 0/1 authoritative (requested 2; 0 waiting)" in observe
+    assert f"conflict {conflict}" in observe
+    assert "heavy 0/1 authoritative (requested 2)" in rail
+    assert f"capacity conflict: {conflict}" in rail
+    assert "heavy execution: <strong>0/1</strong> authoritative" in config
+    assert "(requested 2)" in config and f"Heavy capacity conflict: {conflict}" in config
+
+    running = sched.runs.new_run("DM-001", "local", mode="check")
+    (running.path / "execution.json").write_text('{"state": "running"}')
+    running.save()
+    waiting = sched.runs.new_run("DM-002", "local", mode="check")
+    (waiting.path / "execution.json").write_text('{"state": "waiting"}')
+    waiting.save()
+
+    observe, rail, config = rendered()
+    assert "heavy 1/1 authoritative (requested 2; 1 waiting)" in observe
+    assert "heavy 1/1 authoritative (requested 2) (1 waiting)" in rail
+    assert "heavy execution: <strong>1/1</strong> authoritative" in config
+    assert "(1 waiting: heavy-test budget full)" in config
+
+
 def test_writable_but_unbounded_execution_cgroup_is_not_enforced(sched, monkeypatch, tmp_path):
     group = tmp_path / "execution"
     group.mkdir()
@@ -118,19 +218,65 @@ def test_disabled_heavy_budget_is_rendered_as_zero(sched):
     assert sched.resource_status().heavy_limit == 0
 
 
-def test_operator_feed_names_effective_limit_pressure_and_recovery(sched, monkeypatch):
+def test_rendered_status_distinguishes_capacity_from_resource_pressure(sched, monkeypatch):
+    """Inbox and Config show ordinary full slots separately from true host gates."""
+    import garden.scheduler.resources as resources
+
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 4096)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
+    monkeypatch.setattr(resources, "_free_mb", lambda path: 4096)
+
+    app = TestClient(create_app(sched.store, watch=False))
+
+    # Available capacity has no warning.
+    assert "At local execution capacity" not in app.get("/").text
+
+    _set_resource_limit(sched, "max_parallel", 2)
+    for task_id in ("DM-001", "DM-002"):
+        sched.runs.new_run(task_id, "local", mode="check").save()
+    inbox = app.get("/").text
+    config = app.get("/config").text
+    line = status_line(sched.store, sched, resolve(sched.cfg, sched))
+    assert "At local execution capacity" in inbox
+    assert "Eligible work waits for a slot and dispatches automatically when one opens" in inbox
+    assert "Resource pressure" not in inbox
+    assert "At local execution capacity" in config
+    assert "at capacity 2/2" in line
+    assert "pressure " not in line
+
+    # Headroom pressure is visible even with a local slot available.
+    _set_resource_limit(sched, "max_parallel", 3)
+    _set_resource_limit(sched, "min_memory_available_mb", 1500)
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 900)
+    inbox = app.get("/").text
+    config = app.get("/config").text
+    assert "Resource pressure" in inbox and "available memory 900 MiB is below 1500 MiB" in inbox
+    assert "At local execution capacity" not in inbox
+    assert "Resource pressure" in config
+
+    # Both conditions remain visible together; occupancy does not hide the memory gate.
+    _set_resource_limit(sched, "max_parallel", 2)
+    inbox = app.get("/").text
+    config = app.get("/config").text
+    assert "At local execution capacity" in inbox
+    assert "Resource pressure" in inbox
+    assert "Also at local execution capacity (2/2 busy)" in inbox
+    assert "Also at local execution capacity (2/2 busy)" in config
+
+
+def test_operator_feed_names_capacity_without_calling_it_pressure(sched, monkeypatch):
     import garden.scheduler.resources as resources
 
     _set_resource_limit(sched, "max_parallel", 1)
-    run = sched.runs.new_run("DM-001", "local", mode="check")
-    run.save()
+    sched.runs.new_run("DM-001", "local", mode="check").save()
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 4096)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: None)
     monkeypatch.setattr(resources, "_free_mb", lambda path: 4096)
 
     line = status_line(sched.store, sched, resolve(sched.cfg, sched))
     assert "local 1/1" in line
-    assert "pressure local execution limit reached (1/1)" in line
-    assert "wait for drain or pause dispatch" in line
+    assert "at capacity 1/1" in line
+    assert "pressure " not in line
 
 
 def test_completed_check_continuation_survives_pressure_until_next_tick(sched, monkeypatch):

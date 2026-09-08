@@ -46,7 +46,7 @@ def costs(
         raise typer.Exit(2)
     tasks = store.tasks()
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
-    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
+    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
     series = cost_series(events, tasks, since=parse_since(since) if since else "", bucket=bucket, group_by=by,
                          difficulty=difficulty, model=model, harness=harness, phase=phase, product=product, task=task,
                          session=session)

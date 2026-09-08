@@ -40,6 +40,15 @@
 </div>
 {% endif %}
 
+{% if state.operator_scope and state.operator_scope.steps %}
+<div class="panel" style="border-color:var(--s-running);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--s-running)">Operator-owned configuration</div>
+  <p style="margin:6px 0">This prerequisite is outside the worker checkout. Verify it as an operator; the worker will receive only checkout-owned work.</p>
+  <ul style="margin:0 0 10px;padding-left:18px">{% for step in state.operator_scope.steps %}<li><code>{{ step.path }}</code> — {{ step.action }}</li>{% endfor %}</ul>
+  <form method="post" action="/tasks/{{ task.id }}/operator-evidence"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><div class="actions" style="margin-top:8px"><button class="primary">Record evidence and continue</button></div></form>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
@@ -161,7 +170,7 @@
         {% if state.stack_parent %}<dt>stacked on</dt><dd><a href="/tasks/{{ state.stack_parent }}">{{ state.stack_parent }}</a> <span class="muted">(PR targets {{ state.pr_base }})</span></dd>{% endif %}
         {% if eff == 'merged_into_parent' %}<dt>waiting on</dt><dd>merged into {% if state.merged_into_parent.parent %}<a href="/tasks/{{ state.merged_into_parent.parent }}">{{ state.merged_into_parent.parent }}</a>{% else %}<span class="mono">{{ state.merged_into_parent.branch }}</span>{% endif %}'s branch; done once it reaches the base</dd>{% endif %}
         {% if trial_view %}<dt>trial</dt><dd>{{ trial_view.get('status', '') }}{% if trial_view.get('winner') %} · winner {{ trial_view.get('winner') }}{% elif trial_view.get('kept') %} · kept {{ trial_view.get('kept') }}{% else %} · no verdict yet{% endif %}<br>{% for c in trial_view.get('contenders', []) %}<span class="mono">{{ c.get('label', 'unknown contender') }}</span> {{ c.get('model', '') }} · {{ c.get('status', 'unknown') }}{% if c.get('run_id') %} · <a href="/runs/{{ task.id }}/{{ c.get('run_id') }}">run</a>{% endif %}{% if c.get('elapsed') is not none %} · {{ '%.1f' % c.get('elapsed') }} min elapsed{% endif %}{% if c.get('kind') %} ({{ c.get('kind') }}){% endif %}{% if c.get('cost') is not none %} · ${{ '%.2f' % c.get('cost') }}{% endif %}{% if c.get('score') is not none %} · {{ c.get('score') }}/10{% endif %}{% if c.get('pr') %} · <a href="{{ c.get('pr') }}" target="_blank">PR</a>{% endif %}{% if c.get('note') %} · <span class="muted">{{ c.get('note') }}</span>{% endif %}<br>{% endfor %}</dd>{% endif %}
-        <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="faint">—</span>{% endfor %}</dd>
+        <dt>depends on</dt><dd>{% for d in task.depends_on %}<a href="/tasks/{{ d }}">{{ d }}</a> <span class="muted">(after {{ dependency_after(d) }})</span>{% if d in blockers %} <span class="muted">(open)</span>{% endif %} {% else %}<span class="faint">—</span>{% endfor %}</dd>
         <dt>unblocks</dt><dd>{% for d in dependents %}<a href="/tasks/{{ d }}">{{ d }}</a> {% else %}<span class="faint">—</span>{% endfor %}</dd>
         <dt>reading</dt><dd>{% for r in task.reading %}<span class="mono">{{ r }}</span><br>{% else %}<span class="faint">—</span>{% endfor %}</dd>
         <dt>branch</dt><dd class="mono">{{ task.branch or '—' }}</dd>

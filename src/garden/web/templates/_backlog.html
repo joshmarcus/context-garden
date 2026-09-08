@@ -21,7 +21,7 @@
           <form class="inline" method="post" action="/tasks/{{ t.id }}/order"><input type="hidden" name="note" value="up"><button class="quiet" title="Move up" aria-label="Move {{ t.id }} up">↑</button></form>
           <form class="inline" method="post" action="/tasks/{{ t.id }}/order"><input type="hidden" name="note" value="down"><button class="quiet" title="Move down" aria-label="Move {{ t.id }} down">↓</button></form>
           {% if move_phases[t.product]|length > 1 %}
-          <form class="inline" method="post" action="/tasks/{{ t.id }}/move"><label class="muted" for="mv-{{ t.id }}">phase</label><select id="mv-{{ t.id }}" name="note" onchange="this.form.submit()"{% if not row.movable %} disabled title="{{ row.move_reason }}"{% endif %}>{% for name in move_phases[t.product] %}<option value="{{ t.product }}/{{ name }}"{% if t.phase == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></form>
+          <form class="inline" method="post" action="/tasks/{{ t.id }}/move"><label class="muted" for="mv-{{ t.id }}">phase</label><select id="mv-{{ t.id }}" name="note" onchange="this.form.submit()"{% if not row.movable %} disabled title="{{ row.move_reason }}"{% endif %}>{% for name in move_phases[t.product] %}<option value="{{ t.product }}/{{ name }}"{% if t.phase == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select><noscript><button class="quiet" type="submit">Move</button></noscript></form>
           {% endif %}
         </span>
       </li>

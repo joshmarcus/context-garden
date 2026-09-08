@@ -1,5 +1,7 @@
 import json
+import subprocess
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -29,6 +31,23 @@ def test_status_ls_graph_validate(garden):
     r = run(garden, "graph", "--format", "mermaid")
     assert "DM_001 --> DM_002" in r.output
     assert run(garden, "validate").exit_code == 0
+
+
+def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    target = "operator@host-203-0-113-10.internal"
+    config["ssh"]["hosts"][0]["host"] = target
+    config_path.write_text(yaml.safe_dump(config))
+    subprocess.run(["git", "init", "-q"], cwd=garden, check=True)
+    subprocess.run(["git", "add", "garden.yaml"], cwd=garden, check=True)
+
+    result = run(garden, "doctor")
+
+    assert result.exit_code == 1
+    assert "host identities" in result.output
+    assert "ssh.hosts[0].host" in result.output
+    assert target not in result.output
 
 
 def test_status_shows_retro_waiting_for_personas(garden):
@@ -389,6 +408,19 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         assert "all good" in r.output
         assert "free space work dir: 1 MB" in r.output
         assert "below doctor.min_free_mb=2048 MB" in r.output
+
+
+def test_doctor_wraps_long_diagnostics_to_console_width(garden, monkeypatch):
+    from rich.console import Console
+
+    import garden.cli.diagnostics as diagnostics
+
+    narrow = Console(width=40, record=True)
+    monkeypatch.setattr(diagnostics, "console", narrow)
+    result = run(garden, "doctor")
+    assert result.exit_code in (0, 1)
+    lines = narrow.export_text().splitlines()
+    assert lines and max(len(line) for line in lines) <= 40
 
 
 def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
@@ -772,6 +804,14 @@ def test_unpause_resumes_dispatch_and_resume_needs_a_task(garden):
     assert run(garden, "resume").exit_code != 0
 
 
+def test_maintenance_commands_report_requested_then_quiesced(garden):
+    assert run(garden, "maintenance-pause", "--reason", "restart").exit_code == 0
+    assert "requested" in run(garden, "maintenance-status").output
+    assert run(garden, "tick").exit_code == 0
+    assert "quiesced" in run(garden, "maintenance-status").output
+    assert run(garden, "maintenance-resume").exit_code == 0
+
+
 def test_take_finish_revise_and_cost(garden):
     """CG-158: `garden take` on a changes_requested task dispatches a revise round (not a
     fresh work round), and `garden finish --cost` records what the round cost so a manual
@@ -799,6 +839,51 @@ def test_take_finish_revise_and_cost(garden):
     assert r.exit_code == 0, r.output
     run_rec = RunStore(garden / ".garden").latest("DM-001")
     assert run_rec.cost_usd == 2.5
+
+
+def test_external_take_persists_pr_identity_and_can_finish_blocked(garden):
+    """External branch-first work retains its claim and can stop before opening a PR."""
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    r = run(garden, "take", "DM-001", "--branch", "operator/blocked", "-q")
+    assert r.exit_code == 0, r.output
+    task = Store(garden).task("DM-001")
+    assert task.branch == "operator/blocked"
+
+    r = run(garden, "finish", "DM-001", "--blocked", "--summary", "waiting on access")
+    assert r.exit_code == 0, r.output
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/test/demo/pull/1",
+    "https://github.com/other/demo/pull/1",
+    "https://github.com/test/other/pull/1",
+])
+def test_take_rejects_external_pr_outside_the_configured_repository(garden, fake_github, monkeypatch, url):
+    """A PR number from another host or repository must never be looked up locally."""
+    import garden.cli.loop as loop
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    called = False
+
+    def get_pr(*_):
+        nonlocal called
+        called = True
+        raise AssertionError("a foreign PR URL must be rejected before lookup")
+
+    monkeypatch.setattr(fake_github, "get_pr", get_pr)
+    result = run(garden, "take", "DM-001", "--pr", url)
+
+    assert result.exit_code == 1
+    assert "GitHub URL for this repository" in result.output
+    assert not called
 
 
 def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):

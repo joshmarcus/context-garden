@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -9,13 +10,17 @@ from typing import Any
 
 from .. import gitops
 from ..brief import build_brief
+from ..criteria import parse_criteria
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
+from ..review import validation_plan
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
 from .selection import worker_candidates
+
+MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
 class DispatchMixin:
@@ -81,7 +86,13 @@ class DispatchMixin:
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
+        # A review uses the same local admission capacity as a worker or a detached
+        # check.  Give queued validation its priority-ordered turn before this ready
+        # queue can fill a slot again.
+        self._drain_pending_reviews(tasks, rep)
         for task, mode, _why in self.dispatch_queue():
+            if self.worker_run_in_flight(task.id):
+                continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
             if ph is not None and phase_refusal(ph, task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
@@ -98,13 +109,14 @@ class DispatchMixin:
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
                 continue  # infrastructure hold: no worker run or task attempt is consumed
+            if not self.operator_scope_ready(task):
+                continue  # live config is an operator prerequisite, never worker scope
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
-        self._drain_pending_reviews(tasks, rep)
 
     def _audit_stuck(self, rep: TickReport) -> None:
         """Backstop: any non-terminal task with no active run and no dispatchable next
@@ -270,20 +282,23 @@ class DispatchMixin:
 
     def dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
-                 worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+                 worktree_override: Path | None = None, model_override: str | None = None,
+                 reserved_run: Run | None = None, completion_mode: str = "managed",
+                 external_pr: str = "") -> Run:
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
-                                  branch_override, worktree_override, model_override)
+                                  branch_override, worktree_override, model_override, reserved_run,
+                                  completion_mode, external_pr)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
             # startup details.  In that case the process owns the run and closing the
             # record here would leave a live worker behind.  The orphan sweep handles
             # a process that later disappears without an exit marker.
-            if run is not None and run.status == "running" and run.pid is None:
+            if run is not None and run.status in ("requested", "preparing", "running") and run.pid is None:
                 self._close_dispatch_failure(task, run, e)
             raise
         finally:
@@ -308,22 +323,51 @@ class DispatchMixin:
 
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
-                  worktree_override: Path | None = None, model_override: str | None = None) -> Run:
+                  worktree_override: Path | None = None, model_override: str | None = None,
+                  reserved_run: Run | None = None, completion_mode: str = "managed",
+                  external_pr: str = "") -> Run:
+        self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
+        if not self.operator_scope_ready(task):
+            raise RuntimeError("operator evidence is required before checkout work can dispatch")
         runner = runner or self.runner_for(task)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        # An external claim names an operator-owned branch (and sometimes a PR) before
+        # there is anything to finish. Keep that identity on the task as well as the
+        # run, so a restart and every task-facing surface describe the claimed work
+        # rather than falling back to the scheduler-generated default branch. Internal
+        # callers may still use branch_override without changing the task identity.
+        if completion_mode == "external":
+            task.branch = branch
+            if external_pr:
+                task.pr = external_pr
+                match = re.search(r"/pull/(\d+)", external_pr)
+                if match:
+                    st["pr_number"] = int(match.group(1))
+            self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
         # worktree's stash (further below) can both name themselves after the run about to
         # reuse it; every later mutation just sets attributes on this same object before its
         # final run.save() near the bottom of this method.
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
-        run = (self._new_local_run(task.id, mode, mode, run_id=run_id)
-               if runner.name == "local" else self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id))
+        if reserved_run is not None:
+            run = reserved_run
+        elif runner.name == "local":
+            run = self._new_local_run(task.id, mode, mode, run_id=run_id)
+            run.status = "requested"
+            run.save()
+        else:
+            run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id,
+                                    initial_status="requested")
+        if run.task_id != task.id or run.mode != mode or run.status not in ("requested", "preparing"):
+            raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run
+        run.status = "preparing"
+        run.save()
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
         feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
@@ -400,27 +444,64 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
+        # Capture this before rendering the brief.  A task edit made after this
+        # point belongs to the next revise note, not this worker's contract.
+        criteria_snapshot = parse_criteria(task.body)
         if mode == "rebase":
             from ..brief import rebase_brief
 
             text = prompt_override or rebase_brief(
                 self.store, task, branch=branch, base=base,
-                hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []))
+                hunks=dict(st.get("rebase_hunks") or {}), files=list(st.get("rebase_files") or []),
+                artifacts=dict(st.get("rebase_artifacts") or {}))
         else:
-            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback, stack=stack, qa=qa, commits_ahead=commits_ahead)
+            inspection_error = ""
+            try:
+                changed = gitops.diff_names(wt, base) if wt is not None else []
+            except gitops.GitError as exc:
+                changed = []
+                inspection_error = str(exc)
+            plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
+                                   check_specs=self._pre_pr_specs(task),
+                                   visual_scope=task.extra.get("visual_scope"))
+            if inspection_error:
+                plan["inspection_error"] = inspection_error
+                plan["reasons"].append({"item": "bounded diff inspection",
+                                        "reason": "changed paths unavailable: " + inspection_error})
+            brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
+                                stack=stack, qa=qa, commits_ahead=commits_ahead,
+                                criteria_snapshot=criteria_snapshot, validation_plan=plan)
             text = prompt_override or brief.text
+        prompt_bytes = len(text.encode("utf-8", "replace"))
+        if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
+            raise ValueError(f"serialized prompt is {prompt_bytes:,} bytes; limit is {MAX_SERIALIZED_PROMPT_BYTES:,}")
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
+        run.completion_mode = completion_mode
+        run.external_pr = external_pr
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
+        # The task can be edited while this run is in flight. Preserve exactly what this
+        # worker was asked to meet, so review never silently moves its goalposts.
+        run.env_snapshot["criteria"] = criteria_snapshot
+        # This marker is a versioned part of the dispatched contract.  Reap uses it to
+        # distinguish a new worker that failed to return its required pre-flight from an
+        # older saved run, whose missing-result recovery must remain compatible.
+        run.env_snapshot["requires_preflight"] = mode in ("work", "revise", "resume")
         if session_id and st.get("session_host"):
             run.host = str(st["session_host"])
         runner.assign(run, self.active_runs())
         if wt is not None:
             run.worktree = str(wt)
             run.env_snapshot["worktree_baseline"] = gitops.status_lines(wt)
+            if mode != "rebase":
+                run.env_snapshot["validation_plan"] = plan
+        elif worktree_override is not None:
+            # Audit an operator-owned checkout without preparing, snapshotting or later
+            # treating it as a scheduler worktree.
+            run.worktree = str(worktree_override)
         if mode in ("work", "revise", "resume", "rebase"):
             fence = self._fence_repos(task)
             run.fence_paths = [str(p) for _, p in fence]
@@ -432,6 +513,11 @@ class DispatchMixin:
         except Exception as e:  # setup/start failed: mark this run failed so it stops
             if run.pid is None:
                 self._close_dispatch_failure(task, run, e)
+            elif run.status != "running":
+                # A runner may launch successfully and fail while persisting its final
+                # startup detail.  A recorded pid is authoritative confirmed-live work.
+                run.status = "running"
+                run.save()
             raise
         if not branch_override:
             task.branch = branch

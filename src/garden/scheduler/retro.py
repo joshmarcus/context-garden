@@ -15,6 +15,7 @@ from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
 from ..operator_spend import total_cost as operator_total_cost
+from ..operator_spend import total_turns as operator_total_turns
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -44,6 +45,7 @@ from ..runs import Run
 from .report import TickReport
 
 _RUN_FOOTER_RE = re.compile(r"_garden persona run (\S+)_\s*$")
+_SAFE_RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
 class RetroMixin:
@@ -67,15 +69,15 @@ class RetroMixin:
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
 
-    def _persona_revs(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
         (`reports`, from `persona_reports`) carries only prose, so this recovers the run id from
         its footer line and re-parses that run's `final.md` for the structured findings and the
-        persona's own sections (CG-187, CG-188). Every phase persona run is recorded under the
-        aux task id `_persona` (see `dispatch_aux`, which falls back to `f"_{kind}"` when
-        dispatched with no task), not a per-phase id, so that is where every run's `final.md`
-        lives regardless of which phase it reviewed."""
+        persona's own sections (CG-187, CG-188). Phase persona runs are recorded under their
+        phase-specific auxiliary task id, so reports from separate phases cannot collide."""
         out: dict[str, dict[str, Any]] = {}
+        runs_dir = self.runs.dir.resolve()
+        phase_run_dir = f"_{phase.product}-{phase.name}"
         for name, path in reports.items():
             try:
                 text = path.read_text()
@@ -84,7 +86,15 @@ class RetroMixin:
             m = _RUN_FOOTER_RE.search(text)
             if not m:
                 continue
-            final_path = self.runs.dir / "_persona" / m.group(1) / "final.md"
+            run_id = m.group(1)
+            if not _SAFE_RUN_ID_RE.fullmatch(run_id):
+                continue
+            final_path = self.runs.dir / phase_run_dir / run_id / "final.md"
+            try:
+                if not final_path.resolve().is_relative_to(runs_dir):
+                    continue
+            except OSError:
+                continue
             if not final_path.exists():
                 continue
             out[name] = parse_persona(final_path.read_text())
@@ -94,12 +104,12 @@ class RetroMixin:
         """One draft task per finding needs severity/area/suggestion (CG-187); pull them from
         the parsed verdicts."""
         return {name: [f for f in rev.get("findings") or [] if isinstance(f, dict)]
-                for name, rev in self._persona_revs(reports).items()}
+                for name, rev in self._persona_revs(phase, reports).items()}
 
-    def _persona_sections(self, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    def _persona_sections(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """Each persona's own declared sections (CG-188); only those that reported a `sections`
         object, so `persona_features` can lift structured features into the retro's list."""
-        return {name: rev["sections"] for name, rev in self._persona_revs(reports).items()
+        return {name: rev["sections"] for name, rev in self._persona_revs(phase, reports).items()
                 if isinstance(rev.get("sections"), dict)}
 
     def _retro_materials(self, phase: Phase, names: list[str]):
@@ -158,14 +168,24 @@ class RetroMixin:
                 "difficulty": difficulty, "model": model}
 
     def start_retro(self, phase: Phase, personas: list[str] | None = None, skip_personas: bool = False,
-                    next_phase: str = "") -> dict[str, Any]:
+                    next_phase: str = "", no_file: bool = False) -> dict[str, Any]:
         """Start a phase retro. Runs the missing persona reviews (unless `skip_personas`), then
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
+        self.require_maintenance_running()
         self_prod = self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
                                "open the retro PR; see docs/architecture.md")
+        # The persona briefs inline the newest walkthrough. Capture it before dispatching any
+        # persona so every review sees the same page set and empty/error states.
+        from datetime import date
+
+        from ..walkthrough import capture
+
+        walkthrough_dir = phase.path / "docs" / "walkthrough" / date.today().isoformat()
+        # Scheduler work must remain bounded and headless; the CLI can add PNGs explicitly.
+        capture(self.store, phase, walkthrough_dir, screenshots=False, log=self.log)
         names = personas or self.retro_default_personas()
         for n in names:
             valid_name(n)
@@ -177,7 +197,8 @@ class RetroMixin:
                                "personas that already have a report under docs/reviews/")
         entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                                  "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
-                                 "self_product": self_prod, "stage": "personas", "persona_runs": {}}
+                                 "self_product": self_prod, "stage": "personas", "persona_runs": {},
+                                 "no_file": bool(no_file)}
         missing = [] if skip_personas else [n for n in names if n not in have]
         self._retro_list().append(entry)
         if not missing:
@@ -192,6 +213,7 @@ class RetroMixin:
         return entry
 
     def _dispatch_retro_run(self, probe: Task, brief_text: str, worktree: Path, difficulty: str = "hard") -> Run:
+        self.require_maintenance_running()
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         run = self._new_local_run(probe.id, "retro", "retro")
@@ -488,13 +510,15 @@ class RetroMixin:
         for question in questions:
             question.update(retro_worktree=str(wt), retro_branch=branch, retro_base=base,
                             live_retro_path=str(phase.path / "docs" / "retro.md"))
-            self.state.get("_decisions")[question["decision_id"]].update(question)
+            decision = self.state.get("_decisions").get(question["decision_id"])
+            if isinstance(decision, dict):
+                decision.update(question)
         existing_titles = {t.title.strip().lower(): t.id for t in self.store.tasks().values()}
         # Blocking tasks go live into the current phase (it exists, they must dispatch and block
         # the close); features, followups and findings go into the worktree next phase (which may
         # not exist yet) to land with the retro PR. Blocking is filed first, as real files, so the
         # reservations below allocate past them.
-        blocking = self._file_retro_blocking(phase, rev, existing_titles)
+        blocking = [] if entry.get("no_file") else self._file_retro_blocking(phase, rev, existing_titles)
         # Each worktree draft's id is reserved durably before it is written, so no live task
         # creator (discovered work, another retro, the planner) hands out the same id between now
         # and the PR merging — a collision that would otherwise disable every page and tick. The
@@ -502,26 +526,34 @@ class RetroMixin:
         # abandoned earlier attempt's ids are reclaimed rather than leaked, and a merged draft's
         # id is pruned from the ledger once its file exists (store.prune_reservations, each tick).
         owner = f"retro:{phase.key}"
-        self.store.release_reservation(owner)
+        if not entry.get("no_file"):
+            self.store.release_reservation(owner)
 
         def alloc() -> str:
             return self.store.reserve_ids(phase.product, 1, owner=owner, reason=f"{phase.key} retro draft")[0]
 
-        persona_feats = persona_features(self._persona_sections(reports))
-        filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, alloc,
-                                          persona_feats=persona_feats)
-        persona_findings = self._persona_findings(phase, reports)
-        filed_findings = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
-                                                    existing_titles, alloc)
-        followups = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, alloc)
+        if entry.get("no_file"):
+            filed, filed_findings, followups = [], [], []
+        else:
+            persona_feats = persona_features(self._persona_sections(phase, reports))
+            filed = self._file_retro_features(phase, next_phase, rev, wt, rel_product, existing_titles, alloc,
+                                              persona_feats=persona_feats)
+            persona_findings = self._persona_findings(phase, reports)
+            filed_findings = self._file_retro_findings(phase, next_phase, persona_findings, wt, rel_product,
+                                                        existing_titles, alloc)
+            followups = self._file_retro_followups(phase, next_phase, rev, wt, rel_product, existing_titles, alloc)
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
-        operator_records = read_operator_records(operator_spend_path(self.store.root))
+        ledger_path = operator_spend_path(self.store.root, self.cfg, phase.path.parent)
+        operator_records = read_operator_records(ledger_path)
         operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
-        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"])
+        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
+                                  operator_turns=operator_total_turns(operator_records, since=summary["first_dispatch"]),
+                                  operator_ledger_path=ledger_path)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,
-                                               difficulty=run.difficulty, model=run.model, numbers=numbers))
+                                               difficulty=run.difficulty, model=run.model, numbers=numbers,
+                                               no_file=bool(entry.get("no_file"))))
         goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
@@ -565,6 +597,8 @@ class RetroMixin:
                 + f"- retro document: `{rel_phase.as_posix()}/docs/retro.md`\n"
                 f"- next-phase goals draft: `{rel_product.as_posix()}/{next_phase}/goals.md`\n\n"
                 f"{str(rev.get('summary', '')).strip()}\n")
+        if entry.get("no_file"):
+            body += "- task filing disabled (judge-only mode)\n"
         pr_url = ""
         slug = entry.get("slug") or ""
         if slug and self.github.available:
@@ -576,7 +610,8 @@ class RetroMixin:
                 rep.errors.append(f"retro {phase.key}: branch pushed but PR failed: {e}")
         self.events.emit("retro_done", "", phase=phase.key, pr=pr_url, branch=branch, items=n_items, cost_usd=run.cost_usd)
         rep.transitions.append(f"retro {phase.key} -> {pr_url or branch}")
-        self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url)
+        if not entry.get("no_file"):
+            self._apply_retro_verdict(phase, rev, followups, blocking, next_phase, pr_url)
 
     # ---- the verdict: close, close with follow-ups, or reopen --------------
     def _apply_retro_verdict(self, phase: Phase, rev: dict[str, Any], followups: list[dict[str, Any]],

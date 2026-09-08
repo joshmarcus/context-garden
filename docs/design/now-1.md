@@ -1,14 +1,13 @@
-# Now 1: the design
+# Now: the retained design
 
-The design for `/now1`, the first of the two Now pages (spec:
-`context-garden/phase-05/specs/now-page.md`, section "Two Nows"): the page a person leaves
+The design for `/now`: the page a person leaves
 open on a second screen and shows in a demo. It fixes the layout and hierarchy of the four
 regions, the visual system, the motion, every state, and the data each element reads, so the
 build task has one target and no design decision left to make. A static mock rendered from a
 real snapshot of this garden is at `docs/design/now-1.html`; how it was made is at the end.
 
-The page is called "Now 1" only in the nav, while Now 2 exists beside it; its heading is
-"Now". Nothing in the design depends on Now 2.
+The owner selected this design as the single Now page. The former `/now1` and `/now2`
+bookmarks redirect to `/now`; there is no second application implementation.
 
 ## In one sentence
 
@@ -22,8 +21,8 @@ period. Nothing on it is a card of equal weight; the order of prominence is the 
 Under the title, one sentence in the page's serif states what the page is for, filled from the
 same data as the regions, each clause a link to its region:
 
-> 6 runs in flight on 5 of 5 worker slots and 1 of 3 review slots. Next: Build Now 1 at
-> /now1 from the Fable design: live view of…, then A dispatch that fails before its process
+> 6 runs in flight on 5 of 5 worker slots and 1 of 3 review slots. Next: Build the Now
+> page from the retained design: live view of…, then A dispatch that fails before its process
 > starts closes…. phase-05: 13 of 49 merged. Last hour: 4 merged, $65.72.
 
 A visitor who reads nothing else has the four answers. What comes next is said by title,
@@ -42,9 +41,9 @@ At 1280 wide (a projector), inside the app's shell with the rail on the left:
 
 ```
 ┌ rail ┐ ┌──────────────────────────────────────────────────────────────────────┐
-│ Now 1│ │ Now                                                                  │
-│ Now 2│ │ 6 runs in flight … Next: <title>, then <title>. phase-05: … Last hour: … │
-│ Inbox│ │                                                                      │
+│ Inbox│ │ Now                                                                  │
+│ Now  │ │ 6 runs in flight … Next: <title>, then <title>. phase-05: … Last hour: … │
+│ …    │ │                                                                      │
 │ …    │ │ NOW                                    5 of 5 slots · 3 of 3 reviews │
 │      │ │ ┌ strip: glyph id title · mode · harness model                   ┐   │
 │      │ │ │        elapsed ▬▬▬▬▬▬│──  14 min · typically 47   $0.42 so far │   │
@@ -449,7 +448,7 @@ The page must feel alive without a reload and without noise. The rules:
 
 ## Live updates
 
-One server-sent-events endpoint, `/now1/stream`, off the tick's path and never holding the
+One server-sent-events endpoint, `/now/stream`, off the tick's path and never holding the
 hub lock. It carries three message kinds:
 
 - `event`: one events.jsonl line, tailed from the file (the log is the source of history,
@@ -480,7 +479,7 @@ What each element listens to:
 | the last period, the difficulty-by-model tables included | `run_finished`, `transition` to `done`, `review`, `automerged`, and the hand-step kinds listed above; the region is re-fetched as one partial, at most once a minute |
 
 The client is one small script: it opens the stream, keeps a map of run ids to strips, and
-for a list region fetches the server-rendered partial (`/partials/now1/<region>`) rather than
+for a list region fetches the server-rendered partial (`/partials/now/<region>`) rather than
 building markup in the browser, so the template stays the one source of markup. There is no
 polling loop; a stream that drops reconnects and the page re-fetches all four partials once.
 While it is down for longer than one tick interval the Now region head says `connection
@@ -491,7 +490,7 @@ and the words leave when the stream is back.
 
 | element | source | function |
 |---|---|---|
-| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active`, `check_runs_active`, `review_runs_active` for slots |
+| runs in flight | `.garden/runs/*/*/run.json` | `RunStore.active()` less manual runs (the scheduler's `active_runs` rule); `Scheduler.worker_runs_active` for worker slots, `check_runs_active` for visible checks, and `review_runs_active` for review slots |
 | a record without a process | the run record | `Run.pid is None` and no `stdout.json` |
 | the clock's start, the server's clock | run records, the request | `Run.started_at` as UTC ISO in `data-started`; `now_iso()` at render in `data-server-now`; `Run.elapsed_minutes` for the first reading |
 | typical | run records | `now1.typical_seconds(runs)`: median elapsed per (mode, harness or token-free, difficulty) over the last seven days, falling back to (mode, harness or token-free) all-time, at least three samples, counting only runs that reached an outcome (done, failed, timeout, blocked): a cancelled, superseded or env_error run says nothing about how long the work takes, and a mechanical rebase must not share a median with an agent one |
@@ -517,11 +516,10 @@ and the words leave when the stream is back.
 | throughput | events | `run_finished` per bucket via `costs.bucket_key` |
 
 All of it is assembled by `garden/now1.py` into one dict, `now1.snapshot(store, sched,
-runs, events, window)`, which the route renders and `garden now1` prints as text. `now1`
+runs, events, window)`, which the route renders and `garden now` prints as text. `now1`
 reads through the existing store, state, run store and event log only; it makes no network
-call and does not import the web package. It is a separate module from Now 2's so the two
-builds land in parallel without a conflict; `typical_seconds` and `goal_marks` are the
-candidates for a shared `now.py` when one page is retired.
+call and does not import the web package. The internal module name records the retained
+design's origin; it does not expose a numbered product surface.
 
 ## States
 
@@ -577,9 +575,9 @@ Named here so the build makes no design choice:
   renders a running card and asserts `data-started`, as `tests/test_now1_design.py` does
   for the mock.
 - `Hub.tick` publishing the `tick` message, and the stream endpoint with the run watcher.
-- The nav entries `Now 1` and `Now 2` first in `base.html`, the `page-now` body class with
-  its two rules (the narrow rail, the hidden Running now block), and `garden walkthrough`
-  capturing `/now1`.
+- The single `Now` nav entry immediately after Inbox in `base.html`, the `page-now` body
+  class with its two rules (the narrow rail, the hidden Running now block), and
+  `garden walkthrough` capturing `/now`.
 - The styles in the mock's second `<style>` block, lifted as they are.
 
 ## The mock
@@ -612,7 +610,7 @@ under `docs/design/captures/`:
 | capture | what it is | what it showed |
 |---|---|---|
 | `now1-1280-light.png`, `now1-1280-dark.png` | the page at 1280, last hour, both palettes | the hierarchy holds: strips, then Next beside the sheet, then the ledger; the dark palette keeps the plate on paper and the tables legible |
-| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe in a 500-wide window (the grey band on the right is the frame's margin), because a desktop Edge window will not open narrower than about 500 and quietly lays out wider than it captures; the recipe's plain 390 window cut the right edge of every line | one column, the rail folded to wordmark and nav, strips on four lines with the title first, the sheet's label under the plant, the figures two by two |
+| `now1-390-light.png`, `now1-390-dark.png` | the page at 390 in both palettes, through a 390-wide iframe in a 600-wide window (the extra outer width is the frame's margin); the embedded page measured `clientWidth=390` and `scrollWidth=390` | one column, the rail folded to wordmark and nav, strips on four lines with the title first, the sheet's label under the plant, the figures two by two |
 | `now1-1280-24h-light.png`, `now1-1280-24h-dark.png` | the 24-hour window, where the tables have rows with two or more solid cells | the green-to-red grounds, the ▲ ▽ marks and the faint `~n 1` cells read in both palettes; the seven-model rows overflowed the two-abreast layout, which is why more than five models now stack the tables full width |
 | `now1-390-tables-light.png`, `now1-390-tables-dark.png` | the ledger's tables at 390 (the same frame, scrolled to the tables) | each table scrolls sideways inside its box; the first four columns, the captions and the marks are readable without scrolling |
 | `now1-1280-gallery-light.png` | the states gallery | every strip state, the two empty sheets, the paused header, the seven waiting-reason lines and the no-runs ledger on one screen |
@@ -666,9 +664,8 @@ medium findings, and every finding changed the design. What each said, and what 
 
 Earlier lenses the design was read against, kept because they still hold:
 
-- *Two names for one page: "Now 1" in the nav, "Now" as the heading.* The heading is the
-  page's name; the nav says "Now 1" only while Now 2 exists beside it, per the spec's Two
-  Nows, and the follow-up that retires one removes the number.
+- *Two names for one page: "Now 1" in the nav, "Now" as the heading.* Resolved by the
+  owner's selection: both the navigation and heading now use the single name "Now".
 - *Do the strips' words match the other surfaces?* By construction: the mode words are the
   run record's `mode` as the Runs page prints it, the harness and model are the Runs page's
   `harness:model` column, the stamp words (held, paused, needs you, failed) are the Inbox's

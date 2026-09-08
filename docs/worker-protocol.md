@@ -6,8 +6,8 @@ attached to it. This page walks through everything that passes between them.
 
 ## The short version
 
-There is no socket, no RPC and no shared memory. The two sides share a filesystem and use
-exactly these channels:
+Local and SSH-driven workers use the filesystem channels below. A pull-based `remote`
+runner instead uses HTTPS and shares no filesystem with the scheduler.
 
 | direction | channel | carries |
 |---|---|---|
@@ -17,6 +17,52 @@ exactly these channels:
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
 | worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
+
+## Independent hosts
+
+With `runner: remote`, dispatch queues a run without launching a process. An independent
+host runs `garden worker --garden https://garden.example --host build-1` and authenticates
+with the bearer token named by `workers.hosts[].token_env`.
+
+- `POST /api/runs/claim` leases one compatible work, review, persona, or check run and
+  returns its brief, mode, branch/base, repository URL, setup timeout, turn cap, and
+  environment-variable allowlist.
+- `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
+  returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from
+  an expired claim cannot affect a run after it has been reclaimed, even on the same host.
+- The worker pushes its commit to the claim's lease-specific staging ref, never directly to
+  the task branch. `POST /api/runs/<id>/finish` records the exit code, final message, result,
+  usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
+  the task branch with a git lease, then uses its ordinary
+  result, PR, review, check, and accounting paths.
+
+Expired leases are claimable again and do not fail the task. Each reclaim gets a different
+staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can
+only update its abandoned ref; it cannot overwrite the task branch. Browser origin checking still
+applies; only a correctly token-authenticated runs API request bypasses it. Claim responses
+contain no token or environment value. Repository URL user-info, query strings, and fragments
+are stripped. Of SCP-style remotes, only the conventional `git@host:path` form is accepted;
+other user identities and malformed URL-like remotes fail closed. Configured harness arguments
+are not transported because they may contain inline credentials. The product's trusted
+`setup.command` and timeout are transported so a managed consumer can prepare every execution
+mode inside its admitted host slot; `setup.env` values are not transported. Git, setup, and
+harness credentials belong to the host. A standalone `garden worker` continues to use
+`--setup-command ...` for host-owned preparation. That explicit command also overrides
+product setup for checks. The configured command is sent verbatim to the authenticated host;
+keep credentials in host-local environment/configuration, never inline in that command.
+
+```yaml
+runner: remote
+workers:
+  lease_seconds: 120
+  hosts:
+    - name: build-1
+      token_env: GARDEN_BUILD_1_TOKEN
+      max_parallel: 2
+```
+
+`garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
+the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
@@ -44,6 +90,20 @@ automated review is dispatched, and their state is shown on the task page. Faile
 checks enter the normal mechanical changes-requested path with their diagnostic in the
 revise brief.
 
+When a task materially changes rendered behavior, its frontmatter declares that scope
+explicitly instead of relying on prose or the path it edits:
+
+```yaml
+visual_scope:
+  behavior: Tighter task-page spacing in the activity panel
+  pages: [task]
+```
+
+`behavior` names what a person will see. `pages` is optional when the changed page module
+identifies one affected page; shared styles without an explicit page list use representative
+consumers. A task without this declaration has no screenshot requirement merely because it
+edits a web module; its functional validation remains required.
+
 Before dispatching a task that explicitly requires captures, the scheduler performs one
 bounded Chromium launch in the product check's final scrubbed child environment. A failed
 probe holds only capture-dependent tasks and is cached for five minutes; unrelated work
@@ -64,6 +124,23 @@ Browser readiness is infrastructure evidence only. It is not application accepta
 current PR head must still produce every expected PNG and provide executed interaction and
 viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
 they are retained as diagnostics, never presented as successful captures.
+The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox/model state,
+or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
+against a disposable garden and report the command, performed actions, observed consequences,
+and artifact paths for the affected journey, an empty state, and a relevant failure/recovery
+state. This structured JSON interaction record names the reviewed SHA, repeats the performed
+actions and observations, and includes a chronological sequence of affected, empty, failure, and
+recovery events. Each event names its outcome; served HTTP failures have an unsuccessful response
+followed by a successful recovery response, while browser actions name the action, target, outcome,
+and observed result.
+It lists automated checks separately. A screenshot, generic file, or image-only artifact by
+itself is capture evidence, not interaction evidence; missing,
+failed, stale-head, live-garden, or partly unverified interaction evidence mechanically changes
+an approval to changes requested. Reviews of performance or scalability claims additionally
+record representative and larger histories, repeated cache-expiry intervals, executing bounded
+workloads, empirical latency samples, read/scan counts, and whether the load was controlled or
+used real model harnesses. Pure non-UI changes keep the ordinary proportionate code-and-test
+review.
 
 ## The sequence
 
@@ -99,16 +176,18 @@ Before anything is started, the scheduler settles every choice a worker might ot
 have had to make:
 
 - **Runner**: the task's `runner:`, else the product's, else the garden's (`local`,
-  `ssh` or `manual`).
+  `ssh`, `remote` or `manual`).
 - **Harness and model**: the task's `harness:`, else the product's, else the garden's;
   the model is the task's explicit `model:` or the harness's map from the task's
   `difficulty` (`easy`, `medium`, `hard`) to a model name.
 - **Branch and base**: the branch is `garden/<id>-<slug>` (kept across runs). The base is
   the product's base branch, or, when stacking applies, the branch of the one dependency
   whose PR is still open.
-- **Worktree**: `.garden/worktrees/<id>` is created from `origin/<base>` (fetched first)
-  or reused if it already exists on that branch. Remote runners skip this; the host makes
-  its own.
+- **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
+  (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
+  creates or reuses its host-side worktree as described in its variant below. The pull-based
+  remote runner creates or reuses its independent host-side clone and pushes through the
+  lease-specific staging ref described above.
 - **Paths in the brief** are relative to the worktree the worker starts in; the brief never names the garden's own checkout, so a worker has nowhere else to go.
 - **The brief**: `build_brief()` assembles the operating rules, the principles digest, the
   product overview, the phase goals, the task body and the reading list (inlined when
@@ -122,6 +201,17 @@ have had to make:
   with `run.json` holding the choices above.
 
 ### 2. Starting the process (the runner, in `start`)
+
+Before potentially slow worktree or setup work, dispatch writes the run identity as
+`requested`, then advances it to `preparing`. Only recording the detached worker PID
+advances it to `running`; terminal outcomes are presented as `finished` by the operation
+API. All three startup states reserve the task and capacity, so a timed-out retry cannot
+start another run. After restart, a `requested` or `preparing` record with no PID is not
+live. Ordinary launches are closed once and left retryable. Recovery API launches retain
+their client idempotency key and are resumed on the same record when that client replays
+after restart; the runner's setup lock/stamp makes an escaped setup child and the resumed
+server reconcile preparation once. The preparation server's PID is never exposed as the
+worker PID.
 
 The local runner writes the brief to `brief.md` in the run directory and starts a small
 supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
@@ -276,8 +366,9 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
                 "reason": "only for wont_do / no_change",
                 "pr_title": "...", "pr_body": "markdown", "pr_comment": "optional",
                 "verified": [{"criterion", "evidence"} | {"criterion", "not_done", "reason"}],
+                "pre_flight": [{"item", "status", "evidence"}],
                 "friction": ["short item"], "notes": "...",
-                "discovered": [{"kind", "title", "body", "difficulty", "blocking"}]}
+                "discovered": [{"kind", "title", "body", "file", "error", "difficulty", "blocking"}]}
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
@@ -297,6 +388,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   automated review is shown the same list to check each claim against the diff, and
   `garden metrics` reports criteria met on the first review per tier. A criterion with no
   evidence is a finding, not a pass.
+- `pre_flight` has one row for every item in the review rubric the brief gives the worker:
+  criterion evidence, lint, conflict markers, UI captures where relevant, PR description, and
+  criteria-by-name. Each row says `pass`, `not_applicable`, or `fail` and gives short evidence.
+  A missing row is mechanically sent back before a PR opens; conflict markers, Python syntax,
+  missing UI PNGs for a UI diff, and an empty initial description are token-free pre-PR failures.
 - `friction` is a list of short items (missing context, a confusing spec, tooling pain). The
   scheduler posts them as one marked PR comment and appends them to the phase's friction
   record; `garden friction` harvests them for the next planning round. Friction never goes in
@@ -315,8 +411,8 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   leaves a criterion undone or declines an improvement, because that changes the promised
   product outcome rather than merely reporting evidence about it.
 - `discovered`: things it noticed but did not do. Each item has a `kind` (default `task`):
-  a `task` becomes a draft task file, unless its title (normalised) or its body's file and
-  error already match an open task in this phase or the next one, in which case it is noted
+  a `task` becomes a draft task file, unless its title (normalised) or its structured `file`
+  and `error` fields already match an open task in this phase or the next one, in which case it is noted
   on that task ("also found by") instead of filing a near-duplicate, with a
   `discovered_duplicate` event; a `duplicate` (`of`/`duplicates`) or `cancel`
   (`task`) becomes a decision card for a human — Accept cancels the named task with the
@@ -441,6 +537,20 @@ does this from inside an interactive Claude Code session. `garden finish WID-003
 `finalize` as a detached run, so the push, checks, PR and review are identical. A manual
 run never times out and never occupies a scheduler slot.
 
+For work already implemented in an operator's checkout, claim its real identity instead:
+
+```bash
+garden take WID-003 --branch operator/fix --external-worktree /path/to/checkout
+# commit, push and open the PR from that checkout
+garden finish WID-003 --pr https://github.com/OWNER/REPO/pull/123 --summary '...'
+```
+
+The claim records the branch and PR rather than creating or inferring a garden worktree.
+An already merged PR completes only after its head is verified on the final base; an open
+PR retains its normal checks and review. If the external work cannot proceed before a PR,
+use `garden finish WID-003 --blocked --summary '...'`; it follows ordinary manual blocked
+handling. Git and fence protections remain in force in all three cases.
+
 **the planner.** `garden plan` (and the synchronous kickoff review it runs first) is the one
 model call that is not detached: it runs the harness synchronously with the planning prompt
 on stdin and imports the JSON array it prints as task files. Goals, specs and docs are
@@ -486,3 +596,41 @@ reach `ready`, whatever `plan.auto_approve` says.
   shows the same with the last run's log.
 - `garden brief WID-003 --stats` prints exactly what the next worker would receive and
   how big each section is.
+
+
+## Proportionate verification and evidence metadata
+
+Authors and reviewers receive the same verification guidance. Prove the requested
+outcome and explicit constraints; implementation details and equivalent meaningful
+checks may vary. Authors report source/command/result and artifact references in
+`verified[].evidence`; reviewers inspect existing evidence and report their conclusions.
+For served journeys, keep the actual actions and consequences in `interaction.events`
+and point to saved evidence where available. Check paths and facts before finishing.
+
+Missing metadata is an advisory, not another implementation round. A saved artifact
+may use a different schema or wording from the reviewer report. The controller no
+longer requires a JSON file whose states/events exactly equal the reviewer's paraphrase.
+The old author brief exposed per-criterion prose while the detailed interaction fields
+were only described to reviewers, and the review JSON example omitted the events it
+required. Both briefs now state the evidence contract and the example includes events.
+
+Actual failed checks, contradictory source identities, failed or materially unverified
+journeys, and explicit phase evidence holds still block. An unavailable reference is
+reported honestly; this policy does not manufacture a performed test or interaction.
+Final current-head checks and CI remain required. Reviewers should reuse inspectable
+passing evidence and identify the concrete defect or unmet outcome behind a send-back.
+
+
+### Remote model validation supervision
+
+Remote work, review and persona harnesses run through the same execution supervisor as
+local harnesses. The host creates a private per-claim metadata directory and a fresh owner
+identity; the supervisor supplies `GARDEN_VALIDATION_RUNNER` and `GARDEN_EXECUTION_RUN_DIR`.
+Workers can invoke `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` exactly as
+the brief says. Validation remains serialized per owner and uses the host's heavy-work
+admission and service limits. Controller paths and inherited execution ownership are not
+forwarded as a substitute. Nonzero command results propagate through the wrapper.
+
+This requires a versioned worker runtime update. Updating only the controller's briefs or
+exporting the interpreter variable on its own does not repair an already running worker.
+Stress/load experiments remain outside the ordinary suite and require separate opt-in.

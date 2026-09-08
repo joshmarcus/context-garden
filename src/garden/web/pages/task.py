@@ -16,7 +16,7 @@ from ...criteria import (
     worker_verified,
 )
 from ...events import EventLog
-from ...graph import blockers, dependents, deps_in_later_phase, effective_status
+from ...graph import blockers, dependency_after, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...review import review_to_markdown
 from ...runs import RunStore
@@ -36,7 +36,7 @@ def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
         names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
     except Exception:  # noqa: BLE001
         return []
-    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}"}
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}&product={task.product}"}
             for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
 
 
@@ -88,9 +88,22 @@ def register(app: FastAPI, site: Site) -> None:
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
         trial_view = _trial_view(st.get("trial"), runs)
 
+        decision_card = decision_card_view(t, st, rs)
+        if decision_card is None and request.query_params.get("walkthrough") == "decision":
+            decision_card = {
+                "type": "attention",
+                "title": "Example decision card",
+                "reason": "This representative card shows where a person acts when work needs a decision.",
+                "blurb": "This example is captured for the walkthrough; it does not describe a live task decision.",
+                "final": "",
+                "evidence": [],
+                "attention": {"actions": [], "discuss": ""},
+            }
+
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
+            dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
@@ -104,7 +117,7 @@ def register(app: FastAPI, site: Site) -> None:
             review_md=review_to_markdown(st["last_review"]) if st.get("last_review") else "",
             friction_text=friction_text,
             initial_stdout=initial_stdout,
-            decision_card=decision_card_view(t, st, rs),
+            decision_card=decision_card,
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,

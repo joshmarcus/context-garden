@@ -4,7 +4,7 @@
 {%- set w = snap.period -%}
 <div id="period-body">
   <div class="region-head"><span class="eyebrow">The last period</span><span class="lead">the ledger</span>
-    <span class="right filters" style="margin-bottom:0">{% for key, label in snap.windows %}<a href="/now1?window={{ key }}#period" class="{{ 'on' if key == snap.window }}">{{ label }}</a>{% endfor %}</span></div>
+    <span class="right filters" style="margin-bottom:0">{% for key, label in snap.windows %}<a href="/now?window={{ key }}#period" class="{{ 'on' if key == snap.window }}">{{ label }}</a>{% endfor %}</span></div>
   {#- The window is quiet only when nothing at all was recorded in it (`period` decides): a
       window with only the operator's ledger entries or a profile change still shows its
       figures, so the operator's spend and share are never hidden behind "no runs". -#}

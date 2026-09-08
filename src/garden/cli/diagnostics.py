@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,40 @@ import typer
 from rich.table import Table
 
 from .common import PANEL_BOARD, PANEL_DIAG, PANEL_LOOP, _scheduler, _store, app, console, err
+
+
+@app.command(rich_help_panel=PANEL_DIAG)
+def worker(
+    garden: str = typer.Option(..., "--garden", help="Garden web app URL."),
+    host: str = typer.Option(..., "--host", help="Configured worker host name."),
+    token_env: str = typer.Option("GARDEN_WORKER_TOKEN", help="Environment variable holding the bearer token."),
+    work_dir: Path = typer.Option(Path(".garden-worker"), help="Clone and scratch directory."),
+    harness: list[str] = typer.Option([], "--harness"),
+    tier: list[str] = typer.Option(["easy", "medium", "hard"], "--tier"),
+    capacity: int = typer.Option(1, min=1),
+    once: bool = typer.Option(False, "--once"),
+    doctor: bool = typer.Option(False, "--doctor"),
+    repo: str = typer.Option("", "--repo"),
+    setup_command: str = typer.Option("", "--setup-command", help="Host-owned product setup command."),
+):
+    """Claim and execute runs from a garden on this independent host."""
+    from ..remote_worker import doctor_worker, run_worker
+
+    token = os.environ.get(token_env, "")
+    offered = harness or [name for name in ("claude", "codex") if shutil.which(name)]
+    if doctor:
+        problems = doctor_worker(token, repo, offered)
+        if problems:
+            for problem in problems:
+                err.print(f"[red]{problem}[/red]")
+            raise typer.Exit(1)
+        console.print("[green]worker host ok: token present, git access and harnesses available[/green]")
+        return
+    if not token:
+        err.print(f"[red]{token_env} is not set[/red]")
+        raise typer.Exit(2)
+    run_worker(garden, host, token, work_dir.resolve(), offered, tier, capacity, once,
+               setup_command=setup_command)
 
 
 # --------------------------------------------------------------------------- runs / diagnostics
@@ -109,6 +144,7 @@ def doctor():
 
     from ..github import GitHub
     from ..graph import validate as _validate
+    from ..host_identity import tracked_connection_target_fields
     from ..runner import get_runner
     from ..runner.base import scrubbed_env
 
@@ -141,6 +177,12 @@ def doctor():
         except OSError as e:
             console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]")
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
+    connection_fields = tracked_connection_target_fields(store.root)
+    if connection_fields:
+        console.print("[red]host identities: tracked configuration contains connection targets at "
+                      + ", ".join(connection_fields)
+                      + " (use a logical alias here and put its target in ignored garden.local.yaml)[/red]")
+        fail("host identities")
     try:
         from playwright.sync_api import sync_playwright
 
@@ -179,18 +221,15 @@ def doctor():
             # a custom harness with no such subcommand is checked the same way.
             ok, detail = h.check_login(scrubbed_env(store.config.data))
             if ok:
-                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}", soft_wrap=True)
+                console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
                 fix = detail or f"run {h.bin}'s login command"
-                # soft_wrap: a long worktree path or login-failure detail must never be broken
-                # mid-word by the console width, or the fix hint on the wrapped line is unreadable
-                # (and no longer a reliable contiguous substring for anything scraping this output).
-                console.print(f"harness {hn}: [red]{found} [NOT LOGGED IN][/red]  models={h.cfg.get('models') or 'cli default'}"
-                              f"  (fix: {fix})", soft_wrap=True)
+                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  (fix: {fix})  "
+                              f"models={h.cfg.get('models') or 'cli default'}  {found}")
                 fail(f"harness {hn}")
         else:
             console.print(f"harness {hn}: [red]{h.bin!r} not on PATH[/red]  models={h.cfg.get('models') or 'cli default'}"
-                          f"  (fix: install {h.bin} and add it to PATH)", soft_wrap=True)
+                          f"  (fix: install {h.bin} and add it to PATH)")
             fail(f"harness {hn}")
     git_email = ""
     git_name = ""
@@ -224,7 +263,9 @@ def doctor():
     mp_live = (ctrl.get("overrides") or {}).get("max_parallel")
     mp = mp_live if mp_live is not None else store.config.get("max_parallel")
     review_parallel = store.config.get("review_parallel") or store.config.get("max_parallel")
-    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {store.config.get('review.max_rounds')} rounds)  max_parallel={mp}"
+    review_cap = store.config.review_max_rounds()
+    cap_label = str(review_cap) if review_cap is not None else "unlimited"
+    console.print(f"review pass: {'on' if store.config.get('review.enabled') else 'off'} (max {cap_label} rounds)  max_parallel={mp}"
                  + (f" (live override; garden.yaml: {store.config.get('max_parallel')})" if mp_live is not None else "")
                  + f"  review_parallel={review_parallel}")
     notify_cmd = store.config.get("notify.command")

@@ -45,6 +45,10 @@ class PollMixin:
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
+        # A configured CI analyser implies that a rollup is expected.  An absent rollup is
+        # an operator prerequisite, not an owner review decision; leave unconfigured CI
+        # alone so repositories that do not publish checks keep their normal review flow.
+        st["ci_missing"] = bool(self.cfg.get("checks.ci", []) and not pr.checks)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
@@ -53,7 +57,8 @@ class PollMixin:
                 self._mark_merged_into_parent(task, pr, rep)
                 return
             by_garden = bool(st.get("automerged"))
-            self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}")
+            self._transition(task, Status.DONE, f"PR merged{' by the garden' if by_garden else ''}: {task.pr}",
+                             base_merged=True)
             rep.transitions.append(f"{task.id} -> done")
             self._on_merged(task, rep, head_sha=pr.head_sha)
             self._cleanup(task)
@@ -133,7 +138,8 @@ class PollMixin:
         max_rev = int(self.cfg.get("max_revisions", 3))
         if int(st.get("revisions", 0)) >= max_rev:
             reason = f"{max_rev} revision rounds used"
-            self._set_needs_human(task, "revision_cap", reason)
+            self._set_needs_human(task, "revision_cap", reason,
+                                  delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))
             self.events.emit("needs_human", task.id, stop_kind="revision_cap", reason=reason)
             self._transition(task, Status.CHANGES_REQUESTED, f"{note}, but {max_rev} revision rounds already used; needs a human", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested (cap)")
@@ -254,11 +260,22 @@ class PollMixin:
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
         if hard_tier:
             min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
-        if (self._needs_second_review_round(task.product)
-                and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
+        self_product_default = (self.cfg.product_self(task.product)
+                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+        if self_product_default:
+            # The second opinion is supplied by a current-head persona or a human, so only
+            # one automated review round is required by the default self-product policy.
+            min_rounds = max(min_rounds, 1)
+        elif (self._needs_second_review_round(task.product)
+              and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
             min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
+        if (self_product_default and int(st.get("review_rounds", 0)) >= 1
+                and pr.review_decision != "APPROVED"
+                and not any(str(item.get("head") or "") == str(pr.head_sha or "")
+                            for item in st.get("persona_reviews", []) if isinstance(item, dict))):
+            return False, "the second review must be a persona review or human approval"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
         review_run = st.get("review_run")
@@ -417,7 +434,8 @@ class PollMixin:
             return
         st.pop("stack_parent", None)
         self._transition(child, Status.DONE,
-                         f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}")
+                         f"parent {parent.id} merged to {final_base}; this task's commits are now on {final_base}",
+                         base_merged=True)
         rep.transitions.append(f"{child.id} -> done")
         self._on_merged(child, rep, head_sha=target)
         self._cleanup(child)
@@ -517,7 +535,8 @@ class PollMixin:
             return
         self.events.emit("restacked", child.id, parent=parent_id, base=new_base, conflict=True, files=outcome.files)
         # A textual conflict: an easy-tier rebase agent resolves it, not a full revise run.
-        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, rep, f"parent {parent_id} merged")
+        self._dispatch_rebase_agent(child, new_base, outcome.files, outcome.hunks, outcome.artifacts,
+                                    rep, f"parent {parent_id} merged")
 
     def _reopen_if_base_deleted(self, task: Task, slug: str | None, pr: PRInfo, rep: TickReport) -> bool:
         """A PR GitHub closed because its base branch was deleted (a stack parent that merged with

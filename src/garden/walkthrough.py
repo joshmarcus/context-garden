@@ -15,7 +15,6 @@ HTML and text.
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -25,11 +24,13 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 
 from .browser import browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
+from .scheduler import State
 from .store import Store
 
 Log = Callable[[str], None]
@@ -89,28 +90,50 @@ def _task_and_run(store: Store, phase: Phase) -> tuple[str, str]:
     return task_id, run_id
 
 
+def _decision_task(store: Store, phase: Phase) -> str:
+    """Choose an open task whose page renders the same decision card a person must act on."""
+    state = State(store.config.garden_dir / "state.json")
+    fallback = ""
+    for task in phase.tasks:
+        if task.status.terminal:
+            continue
+        fallback = fallback or task.id
+        facts = state.get(task.id)
+        if (facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human")):
+            return task.id
+    return fallback
+
+
+def _has_live_decision(store: Store, phase: Phase, task_id: str) -> bool:
+    """Return whether a task already has decision state that the page can render."""
+    task = next((task for task in phase.tasks if task.id == task_id), None)
+    if task is None:
+        return False
+    facts = State(store.config.garden_dir / "state.json").get(task_id)
+    return bool(facts.get("decision") or facts.get("question") or facts.get("needs_human")
+                or task.status.value in ("failed", "waiting_human"))
+
+
 def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     """The pages to capture, in the order a person uses them, with the data this phase has."""
     key = phase.key
     specs = [
-        PageSpec("now2", "/now2", "Now 2",
-                 "Live work, dispatch and merge queues, phase progress and windowed outcomes.",
-                 "Can you see what is running and what that work adds up to?"),
-        PageSpec("now", "/", "Now",
+        PageSpec("inbox", "/", "Inbox",
                  "The first page: everything that needs the operator now.",
                  "Can a person immediately tell what needs action?"),
-        PageSpec("now1", "/now1", "Now 1",
+        PageSpec("now", "/now", "Now",
                  "What is running, what is next, where the phase is and the last period, live from the events stream.",
                  "Can you say what the garden is doing and what comes next within five seconds?"),
-        PageSpec("inbox", "/inbox", "Inbox",
-                 "What needs a decision and what is only a notice; the rail badge counts decisions only.",
-                 "Is the split between a decision and a notice clear, and is the empty state designed?"),
         PageSpec("board", "/board", "Board (columns)",
                  "The board in columns, one per status in the loop's order.",
                  "Do the columns read left to right as the loop moves work?"),
         PageSpec("board-list", "/board?view=list", "Board (list)",
                  "The board as a list grouped by status, with a per-state fact on each row.",
                  "Does each row say enough to act without opening the task?"),
+        PageSpec("backlog", "/board?view=backlog", "Backlog",
+                 "The backlog view of work that is not yet ready to run.",
+                 "Can you see what is waiting for approval or dependencies?"),
         PageSpec("trellis", "/trellis", "Trellis",
                  "The dependency and stacking graph with growth-stage glyphs and the hide-done control.",
                  "Can you follow what blocks what, and what the glyphs mean?"),
@@ -123,13 +146,26 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
         first = next((p for p in sorted(design_root.rglob("*")) if p.is_file()), None)
         if first:
             rel = first.relative_to(design_root).as_posix()
-            specs.append(PageSpec("design", f"/design/{rel}", "Design",
+            specs.append(PageSpec("design", f"/design/{rel}?product={phase.product}", "Design",
                                   "A product design document or mock served by the garden.",
                                   "Can a person open the design artifact directly from the app?"))
     task_id, run_id = _task_and_run(store, phase)
+    decision_id = _decision_task(store, phase)
+    if decision_id:
+        has_live_decision = _has_live_decision(store, phase, decision_id)
+        decision_url = f"/tasks/{decision_id}"
+        if not has_live_decision:
+            decision_url += "?walkthrough=decision"
+        specs.append(PageSpec("task-decision", decision_url, "Task decision",
+                              "A task page with an active worker decision or needs-you card.",
+                              "Does the page explain the decision and give the person a clear recovery action?"))
     if task_id:
         specs.append(PageSpec("task", f"/tasks/{task_id}", "Task",
                               "A task page: state, tier and priority controls, runs, the live log, the actions.",
+                              "Are the controls and the run history legible, and is it clear what happens next?"))
+    if decision_id and decision_id != task_id:
+        specs.append(PageSpec("task-ordinary", f"/tasks/{task_id}", "Task",
+                              "An ordinary task page: state, runs, the live log and actions.",
                               "Are the controls and the run history legible, and is it clear what happens next?"))
     if task_id and run_id:
         specs.append(PageSpec("run", f"/runs/{task_id}/{run_id}", "Run",
@@ -138,6 +174,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("runs", "/runs", "Runs",
                           "Every run with its cost and tokens.",
                           "Is cost easy to total and attribute?"))
+    specs.append(PageSpec("costs", "/costs", "Costs",
+                          "Spend and accepted-task outcomes by activity, tier, model and harness.",
+                          "Can you read what an accepted task costs and which route produced it?"))
     specs.append(PageSpec("herbarium", "/herbarium", "Herbarium",
                           "A plate per phase; closed phases live here.",
                           "Does a closed phase read as a finished, catalogued thing?"))
@@ -155,6 +194,9 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     specs.append(PageSpec("events", "/events", "Events",
                           "The event timeline.",
                           "Can you reconstruct what happened from the timeline alone?"))
+    specs.append(PageSpec("retro", f"/phases/{key}/retro", "Retro",
+                          "The phase retrospective, persona reports and filed follow-ups.",
+                          "Can you see what the phase learned and what it carries forward?"))
     return specs
 
 
@@ -166,11 +208,219 @@ def _design_root(store: Store, phase: Phase) -> Path:
 
 
 # --------------------------------------------------------------------------- html -> text
-_BLOCK = re.compile(r"</(p|div|li|tr|h[1-6]|section|header|footer|article|table|ul|ol|nav|form)>", re.I)
-_BR = re.compile(r"<br\s*/?>", re.I)
-_DROP = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
-_TAG = re.compile(r"<[^>]+>")
 _BLANKS = re.compile(r"\n[ \t]*\n[ \t]*\n+")
+
+
+class _TextParser(HTMLParser):
+    """Collect visible text nodes without allowing markup attributes into the capture."""
+
+    _BLOCK_TAGS = frozenset({"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+                             "section", "header", "footer", "article", "table", "ul", "ol",
+                             "nav", "form"})
+    _IGNORED_TAGS = frozenset({"script", "style"})
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                             "meta", "param", "source", "track", "wbr"})
+
+    def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden_selectors = hidden_selectors or []
+        self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
+        self._hidden_depth = 0
+        self._ignored_depth = 0
+        self._hidden_starts: list[bool] = []
+        self._ignored_starts: list[bool] = []
+
+    @staticmethod
+    def _matches_simple_selector(tag: str, attrs: list[tuple[str, str | None]], selector: str) -> bool:
+        """Match the small, explicit selector subset used by the app's stylesheets.
+
+        Returning false for syntax we do not understand is important here: this is a
+        conservative visibility filter, not a CSS engine.  A false negative leaves text
+        in a capture for review; a false positive can erase unrelated visible content.
+        """
+        values = {name.lower(): value or "" for name, value in attrs}
+        classes = set(values.get("class", "").split())
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
+        if tag_name:
+            if tag_name.group(0).lower() not in ("*", tag.lower()):
+                return False
+            index += len(tag_name.group(0))
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match or values.get("id") != match.group(0)[1:]:
+                    return False
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match or match.group(0)[1:] not in classes:
+                    return False
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return False
+                name = match.group(1).lower()
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                if name not in values or (expected is not None and values[name] != expected):
+                    return False
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return False
+                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
+                    return False
+                index = end + 1
+            else:
+                return False
+        return True
+
+    @staticmethod
+    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+        """Split selectors, retaining whether each component requires a direct parent."""
+        components: list[tuple[str, str | None]] = []
+        buffer: list[str] = []
+        brackets = parentheses = 0
+        pending: str | None = None
+        whitespace = False
+
+        def add_component() -> bool:
+            nonlocal pending, whitespace
+            component = "".join(buffer).strip()
+            if not component:
+                return True
+            relation = pending
+            if relation is None and components and whitespace:
+                relation = " "
+            components.append((component, relation))
+            buffer.clear()
+            pending = None
+            whitespace = False
+            return True
+
+        for char in selector:
+            if char == "[":
+                brackets += 1
+            elif char == "]":
+                brackets -= 1
+                if brackets < 0:
+                    return None
+            elif char == "(":
+                parentheses += 1
+            elif char == ")":
+                parentheses -= 1
+                if parentheses < 0:
+                    return None
+            if brackets or parentheses:
+                buffer.append(char)
+            elif char.isspace():
+                add_component()
+                whitespace = True
+            elif char == ">":
+                add_component()
+                if not components or pending == ">":
+                    return None
+                pending = ">"
+            else:
+                if not buffer and whitespace and components and pending is None:
+                    pending = " "
+                buffer.append(char)
+                whitespace = False
+        if brackets or parentheses or not add_component() or pending:
+            return None
+        return components
+
+    def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if not self._hidden_selectors:
+            return False
+        # A selector's final component identifies the element; checking its ancestors
+        # as well handles the descendant selectors used by the web templates without
+        # needing a CSS dependency in the walkthrough tool.
+        hidden: bool | None = None
+        winning_rule: tuple[bool, int] | None = None
+        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
+            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
+                continue
+            ancestors = self._elements
+            index = len(ancestors) - 1
+            matched = True
+            for component_index in range(len(components) - 1, 0, -1):
+                relation = components[component_index][1]
+                component = components[component_index - 1][0]
+                if relation == ">":
+                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                        matched = False
+                        break
+                else:
+                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                        index -= 1
+                    if index < 0:
+                        matched = False
+                        break
+                index -= 1
+            if matched:
+                rule_order = (important, rule_index)
+                if winning_rule is None or rule_order >= winning_rule:
+                    winning_rule = rule_order
+                    hidden = is_none
+        return bool(hidden)
+
+    def _is_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        values = {name.lower(): value for name, value in attrs}
+        if "hidden" in values:
+            return True
+        if str(values.get("aria-hidden") or "").strip().lower() == "true":
+            return True
+        style = str(values.get("style") or "")
+        return bool(re.search(r"(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)", style, re.I)) \
+            or self._stylesheet_hidden(tag, attrs)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        hidden = self._is_hidden(tag, attrs)
+        ignored = tag in self._IGNORED_TAGS
+        if tag in self._VOID_TAGS:
+            if tag == "br" and not self._hidden_depth and not self._ignored_depth:
+                self.parts.append("\n")
+            return
+        self._hidden_starts.append(hidden)
+        self._ignored_starts.append(ignored)
+        self._elements.append((tag, attrs))
+        if hidden:
+            self._hidden_depth += 1
+        if ignored:
+            self._ignored_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        hidden = self._hidden_starts.pop() if self._hidden_starts else False
+        ignored = self._ignored_starts.pop() if self._ignored_starts else False
+        if hidden:
+            self._hidden_depth -= 1
+        if ignored:
+            self._ignored_depth -= 1
+        if self._elements:
+            self._elements.pop()
+        if tag in self._BLOCK_TAGS and not self._hidden_depth and not self._ignored_depth:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden_depth and not self._ignored_depth:
+            self.parts.append(data)
 
 # The run page's stderr tab: raw process stderr can carry secrets a test suite printed,
 # tracebacks or other things that should never land in a committed docs/ page.
@@ -194,15 +444,26 @@ def _redact_home(text: str, home: str) -> str:
 
 
 def html_to_text(page: str) -> str:
-    """A plain-text rendering that reads roughly as the page does, top to bottom: scripts
-    and styles dropped, block ends turned into newlines, remaining tags stripped."""
-    page = _DROP.sub("", page)
-    page = _BR.sub("\n", page)
-    page = _BLOCK.sub("\n", page)
-    page = _TAG.sub("", page)
-    page = html.unescape(page)
-    page = "\n".join(line.rstrip() for line in page.splitlines())
-    return _BLANKS.sub("\n\n", page).strip() + "\n"
+    """Render visible element text, excluding hidden subtrees and all attributes."""
+    hidden_selectors: list[tuple[str, bool, bool]] = []
+    for css in re.findall(r"<style\b[^>]*>(.*?)</style\s*>", page, re.I | re.S):
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            display = re.search(r"display\s*:\s*([\w-]+)(\s*!important)?", declarations, re.I)
+            if display:
+                is_none = display.group(1).lower() == "none"
+                important = bool(display.group(2))
+                hidden_selectors.extend(
+                    (part.strip(), is_none, important)
+                    for part in selectors.split(",")
+                    if part.strip()
+                )
+    parser = _TextParser(hidden_selectors)
+    parser.feed(page)
+    parser.close()
+    text = "".join(parser.parts)
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    return _BLANKS.sub("\n\n", text).strip() + "\n"
 
 
 # --------------------------------------------------------------------------- capture
@@ -231,6 +492,53 @@ def _fetch(store: Store, specs: list[PageSpec], base_url: str) -> dict[str, tupl
 
 VIEWPORTS = (1280, 390)
 COLOR_SCHEMES = ("light", "dark")
+NARROW_OUTER_WIDTH = 600
+NARROW_FRAME_HEIGHT = 5400
+
+
+class NarrowViewportError(RuntimeError):
+    """The embedded page loaded, but did not fit the required narrow viewport."""
+
+    def __init__(self, measurements: dict[str, int]) -> None:
+        self.measurements = measurements
+        super().__init__(
+            "narrow frame measured "
+            f"clientWidth {measurements['clientWidth']}, "
+            f"scrollWidth {measurements['scrollWidth']}"
+        )
+
+
+def _narrow_frame(page: object, url: str) -> object:
+    """Load a page in a 390px frame so Edge's outer-window floor cannot widen it."""
+    import html
+
+    frame_url = html.escape(url, quote=True)
+    wrapper = ("<html><body style=\"margin:0\">"
+               f"<iframe src=\"{frame_url}\" style=\"width:390px;height:{NARROW_FRAME_HEIGHT}px;border:0\"></iframe>"
+               "</body></html>")
+    page.set_content(wrapper, wait_until="networkidle", timeout=30000)
+    iframe = page.locator("iframe")
+    handle = getattr(iframe, "element_handle", lambda: None)()
+    frame = handle.content_frame() if handle is not None else page.frame(url=url)
+    if frame is None:
+        raise RuntimeError(f"narrow frame did not load {url}")
+    wait_for_load_state = getattr(frame, "wait_for_load_state", None)
+    if wait_for_load_state is not None:
+        wait_for_load_state("domcontentloaded", timeout=30000)
+    measured = frame.evaluate(
+        """() => {
+            const width = document.documentElement.clientWidth;
+            const scrollWidth = document.documentElement.scrollWidth;
+            return {clientWidth: width, scrollWidth, scrollHeight: document.documentElement.scrollHeight};
+        }"""
+    )
+    iframe.evaluate(
+        "(iframe, height) => { iframe.style.height = `${Math.max(5400, height)}px`; }",
+        measured["scrollHeight"],
+    )
+    if measured["clientWidth"] != 390 or measured["scrollWidth"] != 390:
+        raise NarrowViewportError(measured)
+    return {"clientWidth": measured["clientWidth"], "scrollWidth": measured["scrollWidth"]}
 
 
 def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -> tuple[set[str], dict[str, object] | None, list[dict[str, object]]]:
@@ -249,13 +557,50 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
                 complete = True
                 for width in VIEWPORTS:
                     for scheme in COLOR_SCHEMES:
-                        page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
+                        narrow = width == 390
+                        page = browser.new_page(
+                            viewport={"width": NARROW_OUTER_WIDTH if narrow else width,
+                                      "height": 900},
+                            color_scheme=scheme,
+                        )
                         try:
-                            page.goto(base_url.rstrip("/") + s.url, wait_until="networkidle", timeout=30000)
-                            viewport = page.evaluate("() => ({clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth})")
-                            page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
-                            evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
-                                             "color_scheme": scheme, **viewport})
+                            url = base_url.rstrip("/") + s.url
+                            if narrow:
+                                measurements: dict[str, int] | None = None
+                                try:
+                                    measurements = _narrow_frame(page, url)
+                                    log(f"  narrow frame {s.slug} {scheme}: "
+                                        f"clientWidth={measurements['clientWidth']} "
+                                        f"scrollWidth={measurements['scrollWidth']}")
+                                except NarrowViewportError as e:
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                except Exception as e:  # noqa: BLE001 - retain a load diagnostic
+                                    complete = False
+                                    log(f"  narrow frame {s.slug} at {scheme} failed: {e}")
+                                finally:
+                                    # Keep a diagnostic image when the page itself overflows;
+                                    # the missing/invalid measurement must still fail the check.
+                                    try:
+                                        page.locator("iframe").screenshot(
+                                            path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"),
+                                        )
+                                    except Exception as e:  # noqa: BLE001 - outer handler logs it
+                                        log(f"  diagnostic screenshot {s.slug} at {width}/{scheme} failed: {e}")
+                                if measurements is not None:
+                                    evidence.append({"page": s.slug, "action": "frame", "viewport": width,
+                                                     "color_scheme": scheme, **measurements})
+                            else:
+                                response = page.goto(url, wait_until="networkidle", timeout=30000)
+                                if response is None or not 200 <= response.status < 300:
+                                    raise RuntimeError(f"HTTP {response.status if response else 'no response'}")
+                                viewport = page.evaluate("""() => {
+                                    if (!document.body || !document.body.innerHTML.trim()) throw new Error('empty document');
+                                    return {clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth};
+                                }""")
+                                page.screenshot(path=str(out_dir / f"{s.slug}-{width}-{scheme}.png"), full_page=True)
+                                evidence.append({"page": s.slug, "action": "navigate", "viewport": width,
+                                                 "color_scheme": scheme, **viewport})
                         except Exception as e:  # noqa: BLE001 - one bad page should not sink the rest
                             complete = False
                             log(f"  screenshot {s.slug} at {width}/{scheme} failed: {e}")
@@ -332,9 +677,11 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
 
 
 def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
-            base_url: str = "", log: Log | None = None, include_stderr: bool = False) -> WalkthroughResult:
+            base_url: str = "", log: Log | None = None, include_stderr: bool = False,
+            pages: list[str] | None = None) -> WalkthroughResult:
     """Write `<slug>.html`, `<slug>.txt` (and `<slug>.png` when a browser is available) for
-    every page, plus `index.md`, under out_dir. Returns what was captured.
+    each selected page (or every page when ``pages`` is omitted), plus `index.md`, under out_dir.
+    Returns what was captured.
 
     Absolute home-directory paths are redacted to `~` in every page, and the run page's
     stderr tab is omitted unless `include_stderr` is set — this capture is committed to the
@@ -343,6 +690,10 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
     log = log or (lambda _m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     specs = pages_for(store, phase)
+    # ``None`` is the milestone-walkthrough default.  An explicit empty selection is
+    # a scoped PR check with no rendered pages, not an accidental request for all of them.
+    if pages is not None and "*" not in pages:
+        specs = [spec for spec in specs if spec.slug in pages]
     fetched = _fetch(store, specs, base_url)
 
     shot: set[str] = set()
@@ -377,7 +728,10 @@ def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
             page = _scrub_stderr(page)
         (out_dir / f"{s.slug}.html").write_text(page)
         (out_dir / f"{s.slug}.txt").write_text(html_to_text(page))
-        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot))
+        note = ""
+        if not (200 <= status < 300) or not page.strip():
+            note = "empty or unsuccessful document"
+        result.pages.append(PageResult(spec=s, status=status, html_bytes=len(page.encode()), shot=s.slug in shot, note=note))
         log(f"  {s.slug:<14} {s.url}  ({status}, {len(page.encode()) // 1024} KB){'  +png' if s.slug in shot else ''}")
 
     (out_dir / "index.md").write_text(_index_md(phase, result))
@@ -426,14 +780,38 @@ def _index_md(phase: Phase, result: WalkthroughResult) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
+def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[str, object]:
     """Render the stable QA garden using the code imported from the proposed worktree."""
     from .qa.sandbox import make_garden
+    from .scheduler import State
 
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
         store = Store(garden_root)
-        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True)
+        # Keep the visual fixture representative even before a worker has run: the
+        # walkthrough must always give personas a real decision card to inspect.
+        state = State(store.config.garden_dir / "state.json")
+        state.get("DM-001")["decision"] = {
+            "kind": "changed_outcome",
+            "reason": "The worker needs a product decision before it can continue.",
+        }
+        state.save()
+        logs: list[str] = []
+        result = capture(store, store.phase("demo", "p1"), out_dir, screenshots=True,
+                         log=logs.append, pages=pages)
+    decision = next((page for page in result.pages if page.spec.slug == "task-decision"), None)
+    decision_html = (out_dir / "task-decision.html").read_text() if decision else ""
+    if decision is None or "class=\"panel decision-card\"" not in decision_html:
+        return {"status": "fail", "summary": "decision-card walkthrough page is missing",
+                "failure_kind": "product", "details": "task-decision.html must contain .decision-card",
+                "captures": [], "interaction_evidence": [], "pages": [p.spec.slug for p in result.pages]}
+    expected = {
+        f"{page.spec.slug}-{width}-{scheme}.png"
+        for page in result.pages
+        for width in VIEWPORTS
+        for scheme in COLOR_SCHEMES
+    }
+    missing = sorted(name for name in expected if not (out_dir / name).is_file())
     captures = [str(p) for p in sorted(out_dir.iterdir())
                 if p.suffix in {".png", ".html", ".txt", ".md"}]
     expected = len(result.pages) * len(VIEWPORTS) * len(COLOR_SCHEMES)
@@ -441,16 +819,19 @@ def _seeded_ui_capture(out_dir: Path) -> dict[str, object]:
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
-    if not complete_pngs:
+    details = "\n".join(filter(None, [result.browser_note, *logs]))
+    if not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
+        if missing:
+            details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and evidence_complete
+    passed = complete_pngs and not missing and evidence_complete
     return {"status": "pass" if passed else "fail", "summary": summary,
             "failure_kind": "infrastructure" if result.browser_failure_kind else
                             ("product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
-            "details": result.browser_note or ("missing screenshot files or interaction evidence" if not passed else ""),
+            "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
             "pages": [p.spec.slug for p in result.pages]}
 
@@ -470,7 +851,8 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     env = dict(os.environ)
     env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.run(
-        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)],
+        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
+         json.dumps(spec.get("pages") or [])],
         cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
     )
     try:
@@ -485,8 +867,11 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
 
 
 def _main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--ui-check":
-        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]))))
+    # Newer controllers supply optional page selection. This capture engine safely renders
+    # all pages when no selection is supplied, preserving compatibility across pinned releases.
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--ui-check":
+        pages = json.loads(sys.argv[3]) if len(sys.argv) == 4 else []
+        print(json.dumps(_seeded_ui_capture(Path(sys.argv[2]), pages)))
         return 0
     return 2
 
