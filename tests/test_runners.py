@@ -468,54 +468,6 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
         assert run.read_exit_code() == 0
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires Linux subreaper semantics")
-def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
-    """Short-lived orphaned grandchildren do not remain zombies until leader exit."""
-    from garden.harness import Harness
-    from garden.runs import Run
-
-    orphan = tmp_path / "orphan.py"
-    orphan.write_text(
-        "import os, pathlib\n"
-        "pid_file = pathlib.Path(os.environ['ORPHAN_PIDS'])\n"
-        "for _ in range(3):\n"
-        " pid = os.fork()\n"
-        " if pid == 0:\n"
-        "  with pid_file.open('a') as out: out.write(f'{os.getpid()}\\n')\n"
-        "  os._exit(0)\n"
-        "os._exit(0)\n"
-    )
-    leader = tmp_path / "leader.py"
-    leader.write_text(
-        "import os, pathlib, subprocess, sys, time\n"
-        "subprocess.run([sys.executable, os.environ['ORPHAN_SCRIPT']], check=True)\n"
-        "release = pathlib.Path(os.environ['LEADER_RELEASE'])\n"
-        "while not release.exists(): time.sleep(0.01)\n"
-    )
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    brief = run_dir / "brief.md"
-    brief.write_text("")
-    run = Run(task_id="T-1", run_id="reap", dir=str(run_dir), runner="local")
-    runner = LocalRunner({"timeout_minutes": 1}, Harness("orphan", {"command": [sys.executable, str(leader)]}))
-    pids = tmp_path / "orphan-pids"
-    release = tmp_path / "release"
-    runner.launch(run, tmp_path, brief, {**os.environ, "ORPHAN_SCRIPT": str(orphan),
-                                        "ORPHAN_PIDS": str(pids), "LEADER_RELEASE": str(release)})
-
-    deadline = time.monotonic() + 3
-    while (not pids.exists() or len(pids.read_text().splitlines()) < 3) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    orphan_pids = pids.read_text().splitlines()
-    assert len(orphan_pids) == 3
-    while any(Path(f"/proc/{pid}").exists() for pid in orphan_pids) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert not any(Path(f"/proc/{pid}").exists() for pid in orphan_pids)
-    assert not run.process_finished()  # the primary leader and its run lease remain live
-
-    release.touch()
-    os.waitpid(run.pid, 0)
-    assert run.read_exit_code() == 0
 
 
 def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
