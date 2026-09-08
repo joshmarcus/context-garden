@@ -1,0 +1,345 @@
+{
+  "producer": "garden.scheduler.interaction-replay/v1",
+  "head": "583398fe6a90d7a0f1285dba9dd35670ed456412",
+  "nonce": "cg406-583398f",
+  "started_at": "2026-09-08T14:58:00.417089+00:00",
+  "finished_at": "2026-09-08T14:58:03.240608+00:00",
+  "status": "pass",
+  "environment": "disposable",
+  "serve_command": "uvicorn.Server(create_app(Store(<disposable garden>)), host='127.0.0.1', port=<ephemeral>)",
+  "flows": [
+    {
+      "name": "operator commit survives reap",
+      "ok": true,
+      "requests": [
+        {
+          "at": 1788879481.390655,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tasks/DM-001/dispatch",
+          "status_code": 303,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.414628,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.4641504,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.574868,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.7910945,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.8968132,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        }
+      ]
+    },
+    {
+      "name": "transcript redirect fails then retry recovers",
+      "ok": true,
+      "requests": [
+        {
+          "at": 1788879482.0664463,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tasks/DM-002/dispatch",
+          "status_code": 303,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.0729976,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.113324,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.2195907,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.34805,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.4541461,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.4601605,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tasks/DM-002/not-an-action",
+          "status_code": 400,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.473763,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tasks/DM-002/retry",
+          "status_code": 303,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.6014853,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tasks/DM-002/dispatch",
+          "status_code": 303,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.6076915,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.661562,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.7676558,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.9230917,
+          "kind": "http_request",
+          "method": "POST",
+          "url": "http://127.0.0.1:43855/tick",
+          "status_code": 303,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879483.0295181,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        }
+      ]
+    },
+    {
+      "name": "clean reaped state",
+      "ok": true,
+      "requests": [
+        {
+          "at": 1788879481.414628,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.574868,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        },
+        {
+          "at": 1788879481.8968132,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "affected"
+        },
+        {
+          "at": 1788879482.0729976,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.2195907,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.4541461,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "failure"
+        },
+        {
+          "at": 1788879482.6076915,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879482.7676558,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879483.0295181,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "recovery"
+        },
+        {
+          "at": 1788879483.0395443,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "empty"
+        },
+        {
+          "at": 1788879483.0464222,
+          "kind": "http_request",
+          "method": "GET",
+          "url": "http://127.0.0.1:43855/api/tasks",
+          "status_code": 200,
+          "state": "empty"
+        }
+      ]
+    }
+  ],
+  "states": {
+    "affected": {
+      "status": "pass",
+      "action": "GET /api/tasks after operator commit and reap",
+      "observed": "operator spec commit survived and DM-001 reaped to review"
+    },
+    "failure": {
+      "status": "pass",
+      "action": "POST /tasks/DM-002/not-an-action after fenced reap",
+      "observed": "DM-002 was failed by its transcript redirect and rejected an invalid action"
+    },
+    "recovery": {
+      "status": "pass",
+      "action": "POST /tasks/DM-002/retry then reap",
+      "observed": "clean retry reaped DM-002 to review"
+    },
+    "empty": {
+      "status": "pass",
+      "action": "GET /api/tasks",
+      "observed": "no active or fenced task remains after both reaps"
+    }
+  },
+  "events": [
+    {
+      "at": 1788879481.8968132,
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:43855/api/tasks",
+      "status_code": 200,
+      "state": "affected",
+      "outcome": "success",
+      "observed": "operator spec commit survived and DM-001 reaped to review"
+    },
+    {
+      "at": 1788879482.4601605,
+      "kind": "http_request",
+      "method": "POST",
+      "url": "http://127.0.0.1:43855/tasks/DM-002/not-an-action",
+      "status_code": 400,
+      "state": "failure",
+      "outcome": "failure",
+      "observed": "DM-002 was failed by its transcript redirect and rejected an invalid action"
+    },
+    {
+      "at": 1788879482.9230917,
+      "kind": "http_request",
+      "method": "POST",
+      "url": "http://127.0.0.1:43855/tick",
+      "status_code": 303,
+      "state": "recovery",
+      "outcome": "success",
+      "observed": "clean retry reaped DM-002 to review"
+    },
+    {
+      "at": 1788879483.0464222,
+      "kind": "http_request",
+      "method": "GET",
+      "url": "http://127.0.0.1:43855/api/tasks",
+      "status_code": 200,
+      "state": "empty",
+      "outcome": "empty",
+      "observed": "no active or fenced task remains after both reaps"
+    }
+  ],
+  "artifacts": [
+    "docs/validation/cg406/replay/interaction-manifest.json"
+  ]
+}
