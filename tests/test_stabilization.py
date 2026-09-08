@@ -245,6 +245,7 @@ def test_distinct_same_second_owner_events_are_each_retained_and_reset_once(gard
 
 def test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery(garden):
     import hashlib
+
     import httpx
 
     phase = protected_phase(garden)
