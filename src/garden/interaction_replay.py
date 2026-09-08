@@ -147,6 +147,7 @@ def main() -> int:
     ]
     manifest = {
         "producer": "garden.scheduler.interaction-replay/v1",
+        "coverage": "generic_smoke",
         "head": args.head,
         "nonce": args.nonce,
         "started_at": started,
