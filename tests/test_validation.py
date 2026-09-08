@@ -10,6 +10,7 @@ from garden.validation import (
     POLICY_SOURCE_SHA,
     STRESS_NODES,
     ValidationPolicyError,
+    enforce_validation_policy_env,
     resolve_validation,
 )
 
@@ -100,3 +101,18 @@ def test_shell_hidden_pytest_is_blocked_before_execution(tmp_path):
 
     with pytest.raises(ValidationPolicyError, match="invoke pytest directly"):
         resolve_validation(["sh", "-c", "pytest -q"], repo)
+
+
+def test_worker_environment_enforces_policy_for_plain_pytest(tmp_path):
+    repo = _checkout(tmp_path, "old")
+    env = {"PYTEST_ADDOPTS": "-ra"}
+    enforce_validation_policy_env(env)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"], cwd=repo, env=env,
+        capture_output=True, text=True, timeout=15,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout and "3 deselected" in result.stdout
+    assert env["PYTEST_ADDOPTS"].startswith("-ra ")
