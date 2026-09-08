@@ -70,6 +70,16 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     app.add_middleware(OriginCheck, allowed_origins=allowed, worker_tokens=tokens)
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
+
+    @app.middleware("http")
+    async def request_store_snapshot(request: Request, call_next: Any) -> Response:
+        """Give all reads used to render one response one fresh Store snapshot."""
+        token = hub.begin_request()
+        try:
+            return await call_next(request)
+        finally:
+            hub.end_request(token)
+
     templates = Jinja2Templates(directory=str(TEMPLATES))
     # A missing context key reads as an error, not a silent falsy: the one incident this
     # caught (CG-185) was a `tojson` site fed an Undefined because its page forgot to pass
