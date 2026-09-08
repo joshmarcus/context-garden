@@ -67,7 +67,11 @@ def test_private_runner_adapter_reports_missing_import_without_config_load_impor
     from garden.config import Config
     from garden.runner import RunnerError, get_runner
 
-    config = Config(root=tmp_path, data={"runner_adapters": {"synthetic": {"path": "missing_adapter.Runner"}}})
+    # An import can have arbitrary effects, so simply inspecting a garden must not resolve it.
+    (tmp_path / "garden.yaml").write_text(
+        "runner_adapters:\n  synthetic:\n    path: missing_adapter.Runner\n"
+    )
+    config = Config.load(tmp_path)
     assert config.runner_adapter("synthetic") == {"path": "missing_adapter.Runner"}
     with pytest.raises(RunnerError, match="could not import 'missing_adapter'"):
         get_runner("synthetic", {"_runner_adapters": config.get("runner_adapters")})
