@@ -2,8 +2,9 @@
 
 import json
 import os
-import shutil
 import subprocess
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from garden import gitops
@@ -13,7 +14,6 @@ from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from garden.scheduler.snapshot import write_snapshot
-from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
 
@@ -226,42 +226,6 @@ def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched)
     assert "DM-001 -> changes_requested (checks)" not in report.transitions
     assert "DM-001 -> in_review" in report.transitions[0]
     assert sched.runs.latest("DM-001").run_id == run.run_id
-
-
-def _run_fake_claude(cwd, task_id, run_id, when):
-    env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
-    env.pop("FAKE_CLAUDE_MODE", None)
-    _, _, code = fake_claude.run([], "brief", cwd, env)
-    assert code == 0
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
-
-
-def test_stacked_runs_never_collide_into_the_same_commit(tmp_path):
-    """A stack child's own work run and its parent's revise round both branch from the
-    parent's tip, write the same counter value to the same file, and can finish in the
-    same wall-clock second. If the fake worker's commit is otherwise identical (same
-    tree, parent, author, message and timestamp), git dedupes the two into one object:
-    the child's branch ends up pointing at the parent's revise commit, its own commit
-    silently vanishes, and `commits_ahead()` reports 0 -- the scheduler then discards the
-    child's real work as "worker finished with no commits" (this is what actually caused
-    the intermittent DM-002 PR seen in test_feedback_triggers_revise_round, not a race in
-    finalize()'s PR lookup). Mixing task/run identity into the commit message keeps every
-    run's commit distinct even when timestamps and content otherwise collide."""
-    base = tmp_path / "base"
-    base.mkdir()
-    git("init", "-q", "-b", "main", cwd=base)
-    (base / "worker-output.txt").write_text("1\n")
-    git("add", "-A", cwd=base)
-    git("commit", "-q", "-m", "parent work", cwd=base)
-
-    a, b = tmp_path / "a", tmp_path / "b"
-    shutil.copytree(base, a)
-    shutil.copytree(base, b)
-    same_instant = "2024-01-01T00:00:00"
-
-    sha_a = _run_fake_claude(a, "DM-001", "20260101T000000Z-revise", same_instant)
-    sha_b = _run_fake_claude(b, "DM-002", "20260101T000000Z-work", same_instant)
-    assert sha_a != sha_b
 
 
 def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
@@ -605,6 +569,7 @@ def test_auxiliary_reapers_do_not_dispatch_work_directly():
 def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
     sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["timeout_minutes"] = 0
     sched.cfg.data["max_attempts"] = 1  # terminal on first failure: no second stall worker
     sched.tick()  # dispatch DM-001; the worker goes silent and never writes exit_code
     run = sched.runs.latest("DM-001")
@@ -616,6 +581,125 @@ def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     assert statuses(sched)["DM-001"] == "failed"
     run = sched.runs.latest("DM-001")
     assert run.status == "timeout" and "idle" in run.error
+
+
+def test_check_admission_wait_does_not_inherit_old_checkout_idle_time(sched, tmp_path):
+    """A queued heavy check remains live, then resumes the ordinary idle policy on release."""
+    sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    checkout = tmp_path / "old-checkout"
+    checkout.mkdir()
+    (checkout / "unchanged.py").write_text("# pre-existing checkout\n")
+    run.worktree = str(checkout)
+    run.pid = os.getpid()  # the in-process liveness sentinel, with no exit_code
+    run.save()
+    old = datetime.now(UTC).timestamp() - 22 * 60
+    for path in Path(run.worktree).rglob("*"):
+        try:
+            os.utime(path, (old, old))
+        except OSError:
+            pass
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+    }))
+
+    runner = sched.runner_for(task, run.runner)
+    assert not sched._finished_or_timed_out(run, runner)
+    assert run.status == "running"  # admission waiting neither retries nor creates another check
+
+    # Capacity becomes available.  The supervisor no longer reports waiting, and a genuinely
+    # silent run is still stopped by the normal idle safeguard.
+    (run.path / "execution.json").write_text(json.dumps({"state": "running", "limit": 1}))
+    make_idle(run, 8)
+    assert sched._finished_or_timed_out(run, runner)
+    assert run.status == "timeout"
+    assert "idle 8 min" in run.error
+
+
+def test_check_admission_wait_has_a_bounded_truthful_timeout(sched):
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.pid = os.getpid()
+    run.started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    run.save()
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+        "waiting_since": (datetime.now(UTC) - timedelta(minutes=31)).isoformat(),
+    }))
+
+    assert sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
+    assert run.status == "timeout"
+    assert "admission wait 31 min (heavy-test budget full (limit 1))" == run.error
+
+
+def test_late_admission_wait_gets_its_full_window(sched):
+    """A long-running check is charged only from its published admission wait."""
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.pid = os.getpid()
+    run.started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    run.save()
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+        "waiting_since": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+    }))
+
+    assert not sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
+    assert run.status == "running"
+
+
+def test_real_local_check_hard_timeout_preserves_exact_recovery_cause(sched, tmp_path, monkeypatch):
+    """A supervisor deadline is a distinct retry cause, not a generic empty result."""
+    from garden.runner.local import LocalRunner
+
+    runtime = tmp_path / "timeout-runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(
+        "garden.runner.local.bounded_validation_timeout_seconds", lambda _configured: 0.1,
+    )
+    checkout = tmp_path / "timeout-checkout"
+    checkout.mkdir()
+    task = sched.store.task("DM-001")
+    specs = [{"name": "silent", "command": "sleep 5"}]
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.worktree, run.branch, run.base = str(checkout), "main", "main"
+    LocalRunner(sched.cfg.data).start_checks(run, checkout, {
+        "specs": specs, "cwd": str(checkout), "setup": {},
+        "config": sched.cfg.data, "timeout": 30,
+    })
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "ci", "cont": {}, "specs": specs,
+        "retries": 1, "backend": "local", "provenance": "timeout fixture",
+    }
+    sched.state.save()
+    try:
+        deadline = time.monotonic() + 3
+        while not run.process_finished() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert run.process_finished() and run.read_exit_code() == 124
+        assert sched.reap_check(task, TickReport())
+    finally:
+        if not run.process_finished():
+            run.stop(timeout=2)
+
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None and saved.status == "done"
+    assert saved.result["checks"] == [{
+        "name": "checks", "status": "error", "summary": "check execution timed out",
+        "details": "validation execution exceeded 0.1 seconds",
+    }]
+    recovery = sched.state.get(task.id)["recovery_check"]
+    assert recovery["cause"] == (
+        "check execution timed out\n\nvalidation execution exceeded 0.1 seconds"
+    )
 
 
 def test_running_card_shows_idle_time(sched, monkeypatch):

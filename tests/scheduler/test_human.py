@@ -1,12 +1,17 @@
 """What a person does to a task: retry past the cap, retry a capped pre-PR round."""
 
 
+import subprocess
+
 import pytest
 
 from garden import gitops
 from garden.github import GitHubError
-from garden.model import Status
+from garden.model import Status, now_iso
+from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
+from garden.scheduler import Scheduler
+from garden.store import Store
 from tests.scheduler.conftest import statuses
 
 
@@ -282,6 +287,132 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert reloaded.branch == "operator/actual"
     assert reloaded.pr == pr.url
     assert sched.state.get(task.id)["pr_number"] == pr.number
+
+
+def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sched, fake_github, tmp_path):
+    """Work from another clone is materialised before the ordinary PR/review handoff."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    task = sched.store.task("DM-001")
+    branch = "operator/pushed"
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=branch, completion_mode="pushed")
+    clone = tmp_path / "authoring-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "author@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Author", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, cwd=clone)
+    (clone / "manual.txt").write_text("authored elsewhere\n")
+    gitops.git("add", "manual.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "external work", cwd=clone)
+    pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+    gitops.git("push", "-q", "origin", branch, cwd=clone)
+    result = {
+        "status": "done", "summary": "authored elsewhere", "repository": "test/demo",
+        "branch": branch, "pushed_sha": pushed_sha,
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked"}
+                       for item in PREFLIGHT_ITEMS],
+    }
+
+    sched.finish_manual(task, result)
+
+    worktree = sched.worktree_for(task)
+    assert gitops.git("rev-parse", "HEAD", cwd=worktree).strip() == pushed_sha
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+
+
+@pytest.mark.parametrize(
+    ("repository", "branch", "sha", "message"),
+    [
+        ("other/repo", "operator/pushed", "a" * 40, "does not match configured repository"),
+        ("test/demo", "operator/other", "a" * 40, "does not match claimed branch"),
+        ("test/demo", "operator/pushed", "short", "exact full commit SHA"),
+        ("test/demo", "operator/pushed", "a" * 40, "was not found"),
+    ],
+)
+def test_pushed_manual_completion_refuses_untrusted_identity(
+    sched, fake_github, repository, branch, sha, message,
+):
+    task = sched.store.task("DM-001")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="operator/pushed", completion_mode="pushed")
+
+    with pytest.raises(RuntimeError, match=message):
+        sched.finish_manual(task, {"status": "done", "repository": repository,
+                                   "branch": branch, "pushed_sha": sha})
+
+    saved = sched.runs.latest(task.id)
+    assert saved.status == "running"
+    assert saved.completion_attempts[-1]["status"] == "refused"
+    assert sched.store.task(task.id).status == Status.RUNNING
+
+
+def test_pushed_manual_stale_sha_can_be_corrected_after_restart(sched, fake_github, tmp_path):
+    task = sched.store.task("DM-001")
+    branch = "operator/recover"
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=branch, completion_mode="pushed")
+    clone = tmp_path / "recovery-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "author@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Author", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, cwd=clone)
+    (clone / "recovery.txt").write_text("recoverable\n")
+    gitops.git("add", "recovery.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "recoverable work", cwd=clone)
+    pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+    gitops.git("push", "-q", "origin", branch, cwd=clone)
+
+    with pytest.raises(RuntimeError, match="SHA is stale"):
+        sched.finish_manual(task, {"status": "done", "repository": "test/demo",
+                                   "branch": branch, "pushed_sha": "a" * 40})
+
+    restarted = Scheduler(Store(sched.store.root), github=fake_github)
+    restarted.finish_manual(restarted.store.task(task.id), {
+        "status": "done", "repository": "test/demo", "branch": branch,
+        "pushed_sha": pushed_sha, "summary": "recovered",
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked"}
+                       for item in PREFLIGHT_ITEMS],
+    })
+    assert restarted.store.task(task.id).status == Status.IN_REVIEW
+    saved = restarted.runs.latest(task.id)
+    assert saved.pushed_head == pushed_sha
+    assert saved.completion_attempts[-1]["status"] == "refused"
+
+
+def test_pushed_manual_submitted_result_resumes_finalization_after_restart(sched, fake_github, tmp_path):
+    task = sched.store.task("DM-001")
+    branch = "operator/interrupted"
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=branch, completion_mode="pushed")
+    clone = tmp_path / "interrupted-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "author@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Author", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, cwd=clone)
+    (clone / "interrupted.txt").write_text("durable\n")
+    gitops.git("add", "interrupted.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "durable work", cwd=clone)
+    pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+    gitops.git("push", "-q", "origin", branch, cwd=clone)
+    result = {
+        "status": "done", "repository": "test/demo", "branch": branch,
+        "pushed_sha": pushed_sha, "summary": "interrupted",
+        "pre_flight": [{"item": item, "status": "pass", "evidence": "checked"}
+                       for item in PREFLIGHT_ITEMS],
+    }
+    run.pushed_head = pushed_sha
+    ManualRunner.finish(run, result)
+    run.env_snapshot["pushed_completion_submitted"] = True
+    run.finished_at = now_iso()
+    run.status = "done"
+    run.save()  # controller stops during finalize(), before the task transition
+
+    restarted = Scheduler(Store(sched.store.root), github=fake_github)
+    restarted.tick()
+
+    assert restarted.store.task(task.id).status == Status.IN_REVIEW
+    assert gitops.git("rev-parse", "HEAD", cwd=restarted.worktree_for(task)).strip() == pushed_sha
 
 
 def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):

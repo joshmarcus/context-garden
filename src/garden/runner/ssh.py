@@ -28,7 +28,14 @@ from pathlib import Path
 from typing import Any
 
 from ..runs import Run
-from .base import Runner, RunnerError, config_dir_env, pass_env_patterns, setup_stamp
+from .base import (
+    Runner,
+    RunnerError,
+    config_dir_env,
+    config_file_shell,
+    pass_env_patterns,
+    setup_stamp,
+)
 
 REMOTE_SCRIPT = r"""
 set -e
@@ -71,6 +78,30 @@ GARDEN_BRIEF_EOF
 # `setup.env` rides on top, matching runner.base.scrubbed_env.
 GARDEN_ENV_ALLOW={env_allow}
 GARDEN_WORKER_HOME="$REPO/.garden-worktrees/.garden-home-{task}"
+garden_copy_config() {{
+  source=$1 destination=$2 required=$3 current="$GARDEN_WORKER_HOME"
+  [ ! -L "$current" ] || {{ echo "unsafe worker config HOME" >&2; exit 4; }}
+  old_ifs=$IFS; IFS=/
+  set -- $destination
+  IFS=$old_ifs
+  while [ "$#" -gt 1 ]; do
+    [ "$1" != . ] && [ "$1" != .. ] && [ -n "$1" ] || exit 4
+    current="$current/$1"
+    [ ! -L "$current" ] || {{ echo "unsafe worker config destination" >&2; exit 4; }}
+    mkdir -p "$current" && chmod 700 "$current"
+    shift
+  done
+  target="$current/$1"
+  [ ! -L "$target" ] || {{ echo "unsafe worker config destination" >&2; exit 4; }}
+  if [ -f "$source" ]; then
+    [ ! -L "$target.garden-new" ] || {{ echo "unsafe worker config temporary destination" >&2; exit 4; }}
+    rm -f "$target.garden-new"
+    cp "$source" "$target.garden-new" && chmod 600 "$target.garden-new" && mv "$target.garden-new" "$target"
+  else
+    rm -f "$target"
+    [ "$required" = 0 ] || {{ echo "required worker config file is unavailable" >&2; exit 4; }}
+  fi
+}}
 garden_scrub() {{
   set -f  # keep `for pat in $GARDEN_ENV_ALLOW` below from globbing a bare `*` against the worktree
   for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
@@ -84,8 +115,10 @@ garden_scrub() {{
   # Build fresh harness homes under the scratch HOME.  The configured locations are sources,
   # never paths handed to the worker: only each harness's login file crosses the boundary.
 {config_dirs}
+{config_files}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
+  export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
 }}
 # Run the setup command once per worktree (again only when it changes, tracked by a marker kept
 # beside the worktree so `git add -A` above cannot commit it) in the scrubbed environment. A
@@ -184,8 +217,12 @@ class SSHRunner(Runner):
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
             brief=brief_text, harness=harness_cmd, run_id=run.run_id, env_allow=env_allow,
             config_dirs=config_dirs, setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
+            config_files=config_file_shell(self.config),
             setup_stamp=shlex.quote(setup_stamp(setup_cmd) if setup_cmd else ""),
             setup_timeout=shlex.quote(str(int(setup.get("timeout_seconds") or 600))),
+            validation_timeout=shlex.quote(str(
+                int(self.config.get("checks", {}).get("timeout_seconds", 900) or 900)
+            )),
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")

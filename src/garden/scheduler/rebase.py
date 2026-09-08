@@ -73,6 +73,9 @@ class RebaseMixin:
         st = self.state.get(task.id)
         branch = task.branch or task.default_branch()
         wt = wt or self.worktree_for(task)
+        if self.external_stack_owner(task):
+            self.log(f"{task.id}: external stack owner controls {branch}; skipped automatic rebase")
+            return RebaseOutcome("error", wt, branch)
         repo = self.repo_for(task)
         patch_before = ""
         artifact_dir: Path | None = None

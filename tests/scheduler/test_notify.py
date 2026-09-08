@@ -1,8 +1,47 @@
 """notify.command: which transitions fire it and what it receives."""
 
 
+import json
+
+from garden import notify as notification
 from garden.github import Feedback
 from tests.scheduler.conftest import statuses
+
+
+def test_notification_payload_escapes_worker_text_and_pins_recipient(tmp_path):
+    """The static delivery command receives JSON, not worker text to interpret."""
+    delivered = tmp_path / "delivery.json"
+    sentinel = tmp_path / "worker-text-ran"
+    payload = 'quote " newline\\n $(touch ' + str(sentinel) + ")"
+    cfg = {
+        "notify": {
+            "recipient": "operator@example.invalid",
+            "command": f"bash -c 'printf %s \"$GARDEN_NOTIFICATION_JSON\" > {delivered}'",
+            "timeout_seconds": 5,
+        },
+    }
+
+    notification.notify(cfg, "DM-001", "waiting_human", payload, "https://example.test/pull/1")
+
+    assert not sentinel.exists()
+    assert json.loads(delivered.read_text()) == {
+        "recipient": "operator@example.invalid",
+        "task_id": "DM-001",
+        "status": "waiting_human",
+        "message": payload,
+        "pr_url": "https://example.test/pull/1",
+    }
+
+
+def test_notification_timeout_and_delivery_failure_are_nonfatal(caplog):
+    """A fake delivery that times out or fails only logs a warning for the operator."""
+    timeout = notification._run_command("sleep 1", {}, 0.01)
+    assert timeout == (False, "timed out after 0s")
+
+    cfg = {"notify": {"command": "false", "timeout_seconds": 5}}
+    notification.notify(cfg, "DM-001", "failed", "delivery failed")
+
+    assert "notify.command failed for DM-001 (status=failed): exited 1" in caplog.text
 
 
 def test_notify_on_waiting_human_transition(sched, fake_github, tmp_path):

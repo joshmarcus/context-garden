@@ -215,6 +215,8 @@ class PollMixin:
         return bool(self.cfg.product_self(product) or p.get("provides_tool"))
 
     def _automerge_enabled(self, task: Task) -> bool:
+        if self.external_stack_owner(task):
+            return False  # a stack owner, not garden, decides whether its branch may merge
         if task.extra.get("automerge") is False:
             return False  # a task-level opt-out
         return bool(self._github_cfg("automerge", task.product, False))
@@ -318,7 +320,9 @@ class PollMixin:
         if not worktree.exists():
             return []
         base = self.final_base_for(task)
-        return [p for p in gitops.diff_names(worktree, base) if _touches_guarded_path(p)]
+        product_patterns = self.cfg.product_protected_paths(task.product)
+        return [p for p in gitops.diff_names(worktree, base)
+                if _touches_guarded_path(p) or any(fnmatch.fnmatch(p, pattern) for pattern in product_patterns)]
 
     def _maybe_automerge(self, task: Task, pr: PRInfo, rep: TickReport) -> None:
         """Decide whether this PR is a merge candidate. When automerge is on and every gate is
@@ -463,10 +467,13 @@ class PollMixin:
         every child that needed retargeting was retargeted (so the caller may delete the branch),
         False when any retarget failed (so the caller keeps the branch and lets a later pass retry).
         The child's branch is rebased onto the final base later, by `_on_merged`/`_restack`."""
+        if self.external_stack_owner(task):
+            return True
         slug = self.slug_for(task)
         if not (slug and self.github.available):
             return True
         all_ok = True
+        parent_branch = task.branch or task.default_branch()
         for child in self.stacked_children(task):
             number = self._pr_number(child)
             new_base = self.final_base_for(child)
@@ -476,7 +483,20 @@ class PollMixin:
                 pr = self.github.get_pr(slug, number)
             except (GitHubError, KeyError):
                 continue
-            if pr.state != "OPEN" or pr.base == new_base:
+            if pr.state != "OPEN":
+                continue
+            if self.external_stack_owner(child):
+                if pr.base == parent_branch:
+                    reason = (f"external stack owner must retarget its PR from {parent_branch} "
+                              f"after stack parent {task.id} merges")
+                    self._set_needs_human(child, "external_stack_retarget", reason)
+                    self.events.emit("needs_human", child.id,
+                                     stop_kind="external_stack_retarget", reason=reason)
+                    child.log(reason)
+                    self.store.save(child)
+                    return False
+                continue
+            if pr.base == new_base:
                 continue
             try:
                 self.github.update_pr(slug, number, base=new_base)
@@ -499,6 +519,13 @@ class PollMixin:
             except Exception as e:  # noqa: BLE001 - never let this block a merge
                 self.log(f"{task.id}: tool upgrade check failed: {e}")
         for child in self.stacked_children(task):
+            if self.external_stack_owner(child):
+                reason = f"external stack owner must reconcile dependency branch after {task.id} merged"
+                self._set_needs_human(child, "external_stack_changed", reason)
+                self.events.emit("needs_human", child.id, stop_kind="external_stack_changed", reason=reason)
+                child.log(reason)
+                self.store.save(child)
+                continue
             st = self.state.get(child.id)
             if child.status == Status.MERGED_INTO_PARENT:
                 self._promote_if_ancestor(child, task, rep, head_sha)
@@ -512,6 +539,8 @@ class PollMixin:
 
     def _restack(self, child: Task, rep: TickReport) -> None:
         """Parent merged: retarget the child's PR to the final base and rebase its branch."""
+        if self.external_stack_owner(child):
+            return
         st = self.state.get(child.id)
         parent_id = st.get("stack_parent", "")
         new_base = self.final_base_for(child)
@@ -589,6 +618,11 @@ class PollMixin:
         """PR is CONFLICTING with its base: run a rebase round. Mechanical first (no model),
         an easy-tier agent only on a real textual conflict — never a full revise run, and never
         against `max_revisions` (see RebaseMixin.mechanical_rebase)."""
+        if self.external_stack_owner(task):
+            reason = "external stack owner must resolve this PR conflict; garden did not rebase or force-push it"
+            self._set_needs_human(task, "external_stack_conflict", reason)
+            self.events.emit("needs_human", task.id, stop_kind="external_stack_conflict", reason=reason)
+            return
         if self.worker_run_in_flight(task.id):
             return  # a worker is writing this branch right now (CG-220); try again next tick
         base = self.base_for(task)

@@ -86,12 +86,34 @@ class Feedback:
         return "\n\n".join(out)
 
 
-def repo_slug_from_remote(url: str) -> str | None:
-    m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url.strip())
-    return f"{m.group(1)}/{m.group(2)}" if m else None
+def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
+    """Return an ``owner/repo`` only for an unambiguous remote on ``host``.
+
+    Enterprise remotes occur in HTTPS, SSH URL, and conventional SCP forms.  Rejecting
+    credential-bearing URLs and unexpected hosts keeps a configured product from
+    borrowing a credential or API route intended for another server. SSH transport
+    usernames and explicit SSH ports remain part of the repository URL.
+    """
+    expected = host.lower().rstrip(".")
+    value = url.strip()
+    patterns = (
+        r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"(?:[^@:]+@)?(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, value, flags=re.IGNORECASE)
+        if match and match["host"].lower().rstrip(".") == expected:
+            return f"{match['owner']}/{match['repo']}"
+    return None
 
 
-def pull_request_number(url: str, slug: str) -> int | None:
+def is_git_remote_url(value: str) -> bool:
+    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes."""
+    return bool(re.match(r"^(?:[a-z][a-z0-9+.-]*://|[^@/:\s]+@[^/:\s]+:)", value, re.IGNORECASE))
+
+
+def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | None:
     """Return a GitHub PR number only when *url* identifies this repository.
 
     A PR number is meaningful only within its repository.  Validating the complete
@@ -99,7 +121,7 @@ def pull_request_number(url: str, slug: str) -> int | None:
     configured repository from being mistaken for an operator-supplied external PR.
     """
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.port not in (None, 443):
+    if parsed.scheme != "https" or parsed.hostname != host.lower().rstrip(".") or parsed.port not in (None, 443):
         return None
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) != 4 or parts[2] != "pull" or "/".join(parts[:2]).lower() != slug.lower():
@@ -172,8 +194,25 @@ class GitHub:
         bot_notice_patterns: list[str] | None = None,
         trusted_authors: list[str] | None = None,
         trusted_bots: list[str] | None = None,
+        host: str = "github.com",
+        api_base: str = "",
+        token_env: str = "",
     ):
-        self.token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        self.host = host.lower().rstrip(".")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", self.host):
+            raise ValueError(f"invalid GitHub host: {host!r}")
+        self.api_base = (api_base or (API if self.host == "github.com" else f"https://{self.host}/api/v3")).rstrip("/")
+        parsed_api = urlparse(self.api_base)
+        if parsed_api.scheme != "https" or not parsed_api.netloc:
+            raise ValueError("github api_base must be an HTTPS URL")
+        if api_base and (
+            parsed_api.hostname != self.host or parsed_api.username or parsed_api.password
+            or parsed_api.query or parsed_api.fragment or parsed_api.port not in (None, 443)
+        ):
+            raise ValueError("github api_base must be an HTTPS URL for the configured GitHub host")
+        # A product that names a token environment has deliberately scoped its
+        # credential. Do not fall through to a public/default token if it is missing.
+        self.token = token or (os.environ.get(token_env) if token_env else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")))
         self.gh = shutil.which("gh") if use_gh else None
         self.bot_logins = set(bot_logins or [])
         self.bot_notice_patterns = [
@@ -189,15 +228,20 @@ class GitHub:
 
     def describe(self) -> str:
         if self.gh:
-            return f"gh CLI ({self.gh})"
+            return f"gh CLI ({self.gh}) for {self.host}"
         if self.token:
-            return "REST API with token"
-        return "unavailable (install gh or set GITHUB_TOKEN)"
+            return f"REST API with token for {self.host}"
+        return f"unavailable for {self.host} (install gh or set a token)"
 
     # ---- low level ---------------------------------------------------------
     def _gh(self, *args: str, input_: str | None = None) -> str:
         assert self.gh
-        proc = subprocess.run([self.gh, *args], capture_output=True, text=True, input=input_)
+        # ``--hostname`` belongs to ``gh api``; PR commands select their host through
+        # the fully-qualified ``--repo HOST/OWNER/REPO`` argument instead.
+        command = [self.gh, *args]
+        if args and args[0] == "api":
+            command += ["--hostname", self.host]
+        proc = subprocess.run(command, capture_output=True, text=True, input=input_)
         if proc.returncode != 0:
             raise GitHubError(proc.stderr.strip() or f"gh {' '.join(args)} failed")
         return proc.stdout
@@ -210,7 +254,11 @@ class GitHub:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        r = httpx.request(method, API + path, headers=headers, timeout=30, **kw)
+        base = self.api_base
+        if path == "/graphql" and self.host != "github.com":
+            # Enterprise GraphQL is a sibling of the REST v3 endpoint.
+            base = base.removesuffix("/v3")
+        r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
         if r.status_code >= 400:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
@@ -247,7 +295,7 @@ class GitHub:
     def is_authenticated(self) -> bool:
         if self.gh:
             try:
-                subprocess.run([self.gh, "auth", "status"], capture_output=True, text=True, check=True)
+                subprocess.run([self.gh, "auth", "status", "--hostname", self.host], capture_output=True, text=True, check=True)
                 return True
             except (subprocess.CalledProcessError, FileNotFoundError):
                 return False
@@ -256,10 +304,13 @@ class GitHub:
         return False
 
     # ---- PRs ---------------------------------------------------------------
+    def _repo(self, slug: str) -> str:
+        return f"{self.host}/{slug}"
+
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None:
         if self.gh:
             out = self._gh(
-                "pr", "list", "-R", slug, "--head", head_branch, "--state", "all",
+                "pr", "list", "-R", self._repo(slug), "--head", head_branch, "--state", "all",
                 "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
                 "--limit", "5",
             )
@@ -284,7 +335,7 @@ class GitHub:
     def get_pr(self, slug: str, number: int) -> PRInfo:
         if self.gh:
             out = self._gh(
-                "pr", "view", str(number), "-R", slug,
+                "pr", "view", str(number), "-R", self._repo(slug),
                 "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
@@ -335,14 +386,16 @@ class GitHub:
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str, draft: bool = False,
                   reviewers: list[str] | None = None) -> PRInfo:
         if self.gh:
-            args = ["pr", "create", "-R", slug, "--head", head, "--base", base, "--title", title, "--body-file", "-"]
+            args = ["pr", "create", "-R", self._repo(slug), "--head", head, "--base", base, "--title", title, "--body-file", "-"]
             if draft:
                 args.append("--draft")
             for r in reviewers or []:
                 args += ["--reviewer", r]
             url = self._gh(*args, input_=body).strip().splitlines()[-1]
-            m = re.search(r"/pull/(\d+)", url)
-            return PRInfo(number=int(m.group(1)) if m else 0, url=url, state="OPEN", title=title, head=head, base=base, is_draft=draft)
+            number = pull_request_number(url, slug, self.host)
+            if number is None:
+                raise GitHubError(f"gh returned a PR URL outside {self.host}/{slug}")
+            return PRInfo(number=number, url=url, state="OPEN", title=title, head=head, base=base, is_draft=draft)
         p = self._rest("POST", f"/repos/{slug}/pulls", json={"title": title, "body": body, "head": head, "base": base, "draft": draft})
         if reviewers:
             try:
@@ -428,7 +481,7 @@ class GitHub:
         if not title and not body and not base:
             return
         if self.gh:
-            args = ["pr", "edit", str(number), "-R", slug]
+            args = ["pr", "edit", str(number), "-R", self._repo(slug)]
             if title:
                 args += ["--title", title]
             if base:
@@ -449,7 +502,7 @@ class GitHub:
     def mark_ready(self, slug: str, number: int) -> None:
         """Convert a draft PR to ready for review (the human's triage step)."""
         if self.gh:
-            self._gh("pr", "ready", str(number), "-R", slug)
+            self._gh("pr", "ready", str(number), "-R", self._repo(slug))
             return
         pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         node = pr.get("node_id")
@@ -462,7 +515,7 @@ class GitHub:
 
     def close_pr(self, slug: str, number: int) -> None:
         if self.gh:
-            self._gh("pr", "close", str(number), "-R", slug)
+            self._gh("pr", "close", str(number), "-R", self._repo(slug))
         else:
             self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "closed"})
 
@@ -470,7 +523,7 @@ class GitHub:
         """Reopen a closed PR. Raises GitHubError if GitHub refuses (e.g. the base branch is
         gone, so the caller falls back to opening a fresh PR from the same head branch)."""
         if self.gh:
-            self._gh("pr", "reopen", str(number), "-R", slug)
+            self._gh("pr", "reopen", str(number), "-R", self._repo(slug))
         else:
             self._rest("PATCH", f"/repos/{slug}/pulls/{number}", json={"state": "open"})
 
@@ -505,7 +558,7 @@ class GitHub:
         if method not in ("squash", "merge", "rebase"):
             method = "squash"
         if self.gh:
-            args = ["pr", "merge", str(number), "-R", slug, f"--{method}"]
+            args = ["pr", "merge", str(number), "-R", self._repo(slug), f"--{method}"]
             if delete_branch:
                 args.append("--delete-branch")
             self._gh(*args)
@@ -546,9 +599,87 @@ class GitHub:
         if GARDEN_MARKER not in body:
             body = body.rstrip() + "\n\n" + GARDEN_MARKER
         if self.gh:
-            self._gh("pr", "comment", str(number), "-R", slug, "--body-file", "-", input_=body)
+            self._gh("pr", "comment", str(number), "-R", self._repo(slug), "--body-file", "-", input_=body)
         else:
             self._rest("POST", f"/repos/{slug}/issues/{number}/comments", json={"body": body})
+
+
+class RepositorySlug(str):
+    """A repository slug that carries its configured GitHub host for routing."""
+
+    def __new__(cls, slug: str, host: str):
+        value = super().__new__(cls, slug)
+        value.host = host.lower().rstrip(".")
+        return value
+
+    def __getnewargs__(self) -> tuple[str, str]:
+        # State snapshots copy values before flushing them; preserve the route when
+        # copy/deepcopy or pickle reconstruct this immutable string subclass.
+        return str(self), self.host
+
+
+class GitHubRouter:
+    """Route repository operations to the GitHub client configured for that repository.
+
+    Every repository operation includes a slug as its first argument. Keeping the route
+    here makes it difficult for a newly added scheduler operation to accidentally fall
+    back to whichever host happens to be active in ``gh``.
+    """
+
+    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, GitHub]):
+        self.default = default
+        self.routes = {
+            ((key[0] if isinstance(key, tuple) else client.host).lower().rstrip("."),
+             (key[1] if isinstance(key, tuple) else key).lower()): client
+            for key, client in routes.items()
+        }
+        self._legacy_routes = {
+            slug: clients[0]
+            for slug, clients in self._routes_by_slug().items()
+            if len(clients) == 1
+        }
+
+    def _routes_by_slug(self) -> dict[str, list[GitHub]]:
+        grouped: dict[str, list[GitHub]] = {}
+        for (_, slug), client in self.routes.items():
+            grouped.setdefault(slug, []).append(client)
+        return grouped
+
+    @property
+    def available(self) -> bool:
+        return self.default.available or any(client.available for client in self.routes.values())
+
+    def describe(self) -> str:
+        return self.default.describe()
+
+    def me(self) -> str:
+        return self.default.me()
+
+    def is_authenticated(self) -> bool:
+        return self.default.is_authenticated()
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward slug-first GitHub operations to their configured client."""
+        default_method = getattr(self.default, name)
+        if not callable(default_method):
+            return default_method
+
+        def routed(slug: str, *args: Any, **kwargs: Any) -> Any:
+            host = getattr(slug, "host", "")
+            key = slug.lower()
+            if host:
+                client = self.routes.get((host, key))
+                if client is None and host == getattr(self.default, "host", "github.com"):
+                    client = self.default
+                if client is None:
+                    raise GitHubError(f"no GitHub client configured for host {host!r} and repository {slug!r}")
+            else:
+                if key in self._routes_by_slug() and key not in self._legacy_routes:
+                    raise GitHubError(f"ambiguous GitHub host for repository {slug!r}; supply its explicit host")
+                client = self._legacy_routes.get(key, self.default)
+            return getattr(client, name)(slug, *args, **kwargs)
+
+        return routed
 
 
 def _rollup_failed(rollup: list[dict[str, Any]]) -> list[str]:
