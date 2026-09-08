@@ -8,7 +8,7 @@ carries a line `qa-worker: <mode>` reaches the worker inside its brief, so one t
 garden can hold a task that asks a question beside one that finds nothing to change.
 
 Modes: done (default) | needs_input (asks once; a --resume run finishes)
-       | no_change (the first run finishes; a revise round reports no_change)
+       | no_change_decision (the first run finishes; a revise round asks a person to accept no_change)
 A planning prompt returns two tasks; a review brief approves. No network, no tokens.
 Standalone on purpose: nothing here imports `garden`, so the harness command is just
 `python worker.py`.
@@ -74,8 +74,8 @@ def main() -> None:
         commit("partial work before asking")
         emit('Stopping.\nGARDEN_RESULT: {"status": "needs_input", "question": "Postgres or SQLite?", "summary": "need a decision"}')
         return
-    if mode == "no_change" and revise:
-        emit('The code is already correct.\nGARDEN_RESULT: {"status": "no_change", "reason": "The failing check is an environment mismatch, not this diff; the code is right."}')
+    if mode == "no_change_decision" and revise:
+        emit('The code is already correct.\nGARDEN_RESULT: {"status": "no_change", "reason": "The requested outcome should remain unchanged.", "verified": [{"criterion": "Change the promised outcome", "not_done": true, "reason": "The existing promise is correct."}]}')
         return
     if mode == "escape" and escape is not None:
         target = Path(escape.group(1).strip())
