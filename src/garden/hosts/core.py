@@ -23,6 +23,7 @@ from .provider import (
     AllowPolicy,
     HostProvider,
     PolicyResolver,
+    ProviderError,
     ProvisioningUncertain,
     TransientProviderError,
 )
@@ -348,7 +349,11 @@ class HostLifecycle:
         Callers perform this before incrementing a task attempt; ``EnvironmentStop`` is an
         infrastructure outcome, not worker failure.
         """
-        checked = self.reconcile(pool)
+        try:
+            checked = self.reconcile(pool)
+        except ProviderError as exc:
+            self._record_environment_stop(pool, str(exc))
+            raise EnvironmentStop(str(exc)) from exc
         data = self.state.read()
         leases = data.setdefault("leases", {})
         assert isinstance(leases, dict)
@@ -360,6 +365,11 @@ class HostLifecycle:
         candidates: list[HostFacts] = []
         for host in checked:
             if host.state != HostState.READY:
+                continue
+            if (host.image, host.bootstrap_version) != (
+                pool.profile.image,
+                pool.profile.bootstrap_version,
+            ):
                 continue
             lease = leases.get(host.provider_id, {})
             if isinstance(lease, dict):
@@ -392,11 +402,27 @@ class HostLifecycle:
                 "harness": harness,
                 "run_id": "",
             }
+            stops = data.setdefault("environment_stops", {})
+            if isinstance(stops, dict):
+                stops.pop(pool.name, None)
             self.state.write(data)
             return host
-        self.state.write(data)
         detail = "; ".join(failures) or "no ready host is available"
+        self._record_environment_stop(pool, detail, data=data)
         raise EnvironmentStop(detail)
+
+    def _record_environment_stop(
+        self,
+        pool: PoolDeclaration,
+        detail: str,
+        *,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        value = data if data is not None else self.state.read()
+        stops = value.setdefault("environment_stops", {})
+        assert isinstance(stops, dict)
+        stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
+        self.state.write(value)
 
     def attach_run(self, provider_id: str, run_id: str) -> None:
         """Persist the controller run identity after dispatch."""
