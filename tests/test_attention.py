@@ -86,6 +86,20 @@ def test_revision_cap_card(garden):
     assert "3 revision rounds used" in it["why"]
 
 
+def test_troubled_card_is_distinct_and_offers_bounded_decisions(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "troubled_task", "reason": "6 substantive revisions did not converge"},
+               substantive_revisions=6, revisions=6, review_rounds=4,
+               difficulty_escalations=[{"from": "easy", "to": "medium", "counter": 2, "model": "terra"}])
+    it = _attention(garden, "DM-001")
+    assert it["kind_title"] == "Troubled task"
+    assert {a["kind"] for a in it["actions"]} >= {"troubled-continue", "investigate", "defer", "cancel"}
+    evidence = "\n".join(it["evidence"])
+    assert "6 revision" in evidence and "4 automated review" in evidence
+    assert "easy → medium" in evidence and "current owner" in evidence
+
+
 def test_parent_closed_card(garden):
     store = Store(garden)
     _set_task(store, "DM-002", Status.IN_REVIEW, pr="https://example.com/pull/8")
