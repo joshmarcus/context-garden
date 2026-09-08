@@ -84,6 +84,7 @@ class Run:
     host: str = ""  # ssh runner: which host
     claimed_at: str = ""  # pull-based remote runner lease
     lease_expires_at: str = ""
+    recovery_expires_at: str = ""  # same generation may reconnect until this durable deadline
     lease_token: str = ""  # unique claim generation; fences a stale worker after reclaim
     pushed_ref: str = ""  # lease-specific staging ref; only an accepted finish promotes it
     pushed_head: str = ""
