@@ -1,12 +1,12 @@
 {
   "producer": "cg443.disposable-served-review-clarification/v2",
-  "head": "07b4e16c4ad4b2a7488978c0480378484b746ea5",
+  "head": "3d2f28eb262cf2d75af04ffd513d977daed5bd64",
   "application_source_head": "c1b4d88330c6e64938f77f2a459d1f8bc721735d",
   "source_note": "The replay head contains the unchanged application tree from c1b4d883 plus evidence-only commits under docs/design/cg443-validation.",
   "environment": "disposable garden with MemoryGitHub and QA harness",
-  "command": "PYTHONPATH=src .venv/bin/python -m pytest docs/design/cg443-validation/replay_test.py -q",
-  "started_at": "2026-09-08T22:43:32.942301+00:00",
-  "finished_at": "2026-09-08T22:43:33.376115+00:00",
+  "command": "timeout --signal=TERM --kill-after=10s 900 $GARDEN_VALIDATION_RUNNER -m garden.validation -- .venv/bin/python -m pytest --timeout=120 --timeout-method=thread docs/design/cg443-validation/replay_test.py -q",
+  "started_at": "2026-09-08T22:44:02.543703+00:00",
+  "finished_at": "2026-09-08T22:44:02.980915+00:00",
   "status": "pass",
   "fixture_setup": "A disposable garden was seeded with a reviewer-owned clarification stop; the served app then received an invalid request before the valid recovery action.",
   "states": {
@@ -40,7 +40,7 @@
       "state": "empty",
       "outcome": "empty",
       "method": "GET",
-      "url": "http://127.0.0.1:45571/inbox",
+      "url": "http://127.0.0.1:58897/inbox",
       "status_code": 200,
       "observed": "Inbox has no reviewer-clarification attention card."
     },
@@ -49,7 +49,7 @@
       "state": "affected",
       "outcome": "success",
       "method": "GET",
-      "url": "http://127.0.0.1:45571/inbox",
+      "url": "http://127.0.0.1:58897/inbox",
       "status_code": 200,
       "observed": "Reviewer-owned clarification stop is visible with its recovery action."
     },
@@ -58,7 +58,7 @@
       "state": "failure",
       "outcome": "failure",
       "method": "GET",
-      "url": "http://127.0.0.1:45571/tasks/NOT-A-TASK",
+      "url": "http://127.0.0.1:58897/tasks/NOT-A-TASK",
       "status_code": 404,
       "observed": "An invalid task request is rejected with HTTP 404; the clarification stop remains intact."
     },
@@ -67,7 +67,7 @@
       "state": "recovery",
       "outcome": "success",
       "method": "POST",
-      "url": "http://127.0.0.1:45571/tasks/DM-001/review",
+      "url": "http://127.0.0.1:58897/tasks/DM-001/review",
       "status_code": 303,
       "observed": "The valid operator action dispatches reviewer-owned work without an author revision."
     },
@@ -76,7 +76,7 @@
       "state": "recovery",
       "outcome": "success",
       "method": "GET",
-      "url": "http://127.0.0.1:45571/inbox",
+      "url": "http://127.0.0.1:58897/inbox",
       "status_code": 200,
       "observed": "The recovered Inbox no longer shows the clarification stop."
     }
