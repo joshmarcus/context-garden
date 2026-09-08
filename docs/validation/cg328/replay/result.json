@@ -1,0 +1,720 @@
+{
+ "flows": [
+  {
+   "name": "add a task",
+   "ok": true,
+   "page": "/phases/demo/p1",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879511.89607,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879511.9581828,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/phases/demo/p1",
+     "status_code": 200
+    },
+    {
+     "at": 1788879511.9612548,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/phases/demo/p1/plan",
+     "status_code": 303
+    },
+    {
+     "at": 1788879511.9660757,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.1695058,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.172265,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.2025898,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/phases/demo/p1",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.2056677,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "approve",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879512.2573795,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.2647529,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-003/approve",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.2675838,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.297583,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/phases/demo/p1",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.3023555,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/phases/demo/p1/approve-all",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.3049545,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "dispatch",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879512.311023,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.368103,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-003/dispatch",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.3711429,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.374148,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.3769648,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.3876934,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.5910523,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.6369333,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.840028,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.8486998,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "answer a worker's question",
+   "ok": true,
+   "page": "/tasks/DM-001",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879512.8555455,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-001",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.9098732,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-001/dispatch",
+     "status_code": 303
+    },
+    {
+     "at": 1788879512.913243,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.9163754,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879512.9290965,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879513.144889,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.1643422,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879513.378398,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.3952143,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-001",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.4243636,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.4867737,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-001/answer",
+     "status_code": 303
+    },
+    {
+     "at": 1788879513.4900188,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.4929147,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.4958127,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.508714,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879513.7204266,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.7689354,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879513.9733872,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879513.984795,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-001",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "send back with a note",
+   "ok": true,
+   "page": "/tasks/DM-003",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879513.9941876,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.0009072,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-003/triage-changes",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.0038033,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.0128767,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.079427,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-003/dispatch",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.0825582,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.0855536,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.1007872,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.3119512,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.3617697,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.5786238,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.592726,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "triage",
+   "ok": true,
+   "page": "/inbox",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879514.6001081,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.606909,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-003/triage-ready",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.6096466,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.615981,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-001/triage-ready",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.618863,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "reconcile a nothing-to-change report",
+   "ok": true,
+   "page": "/tasks/DM-002",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879514.6256094,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-002",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.6805441,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-002/dispatch",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.6838381,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.6870277,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.7028973,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.9071019,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.9142876,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-002/triage-changes",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.9826803,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-002/dispatch",
+     "status_code": 303
+    },
+    {
+     "at": 1788879514.9865677,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879514.9896424,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.0080547,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.2209215,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.24551,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.455143,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.4657562,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-002",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.4735215,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5006964,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-002/accept",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.5039215,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5072246,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.510273,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5169237,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-002/triage-ready",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.5199623,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5277166,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "merge",
+   "ok": true,
+   "page": "/qa/github",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879515.5289912,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/qa/github",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5322468,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5333135,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/qa/github/pull/2/merge",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.5362601,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5372026,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/qa/github/pull/3/merge",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.5403583,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5413916,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/qa/github/pull/1/merge",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.5445354,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5478096,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.5833166,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tick",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.7914762,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.7949646,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.7981768,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.8014495,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.804458,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.8142524,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-003",
+     "status_code": 200
+    }
+   ]
+  },
+  {
+   "name": "close a phase",
+   "ok": true,
+   "page": "/phases/demo/p1",
+   "note": "",
+   "requests": [
+    {
+     "at": 1788879515.8222568,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/tasks/DM-004",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.829338,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/tasks/DM-004/cancel",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.8324063,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/api/tasks",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.8649514,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/phases/demo/p1",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.869568,
+     "method": "POST",
+     "url": "http://127.0.0.1:60791/phases/demo/p1/close",
+     "status_code": 303
+    },
+    {
+     "at": 1788879515.8922837,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/phases/demo/p1",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.9066727,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/herbarium",
+     "status_code": 200
+    },
+    {
+     "at": 1788879515.9229388,
+     "method": "GET",
+     "url": "http://127.0.0.1:60791/",
+     "status_code": 200
+    }
+   ]
+  }
+ ],
+ "findings": [],
+ "summary": "scripted agent: 9 of 9 flows completed"
+}
