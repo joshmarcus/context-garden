@@ -72,12 +72,17 @@ def difficulty(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) 
 def owner(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     """Change only the task's planning owner; this never affects access or approval."""
     value = note.strip()
+    explicit_unassigned = value in ("", "-")
+    inherit = value == "inherit"
+    if explicit_unassigned or inherit:
+        value = ""
     try:
         value = _owner_id(value, t.path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     old = t.owner or "unassigned"
     t.owner = value
+    t.owner_unassigned = explicit_unassigned
     t.log(f"owner {old} -> {value or 'unassigned'} (web)")
     s.save(t)
 

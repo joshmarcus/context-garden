@@ -107,11 +107,13 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
 
 
 @app.command("assign", rich_help_panel=PANEL_PLAN)
-def assign(task_id: str, owner: str = typer.Argument(..., help="Logical owner id; use '-' to unassign")):
+def assign(task_id: str, owner: str = typer.Argument(..., help="Logical owner id; use '-' to unassign or 'inherit' to use the phase default")):
     """Assign planning ownership without changing access, execution, or approval rules."""
     store = _store()
     t = _task(store, task_id)
-    value = "" if owner == "-" else owner
+    explicit_unassigned = owner == "-"
+    inherit = owner == "inherit"
+    value = "" if explicit_unassigned or inherit else owner
     try:
         value = _owner_id(value, t.path)
     except ValueError as exc:
@@ -119,9 +121,10 @@ def assign(task_id: str, owner: str = typer.Argument(..., help="Logical owner id
         raise typer.Exit(1) from None
     old = t.owner or "unassigned"
     t.owner = value
+    t.owner_unassigned = explicit_unassigned
     t.log(f"owner {old} -> {value or 'unassigned'}")
     store.save(t)
-    console.print(f"{t.id} owner {old} -> {value or 'unassigned'}")
+    console.print(f"{t.id} owner {old} -> {'inherits phase default' if inherit else value or 'unassigned'}")
 
 
 @app.command("assign-phase", rich_help_panel=PANEL_PLAN)
