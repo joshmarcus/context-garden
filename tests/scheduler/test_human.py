@@ -238,6 +238,15 @@ def test_mark_done_requires_pr_commits_on_the_base_unless_forced(sched, monkeypa
 
     sched.mark_done(task, force=True)
     assert statuses(sched)["DM-001"] == "done"
+    done = sched.events.read(task_id=task.id, kinds=("transition",))[-1]
+    assert done["base_merged"] is False
+
+
+def test_forced_done_custom_note_is_not_a_merge(sched):
+    task = sched.store.task("DM-001")
+    sched.mark_done(task, note="obsolete", force=True)
+    done = sched.events.read(task_id=task.id, kinds=("transition",))[-1]
+    assert done["base_merged"] is False
 
 
 def test_external_open_pr_uses_claimed_identity_and_review_without_managed_worktree(sched, fake_github):

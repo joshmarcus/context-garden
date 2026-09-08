@@ -249,7 +249,7 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
-        self._transition(task, Status.DONE, note or "marked done")
+        self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""
@@ -476,6 +476,7 @@ class HumanMixin:
             base=str(check.get("cont", {}).get("base") or self.base_for(task)),
             specs=list(check["specs"]), stage=str(check["stage"]),
             cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
+            backend=str(check.get("backend") or ""), provenance=str(check.get("provenance") or ""),
         )
         used.add(fingerprint)
         st["delegated_recovery_fingerprints"] = sorted(used)

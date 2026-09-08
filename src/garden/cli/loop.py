@@ -558,6 +558,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
             since: str = typer.Option("", help="Window for difficulty/model matrices, e.g. 1h"),
             until: str = typer.Option("", help="Exclusive ISO end for the matrices")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
+    from .. import operator_spend as ops
     from ..events import EventLog, parse_since, with_run_records
     from ..events import metrics as _metrics
     from ..runs import RunStore
@@ -569,7 +570,18 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
     events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
+    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
     m = _metrics(events, tasks, parse_since(since) if since else "", until)
+    timing = m["tick_duration"]
+    console.print(f"Merged PRs: {m['merges']} (queue: {m['queue_merges']}, hand: {m['hand_merges']})")
+    console.print("Tick duration: " + (f"mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)"
+                                       if timing["count"] else "no tick records"))
+    operator = m["operator"]
+    console.print("Operator spend: " + (f"${operator['spend']:.2f} ({operator['share']:.0%} of recorded spend)"
+                                         if operator["share"] is not None else "no ledger entries"))
+    rb = m["rebase"]
+    console.print(f"Rebases per merge: {rb['mechanical'] / rb['merges']:.2f} mechanical, "
+                  f"{rb['agent'] / rb['merges']:.2f} agent" if rb["merges"] else "Rebases per merge: no merges")
     from ..outcomes import format_cell
 
     for matrix in m["difficulty_by_model"]["metrics"].values():

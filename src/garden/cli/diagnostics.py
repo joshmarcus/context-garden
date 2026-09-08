@@ -144,6 +144,7 @@ def doctor():
 
     from ..github import GitHub
     from ..graph import validate as _validate
+    from ..host_identity import tracked_connection_target_fields
     from ..runner import get_runner
     from ..runner.base import scrubbed_env
 
@@ -176,6 +177,12 @@ def doctor():
         except OSError as e:
             console.print(f"[yellow]free space {label}: unavailable ({e})[/yellow]")
     console.print(f"config: {' < '.join(store.config.sources) or 'defaults only'}" + (f"  (GARDEN_ENV={store.config.env})" if store.config.env else "  (set GARDEN_ENV=work to add garden.work.yaml)"))
+    connection_fields = tracked_connection_target_fields(store.root)
+    if connection_fields:
+        console.print("[red]host identities: tracked configuration contains connection targets at "
+                      + ", ".join(connection_fields)
+                      + " (use a logical alias here and put its target in ignored garden.local.yaml)[/red]")
+        fail("host identities")
     try:
         from playwright.sync_api import sync_playwright
 

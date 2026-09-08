@@ -1,5 +1,6 @@
 # Environment overlay, loaded on top of garden.yaml when GARDEN_ENV=work.
 # Copy to the garden root as garden.work.yaml and adjust. Keys merge; lists replace.
+# Keep physical SSH targets and checkout paths in ignored garden.local.yaml instead.
 #
 #   GARDEN_ENV=work garden serve
 #
@@ -9,12 +10,12 @@ runner: ssh                       # workers on the build hosts, not this laptop
 ssh:
   hosts:
     - name: build-1
-      host: me@build-1.internal
-      repos: {context-garden: /srv/gardens/context-garden}
+      host: build-1                 # logical alias; local overlay resolves the target
+      repos: {context-garden: context-garden}
       max_parallel: 4
     - name: build-2
-      host: me@build-2.internal
-      repos: {context-garden: /srv/gardens/context-garden}
+      host: build-2                 # logical alias; local overlay resolves the target
+      repos: {context-garden: context-garden}
       max_parallel: 4
 
 github:

@@ -1,4 +1,9 @@
-# Now 2, live implementation
+# Now 2, retired implementation evidence
+
+This directory is preserved as historical design and validation evidence. The executable
+Now 2 application was retired when the owner selected the former Now 1 design as `/now`;
+the legacy `/now2` URL now redirects there. Commands and paths below describe the evidence
+as it was captured and are not current application targets.
 
 `/now2` implements the Astra composition from `../now-2.md`: a broad list of
 active work beside independent dispatch, merge and review queues; phase specimens

@@ -13,6 +13,9 @@ workflow: `docs/codex.md`. For a dispatched task, use its supplied brief and rea
 - Tests: use the focused, serial suite commands and selection guide in
   [`docs/test-suites.md`](docs/test-suites.md) while iterating; final full-suite validation
   is `python3 scripts/check_ci.py`.
+- Stress/load experiments are excluded from ordinary pytest and CI. They require explicit
+  `--run-stress` opt-in in a separately bounded disposable environment; never enable them
+  just to complete routine worker validation. See `docs/test-suites.md`.
 - Lint: `.venv/bin/ruff check src tests`.
 - In a worktree without a venv, use an available Python environment with the dev
   dependencies and `PYTHONPATH=src` so tests exercise this worktree's source.

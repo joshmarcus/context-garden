@@ -52,9 +52,29 @@ class CheckRunMixin:
                 "branch": branch, "base": base, "cost": cost, "diff_h": diff_h, "body_h": body_h,
                 "stalled": stalled}
 
+    def _check_execution(self, task: Task, stage: str, specs: list[dict[str, Any]],
+                         backend: str = "", provenance: str = "") -> tuple[str, str]:
+        """Choose where a check can execute from the inputs it owns.
+
+        An interaction replay names the controller checkout and its durable replay output.
+        It is consequently controller-owned even when the implementation task is leased to a
+        remote worker.  Other check payloads remain portable and follow the task runner.
+        Stored values are accepted for retries so a continuation cannot change ownership.
+        """
+        if backend:
+            return backend, provenance
+        controller_owned = stage == "interaction_replay" or any(
+            str(spec.get("execution_owner") or "") == "controller" for spec in specs
+        )
+        if controller_owned:
+            return "local", provenance or "controller-owned replay inputs"
+        return ("remote" if self.runner_for(task).name == "remote" else "local",
+                provenance or "portable check payload")
+
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
-                            extra: dict[str, Any] | None = None, retries: int = 0) -> Run:
+                            extra: dict[str, Any] | None = None, retries: int = 0,
+                            backend: str = "", provenance: str = "") -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
@@ -66,7 +86,7 @@ class CheckRunMixin:
         # for the next reap/poll rather than publishing a duplicate check record.
         if stage != "interaction_replay" and self.review_slots_free() > 0 and self._queued_review_precedes(task):
             self._drain_pending_reviews(self.store.tasks(), rep)
-        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner_name, provenance = self._check_execution(task, stage, specs, backend, provenance)
         runner = self.runner_for(task, runner_name)
         run = (self.runs.new_run(task.id, runner_name, mode="check")
                if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
@@ -96,7 +116,8 @@ class CheckRunMixin:
                 specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
                                   "out_dir": str(run.path / "ui"), "worktree": str(worktree),
                                   "changed": changed, "pages": plan["pages"]}]
-            run.env_snapshot = {"validation_plan": plan}
+            run.env_snapshot["validation_plan"] = plan
+        run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
@@ -108,7 +129,8 @@ class CheckRunMixin:
         st = self.state.get(task.id)
         cont.setdefault("task_status", task.status.value)
         st["check_run"] = {"run_id": run.run_id, "stage": stage, "cont": cont,
-                           "specs": specs, "retries": retries}
+                           "specs": specs, "retries": retries, "backend": runner_name,
+                           "provenance": provenance}
         self.events.emit("dispatch", task.id, run=run.run_id, mode="check", stage=stage)
         self.state.save()
         rep.dispatched.append(f"{task.id}(check:{stage})")
@@ -207,7 +229,9 @@ class CheckRunMixin:
             run.save()
         if self._check_did_not_run(run, results):
             self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
-                                      int(info.get("retries", 0)), rep)
+                                      int(info.get("retries", 0)), rep,
+                                      backend=str(info.get("backend") or run.runner),
+                                      provenance=str(info.get("provenance") or ""))
             return True
         handler = {
             "interaction_replay": self._after_interaction_replay_check,
@@ -239,7 +263,8 @@ class CheckRunMixin:
                    for result in results)
 
     def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
-                             specs: list[dict[str, Any]], retries: int, rep: TickReport) -> None:
+                             specs: list[dict[str, Any]], retries: int, rep: TickReport,
+                             backend: str = "", provenance: str = "") -> None:
         """Retry an interrupted detached check once, without creating revision feedback."""
         cause = self._check_failure_cause(run, results=run.result.get("checks") or [])
         if retries < 1 and specs:
@@ -250,7 +275,8 @@ class CheckRunMixin:
             self._dispatch_check_run(task, worktree=Path(cont.get("worktree") or run.worktree),
                                      branch=str(cont.get("branch") or run.branch),
                                      base=str(cont.get("base") or run.base), specs=specs, stage=stage,
-                                     cont=cont, rep=rep, retries=retries + 1)
+                                     cont=cont, rep=rep, retries=retries + 1,
+                                     backend=backend, provenance=provenance)
             return
         note = f"check did not run ({run.run_id}): {cause}; retry also failed; needs human"
         # Keep the mechanical continuation, not merely its prose diagnostic.  A delegated
@@ -258,7 +284,8 @@ class CheckRunMixin:
         # losing the PR/check stage it belongs to.
         self.state.get(task.id)["recovery_check"] = {
             "stage": stage, "cont": cont, "specs": specs, "retries": retries,
-            "run": run.run_id, "cause": cause,
+            "run": run.run_id, "cause": cause, "backend": backend or run.runner,
+            "provenance": provenance,
         }
         self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage,
                               delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))

@@ -1,4 +1,4 @@
-"""Now 1 (docs/design/now-1.md): the now module's computations, the page and its partials,
+"""Now (docs/design/now-1.md): the now module's computations, the page and its partials,
 the live stream, the text view and the heat-map shading."""
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ def test_the_page_shades_a_row_with_two_solid_cells(garden):
             log.emit("run_finished", "DM-001", mode="work", model=model, harness="claude", cost_usd=cost, status="done")
     lines = log.path.read_text().splitlines()
     log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
-    page = _client(garden).get("/now1?window=hour").text
+    page = _client(garden).get("/now?window=hour").text
     assert re.search(r'<th>work</th>.*?class="scaled worst" style="--k:1\.0">\s*<b><span class="mark worst" title="worst of the row">▽</span>\$4\.00</b><small>n 3</small>', page, re.S)
     assert re.search(r'<th>work</th>.*?class="scaled best" style="--k:0\.0">\s*<b><span class="mark best" title="best of the row">▲</span>\$1\.00</b><small>n 3</small>', page, re.S)
 
@@ -207,7 +207,7 @@ def test_cell_text_reads_like_garden_metrics():
     assert now1.cell_text(worst, "pct") == "▽ 25% (n 3)" and now1.cell_text(thin, "hours") == "0.5 h (~n 2)"
     assert now1.cell_text(None, "usd") == "—" == _tier_cell(None, "usd")
     # the five-second sentence names what comes next by title: whole words, then an ellipsis
-    assert now1.short_title("Build Now 1 at /now1 from the Fable design: live view of what is running") == "Build Now 1 at /now1 from the Fable design: live view…"
+    assert now1.short_title("Build the Now page from the retained design: live view of what is running") == "Build the Now page from the retained design: live view…"
     assert now1.short_title("  Second   task ") == "Second task"
 
 
@@ -229,11 +229,13 @@ def test_harness_progress_reads_a_partial_stream():
 
 # ---- the page --------------------------------------------------------------------------
 
-def test_now1_page_renders_the_four_regions_and_the_nav(garden):
-    page = _client(garden).get("/now1").text
+def test_now_page_renders_the_four_regions_and_the_nav(garden):
+    page = _client(garden).get("/now").text
     for region in ('id="now"', 'id="next"', 'id="where"', 'id="period"'):
         assert region in page
-    assert '<a href="/now1" class="on">Now 1</a>' in page and 'href="/now2"' in page
+    assert '<a href="/now" class="on">Now</a>' in page
+    assert "Now 1" not in page and "Now 2" not in page
+    assert page.index('href="/"') < page.index('href="/now"') < page.index('href="/board"')
     assert 'class="page-now"' in page and re.search(r'data-server-now="\d{4}-\d\d-\d\dT', page)
     assert "The garden is quiet." not in page  # two ready tasks are queued
     assert "Nothing running." in page and 'it will dispatch <a href="/tasks/DM-001">First task</a> into' in page
@@ -246,15 +248,15 @@ def test_now1_page_renders_the_four_regions_and_the_nav(garden):
     assert "p1, seed" in page and "0 of 2 merged" in page
     assert now1.QUIET_PERIOD in page
     for region in ("head", "now", "next", "where", "period"):
-        assert _client(garden).get(f"/partials/now1/{region}").status_code == 200
-    assert _client(garden).get("/partials/now1/nope").status_code == 404
+        assert _client(garden).get(f"/partials/now/{region}").status_code == 200
+    assert _client(garden).get("/partials/now/nope").status_code == 404
 
 
 def test_running_card_carries_the_start_time_the_clock_reads(garden):
     stdout = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Found the bug."}], "usage": {"input_tokens": 1000}}})
     run = _record_running(garden, stdout=stdout, started_minutes_ago=7)
     c = _client(garden)
-    page = c.get("/now1").text
+    page = c.get("/now").text
     card = re.search(r'<article class="specimen strip[^"]*"[^>]*data-task="DM-001"[^>]*>', page).group(0)
     assert f'data-started="{now1.iso_utc(run.started_at)}"' in card
     assert re.search(r'data-started="2\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00"', card)  # UTC, whole seconds, explicit offset
@@ -281,7 +283,7 @@ def test_typical_and_longer_than_usual_on_the_strip(garden):
         r.finished_at = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20)).isoformat()
         r.save()
     _record_running(garden, started_minutes_ago=20)  # twice the typical ten minutes
-    page = _client(garden).get("/now1").text
+    page = _client(garden).get("/now").text
     strip = re.search(r'data-task="DM-001".*?</article>', page, re.S).group(0)
     assert 'data-typical="6' in strip and "typically 1" in strip
     assert "data-longer> · longer than usual" in strip  # past typical: the words show, no colour change
@@ -299,7 +301,7 @@ def test_no_process_record_and_hands_are_visible(garden):
     t = store.task("DM-002")
     t.status = now1.Status.WAITING_HUMAN
     store.save(t)
-    page = _client(garden).get("/now1").text
+    page = _client(garden).get("/now").text
     assert "no process recorded" in page and "(1 without a process)" in page
     assert 'class="stamp">needs you</span>' in page and "Which fixture: Go or Node?" in page
     assert 'class="stamp">paused</span>' in page and "codex harness paused" in page and "usage limit reached" in page
@@ -324,7 +326,7 @@ def test_next_region_is_the_schedulers_dispatch_order_with_reasons(garden):
     assert lines[0]["task"] == "DM-001" and lines[0]["harness"] == "claude" and lines[0]["model"] == "sonnet" and not lines[0]["skip"]
     sched.pause_harness("claude", "quota")
     assert now1.dispatch_lines(sched)[0]["skip"] == "harness paused"
-    page = _client(garden).get("/now1").text
+    page = _client(garden).get("/now").text
     assert "revise round 2 of 2 · revise · medium →" in page and '<span class="skip">harness paused</span>' in page
     assert "in review" not in page.lower() or "no open PR" in page
 
@@ -346,7 +348,7 @@ def test_merge_queue_and_reviews_waiting_show_their_facts(garden):
                  ("pending_reviews", [{"kind": "persona", "name": "security"}])):
         st2[k] = v
     sched.state.save()
-    page = _client(garden).get("/now1").text
+    page = _client(garden).get("/now").text
     assert "rebased, waiting for its rollup · CI pending" in page
     assert "round 1 of 2 · CI success · the automated review verdict is request_changes" in page
     # a waiting review names the task and the gate that holds it; nothing does here, and a free
@@ -357,7 +359,7 @@ def test_merge_queue_and_reviews_waiting_show_their_facts(garden):
     # in the ink colour and sends the person to the log rather than promising a recovery
     app_ = create_app(Store(garden), watch=False, host="testserver")
     app_.state.hub.tick_record = {"at": "2999-01-01T00:00:00+00:00"}
-    page = TestClient(app_).get("/now1").text
+    page = TestClient(app_).get("/now").text
     assert ('class="fact held">still queued after a tick and no gate explains it: see the task&#39;s log · '
             '<a href="/tasks/DM-002#log">open the log</a>') in page
 
@@ -408,7 +410,7 @@ def test_phase_sheet_grows_with_merges_and_closed_phases_are_specimens(garden):
     t = store.task("DM-001")
     t.status = now1.Status.DONE
     store.save(t)
-    page = _client(garden).get("/now1").text
+    page = _client(garden).get("/now").text
     assert "1 of 2 merged" in page and 'style="--grown:50.0%"' in page and "p1, in bud" in page
     assert "1 of 1 · merged" in page and "0 of 1 · not started" in page
     assert 'class="stamp ink">pressed</span>' in page and "/phases/demo/p0" in page
@@ -422,15 +424,15 @@ def test_last_period_reads_the_windows_events(garden):
         log.emit("dispatch", task, mode="work", model=model, harness="claude")
         for ev in (("run_finished", {"mode": "work", "model": model, "harness": "claude", "cost_usd": cost, "status": "done"}),
                    ("review", {"verdict": "approve" if i == 0 else "request_changes"}),
-                   ("transition", {"from": "in_review", "to": "done"})):
+                   ("transition", {"from": "in_review", "to": "done", "note": "PR merged: https://example.test"})):
             log.emit(ev[0], task, **ev[1])
     log.emit("answer", "DM-001", question="q", answer="a")
     log.emit("profile_changed", "", **{"from": "", "to": "steady"})
     lines = log.path.read_text().splitlines()
     log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
     c = _client(garden)
-    page = c.get("/now1?window=hour").text
-    assert 'href="/now1?window=hour#period" class="on"' in page
+    page = c.get("/now?window=hour").text
+    assert 'href="/now?window=hour#period" class="on"' in page
     assert "merged · DM-001, DM-002" in page and "50 %<small>1 of 2</small>" in page
     assert "$4.00<small>2 runs" in page and "$2.00</div><div class=\"l\">per accepted task" in page
     assert '<span class="vendor">claude:</span>opus' in page and '<span class="vendor">claude:</span>sonnet' in page
@@ -453,7 +455,7 @@ def test_last_period_reads_the_windows_events(garden):
     assert '<span class="vendor">claude:</span>opus<span class="tot">$3.00 · 1 run</span>' in page
     assert re.search(r'<th>work</th>.*?class="thin">\s*<b>\$1\.00</b>', page, re.S)
     for window in ("today", "24h", "phase"):
-        assert c.get(f"/now1?window={window}").status_code == 200
+        assert c.get(f"/now?window={window}").status_code == 200
 
 
 def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(garden):
@@ -472,7 +474,10 @@ def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(ga
     log.emit("run_finished", "DM-002", run="r3", mode="rebase", model="sonnet", harness="claude", cost_usd=1.0, status="done")
     log.emit("automerged", "DM-001", pr="https://example/1", method="merge")
     for task in ("DM-001", "DM-002"):
-        log.emit("transition", task, **{"from": "in_review", "to": "done"})
+        transition = {"from": "in_review", "to": "done"}
+        if task == "DM-002":
+            transition["note"] = "PR merged: https://example.test/2"
+        log.emit("transition", task, **transition)
     lines = log.path.read_text().splitlines()
     log.path.write_text("\n".join(json.dumps({**json.loads(ln), "at": at}) for ln in lines) + "\n")
     ledger = garden / "docs" / "operator-spend.jsonl"
@@ -487,7 +492,7 @@ def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(ga
                                   "rebase rounds per merge 1.00 mechanical · 0.50 agent (2 + 1 over 2 merges)",
                                   "operator $1.00 · 17 % of the window's spend"]
     # the same on the page, one figure per line under By hand
-    page = _client(garden).get("/now1?window=hour").text
+    page = _client(garden).get("/now?window=hour").text
     assert "<dt>hand merges</dt><dd><b>1 of 2</b><small>DM-002</small></dd>" in page
     assert '<b>1.00 <span class="unit">mechanical</span> · 0.50 <span class="unit">agent</span></b><small>per merge: 2 + 1 over 2 merges · $1.00</small>' in page
     assert '<b>$1.00 <span class="unit">· 17 % of the window\'s spend</span></b><small>1 session in the ledger' in page
@@ -532,7 +537,7 @@ def test_last_period_is_quiet_only_when_nothing_at_all_was_recorded(garden):
     ledger = garden / "docs" / "operator-spend.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({"at": now, "session": "sess-a", "list_price_usd": 2.5, "turns": 3, "avg_context": 100}) + "\n")
-    page = _client(garden).get("/now1?window=hour").text
+    page = _client(garden).get("/now?window=hour").text
     assert now1.QUIET_PERIOD not in page
     assert '<div class="v">$2.50<small>no run finished</small></div><div class="l">cost</div>' in page
     assert '<b>$2.50 <span class="unit">· 100 % of the window\'s spend</span></b><small>1 session in the ledger' in page
@@ -561,18 +566,18 @@ def test_stream_drives_a_dispatch_event_to_the_strip_fragment(garden):
     log = EventLog(store.config.garden_dir / "events.jsonl")
     log.emit("dispatch", "DM-001", run=run.run_id, mode="work", model="sonnet", harness="claude")
     c = _client(garden)
-    body = c.get("/now1/stream?start=0&limit=1").text
+    body = c.get("/now/stream?start=0&limit=1").text
     messages = _sse(body)
     assert messages[0][0] == "event" and messages[0][1]["kind"] == "dispatch" and messages[0][1]["run"] == run.run_id
     # the page fetches the strip the event names and inserts it: the fragment is one article
-    frag = c.get(f"/partials/now1/strip/DM-001/{run.run_id}").text.strip()
+    frag = c.get(f"/partials/now/strip/DM-001/{run.run_id}").text.strip()
     assert frag.startswith('<article class="specimen strip') and frag.endswith("</article>")
     assert f'data-run="{run.run_id}"' in frag and 'data-started="' in frag and "“Starting.”" in frag
-    assert c.get("/partials/now1/strip/DM-001/nope").status_code == 404
+    assert c.get("/partials/now/strip/DM-001/nope").status_code == 404
     # a finished run's fragment carries its verdict and stops the clock
     run.status, run.cost_usd, run.finished_at = "done", 1.42, dt.datetime.now(dt.UTC).isoformat()
     run.save()
-    frag = c.get(f"/partials/now1/strip/DM-001/{run.run_id}").text
+    frag = c.get(f"/partials/now/strip/DM-001/{run.run_id}").text
     assert 'data-stopped="' in frag and '<span class="verdict">done · $1.42</span>' in frag
 
 
@@ -584,7 +589,7 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     hub.tick_seq, hub.tick_record = 3, {"seq": 3, "at": "2026-09-06T02:00:00+00:00", "duration_s": 0.4, "summary": "quiet"}
     with hub.lock:  # a pass in flight: the stream must not wait for it
         with TestClient(app_) as c:
-            r = c.get("/now1/stream?limit=2&seconds=0.5")
+            r = c.get("/now/stream?limit=2&seconds=0.5")
     assert r.headers["content-type"].startswith("text/event-stream")
     kinds = {k: d for k, d in _sse(r.text)}
     assert kinds["progress"]["run"] == run.run_id and kinds["progress"]["said"] == "Working." and kinds["progress"]["tokens"] == 5
@@ -608,8 +613,8 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     assert parsed[0][0] == "tick" and parsed[1][0] == "event" and parsed[1][1]["kind"] == "transition"
     assert len(calls) >= 1
     # the page itself never polls: no data-poll hook and no setInterval fetch of a region
-    page = c.get("/now1").text
-    assert 'data-poll="' not in page and 'new EventSource("/now1/stream")' in page
+    page = c.get("/now").text
+    assert 'data-poll="' not in page and 'new EventSource("/now/stream")' in page
 
 
 def test_tail_lines_leaves_a_partial_line_for_the_next_read(tmp_path):
@@ -630,7 +635,7 @@ def test_garden_now_prints_the_four_regions(garden):
     cwd = os.getcwd()
     os.chdir(garden)
     try:
-        r = CliRunner().invoke(app, ["now", "--page", "1"])
+        r = CliRunner().invoke(app, ["now"])
     finally:
         os.chdir(cwd)
     assert r.exit_code == 0, r.output
@@ -641,36 +646,22 @@ def test_garden_now_prints_the_four_regions(garden):
     assert now1.QUIET_PERIOD in r.output
 
 
-def test_garden_now_page_2_prints_the_four_regions(garden):
-    cwd = os.getcwd()
-    os.chdir(garden)
-    try:
-        r = CliRunner().invoke(app, ["now", "--page", "2"])
-    finally:
-        os.chdir(cwd)
-    assert r.exit_code == 0, r.output
-    for title in ("Now", "Next", "Where we are", "The last period"):
-        assert title in r.output
+def test_legacy_now_routes_redirect_to_the_canonical_page(garden):
+    c = _client(garden)
+    for legacy in ("/now1", "/now2"):
+        response = c.get(f"{legacy}?window=24h", follow_redirects=False)
+        assert response.status_code == 308
+        assert response.headers["location"] == "/now?window=24h"
 
 
-def test_garden_now_rejects_an_unknown_page(garden):
-    cwd = os.getcwd()
-    os.chdir(garden)
-    try:
-        r = CliRunner().invoke(app, ["now", "--page", "3"])
-    finally:
-        os.chdir(cwd)
-    assert r.exit_code == 2 and "page must be 1 or 2" in r.output
-
-
-def test_walkthrough_captures_now1(garden):
+def test_walkthrough_captures_now(garden):
     from garden.walkthrough import capture, pages_for
 
     store = Store(garden)
     ph = store.phase("demo", "p1")
-    assert [p.url for p in pages_for(store, ph)][:3] == ["/now2", "/", "/now1"]
+    assert [p.url for p in pages_for(store, ph)][:3] == ["/", "/now", "/board"]
     out = Path(garden) / "cap"
     result = capture(store, ph, out, screenshots=False)
-    now_page = next(pr for pr in result.pages if pr.spec.slug == "now1")
-    assert now_page.status == 200 and (out / "now1.html").exists()
-    assert "every run in flight" in (out / "now1.txt").read_text()
+    now_page = next(pr for pr in result.pages if pr.spec.slug == "now")
+    assert now_page.status == 200 and (out / "now.html").exists()
+    assert "every run in flight" in (out / "now.txt").read_text()

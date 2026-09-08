@@ -59,6 +59,13 @@ def test_backlog_shows_two_phases_as_sections_with_freeze_marker(garden):
     assert allp.status_code == 200 and 'data-phase="demo/p1"' in allp.text
 
 
+def test_backlog_narrow_rows_give_titles_a_full_width_line(garden):
+    page = client(garden).get("/board?product=demo&view=backlog").text
+    assert "@media (max-width:600px)" in page
+    assert ".bl-row .bl-main { flex:1 0 100%;" in page
+    assert ".bl-row .bl-ctrls { flex-wrap:wrap;" in page
+
+
 def test_order_action_persists_order_and_crosses_a_band(garden):
     c = client(garden)
     # DM-001 is priority 1, DM-002 priority 2, both in demo/p1. Drop DM-002 at the top of the

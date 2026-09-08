@@ -8,8 +8,10 @@ from datetime import UTC, datetime, timedelta
 
 import yaml
 
-from garden.now2 import snapshot
+from garden.now1 import snapshot
+from garden.scheduler import Scheduler
 from garden.store import Store
+from tests.conftest import FakeGitHub
 from tests.test_cli import run
 
 
@@ -48,8 +50,9 @@ def test_operator_ledger_default_is_shared_by_command_costs_and_now(garden):
     costs = run(garden, "costs", "--by", "activity", "--json")
     assert costs.exit_code == 0
     assert json.loads(costs.output)["totals"]["operator"]["cost_usd"] == 2.5
-    now = snapshot(Store(garden), window="24h")
-    assert now["period"]["operator"] == 2.5
+    store = Store(garden)
+    now = snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda _: None), window="24h")
+    assert now["period"]["operator"]["spend"] == 2.5
 
 
 def test_operator_spend_record_from_transcript_appends_and_prints(garden, tmp_path):

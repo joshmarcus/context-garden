@@ -157,6 +157,7 @@ def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])
+@pytest.mark.stress
 def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size):
     rs = RunStore(garden / ".garden")
     for n in range(history_size):
@@ -172,7 +173,7 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     timings = []
     scans = rs.scan_count
     reads = rs.read_count
-    urls = ("/", "/board", "/partials/board", "/now2", "/now2/period")
+    urls = ("/", "/board", "/partials/board", "/now", "/partials/now/period")
     for interval in range(3):
         for url in urls * 4:
             started = time.perf_counter()
@@ -256,6 +257,17 @@ def test_snapshot_scrubs_sensitive_strings_not_just_field_names():
     text = str(value)
     assert "/home/alice/repo" not in text
     assert "abc123" not in text and "ghp_secret" not in text and "xyz" not in text
+
+
+def test_snapshot_replaces_configured_connection_targets_with_aliases():
+    target = "operator@host-203-0-113-10.internal"
+    value = _safe(
+        {"message": f"failed on {target}; credential=not-for-sharing"},
+        config={"ssh": {"hosts": [{"name": "build-a", "host": target}]}},
+    )
+    text = str(value)
+    assert target not in text and "not-for-sharing" not in text
+    assert "build-a" in text and "credential=<redacted>" in text
 
 
 def test_run_page_links_and_serves_every_capture_type(garden):
@@ -2044,7 +2056,7 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
                 responses.extend([
                     c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False),
                     c.get("/"),
-                    c.get("/now1"),
+                    c.get("/now"),
                 ])
             finally:
                 requests_finished.set()
@@ -2076,6 +2088,7 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
     hub.action_lock = threading.Lock()
 
 
+@pytest.mark.stress
 def test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest(garden, tmp_path):
     """A bounded CPU/memory workload runs while a second validation waits."""
     import json
@@ -2176,7 +2189,7 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
     timings = {}
     requests = (
         ("inbox", lambda: c.get("/inbox")),
-        ("now", lambda: c.get("/now1")),
+        ("now", lambda: c.get("/now")),
         ("task-control", lambda: c.post("/tasks/DM-001/priority", data={"note": "2"},
                                          follow_redirects=False)),
         ("pause", lambda: c.post("/pause", data={"reason": "bounded workload evidence"},
@@ -2325,6 +2338,7 @@ def test_timed_out_dispatch_retry_does_not_duplicate_preparing_work(garden, monk
     assert len(responses) == 2 and all(response.status_code == 303 for response in responses)
 
 
+@pytest.mark.stress
 def test_served_incident_controls_retry_and_restart_during_overload(garden, tmp_path):
     """Exercise the incident journey through a real socket and ASGI worker pool."""
     import concurrent.futures

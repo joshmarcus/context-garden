@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from garden.cli import app
 from garden.personas import phase_brief
 from garden.runs import RunStore
+from garden.scheduler import State
 from garden.scheduler.checkruns import _is_ui_path
 from garden.scheduler.report import TickReport
 from garden.store import Store
@@ -19,6 +20,7 @@ from garden.walkthrough import (
     NARROW_OUTER_WIDTH,
     VIEWPORTS,
     NarrowViewportError,
+    PageSpec,
     _narrow_frame,
     _prepare_browser,
     _redact_home,
@@ -75,6 +77,34 @@ def test_capture_writes_pages_and_index(garden):
     assert run.run_id in inbox_capture
     assert 'class="decision-evidence"' in inbox_capture
     assert 'class="card-actions decision-actions"' in inbox_capture
+    decision = next(pr for pr in result.pages if pr.spec.slug == "task-decision")
+    assert decision.spec.url == "/tasks/DM-001"
+    assert 'class="panel decision-card"' in (out / "task-decision.html").read_text()
+
+
+def test_capture_includes_representative_decision_card_without_live_decision(garden, tmp_path):
+    store = Store(garden)
+    task = store.task("DM-001")
+    state = State(store.config.garden_dir / "state.json")
+    facts = state.get(task.id)
+    for key in ("decision", "question", "needs_human"):
+        facts.pop(key, None)
+    state.save()
+
+    result = capture(store, store.phase("demo", "p1"), tmp_path / "walkthrough", screenshots=False)
+
+    decision = next(page for page in result.pages if page.spec.slug == "task-decision")
+    assert decision.spec.url == "/tasks/DM-001?walkthrough=decision"
+    assert 'class="panel decision-card"' in (tmp_path / "walkthrough" / "task-decision.html").read_text()
+
+
+def test_capture_marks_empty_or_failed_documents(garden, monkeypatch, tmp_path):
+    store = Store(garden)
+    phase = store.phase("demo", "p1")
+    monkeypatch.setattr("garden.walkthrough._fetch", lambda *_args: {"now": (200, "")})
+    monkeypatch.setattr("garden.walkthrough.pages_for", lambda *_args: [PageSpec("now", "/", "Now", "", "")])
+    result = capture(store, phase, tmp_path / "empty", screenshots=False)
+    assert result.pages[0].note == "empty or unsuccessful document"
 
 
 def test_pages_include_the_phase_and_a_task(garden):
@@ -84,6 +114,14 @@ def test_pages_include_the_phase_and_a_task(garden):
     assert "/phases/demo/p1" in urls
     assert any(s.url.startswith("/tasks/") for s in specs)
     assert "/" in urls
+
+
+def test_includes_costs_backlog_retro(garden):
+    specs = pages_for(Store(garden), Store(garden).phase("demo", "p1"))
+    urls = {s.url for s in specs}
+    assert "/costs" in urls
+    assert "/board?view=backlog" in urls
+    assert "/phases/demo/p1/retro" in urls
 
 
 def test_ui_path_detection():
@@ -184,6 +222,8 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "ui" / "now.html").exists()
     assert (tmp_path / "ui" / "board.html").exists()
     assert (tmp_path / "ui" / "task.html").exists()
+    assert "task-decision" in result["pages"]
+    assert 'class="panel decision-card"' in (tmp_path / "ui" / "task-decision.html").read_text()
     for slug in ("now", "inbox", "board", "task"):
         for width in VIEWPORTS:
             for scheme in COLOR_SCHEMES:
@@ -320,7 +360,7 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
     assert ui["worktree"] == str(worktree)
     assert "garden_root" not in ui
-    assert ui["pages"] == ["inbox", "now"]
+    assert ui["pages"] == ["inbox"]
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
