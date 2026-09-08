@@ -40,7 +40,9 @@ def no_live_garden_root(base: Path) -> str:
 # fence manifest until the run is reaped or an operator confirms it (CG-242): live reload must
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
-EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "checks", "worker_env.pass")
+EXECUTABLE_KEYS: tuple[str, ...] = (
+    "notify.command", "checks", "worker_env.pass", "worker_env.config_files",
+)
 
 
 def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
@@ -235,6 +237,8 @@ DEFAULTS: dict[str, Any] = {
                                   # variable the harness reads. Claude's .credentials.json and
                                   # Codex's auth.json are copied into a fresh private directory
                                   # per dispatch; custom variables pass through unchanged.
+        "config_files": {},       # explicitly named {source, destination, required} files;
+                                  # destinations are relative to the isolated worker HOME.
     },
     "browser_readiness": {
         "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
