@@ -253,7 +253,11 @@ class GitHub:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        r = httpx.request(method, self.api_base + path, headers=headers, timeout=30, **kw)
+        base = self.api_base
+        if path == "/graphql" and self.host != "github.com":
+            # Enterprise GraphQL is a sibling of the REST v3 endpoint.
+            base = base.removesuffix("/v3")
+        r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
         if r.status_code >= 400:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None

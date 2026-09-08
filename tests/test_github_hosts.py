@@ -152,6 +152,34 @@ def test_explicit_api_base_cannot_redirect_a_scoped_token(api_base: str):
         GitHub(use_gh=False, host="forge-one.test", api_base=api_base, token="one")
 
 
+@pytest.mark.parametrize("host,api_base,rest_url,graphql_url", [
+    ("github.com", "", "https://api.github.com", "https://api.github.com/graphql"),
+    ("forge-one.test", "", "https://forge-one.test/api/v3", "https://forge-one.test/api/graphql"),
+    ("forge-one.test", "https://forge-one.test/prefix/api/v3",
+     "https://forge-one.test/prefix/api/v3", "https://forge-one.test/prefix/api/graphql"),
+])
+def test_mark_ready_uses_the_host_graphql_endpoint(monkeypatch, host, api_base, rest_url, graphql_url):
+    import httpx
+
+    github = GitHub(use_gh=False, host=host, api_base=api_base, token="scoped-token")
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs["headers"]["Authorization"]))
+        if method == "GET":
+            return httpx.Response(200, json={"node_id": "PR_fixture"})
+        assert kwargs["json"]["variables"] == {"id": "PR_fixture"}
+        return httpx.Response(200, json={"data": {"markPullRequestReadyForReview": {}}})
+
+    monkeypatch.setattr("garden.github.httpx.request", request)
+    github.mark_ready("Team/Repo", 7)
+
+    assert calls == [
+        ("GET", rest_url + "/repos/Team/Repo/pulls/7", "Bearer scoped-token"),
+        ("POST", graphql_url, "Bearer scoped-token"),
+    ]
+
+
 def test_same_slug_on_two_hosts_keeps_rest_tokens_isolated(monkeypatch):
     one = GitHub(use_gh=False, host="forge-one.test", token="one")
     two = GitHub(use_gh=False, host="forge-two.test", token="two")
