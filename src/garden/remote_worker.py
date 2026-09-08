@@ -82,8 +82,15 @@ class _LeaseHeartbeat:
         self.client = client
         self.stop_event = threading.Event()
         self.failure: BaseException | None = None
-        self.recovery_seconds = max(0.0, float(run.get("recovery_seconds") or 300))
-        self.recovery_deadline = time.monotonic() + self.recovery_seconds
+        # New controllers send the whole interval for which this generation remains
+        # authoritative: the ordinary lease plus its recovery grace.  Keep the older
+        # recovery_seconds fallback so a newly deployed worker remains compatible with
+        # the previous claim shape.
+        self.recovery_window_seconds = max(
+            0.0,
+            float(run.get("recovery_window_seconds") or run.get("recovery_seconds") or 300),
+        )
+        self.recovery_deadline = time.monotonic() + self.recovery_window_seconds
         self.post_lock = threading.Lock()
         self.thread = threading.Thread(target=self._run, name=f"garden-heartbeat-{run['id']}", daemon=True)
 
@@ -101,7 +108,7 @@ class _LeaseHeartbeat:
                     )
                 if status != 200:
                     raise WorkerRequestError(status, "heartbeat rejected")
-                self.recovery_deadline = time.monotonic() + self.recovery_seconds
+                self.recovery_deadline = time.monotonic() + self.recovery_window_seconds
                 return response
             except BaseException as exc:
                 if isinstance(exc, WorkerRequestError) and not exc.retryable:
