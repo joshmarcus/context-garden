@@ -20,6 +20,27 @@ FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-stress", action="store_true", default=False,
+        help="Opt in to stress/load experiments (excluded from ordinary test runs and CI)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Deselect stress before fixtures run, even for explicit node or -m selections."""
+    if config.getoption("--run-stress"):
+        return
+    selected = []
+    deselected = []
+    for item in items:
+        target = deselected if item.get_closest_marker("stress") is not None else selected
+        target.append(item)
+    if deselected:
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
+
+
 @pytest.fixture(autouse=True)
 def in_process_workers(monkeypatch):
     """No test drives a subprocess worker: for the whole suite the `local` runner (and its
