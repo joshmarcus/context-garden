@@ -27,7 +27,7 @@ from .. import gitops
 from ..events import EventLog
 from ..github import GitHub
 from ..harness import DIFFICULTIES
-from ..model import Status, Task
+from ..model import Status, Task, now_iso
 from ..notify import notify, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -261,6 +261,12 @@ class Scheduler(
         from ..runner.base import scrubbed_env
 
         checkout = self.cfg.product_checkout(task.product)
+        if runner.remote and str(checkout.get("strategy") or "worktree") == "in_place":
+            run.env_snapshot["canonical_active_run_ids"] = sorted(
+                item.run_id for item in self.runs.active() if item.run_id != run.run_id
+            )
+            run.save()
+            return None
         root = configured_root(checkout, self.store.root) if not runner.remote else None
         if root is None:
             return None
@@ -269,11 +275,20 @@ class Scheduler(
             if item.run_id != run.run_id and item.worktree
             and Path(item.worktree).resolve() == root.resolve()
         }
-        claim(root, run.run_id, active_ids)
-        preflight(root, branch, base)
-        reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
-                  run.path / "reconcile.log")
-        preflight(root, branch, base)
+        try:
+            claim(root, run.run_id, active_ids)
+            preflight(root, branch, base)
+            reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
+                      run.path / "reconcile.log")
+            preflight(root, branch, base)
+        except Exception:
+            from ..canonical import release
+
+            release(root, run.run_id)
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.save()
+            raise
         return root
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
