@@ -184,8 +184,20 @@ class Brief:
         return max(1, chars // 4)
 
 
-def _push_rule(setup: dict, validation: dict | None = None) -> str:
+def _push_rule(setup: dict, validation: dict | None = None,
+               ci: dict[str, Any] | None = None) -> str:
     provider = str((validation or {}).get("provider") or "legacy")
+    ci = ci or {}
+    if ci.get("status_provider") == "worker_check":
+        command = str((ci.get("worker_check") or {}).get("command") or "").strip()
+        validation_text = f" Run `{command}`" if command else " Run the configured ordinary suite"
+        return (
+            "Do NOT push and do NOT poll GitHub Actions. The controller owns publication and "
+            "external status reads." + validation_text + " through `$GARDEN_VALIDATION_RUNNER -m "
+            "garden.validation -- ...`; its Garden-authored exact-head receipt is the final "
+            "validation gate. Keep local iteration focused and exclude stress/load tests unless "
+            "a separate bounded experiment explicitly opts in."
+        )
     if setup.get("worker_push") is True and provider in ("legacy", "actions"):
         return (
             "You may push ONLY this assigned branch to origin for the configured CI checks, "
@@ -415,7 +427,8 @@ def build_brief(
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
             env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
-            push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
+            push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product),
+                                 dict(cfg.get("ci", {}) or {})),
         )
         sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
         if review_feedback:

@@ -876,6 +876,12 @@ class ReapMixin:
         criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
         verified = result.get("verified")
         st = self.state.get(task.id)
+        # The source identity changes when the branch changes, independently of GitHub's
+        # PR updated_at. Status providers and queued reviews key exclusively to this head.
+        try:
+            st["head_sha"] = gitops.head_sha(Path(run.worktree))
+        except gitops.GitError:
+            st["head_sha"] = ""
         if not slug or not self.github.available:
             self._transition(task, Status.IN_REVIEW,
                              f"branch {branch} pushed; GitHub unavailable, open the PR by hand and run `garden pr {task.id} <url>`{cost}")
