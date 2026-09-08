@@ -154,7 +154,13 @@ def _request(base_url: str, method: str, path: str, replay: Replay) -> dict[str,
     except Exception as error:
         status = getattr(error, "code", 0)
         body = json.loads(error.read()) if hasattr(error, "read") else {"error": str(error)}
-    event = {"method": method, "path": path, "status_code": status, "observation": body}
+    event = {
+        "method": method,
+        "path": path,
+        "url": base_url + path,
+        "status_code": status,
+        "observation": body,
+    }
     replay.requests.append(event)
     return event
 
@@ -179,11 +185,30 @@ def main() -> int:
         finally:
             server.shutdown()
             server.server_close()
+    events = [
+        {
+            "kind": "http_request",
+            "state": state,
+            "outcome": outcome,
+            "method": request["method"],
+            "url": request["url"],
+            "status_code": request["status_code"],
+            "observed": observed,
+        }
+        for state, outcome, request, observed in (
+            ("empty", "empty", empty, "The disposable garden contains no product or tasks."),
+            ("failure", "failure", failed, "Planner rejection leaves the pre-existing garden unchanged."),
+            ("recovery", "success", recovered, "A successful 201 retry creates draft-only onboarding output."),
+            ("affected", "success", collision, "A collision response preserves the completed garden."),
+        )
+    ]
     manifest = {
         "producer": "garden.cg356.onboarding-replay/v1", "head": args.head,
         "started_at": datetime.now(UTC).isoformat(), "environment": "disposable-served-http",
         "status": "pass",
         "requests": replay.requests,
+        "events": events,
+        "artifacts": [str(args.output)],
         "states": {
             "empty": {"status": "pass", "action": "GET /onboarding", "observed": empty["observation"]},
             "failure": {"status": "pass", "action": "POST /onboarding/reject", "observed": failed["observation"]},
@@ -196,6 +221,7 @@ def main() -> int:
     assert failed["observation"]["product_exists"] is False
     assert recovered["status_code"] == 201 and recovered["observation"]["task_statuses"] == ["draft"]
     assert collision["status_code"] == 409 and collision["observation"]["files_unchanged"] is True
+    assert events[2]["outcome"] == "success" and events[2]["status_code"] == 201
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, indent=2) + "\n")
     return 0

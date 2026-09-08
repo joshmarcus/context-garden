@@ -1,6 +1,6 @@
 # CG-356 served onboarding recovery replay
 
-The replay at `c910cac39d559e924a26f47bee08d8591a20dd7c` starts a disposable HTTP
+The replay at `e7c0e1a0faef2dd5a6c024e469445f2cca462122` starts a disposable HTTP
 application around the real `onboard_project` implementation and drives its recovery
 endpoints over loopback. The durable
 [`replay/interaction-manifest.json`](replay/interaction-manifest.json) records every
@@ -19,7 +19,7 @@ Reproduce from the recorded source with:
 ```sh
 PYTHONPATH=src .venv/bin/python docs/validation/cg356/reproduce.py \
   --output docs/validation/cg356/replay/interaction-manifest.json \
-  --head c910cac39d559e924a26f47bee08d8591a20dd7c
+  --head e7c0e1a0faef2dd5a6c024e469445f2cca462122
 ```
 
 This is lifecycle interaction evidence, not a rendered-appearance change or screenshot
