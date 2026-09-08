@@ -369,6 +369,7 @@ def test_touches_guarded_path_predicate():
 def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["setup"] = {"worker_push": True}
+    pr.head_sha = "current-head"
     pr.checks = ""
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "no CI result" in reason
@@ -377,4 +378,5 @@ def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):
     pr.checks = "FAILURE"
     assert not sched._automerge_gate(t, pr)[0]
     pr.checks = "SUCCESS"
-    assert sched._automerge_gate(t, pr)[0]
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
