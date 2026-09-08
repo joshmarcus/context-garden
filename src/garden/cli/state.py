@@ -186,6 +186,53 @@ def retry(task_id: str, actor: str = typer.Option("human_owner", "--actor",
         raise typer.Exit(1) from None
 
 
+@app.command("troubled-continue", rich_help_panel=PANEL_DECIDE)
+def troubled_continue(task_id: str, difficulty: str = typer.Option("", help="Optional same-or-higher tier")):
+    """Grant one bounded revision while preserving lifetime counts and existing work."""
+    store = _store()
+    try:
+        _scheduler(store).continue_troubled(_task(store, task_id), difficulty=difficulty)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: one preserved revision queued")
+
+
+@app.command("investigate", rich_help_panel=PANEL_DECIDE)
+def investigate(
+    task_id: str,
+    reason: str = typer.Argument(..., help="Question or suspected cause to investigate"),
+    owner: str = typer.Option("operator", help="operator or agent"),
+    scope: str = typer.Option("read-only diagnosis", help="Explicit investigation boundary"),
+    budget: str = typer.Option("one bounded investigation", help="Explicit time or cost budget"),
+):
+    """Pause a task at a safe boundary and create a durable investigation request."""
+    if owner not in ("operator", "agent"):
+        err.print("[red]owner must be operator or agent[/red]")
+        raise typer.Exit(1)
+    store = _store()
+    try:
+        _scheduler(store).pause_for_investigation(
+            _task(store, task_id), reason, owner=owner, scope=scope, budget=budget
+        )
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation requested for {owner}")
+
+
+@app.command("investigation-report", rich_help_panel=PANEL_DECIDE)
+def investigation_report(task_id: str, report: str = typer.Argument(...)):
+    """Publish a completed diagnosis without changing the task outcome."""
+    store = _store()
+    try:
+        _scheduler(store).complete_investigation(_task(store, task_id), report)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation report ready for decision")
+
+
 @app.command("recover", rich_help_panel=PANEL_DECIDE)
 def recover(task_id: str):
     """Use one delegated, bounded recovery continuation without changing product scope."""

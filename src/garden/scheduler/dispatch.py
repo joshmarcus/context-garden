@@ -75,7 +75,8 @@ class DispatchMixin:
         skips (a frozen phase, a spent budget, a manual runner, a paused harness) are applied
         by the walker, not here, so the order stays true even for a line the tick passes over."""
         tasks = self.store.tasks()
-        max_rev = int(self.cfg.get("max_revisions", 3))
+        policy = self.cfg.revision_policy()
+        max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
             tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
@@ -83,6 +84,8 @@ class DispatchMixin:
                  or not blockers(task, tasks, stack=False))]
         queue = [(task, mode, (
             "rebase round, goes first" if mode == "rebase" else
+            f"substantive revise round {int(self.state.get(task.id).get('substantive_revisions', self.state.get(task.id).get('revisions', 0))) + 1}"
+            if mode == "revise" and policy["enabled"] else
             f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
             if mode == "revise" else
             f"priority {task.priority}" + (f" · order {task.order}" if task.order is not None else "")
@@ -151,7 +154,8 @@ class DispatchMixin:
                         self.state.save()
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
-                self._transition(task, Status.FAILED, f"dispatch failed: {e}")
+                if not self.state.get(task.id).get("needs_human"):
+                    self._transition(task, Status.FAILED, f"dispatch failed: {e}")
 
     def _audit_stuck(self, rep: TickReport) -> None:
         """Backstop: any non-terminal task with no active run and no dispatchable next
@@ -162,7 +166,7 @@ class DispatchMixin:
         active = {r.task_id for r in self.runs.active()}
         ready_ids = {t.id for t in tasks.values()
                      if t in ready(tasks, stack=self.stack_enabled_for(t))}
-        max_rev = int(self.cfg.get("max_revisions", 3))
+        max_rev = 10**9 if self.cfg.revision_policy()["enabled"] else int(self.cfg.get("max_revisions", 3))
         for t in tasks.values():
             if t.status.terminal or t.status == Status.RUNNING:
                 continue  # running/terminal tasks are accounted for (reap handles a lost run)
@@ -375,6 +379,12 @@ class DispatchMixin:
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        if mode in ("work", "revise", "resume") and st.get("investigation"):
+            investigation = st["investigation"]
+            if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
+                raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
+        if mode == "revise" and not st.get("pending_feedback_easy") and not st.get("pending_feedback_rebase"):
+            self._apply_revision_policy(task, st)
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -603,6 +613,10 @@ class DispatchMixin:
                 rebase_note = f", rebase round {st['rebases']} (not counted)"
             else:
                 st["revisions"] = int(st.get("revisions", 0)) + 1
+                if not revise_easy:
+                    st["substantive_revisions"] = int(st.get("substantive_revisions", st["revisions"] - 1)) + 1
+                    if st.get("troubled_decisions"):
+                        st["revision_allowance"] = max(0, int(st.get("revision_allowance", 0)) - 1)
             st["pending_feedback"] = ""
             st.pop("pending_feedback_sources", None)
             st.pop("pending_feedback_easy", None)
