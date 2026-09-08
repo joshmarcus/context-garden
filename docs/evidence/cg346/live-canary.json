@@ -1,0 +1,175 @@
+{
+  "status": "live canary passed; host terminated",
+  "instance_id": "i-0f14bee6ae2b3355b",
+  "worker_source_head": "3e2f3699e88732c05a3ed62b89ed9211cd4cf41c",
+  "final_implementation_head": "da287e4f5e5fd07987dd73ed4994c957238481a2",
+  "transport": "real EC2 over Tailscale HTTPS with independent git HTTP service",
+  "real_services": [
+    "EC2",
+    "IMDSv2",
+    "Secrets Manager",
+    "Tailscale",
+    "garden claim/heartbeat/finish",
+    "git clone/push",
+    "unprivileged systemd worker"
+  ],
+  "fakes": [
+    "deterministic model harness",
+    "GitHub PR API"
+  ],
+  "runs": [
+    {
+      "run": "20260907T221635Z-work",
+      "mode": "work",
+      "host": "phase05-canary-0",
+      "facts": {
+        "profile_version": "1",
+        "bootstrap_version": "cg346-v1",
+        "source_head": "3e2f3699e88732c05a3ed62b89ed9211cd4cf41c",
+        "provider_id": "i-0f14bee6ae2b3355b",
+        "memory_available_bytes": 15969845248,
+        "memory_total_bytes": 16550281216,
+        "disk_free_bytes": 37617901568,
+        "cpu_count": 4,
+        "observed_at": 1788820042.1322498
+      },
+      "checks": null,
+      "result_status": "done",
+      "review_verdict": null,
+      "exit_code": 0
+    },
+    {
+      "run": "20260907T222723Z-check",
+      "mode": "check",
+      "host": "phase05-canary-0",
+      "facts": {
+        "profile_version": "1",
+        "bootstrap_version": "cg346-v1",
+        "source_head": "3e2f3699e88732c05a3ed62b89ed9211cd4cf41c",
+        "provider_id": "i-0f14bee6ae2b3355b",
+        "memory_available_bytes": 15967727616,
+        "memory_total_bytes": 16550281216,
+        "disk_free_bytes": 37617860608,
+        "cpu_count": 4,
+        "observed_at": 1788820046.3065512
+      },
+      "checks": [
+        {
+          "name": "remote-check",
+          "status": "pass",
+          "summary": "ok",
+          "details": ""
+        }
+      ],
+      "result_status": null,
+      "review_verdict": null,
+      "exit_code": 0
+    },
+    {
+      "run": "20260907T222727Z-review",
+      "mode": "review",
+      "host": "phase05-canary-0",
+      "facts": {
+        "profile_version": "1",
+        "bootstrap_version": "cg346-v1",
+        "source_head": "3e2f3699e88732c05a3ed62b89ed9211cd4cf41c",
+        "provider_id": "i-0f14bee6ae2b3355b",
+        "memory_available_bytes": 15959298048,
+        "memory_total_bytes": 16550281216,
+        "disk_free_bytes": 37617844224,
+        "cpu_count": 4,
+        "observed_at": 1788820051.6033175
+      },
+      "checks": null,
+      "result_status": null,
+      "review_verdict": null,
+      "exit_code": 0
+    },
+    {
+      "run": "20260907T222911Z-check",
+      "mode": "check",
+      "host": "phase05-canary-0",
+      "facts": {
+        "profile_version": "1",
+        "bootstrap_version": "cg346-v1",
+        "source_head": "3e2f3699e88732c05a3ed62b89ed9211cd4cf41c",
+        "provider_id": "i-0f14bee6ae2b3355b",
+        "memory_available_bytes": 15962460160,
+        "memory_total_bytes": 16550281216,
+        "disk_free_bytes": 37617819648,
+        "cpu_count": 4,
+        "observed_at": 1788820168.9940042
+      },
+      "checks": [
+        {
+          "uid": 999,
+          "exclusive_host_slot": true,
+          "imds_denied": true,
+          "tmpdir": "/var/lib/garden-worker/work/tmp",
+          "name": "host-isolation",
+          "status": "pass"
+        }
+      ],
+      "result_status": null,
+      "review_verdict": null,
+      "exit_code": 0
+    }
+  ],
+  "recovery": {
+    "at": 1788820430.8263268,
+    "instance_state": "terminated",
+    "reclaim_http_status": 200,
+    "same_run_reclaimed": true,
+    "stale_heartbeat_http_status": 409,
+    "artifacts_preserved": [
+      "garden/.garden/runs/DM-001/20260907T221635Z-work/remote_result.json",
+      "garden/.garden/runs/DM-001/20260907T221635Z-work/host_facts.json",
+      "garden/.garden/runs/DM-001/20260907T221635Z-work/stdout.json",
+      "garden/.garden/runs/DM-001/20260907T221635Z-work/final.md",
+      "garden/.garden/runs/DM-001/20260907T223131Z-work/stdout.json",
+      "garden/.garden/runs/DM-001/20260907T222911Z-check/remote_result.json",
+      "garden/.garden/runs/DM-001/20260907T222911Z-check/host_facts.json",
+      "garden/.garden/runs/DM-001/20260907T222911Z-check/final.md",
+      "garden/.garden/runs/DM-001/20260907T222727Z-review/remote_result.json",
+      "garden/.garden/runs/DM-001/20260907T222727Z-review/host_facts.json",
+      "garden/.garden/runs/DM-001/20260907T222727Z-review/stdout.json",
+      "garden/.garden/runs/DM-001/20260907T222727Z-review/final.md",
+      "garden/.garden/runs/DM-001/20260907T222723Z-check/remote_result.json",
+      "garden/.garden/runs/DM-001/20260907T222723Z-check/host_facts.json",
+      "garden/.garden/runs/DM-001/20260907T222723Z-check/final.md",
+      "garden/.garden/runs/DM-001/20260907T223007Z-work/remote_result.json",
+      "garden/.garden/runs/DM-001/20260907T223007Z-work/host_facts.json",
+      "garden/.garden/runs/DM-001/20260907T223007Z-work/stdout.json",
+      "garden/.garden/runs/DM-001/20260907T223007Z-work/final.md"
+    ],
+    "limitation": "Replacement claim handshake only; no second EC2 instance launched."
+  },
+  "cleanup": {
+    "instance_state": "terminated",
+    "remaining_owned_volumes": 0,
+    "remaining_owned_network_interfaces": 0,
+    "elastic_ips_created": 0,
+    "retained_billable_resources": [
+      "bootstrap Secrets Manager secret, approximately $0.40/month until deleted; budget monitoring continues"
+    ],
+    "maximum_trial_hosts": 1,
+    "elapsed_wall_minutes": 21.96,
+    "conservative_compute_ipv4_disk_estimate_usd": 0.0644,
+    "trial_admission_ceiling_usd": 2,
+    "aggregate_allocation_usd": 80,
+    "reported_account_actual_before_trial_usd": 0.158,
+    "billing_limitations": "Estimated compute/storage amount includes stopped time conservatively; AWS billing is delayed. Secret/API/transfer/taxes are additional; $2 is not a billing cap."
+  },
+  "repairs": [
+    "Made package directories readable/executable for the unprivileged service after restrictive bootstrap umask blocked startup.",
+    "Added persistent metadata firewall startup ordering for reboot.",
+    "Repaired the same host using bounded bootstrap userdata; one repair boot initially blocked on synchronous systemctl restart, corrected to --no-block.",
+    "Separated fixture Git HTTP service from controller event loop to avoid a self-fetch deadlock."
+  ],
+  "limits": [
+    "No real model account or real GitHub PR was exercised.",
+    "Replacement lease handshake verified after actual instance termination; no replacement EC2 host launched.",
+    "Final bootstrap fixes were applied to the existing host; a clean-image replay of the final artifact remains unproven.",
+    "Production controller build and worker routing remain unchanged."
+  ]
+}

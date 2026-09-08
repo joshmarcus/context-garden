@@ -9,9 +9,11 @@ instance role and secret reference, never controller credentials or secret value
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Protocol
 
 from .models import CONTRACT_VERSION, HostDeclaration, HostFacts, HostState, ProviderCapabilities
@@ -47,6 +49,9 @@ class EC2Provider:
         "delete_root_on_termination",
         "cpu_credits",
         "bootstrap_path",
+        "bootstrap_url",
+        "bootstrap_sha256",
+        "shutdown_behavior",
     }
 
     def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
@@ -144,6 +149,10 @@ class EC2Provider:
             ],
             "UserData": self._user_data(declaration),
         }
+        shutdown = options.get("shutdown_behavior", "stop")
+        if shutdown not in {"stop", "terminate"}:
+            raise ValueError("shutdown_behavior must be stop or terminate")
+        args["InstanceInitiatedShutdownBehavior"] = shutdown
         if str(options["instance_type"]).startswith(("t2.", "t3.", "t3a.", "t4g.")):
             credits = options.get("cpu_credits", "standard")
             if credits not in ("standard", "unlimited"):
@@ -219,6 +228,25 @@ class EC2Provider:
         bootstrap_path = str(options.get("bootstrap_path") or "")
         if not bootstrap_path.startswith("/") or any(c.isspace() for c in bootstrap_path):
             raise ValueError("endpoint profiles require bootstrap_path on a verified prebuilt AMI")
+        installer = ""
+        url = str(options.get("bootstrap_url") or "")
+        digest = str(options.get("bootstrap_sha256") or "")
+        if url or digest:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(url)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                    or parsed.password or parsed.query or parsed.fragment
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                raise ValueError("bootstrap artifact requires credential-free HTTPS and SHA256")
+            # The generic lifecycle verifies a pinned consumer executable. It never
+            # interprets worker enrollment or receives secret values.
+            installer = ("install -d -m 700 " + shlex.quote(str(Path(bootstrap_path).parent)) + "\n"
+                         + "curl --max-time 60 --fail --silent --show-error --proto '=https' --tlsv1.2 "
+                         + shlex.quote(url) + " -o " + shlex.quote(bootstrap_path + ".download") + "\n"
+                         + "printf '%s\\n' " + shlex.quote(digest + "  " + bootstrap_path + ".download")
+                         + " | sha256sum --check --status\n"
+                         + "mv " + shlex.quote(bootstrap_path + ".download") + " " + shlex.quote(bootstrap_path) + "\n"
+                         + "chmod 700 " + shlex.quote(bootstrap_path) + "\n")
         # Environment-specific setup belongs to the pinned image/profile, not the EC2
         # lifecycle. The executable verifies the image manifest and starts its service.
         # Only secret references cross userdata; never inline auth material.
@@ -227,7 +255,7 @@ class EC2Provider:
                              "profile_version": profile.version,
                              "bootstrap_version": profile.bootstrap_version})
         return ("#!/bin/sh\nset -eu\numask 077\n"
-                + "test -x " + shlex.quote(bootstrap_path) + "\n"
+                + installer + "test -x " + shlex.quote(bootstrap_path) + "\n"
                 + "printf '%s' " + shlex.quote(config) + " > /run/host-bootstrap.json\n"
                 + shlex.quote(bootstrap_path) + " --config /run/host-bootstrap.json\n")
 
