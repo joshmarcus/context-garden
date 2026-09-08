@@ -6,10 +6,11 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
-from ..github import GitHubError, mark_garden_comment
+from ..github import GitHubError, PRInfo, mark_garden_comment, pull_request_number
 from ..graph import blockers
 from ..model import (
     Phase,
@@ -651,30 +652,68 @@ class HumanMixin:
         raise RuntimeError("triage needs --ready or --changes")
 
     # ---- attaching a PR by hand ---------------------------------------------
+    def resolve_pr_attachment(self, task: Task, url: str) -> PRInfo:
+        """Read and validate the immutable identity needed to adopt an existing PR.
+
+        The URL is only a locator.  The provider's current branch and SHA are the identity
+        that revisions must use, so reject a URL that does not name this repository, a fork
+        head, or a PR whose ref cannot be resolved rather than falling back to a task default.
+        """
+        slug = self.slug_for(task)
+        parsed = urlparse(url)
+        match = re.search(r"/pull/(\d+)$", parsed.path.rstrip("/"))
+        if not slug or not match or parsed.scheme != "https" or not parsed.hostname:
+            raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
+        number = int(match.group(1))
+        # Public GitHub URLs can be checked before a provider request.  Other configured
+        # hosts are checked against the canonical URL returned by that provider below.
+        if parsed.hostname.lower() == "github.com" and pull_request_number(url, slug) is None:
+            raise RuntimeError("PR URL does not name the configured repository")
+        if not self.github.available:
+            raise RuntimeError("PR attachment needs an available GitHub provider")
+        try:
+            pr = self.github.get_pr(slug, number)
+        except (GitHubError, KeyError) as exc:
+            raise RuntimeError(f"could not read PR for attachment: {exc}") from exc
+        if pr.number != number or pr.url.rstrip("/") != url.rstrip("/"):
+            raise RuntimeError("PR URL does not match the configured repository's PR")
+        if not pr.head or not pr.head_sha:
+            raise RuntimeError("PR attachment needs one resolved head branch and SHA")
+        if pr.head_repo and pr.head_repo.lower() != slug.lower():
+            raise RuntimeError("PR attachment refuses a fork head that the scheduler cannot revise")
+        return pr
+
+    def _refuse_attachment_run_conflict(self, task: Task) -> None:
+        active = [run for run in self.runs.active() if run.task_id == task.id]
+        if active:
+            raise RuntimeError(
+                f"{task.id} has active run {active[0].run_id}; refusing to replace its checkout identity"
+            )
+
     def attach_pr(self, task: Task, url: str) -> None:
-        """Point this task at a PR opened (or reopened) by hand -- e.g. a stacked PR GitHub
-        closed when its base branch went away, reopened under a new number. Resets every
-        cached PR fact so the next poll follows the new PR instead of stale state left over
-        from the old one: a stale `pr_number` would keep polling the old PR, and a stale
-        `review_run` would hold automerge on a run that belongs to a PR this task no longer
-        has (CG-174). Used by `garden pr` and its web equivalent, if one exists."""
+        """Adopt a verified existing PR without discarding task feedback or history."""
+        self._refuse_attachment_run_conflict(task)
+        pr = self.resolve_pr_attachment(task, url)
         st = self.state.get(task.id)
         old_number = st.get("pr_number")
-        m = re.search(r"/pull/(\d+)", url)
-        new_number = int(m.group(1)) if m else None
-        task.pr = url
-        for key in ("pr_number", "pr_state", "head_sha", "review_run"):
+        task.pr, task.branch = pr.url, pr.head
+        # These are observations of the previous PR, not useful task context.  Leave
+        # feedback, Q&A and completed run history intact for the adopted revision.
+        for key in ("pr_number", "pr_state", "head_sha", "review_run", "pr_draft",
+                    "pr_base", "checks", "failed_checks", "review_decision", "ci_missing"):
             st.pop(key, None)
         self._queue_leave(task)
-        if new_number:
-            st["pr_number"] = new_number
-        note = f"PR attached: {url} (pr_number {old_number or 'none'} -> {new_number or 'none'})"
-        if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
+        st.update({"pr_number": pr.number, "pr_state": pr.state, "head_sha": pr.head_sha,
+                   "pr_base": pr.base, "pr_draft": pr.is_draft, "checks": pr.checks,
+                   "failed_checks": list(pr.failed_checks), "review_decision": pr.review_decision})
+        note = f"PR attached: {pr.url} ({pr.head}@{pr.head_sha}, pr_number {old_number or 'none'} -> {pr.number})"
+        if task.status in (Status.READY, Status.DRAFT, Status.FAILED):
             self._transition(task, Status.IN_REVIEW, note)
         else:
             task.log(note)
             self.store.save(task)
-        self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
+        self.events.emit("pr_attached", task.id, pr=pr.url, branch=pr.head, head_sha=pr.head_sha,
+                         old_pr_number=old_number or 0, new_pr_number=pr.number)
         self.state.save()
 
     def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:

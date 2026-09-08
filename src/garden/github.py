@@ -55,6 +55,10 @@ class PRInfo:
     body: str = ""
     head_sha: str = ""
     merge_commit_sha: str = ""
+    # The repository which owns ``head``.  An empty value is retained for older
+    # providers, but providers that expose it let attachment reject fork heads:
+    # a scheduler cannot safely revise a branch it cannot push.
+    head_repo: str = ""
     is_draft: bool = False
     node_id: str = ""
 
@@ -465,7 +469,7 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             rollup = p.get("statusCheckRollup") or []
@@ -476,6 +480,7 @@ class GitHub:
                 checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
                 merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
+                head_repo=str((p.get("headRepository") or {}).get("nameWithOwner") or ""),
                 is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
@@ -483,6 +488,7 @@ class GitHub:
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
         info.merge_commit_sha = p.get("merge_commit_sha") or ""
+        info.head_repo = str(((p.get("head") or {}).get("repo") or {}).get("full_name") or "")
         if info.head_sha:
             rollup: list[dict[str, Any]] = []
             check_errors: list[GitHubError] = []
