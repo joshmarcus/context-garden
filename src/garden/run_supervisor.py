@@ -396,8 +396,6 @@ def _record_execution_timeout(
         "exit_code": exit_code,
     })
     _write_execution_state(run_dir, status)
-
-
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
