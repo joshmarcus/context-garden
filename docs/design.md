@@ -114,6 +114,13 @@ unlimited mode `review.friction_after` records one non-blocking, retrospective-v
 signal; stall handling still stops unchanged paid attempts. The garden should never spend
 money on an identical loop while nobody is watching.
 
+Repeated substantive implementation feedback has a second bound: `revision_policy`
+defaults to escalating the implementation tier every two revisions, stopping at hard or
+after six revisions for an explicit Troubled task decision. An explicit task model is an
+owner choice and is never overwritten by the ladder. Continuing grants a bounded allowance
+without erasing lifetime revision, cost, branch, PR, feedback, or escalation history;
+investigation pauses mutation and produces a separate report before any outcome changes.
+
 ## The operator seat
 
 The scheduler runs without a model, but someone still watches it, clears cards and moves
