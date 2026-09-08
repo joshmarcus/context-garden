@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -14,10 +15,12 @@ from pathlib import Path
 
 from .models import (
     CONTRACT_VERSION,
+    HostAdmission,
     HostDeclaration,
     HostEvent,
     HostFacts,
     HostPlan,
+    HostRequirements,
     HostState,
     PoolDeclaration,
 )
@@ -359,6 +362,7 @@ class HostLifecycle:
         harness: str,
         process_terminal: Callable[[str], bool],
         now: Callable[[], float] = time.time,
+        requirements: HostRequirements | None = None,
     ) -> HostFacts:
         """Acquire one verified host, preferring an eligible warm host.
 
@@ -366,6 +370,8 @@ class HostLifecycle:
         Callers perform this before incrementing a task attempt; ``EnvironmentStop`` is an
         infrastructure outcome, not worker failure.
         """
+        if requirements is not None:
+            self._validate_requirements(requirements)
         try:
             checked = self.reconcile(pool)
         except ProviderError as exc:
@@ -435,6 +441,33 @@ class HostLifecycle:
             if not evidence.ready:
                 failures.append(f"{host.host_id}: {evidence.detail or 'readiness checks failed'}")
                 continue
+            admission: HostAdmission | None = None
+            if requirements is not None:
+                admit = getattr(provider, "admit", None)
+                if admit is None:
+                    failures.append(f"{host.host_id}: provider does not support host-local admission")
+                    continue
+                try:
+                    admission = admit(
+                        host.provider_id,
+                        requirements=requirements,
+                        acquisition_id=uuid.uuid4().hex,
+                    )
+                except ProviderError as exc:
+                    detail = f"{host.host_id}: admission unavailable: {exc}"
+                    self._record_environment_stop(pool, detail, data=data)
+                    raise EnvironmentStop(detail) from exc
+                reason = self._admission_rejection(admission, requirements, current_time)
+                if reason:
+                    if admission.lease_id:
+                        try:
+                            provider.release_admission(
+                                host.provider_id, lease_id=admission.lease_id
+                            )
+                        except ProviderError as exc:
+                            reason = f"{reason}; admission lease release failed: {exc}"
+                    failures.append(f"{host.host_id}: {reason}")
+                    continue
             # Read and claim again under the store lock. Another controller may have
             # completed the same readiness probe while this one was in the wrapper.
             with self.state.locked():
@@ -452,6 +485,15 @@ class HostLifecycle:
                     )
                     active_run = bool(existing_run and not process_terminal(existing_run))
                     if actively_reserved or active_run:
+                        if admission is not None and admission.lease_id:
+                            try:
+                                provider.release_admission(
+                                    host.provider_id, lease_id=admission.lease_id
+                                )
+                            except ProviderError as exc:
+                                detail = f"{host.host_id}: admission lease release failed: {exc}"
+                                self._record_environment_stop(pool, detail, data=claimed)
+                                raise EnvironmentStop(detail) from exc
                         continue
                     acquired_at = float(existing.get("acquired_at", acquired_at))
                 claimed_leases[host.provider_id] = {
@@ -464,6 +506,9 @@ class HostLifecycle:
                     "run_id": "",
                     "released": False,
                 }
+                if admission is not None:
+                    claimed_leases[host.provider_id]["admission"] = asdict(admission)
+                    claimed_leases[host.provider_id]["requirements"] = asdict(requirements)
                 stops = claimed.setdefault("environment_stops", {})
                 if isinstance(stops, dict):
                     stops.pop(pool.name, None)
@@ -473,17 +518,97 @@ class HostLifecycle:
         self._record_environment_stop(pool, detail)
         raise EnvironmentStop(detail)
 
+    @staticmethod
+    def _validate_requirements(requirements: HostRequirements) -> None:
+        if not requirements.activity or not requirements.host_class or not requirements.environment:
+            raise ValueError("activity, host_class and environment are required for host admission")
+        if requirements.memory_mib < 0 or requirements.disk_gib < 0:
+            raise ValueError("host resource requirements cannot be negative")
+        if requirements.probe_max_age_seconds <= 0 or requirements.lease_seconds <= 0:
+            raise ValueError("probe and lease durations must be positive")
+
+    @staticmethod
+    def _admission_rejection(
+        admission: HostAdmission, requirements: HostRequirements, current_time: float
+    ) -> str:
+        if not admission.eligible:
+            return admission.detail or "host-local admission rejected"
+        if admission.measured_at > current_time + 5:
+            return "resource probe timestamp is in the future"
+        age = current_time - admission.measured_at
+        if age > requirements.probe_max_age_seconds:
+            return f"resource probe is stale ({age:.0f}s old)"
+        if admission.host_class != requirements.host_class:
+            return f"host class {admission.host_class!r} does not match {requirements.host_class!r}"
+        if admission.environment != requirements.environment:
+            return f"environment {admission.environment!r} does not match {requirements.environment!r}"
+        missing = sorted(set(requirements.capabilities) - set(admission.capabilities))
+        if missing:
+            return f"missing capabilities: {', '.join(missing)}"
+        if admission.memory_available_mib < requirements.memory_mib:
+            return (
+                f"host memory {admission.memory_available_mib} MiB is below "
+                f"{requirements.memory_mib} MiB"
+            )
+        if admission.disk_free_gib < requirements.disk_gib:
+            return f"host disk {admission.disk_free_gib} GiB is below {requirements.disk_gib} GiB"
+        if not admission.lease_id or admission.lease_expires_at <= current_time:
+            return "host-local admission lease is missing or expired"
+        return ""
+
+    def renew_admission(
+        self, pool: PoolDeclaration, provider_id: str, *, now: Callable[[], float] = time.time
+    ) -> HostAdmission:
+        """Renew a host-owned lease, failing closed when ownership was lost."""
+        data = self.state.read()
+        leases = data.get("leases", {})
+        lease = leases.get(provider_id) if isinstance(leases, dict) else None
+        raw = lease.get("admission") if isinstance(lease, dict) else None
+        raw_requirements = lease.get("requirements") if isinstance(lease, dict) else None
+        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        if not lease_id or not isinstance(raw_requirements, dict):
+            raise EnvironmentStop("host admission lease is not recorded")
+        try:
+            requirements = HostRequirements(
+                **{
+                    **raw_requirements,
+                    "capabilities": tuple(raw_requirements.get("capabilities", ())),
+                }
+            )
+            self._validate_requirements(requirements)
+        except (TypeError, ValueError) as exc:
+            raise EnvironmentStop(f"host admission requirements are invalid: {exc}") from exc
+        provider = self._provider(pool)
+        try:
+            admission = provider.renew_admission(provider_id, lease_id=lease_id)
+        except ProviderError as exc:
+            detail = f"host admission lease lost: {exc}"
+            self._record_environment_stop(pool, detail, data=data)
+            raise EnvironmentStop(detail) from exc
+        current_time = now()
+        rejection = self._admission_rejection(admission, requirements, current_time)
+        if admission.lease_id != lease_id:
+            rejection = "host admission lease identity changed"
+        if rejection:
+            detail = f"host admission lease lost: {rejection}"
+            self._record_environment_stop(pool, detail, data=data)
+            raise EnvironmentStop(detail)
+        lease["admission"] = asdict(admission)
+        self.state.write(data)
+        return admission
+
     def _record_environment_stop(
         self,
         pool: PoolDeclaration,
         detail: str,
+        *,
+        data: dict[str, object] | None = None,
     ) -> None:
-        with self.state.locked():
-            value = self.state.read()
-            stops = value.setdefault("environment_stops", {})
-            assert isinstance(stops, dict)
-            stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
-            self.state.write(value)
+        value = data if data is not None else self.state.read()
+        stops = value.setdefault("environment_stops", {})
+        assert isinstance(stops, dict)
+        stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
+        self.state.write(value)
 
     def attach_run(self, provider_id: str, run_id: str) -> None:
         """Persist the controller run identity after dispatch."""
@@ -497,26 +622,50 @@ class HostLifecycle:
             lease["run_id"] = run_id
             self.state.write(data)
 
-    def cancel_acquisition(self, provider_id: str) -> None:
-        with self.state.locked():
-            data = self.state.read()
-            leases = data.setdefault("leases", {})
-            assert isinstance(leases, dict)
-            leases.pop(provider_id, None)
-            self.state.write(data)
+    def cancel_acquisition(
+        self, provider_id: str, *, pool: PoolDeclaration | None = None
+    ) -> None:
+        """Cancel before dispatch, releasing a host-owned admission when present."""
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        lease = leases.get(provider_id)
+        raw = lease.get("admission") if isinstance(lease, dict) else None
+        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        if lease_id:
+            if pool is None:
+                raise ValueError("pool is required to cancel a host-local admission lease")
+            try:
+                self._provider(pool).release_admission(provider_id, lease_id=lease_id)
+            except ProviderError as exc:
+                detail = f"host admission lease release failed: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
+        leases.pop(provider_id, None)
+        self.state.write(data)
 
     def release(self, pool: PoolDeclaration, provider_id: str) -> HostFacts:
         """Release a warm host while retaining its age and prior process identity."""
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        lease = leases.get(provider_id)
+        raw = lease.get("admission") if isinstance(lease, dict) else None
+        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        if lease_id:
+            try:
+                self._provider(pool).release_admission(provider_id, lease_id=lease_id)
+            except ProviderError as exc:
+                detail = f"host admission lease release failed: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
         released = self.stop(pool, provider_id)
-        with self.state.locked():
-            data = self.state.read()
-            leases = data.setdefault("leases", {})
-            assert isinstance(leases, dict)
-            lease = leases.get(provider_id)
-            if isinstance(lease, dict):
-                lease["released"] = True
-                lease["last_used_at"] = time.time()
-            self.state.write(data)
+        if isinstance(lease, dict):
+            lease["released"] = True
+            lease["last_used_at"] = time.time()
+            lease.pop("admission", None)
+            lease.pop("requirements", None)
+        self.state.write(data)
         return released
 
     def orphaned(self, *, process_terminal: Callable[[str], bool]) -> list[str]:
