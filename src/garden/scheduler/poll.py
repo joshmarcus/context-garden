@@ -115,7 +115,8 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
+        failure_key = (pr.updated_at if ci_status.provider == "github"
+                       else f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}")
         if ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
             st["ci_failed_at"] = failure_key
             names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
