@@ -77,6 +77,10 @@ class Run:
     run_id: str
     dir: str
     runner: str
+    # The configured adapter name identifies the implementation; this capability records
+    # where that implementation executes so aliases cannot evade local host accounting.
+    # ``None`` preserves records written before capabilities were persisted.
+    execution_remote: bool | None = None
     mode: str = "work"  # work | revise | resume | trial | rebase | review | persona | compare | edit | check
     harness: str = ""
     model: str = ""
@@ -129,6 +133,15 @@ class Run:
         return Path(self.dir)
 
     @property
+    def is_local_execution(self) -> bool:
+        """Whether this run occupies the controller host's execution capacity."""
+        if self.execution_remote is not None:
+            return not self.execution_remote
+        # Older records have no capability snapshot. Keep their established built-in
+        # routing and fail closed for an unknown saved alias.
+        return self.runner not in {"manual", "remote", "ssh"}
+
+    @property
     def lifecycle_state(self) -> str:
         """Stable control-plane state; terminal result variants collapse to finished."""
         return self.status if self.status in ("requested", "preparing", "running") else "finished"
@@ -168,7 +181,7 @@ class Run:
         # The wrapper may exit after a harness leaves children behind. Keep the run active
         # until that entire owned group is gone; otherwise cleanup and slot accounting can
         # race a detached test suite that is still consuming the host.
-        if self.runner == "local":
+        if self.is_local_execution:
             return not _process_group_alive(self.pid)
         if (self.path / "exit_code").exists():
             return True
@@ -265,7 +278,7 @@ class Run:
         # Never let a corrupt or synthetic run record terminate the process doing the reap.
         if self.pid == os.getpid():
             return
-        if self.pid and (self.runner == "local" and _process_group_alive(self.pid) or _pid_alive(self.pid)):
+        if self.pid and (self.is_local_execution and _process_group_alive(self.pid) or _pid_alive(self.pid)):
             try:
                 os.killpg(self.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
@@ -285,7 +298,7 @@ class Run:
             return False  # No safely identifiable process to terminate.
         self.kill()
         deadline = time.monotonic() + timeout
-        alive = _process_group_alive if self.runner == "local" else _pid_alive
+        alive = _process_group_alive if self.is_local_execution else _pid_alive
         while time.monotonic() < deadline:
             if not alive(self.pid):
                 return True

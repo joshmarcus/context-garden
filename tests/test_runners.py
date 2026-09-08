@@ -169,6 +169,36 @@ def test_scheduler_routes_private_adapters_through_ordinary_runner_setup(sched, 
     assert runner.config["resources"] == sched.cfg.get("resources")
 
 
+def test_private_local_adapter_obeys_selection_and_atomic_local_admission(sched, tmp_path, monkeypatch):
+    """A configured alias cannot bypass the controller host's local capacity."""
+    from garden.scheduler.report import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+    sched.store.save(task)
+    occupied = sched.runs.new_run("DM-002", "local", mode="check")
+    occupied.save()
+
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == []
+    assert sched.runs.runs_for(task.id) == []
+    with pytest.raises(ResourcePressureError, match="waits for a local execution slot"):
+        sched.dispatch(task)
+
+    occupied.status = "done"
+    occupied.save()
+    run = sched.dispatch(task)
+    assert run.runner == "synthetic"
+    assert run.is_local_execution
+    assert sched.local_slots_free() == 0
+
+
 def test_private_runner_adapter_rejects_bad_contract_and_builtin_replacement(tmp_path, monkeypatch):
     from garden.runner import RunnerError, get_runner
 
