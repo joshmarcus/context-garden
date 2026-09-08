@@ -86,3 +86,30 @@ workplace policy/profile integration. Selecting a development profile never crea
 Contract additions remain backward compatible within `garden.hosts/v1`. A provider declaring
 a different contract version is rejected before planning. Breaking field semantics require a
 new contract version and an explicit adapter.
+
+## Command-backed acquisition and warm reuse
+
+`CommandProvider` adapts an approved controller-side wrapper without embedding a vendor or a
+second infrastructure lifecycle. Configure `provider_options.command` as an argv list and an
+optional `timeout_seconds` (at most one hour). The adapter appends one action argument and
+writes one compact JSON request to stdin; the wrapper returns one JSON value on stdout. There
+is no shell interpolation. Exit status, stdout and stderr remain byte-exact in
+`CommandResult`, and every invocation is bounded. A wrapper can use an API, a queue, SSH, or
+another approved transport, but it is always launched by the controller and does not require
+one acquired host to connect to another.
+
+The actions are `inspect`, `inspect-one`, `acquire`, `ready`, `release`, `start`, and `retire`.
+`acquire` receives the stable logical host and operation aliases and may return
+`provisioning`; later reconciliation discovers the same operation rather than submitting a
+duplicate. `ready` is explicitly read-only and receives the configured workspace, exact
+revision and harness. Its response has five booleans: `workspace`, `revision`, `provisioned`,
+`harness_login`, and `smoke_probe`. The wrapper owns checkout reconciliation, but the
+lifecycle will not lease the host unless all five checks pass.
+
+`HostLifecycle.acquire_ready()` stores leases in the same atomic JSON state as pool facts.
+It reuses a warm host only after the prior run is terminal, retires hosts beyond
+`maximum_age_minutes`, and raises `EnvironmentStop` when preparation or readiness cannot
+admit work. Consumers call it before counting or dispatching a task attempt. After dispatch,
+`attach_run()` records the process identity. `release()` stops a reusable host and clears its
+lease; `cancel_acquisition()` clears an unlaunched reservation, `orphaned()` exposes terminal
+process leases for inspection, and `destroy()` remains the explicit retirement boundary.
