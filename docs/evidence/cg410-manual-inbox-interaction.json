@@ -1,68 +1,87 @@
 {
-  "head": "202b9b2003252efa805c96f1c9ca1f76293117fc",
-  "environment": "disposable local garden fixture served at 127.0.0.1:8876",
+  "head": "44436439f97f29230c6eaba1edb13b3add9742cc",
+  "environment": "disposable local garden fixture served at an ephemeral 127.0.0.1 port",
   "command": "python scripts/capture_cg410.py",
   "states": [
-    "ready",
-    "full automated capacity",
-    "claimed",
-    "stale take",
-    "completion failure",
-    "completion recovery"
+    "affected",
+    "empty",
+    "failure",
+    "recovery"
   ],
   "events": [
     {
-      "state": "ready with full automated capacity",
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
       "method": "GET",
       "url": "/inbox",
-      "status": 200,
-      "consequence": "manual claim is actionable while dependent manual work waits"
+      "status_code": 200,
+      "observed": "manual work is actionable despite full automated capacity; dependent work waits"
     },
     {
-      "state": "take",
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
       "method": "POST",
       "url": "/tasks/DM-001/take",
-      "status": 200,
-      "consequence": "one manual work run owns the packet"
+      "status_code": 200,
+      "observed": "one manual session claims the packet"
     },
     {
-      "state": "claimed",
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
       "method": "GET",
       "url": "/tasks/DM-001/packet",
-      "status": 200,
-      "consequence": "assigned immutable packet is available"
+      "status_code": 200,
+      "observed": "the assigned packet is available"
     },
     {
-      "state": "stale take",
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
       "method": "POST",
       "url": "/tasks/DM-001/take",
-      "status": 200,
-      "consequence": "second request is refused; no duplicate run"
+      "status_code": 200,
+      "observed": "a stale take is refused and does not create another run"
     },
     {
-      "state": "completion failure",
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
       "method": "POST",
       "url": "/tasks/DM-001/finish-manual",
-      "status": 200,
-      "consequence": "invalid completion leaves the claimed session recoverable"
+      "status_code": 200,
+      "observed": "invalid completion leaves the manual session recoverable"
     },
     {
-      "state": "completion recovery",
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
       "method": "POST",
       "url": "/tasks/DM-001/finish-manual",
-      "status": 200,
-      "consequence": "valid result finalizes the assigned run"
+      "status_code": 200,
+      "observed": "a valid result finishes the claimed session"
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "GET",
+      "url": "/inbox",
+      "status_code": 200,
+      "observed": "no manual task remains actionable after the claimed session finishes"
     }
   ],
   "artifacts": [
-    "docs/design/captures/cg-410-manual-inbox-1280-dark.png",
     "docs/design/captures/cg-410-manual-inbox-1280-light.png",
-    "docs/design/captures/cg-410-manual-inbox-390-dark.png",
+    "docs/design/captures/cg-410-manual-inbox-1280-dark.png",
     "docs/design/captures/cg-410-manual-inbox-390-light.png",
-    "docs/design/captures/cg-410-manual-task-1280-dark.png",
+    "docs/design/captures/cg-410-manual-inbox-390-dark.png",
     "docs/design/captures/cg-410-manual-task-1280-light.png",
-    "docs/design/captures/cg-410-manual-task-390-dark.png",
-    "docs/design/captures/cg-410-manual-task-390-light.png"
+    "docs/design/captures/cg-410-manual-task-1280-dark.png",
+    "docs/design/captures/cg-410-manual-task-390-light.png",
+    "docs/design/captures/cg-410-manual-task-390-dark.png"
   ],
   "render": [
     {
@@ -70,6 +89,14 @@
       "action": "navigate",
       "viewport": 1280,
       "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "inbox",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "dark",
       "clientWidth": 1280,
       "scrollWidth": 1280
     },
@@ -83,6 +110,22 @@
     },
     {
       "page": "inbox",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "task",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "task",
       "action": "navigate",
       "viewport": 1280,
       "color_scheme": "dark",
@@ -90,7 +133,15 @@
       "scrollWidth": 1280
     },
     {
-      "page": "inbox",
+      "page": "task",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "task",
       "action": "frame",
       "viewport": 390,
       "color_scheme": "dark",
