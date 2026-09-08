@@ -257,6 +257,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         runtime_dir = root / "runtime"
         runtime_dir.mkdir(mode=0o700, exist_ok=True)
         env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        execution_dir = repo.parent / f"{run['id']}-execution"
+        execution_dir.mkdir(parents=True, exist_ok=True)
+        env.update(GARDEN_EXECUTION_OWNER=f"remote:{run['id']}",
+                   GARDEN_EXECUTION_RUN_DIR=str(execution_dir),
+                   GARDEN_VALIDATION_RUNNER=sys.executable)
         setup = dict(run.get("setup") or {})
         if setup_command:
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
@@ -377,6 +382,14 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         push_ref = str(run["push_ref"])
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+        receipts = []
+        for receipt_path in sorted(execution_dir.glob("validations/*/result.json")):
+            try:
+                receipt = json.loads(receipt_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(receipt, dict):
+                receipts.append(receipt)
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
