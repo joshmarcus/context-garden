@@ -1,0 +1,31 @@
+{
+  "version": "0.3.0rc4",
+  "tag": "v0.3.0rc4",
+  "prior_deployed": "c8c661e8a1ba3bf69033edd517308f8c588d8e99",
+  "included": [
+    {
+      "task": "CG-424",
+      "pr": 306,
+      "source": "2f0225d01e02520f401472a806a2b90ee3470894",
+      "approval": "owner-authorized direct operator self-review; both exact-head full CI passed"
+    },
+    {
+      "task": "CG-426",
+      "pr": 309,
+      "source": "887dbf76430e7ea8688a73eaa5392a210d4a36e6",
+      "approval": "owner-authorized direct operator self-review; exact-head full CI required before publication"
+    }
+  ],
+  "changes": [
+    "Missing artifact metadata is advisory; explicit contradictory source, failed checks and unverified outcomes still block.",
+    "Author/reviewer instructions agree on meaningful outcome evidence and implementation latitude.",
+    "Stress/load tests require --run-stress; ordinary pytest/CI skip all marked stress cases."
+  ],
+  "deployment": "Separate guarded controller installation after final candidate CI; no state schema migration.",
+  "limitations": [
+    "Does not resolve phase05 stabilization or phase07 evidence holds.",
+    "Codex run transcript UI bug tracked by CG-427 remains.",
+    "Existing worktrees must integrate CG-426 to acquire new stress test selection; controller install does not rewrite active worktrees."
+  ],
+  "rollback": "Restore v0.3.0rc3/c8c661e8 using the same accounted deployment protocol without reverting state or run artifacts."
+}
