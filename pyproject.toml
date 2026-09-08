@@ -39,6 +39,7 @@ packages = ["src/garden"]
 testpaths = ["tests"]
 markers = [
     "needs_remote_clone: test executes an SSH worker against the remote-host checkout",
+    "stress: opt-in stress/load experiment excluded from ordinary test runs and CI",
 ]
 
 [tool.ruff]
