@@ -6,6 +6,7 @@ import yaml
 from typer.testing import CliRunner
 
 from garden.cli import app
+from garden.store import Store
 
 runner = CliRunner()
 
@@ -31,6 +32,19 @@ def test_status_ls_graph_validate(garden):
     r = run(garden, "graph", "--format", "mermaid")
     assert "DM_001 --> DM_002" in r.output
     assert run(garden, "validate").exit_code == 0
+
+
+def test_assign_and_owner_filtered_machine_output(garden):
+    goals = garden / "demo" / "p1" / "goals.md"
+    goals.write_text("# p1\n")
+    assert run(garden, "assign-phase", "demo/p1", "platform-team").exit_code == 0
+    assert run(garden, "assign", "DM-001", "feature-team").exit_code == 0
+    rows = json.loads(run(garden, "ls", "--owner", "platform-team", "--json").output)
+    assert [row["id"] for row in rows] == ["DM-002"]
+    rows = json.loads(run(garden, "ls", "--owner", "feature-team", "--json").output)
+    assert rows[0]["effective_owner"] == "feature-team"
+    assert run(garden, "assign", "DM-001", "-").exit_code == 0
+    assert Store(garden).task("DM-001").owner == ""
 
 
 def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garden):

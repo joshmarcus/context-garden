@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from garden.model import Status, Task, ensure_open, join_frontmatter, split_frontmatter
+from garden.model import (
+    Phase,
+    Status,
+    Task,
+    effective_owner,
+    ensure_open,
+    join_frontmatter,
+    split_frontmatter,
+)
 
 
 def test_roundtrip_preserves_unknown_keys(tmp_path):
@@ -92,6 +100,29 @@ Build.
     assert Task.parse(tmp_path / "x.md", t.render()).dependency_after == {"X-002": "merge"}
     with pytest.raises(ValueError, match="malformed depends_on"):
         Task.parse(tmp_path / "x.md", text.replace("- X-000", "- after: merge"))
+
+
+def test_owner_is_optional_and_task_override_beats_phase_default(tmp_path):
+    task = Task.parse(tmp_path / "x.md", """---
+id: X-001
+title: Build
+status: draft
+owner: product-team
+---
+\nGoal.\n""")
+    phase = Phase("demo", "p1", tmp_path, None, [], [], [], meta={"owner": "platform-team"})
+    assert effective_owner(task, phase) == ("product-team", "task")
+    task.owner = ""
+    assert effective_owner(task, phase) == ("platform-team", "phase")
+    assert effective_owner(task, None) == ("", "unassigned")
+    assert "owner" not in Task(path=tmp_path / "old.md", id="X-002", title="Old").to_frontmatter()
+
+
+def test_owner_rejects_contact_details_but_allows_unknown_logical_ids(tmp_path):
+    text = "---\nid: X-001\ntitle: Build\nowner: future-team\n---\n\nGoal.\n"
+    assert Task.parse(tmp_path / "x.md", text).owner == "future-team"
+    with pytest.raises(ValueError, match="stable logical identifier"):
+        Task.parse(tmp_path / "x.md", text.replace("future-team", "person@example.com"))
 
 
 def test_elapsed_minutes_never_negative(tmp_path):

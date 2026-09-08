@@ -18,6 +18,7 @@ from ...criteria import (
 from ...events import EventLog
 from ...graph import blockers, dependency_after, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
+from ...model import effective_owner
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -123,6 +124,8 @@ def register(app: FastAPI, site: Site) -> None:
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
             trial_view=trial_view,
+            owner=effective_owner(t, s.phase(t.product, t.phase))[0],
+            owner_source=effective_owner(t, s.phase(t.product, t.phase))[1],
             design_files=_design_files(t, s),
         ))
 
