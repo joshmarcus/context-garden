@@ -1,0 +1,128 @@
+{
+  "producer": "cg443.disposable-served-review-clarification/v1",
+  "head": "c1b4d88330c6e64938f77f2a459d1f8bc721735d",
+  "environment": "disposable garden with MemoryGitHub and QA harness",
+  "command": "PYTHONPATH=src .venv/bin/python <inline served replay driver>",
+  "started_at": "2026-09-08T22:12:07.784283+00:00",
+  "finished_at": "2026-09-08T22:12:13.169026+00:00",
+  "status": "pass",
+  "fixture_setup": "Seeded needs_human.review_clarification after two malformed reviewer classifications; no claimed HTTP event is synthesized.",
+  "states": {
+    "empty": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox before fixture stop"
+      ],
+      "observed": "Inbox has no reviewer-clarification attention card."
+    },
+    "affected": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox after reviewer-owned stop"
+      ],
+      "observed": "Inbox explains the reviewer-owned stop, withholds author retry/resume, and offers One more automated review."
+    },
+    "failure_recovery": {
+      "status": "pass",
+      "actions": [
+        "restart Scheduler and GET /inbox",
+        "POST /tasks/DM-001/review",
+        "GET /inbox"
+      ],
+      "observed": "Malformed clarification stop survives restart; the operator action clears it and dispatches reviewer-owned validation without queuing author revision."
+    }
+  },
+  "events": [
+    {
+      "at": "2026-09-08T22:12:08.613309+00:00",
+      "kind": "http_request",
+      "state": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:45379/inbox",
+      "status_code": 200,
+      "outcome": "empty",
+      "observed": "Inbox has no reviewer-clarification attention card."
+    },
+    {
+      "at": "2026-09-08T22:12:08.651081+00:00",
+      "kind": "http_request",
+      "state": "affected",
+      "method": "GET",
+      "url": "http://127.0.0.1:45379/inbox",
+      "status_code": 200,
+      "outcome": "success",
+      "observed": "Inbox explains the reviewer-owned stop, withholds author retry/resume, and offers One more automated review."
+    },
+    {
+      "at": "2026-09-08T22:12:08.674267+00:00",
+      "kind": "http_request",
+      "state": "failure",
+      "method": "GET",
+      "url": "http://127.0.0.1:45379/inbox",
+      "status_code": 200,
+      "outcome": "failure",
+      "observed": "Reviewer-owned malformed clarification stop remained visible after Scheduler restart."
+    },
+    {
+      "at": "2026-09-08T22:12:12.955629+00:00",
+      "kind": "http_request",
+      "state": "recovery",
+      "method": "POST",
+      "url": "http://127.0.0.1:45379/tasks/DM-001/review",
+      "status_code": 303,
+      "outcome": "success",
+      "observed": "Operator review action returned 303 and created reviewer-owned work without an author revise run."
+    },
+    {
+      "at": "2026-09-08T22:12:12.990031+00:00",
+      "kind": "http_request",
+      "state": "recovery",
+      "method": "GET",
+      "url": "http://127.0.0.1:45379/inbox",
+      "status_code": 200,
+      "outcome": "success",
+      "observed": "Recovered Inbox no longer shows the clarification stop."
+    }
+  ],
+  "viewports": [
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-1280-light.png",
+      "width": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-1280-dark.png",
+      "width": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-390-light.png",
+      "width": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-390-dark.png",
+      "width": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    }
+  ],
+  "artifacts": [
+    "docs/design/cg443-validation/interaction-manifest.json",
+    "docs/design/cg443-validation/inbox-review-clarification-1280-light.png",
+    "docs/design/cg443-validation/inbox-review-clarification-1280-dark.png",
+    "docs/design/cg443-validation/inbox-review-clarification-390-light.png",
+    "docs/design/cg443-validation/inbox-review-clarification-390-dark.png"
+  ],
+  "automated_checks": [
+    "253 focused tests passed at source head before served replay"
+  ],
+  "unverified": []
+}
