@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -342,6 +343,9 @@ class Enrollments:
     def resolve(self, host_id):
         return self.values.get(host_id, Enrollment())
 
+    def ensure(self, host_id, _secret_ref):
+        return self.resolve(host_id)
+
     def revoke(self, host_id):
         self.revoked.append(host_id)
         return (f"secret:{host_id}",)
@@ -382,6 +386,58 @@ def test_scale_operation_resumes_missing_and_expired_enrollment_without_duplicat
     assert provider.provision_calls == 2
 
 
+def test_scale_continuation_rejects_unadmitted_capacity_change(tmp_path):
+    provider = FakeProvider()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"))
+    enrollments = Enrollments({f"workers-{slot}": ready_enrollment(f"workers-{slot}")
+                               for slot in range(4)})
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "pool-scale.json", enrollments,
+                               now=lambda: now)
+    admitted = pool(enabled=True, desired=1, maximum=4,
+                    profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    operation.request(admitted, deadline=now + dt.timedelta(hours=1),
+                      aggregate_spend_limit_usd=80)
+    operation.continue_(admitted)
+
+    with pytest.raises(ValueError, match="new admitted scale request"):
+        operation.continue_(replace(admitted, desired=4))
+    assert provider.provision_calls == 1
+
+
+def test_concurrent_requests_cannot_race_past_aggregate_admission(tmp_path):
+    provider = FakeProvider(hourly_usd=0.4)
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+
+    def admit(name):
+        requested = replace(
+            pool(enabled=True, desired=1), name=name,
+            profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"),
+        )
+        operation = ScaleOperation(
+            HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / f"{name}-life.json")),
+            tmp_path / f"{name}-scale.json", Enrollments(), now=lambda: now,
+        )
+        try:
+            operation.request(requested, deadline=now + dt.timedelta(hours=1),
+                              aggregate_spend_limit_usd=0.5)
+            return "admitted"
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(admit, ("workers-a", "workers-b")))
+    assert outcomes.count("admitted") == 1
+    assert sum("aggregate admitted worker budget" in item for item in outcomes) == 1
+
+
+@pytest.mark.parametrize("expiry", ["not-a-date", "2026-09-09T00:00:00"])
+def test_model_identity_expiry_must_be_valid_and_timezone_aware(expiry):
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    assert ready_enrollment(model_expires_at=expiry).missing(now) == (
+        "valid model identity expiry",)
+
+
 def test_scale_partial_bootstrap_failure_preserves_ready_sibling_and_cleanup(tmp_path):
     provider = FakeProvider()
     def checks(host, _pool):
@@ -402,9 +458,11 @@ def test_scale_partial_bootstrap_failure_preserves_ready_sibling_and_cleanup(tmp
     result = operation.continue_(requested)
     assert result.healthy == 1
     assert any(host.state == HostState.TERMINATED for host in result.hosts)
-    cleaned = operation.continue_(replace(requested, desired=0))
+    cleaned = operation.cleanup(requested)
     assert cleaned.healthy == 0
     assert enrollments.revoked == ["workers-0", "workers-1"]
+    assert cleaned.pending_credential_revocations == (
+        "secret:workers-0", "secret:workers-1")
 
 
 def test_scale_deadline_and_aggregate_budget_survive_restart(tmp_path):
@@ -439,8 +497,12 @@ def test_production_readiness_requires_matching_pinned_durable_task_result(tmp_p
     run.mkdir(parents=True)
     (run / "host_facts.json").write_text(json.dumps({
         "provider_id": "i-123", "profile_version": "1.0.0",
-        "bootstrap_version": "0.1.0+abcdef", "source_head": "1.0.0"}))
+        "bootstrap_version": "0.1.0+abcdef", "source_head": "1.0.0",
+        "readiness_attestations": {"bootstrap_manifest": True,
+                                   "authenticated_registration": True,
+                                   "repository_ci": True}}))
     (run / "run.json").write_text(json.dumps({
         "run_id": "run-1", "status": "done", "finished_at": "2026-09-08T12:00:00Z"}))
+    (run / "remote_result.json").write_text(json.dumps({"result": {"status": "done"}}))
     healthy, detail = check(host, pool())
     assert healthy is True and "run-1" in detail

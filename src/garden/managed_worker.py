@@ -59,15 +59,25 @@ class AttributedClient(WorkerClient):
     def __init__(self, config: dict, root: Path):
         super().__init__(config["endpoint"], config["worker_token"])
         self.config, self.root = config, root
+        self.authenticated_registration = False
 
     def post(self, path: str, payload: dict):
-        return super().post(path, {**payload, "host_facts": {
+        result = super().post(path, {**payload, "host_facts": {
             "profile_version": self.config["profile_version"],
             "bootstrap_version": self.config["bootstrap_version"],
             "source_head": self.config["source_head"],
             "provider_id": self.config["provider_id"],
+            "readiness_attestations": {
+                **self.config.get("readiness_attestations", {}),
+                "authenticated_registration": self.authenticated_registration,
+            },
             **resources(self.root),
         }})
+        if path == "/api/runs/claim" and result[0] in {200, 204}:
+            # The controller accepted this host's scoped bearer token. Subsequent
+            # heartbeat/finish facts bind that authenticated registration to the run.
+            self.authenticated_registration = True
+        return result
 
 
 def run(config: dict, *, once: bool = False):

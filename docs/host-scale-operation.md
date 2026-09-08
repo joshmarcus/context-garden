@@ -4,7 +4,9 @@
 operation before it mutates AWS. The JSON is the versioned pool declaration documented in
 `host-lifecycle.md`; use an enrollment reference ending in `{host_id}` so each stable slot
 gets a separately revocable Secrets Manager secret. `--continue` resumes it, a repeated
-request is idempotent, and `--cleanup` converges to zero through the same record.
+request is re-admitted, and `--cleanup` converges to zero through the same record. The full
+admitted declaration is stored with the operation. Continuation rejects a changed desired
+count, runtime, spend, provider, or resource profile; submit a new request to admit changes.
 
 The status output always includes desired, healthy, pending and failed counts; exact AMI,
 profile and bootstrap versions; projected and admitted cost; the absolute deadline; missing
@@ -20,7 +22,10 @@ references and identity labels: `secret_ref`, `model_identity`, `repository_iden
 expired item is printed as the next owner handoff and blocks only that new slot. Existing
 healthy hosts keep running. Values and operator/root credentials must never be placed here.
 
-Production integrations should mint AWS access with a scoped instance role (or Roles
+`EnrollmentResolver.ensure` is the replaceable mint/renew hook used before each stable slot;
+`revoke` is called during teardown. The bundled directory resolver intentionally implements
+the owner-handoff form for environments without credential APIs. Production integrations
+should mint AWS access with a scoped instance role (or Roles
 Anywhere for an external controller), tag-limited single-use Tailscale OAuth credentials,
 renewable GitHub App installation credentials or per-host repository keys, and a scoped
 worker token. Codex account sessions may refresh on their host, but their eligibility must

@@ -2000,6 +2000,8 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                 "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
                 "source_head": "a" * 40, "provider_id": "disposable-http-host",
                 "memory_reserve_mib": 0, "disk_reserve_mib": 0,
+                "readiness_attestations": {"bootstrap_manifest": True,
+                                           "repository_ci": True},
             }
             config_file = tmp_path / "managed-worker.json"
             config_file.write_text(json.dumps(worker_config))
@@ -2021,6 +2023,11 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                     assert facts["provider_id"] == "disposable-http-host"
                     assert facts["profile_version"] == "fixture-v1"
                     assert facts["disk_free_bytes"] > 0
+                    assert facts["readiness_attestations"] == {
+                        "bootstrap_manifest": True,
+                        "authenticated_registration": True,
+                        "repository_ci": True,
+                    }
                 events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
                                "setup_count": setup_counts.get(task_id), "managed": managed})
             worker("work")

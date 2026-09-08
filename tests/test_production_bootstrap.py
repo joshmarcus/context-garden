@@ -149,4 +149,8 @@ def test_clean_image_bootstrap_includes_full_test_environment():
     for package in ("python3-pip", "gh", "make", "libnss3", "libgbm1", "libasound2"):
         assert f'"{package}"' in source
     assert '"-m", "playwright", "install", "chromium"' in source
+    assert '"runuser", "-u", "garden-worker"' in source
+    assert "p.chromium.launch(headless=True)" in source
+    assert '"git", "ls-remote"' in source
+    assert '"repository_ci": True' in source
     assert "Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/garden-worker/browsers" in source

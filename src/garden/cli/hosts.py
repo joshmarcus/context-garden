@@ -61,8 +61,7 @@ def scale(
             status = operation.request(pool, deadline=parsed,
                                        aggregate_spend_limit_usd=aggregate_limit)
         elif cleanup:
-            from dataclasses import replace
-            status = operation.continue_(replace(pool, desired=0, enabled=True))
+            status = operation.cleanup(pool)
         elif continue_operation:
             status = operation.continue_(pool)
         else:

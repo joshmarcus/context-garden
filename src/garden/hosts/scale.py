@@ -7,14 +7,16 @@ mutation remains in the provider adapter.  Secret values never enter this state 
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import hashlib
 import json
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Protocol
 
+from .config import pool_from_dict
 from .core import HostLifecycle
-from .models import HostFacts, HostState, PoolDeclaration
+from .models import CONTRACT_VERSION, HostFacts, HostState, PoolDeclaration
 
 
 @dataclass(frozen=True)
@@ -45,12 +47,17 @@ class Enrollment:
             except ValueError:
                 missing.append("valid model identity expiry")
             else:
+                if expiry.tzinfo is None:
+                    missing.append("valid model identity expiry")
+                    return tuple(missing)
                 if expiry <= now:
                     missing.append("renew expired model identity")
         return tuple(missing)
 
 
 class EnrollmentResolver(Protocol):
+    def ensure(self, host_id: str, secret_ref: str) -> Enrollment: ...
+
     def resolve(self, host_id: str) -> Enrollment: ...
 
     def revoke(self, host_id: str) -> tuple[str, ...]: ...
@@ -77,6 +84,16 @@ class DirectoryEnrollmentResolver:
         if unknown:
             raise ValueError(f"unsupported enrollment metadata for {host_id}: {unknown}")
         return Enrollment(**value)
+
+    def ensure(self, host_id: str, secret_ref: str) -> Enrollment:
+        """Return provisioner-produced identities, or an actionable missing state.
+
+        Deployments replace this resolver with an integration which mints renewable
+        repository, tailnet, controller, bootstrap and eligible model identities.  The
+        directory implementation is the owner-handoff boundary and never fabricates or
+        copies an administrator credential.
+        """
+        return self.resolve(host_id)
 
     def revoke(self, host_id: str) -> tuple[str, ...]:
         # Revocation is performed by the credential integration.  Keeping the reference
@@ -105,6 +122,7 @@ class ScaleStatus:
     hosts: tuple[HostFacts, ...]
     missing_setup: dict[str, tuple[str, ...]]
     retained_resources: tuple[str, ...]
+    pending_credential_revocations: tuple[str, ...]
     delayed_cost_notice: str
 
 
@@ -130,40 +148,46 @@ class ScaleOperation:
                 aggregate_spend_limit_usd: float | None = None) -> ScaleStatus:
         if deadline.tzinfo is None or deadline <= self.now():
             raise ValueError("termination deadline must be a future absolute timestamp")
-        current = self._read()
-        identity = self._identity(pool)
-        if current and current["operation_id"] != identity:
-            raise ValueError("scale operation already belongs to a different pool/version")
-        if pool.desired > 1 and "{host_id}" not in pool.profile.enrollment_secret_ref:
-            raise ValueError("multi-host pools require a separate {host_id} enrollment reference")
-        plan = self.lifecycle.plan(pool)
-        aggregate_limit = aggregate_spend_limit_usd or pool.spend_limit_usd
-        if aggregate_limit <= 0:
-            raise ValueError("aggregate spend limit must be positive")
-        other_admitted = 0.0
-        for path in self.state_path.parent.glob("*-scale.json"):
-            if path != self.state_path:
-                other_admitted += float(json.loads(path.read_text()).get("estimated_accrued_usd", 0))
-        if other_admitted + plan.estimated_accrued_usd > aggregate_limit:
-            raise ValueError("scale request exceeds aggregate admitted worker budget")
-        value = {
-            **current,
-            "operation_id": identity,
-            "pool": pool.name,
-            "desired": pool.desired,
-            "maximum": pool.maximum,
-            "spend_limit_usd": pool.spend_limit_usd,
-            "aggregate_spend_limit_usd": aggregate_limit,
-            "estimated_accrued_usd": plan.estimated_accrued_usd,
-            "deadline": deadline.astimezone(dt.UTC).isoformat(),
-            "exact_version": f"{pool.profile.image}/{pool.profile.version}/{pool.profile.bootstrap_version}",
-            "retained_resources": current.get("retained_resources", []) if current else [],
-        }
-        self._write(value)
+        with self._locked():
+            current = self._read()
+            identity = self._identity(pool)
+            if current and current["operation_id"] != identity:
+                raise ValueError("scale operation already belongs to a different pool/version")
+            if pool.desired > 1 and "{host_id}" not in pool.profile.enrollment_secret_ref:
+                raise ValueError("multi-host pools require a separate {host_id} enrollment reference")
+            plan = self.lifecycle.plan(pool)
+            aggregate_limit = aggregate_spend_limit_usd or pool.spend_limit_usd
+            if aggregate_limit <= 0:
+                raise ValueError("aggregate spend limit must be positive")
+            other_admitted = 0.0
+            for path in self.state_path.parent.glob("*-scale.json"):
+                if path != self.state_path:
+                    other_admitted += float(json.loads(path.read_text()).get("estimated_accrued_usd", 0))
+            if other_admitted + plan.estimated_accrued_usd > aggregate_limit:
+                raise ValueError("scale request exceeds aggregate admitted worker budget")
+            value = {
+                **current,
+                "operation_id": identity,
+                "pool": pool.name,
+                "admitted_declaration": {"contract_version": CONTRACT_VERSION, **asdict(pool)},
+                "desired": pool.desired,
+                "maximum": pool.maximum,
+                "spend_limit_usd": pool.spend_limit_usd,
+                "aggregate_spend_limit_usd": aggregate_limit,
+                "estimated_accrued_usd": plan.estimated_accrued_usd,
+                "deadline": deadline.astimezone(dt.UTC).isoformat(),
+                "exact_version": f"{pool.profile.image}/{pool.profile.version}/{pool.profile.bootstrap_version}",
+                "retained_resources": current.get("retained_resources", []) if current else [],
+            }
+            self._write(value)
         return self.status(pool)
 
     def continue_(self, pool: PoolDeclaration) -> ScaleStatus:
         operation = self._require(pool)
+        admitted = self._admitted(operation)
+        if asdict(pool) != asdict(admitted):
+            raise ValueError("pool declaration changed; submit a new admitted scale request")
+        pool = admitted
         enrolled_slots = int(operation["desired"])
         deadline = dt.datetime.fromisoformat(operation["deadline"])
         if self.now() >= deadline:
@@ -189,8 +213,31 @@ class ScaleOperation:
         self._write(operation)
         return self.status(pool, hosts=hosts)
 
+    def cleanup(self, pool: PoolDeclaration) -> ScaleStatus:
+        """Retire the capacity admitted by this operation without trusting new inputs."""
+        operation = self._require(pool)
+        admitted = self._admitted(operation)
+        return self._cleanup(replace(admitted, desired=0, enabled=True), operation)
+
+    def _cleanup(self, pool: PoolDeclaration, operation: dict) -> ScaleStatus:
+        enrolled_slots = int(operation["desired"])
+        hosts = self.lifecycle.reconcile(pool)
+        operation["ephemeral_credentials_pending_revocation"] = sorted({
+            ref for slot in range(enrolled_slots)
+            for ref in self.enrollments.revoke(f"{pool.name}-{slot}")
+        })
+        operation["desired"] = 0
+        operation["estimated_accrued_usd"] = 0.0
+        operation["retained_resources"] = sorted({
+            resource for host in hosts for resource in host.retained_resources
+        })
+        self._write(operation)
+        return self.status(pool, hosts=hosts)
+
     def status(self, pool: PoolDeclaration, *, hosts: list[HostFacts] | None = None) -> ScaleStatus:
         operation = self._require(pool)
+        admitted = self._admitted(operation)
+        pool = replace(admitted, desired=int(operation["desired"]))
         hosts = hosts if hosts is not None else self.lifecycle.inspect(pool)
         active = [host for host in hosts if host.state != HostState.TERMINATED]
         healthy = sum(host.state in {HostState.READY, HostState.BUSY} for host in active)
@@ -205,6 +252,7 @@ class ScaleOperation:
             pool.profile.cpu, pool.profile.memory_mib, pool.profile.disk_gib,
             tuple(hosts), self._missing(pool),
             tuple(operation.get("retained_resources", [])),
+            tuple(operation.get("ephemeral_credentials_pending_revocation", [])),
             "provider billing can arrive after teardown; retained resources may continue to cost",
         )
 
@@ -216,7 +264,9 @@ class ScaleOperation:
             declaration = self.lifecycle._declaration(pool, slot)
             if declaration.operation_id in active_operations:
                 continue
-            enrollment = self.enrollments.resolve(declaration.host_id)
+            enrollment = self.enrollments.ensure(
+                declaration.host_id, declaration.pool.profile.enrollment_secret_ref
+            )
             missing = enrollment.missing(self.now())
             if (enrollment.secret_ref
                     and enrollment.secret_ref != declaration.pool.profile.enrollment_secret_ref):
@@ -232,6 +282,31 @@ class ScaleOperation:
         if value["operation_id"] != self._identity(pool):
             raise ValueError("pool/version does not match the durable scale operation")
         return value
+
+    @staticmethod
+    def _admitted(operation: dict) -> PoolDeclaration:
+        declaration = operation.get("admitted_declaration")
+        if not isinstance(declaration, dict):
+            raise ValueError("legacy scale operation must be requested again for durable admission")
+        return pool_from_dict(declaration)
+
+    def _locked(self):
+        class Lock:
+            def __init__(inner, path: Path):
+                inner.path = path
+                inner.file = None
+
+            def __enter__(inner):
+                inner.path.parent.mkdir(parents=True, exist_ok=True)
+                inner.file = inner.path.open("a")
+                fcntl.flock(inner.file, fcntl.LOCK_EX)
+
+            def __exit__(inner, *_args):
+                assert inner.file is not None
+                inner.file.close()
+
+        # Admission is aggregate across sibling operations, so they share one lock.
+        return Lock(self.state_path.parent / ".scale-admission.lock")
 
     def _read(self) -> dict:
         return json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
@@ -258,20 +333,28 @@ def durable_worker_readiness(garden_dir: Path):
     def check(host: HostFacts, pool: PoolDeclaration) -> tuple[bool | None, str]:
         for facts_path in garden_dir.glob("runs/*/*/host_facts.json"):
             run_path = facts_path.with_name("run.json")
-            if not run_path.exists():
+            result_path = facts_path.with_name("remote_result.json")
+            if not run_path.exists() or not result_path.exists():
                 continue
             try:
                 facts = json.loads(facts_path.read_text())
                 run = json.loads(run_path.read_text())
+                returned = json.loads(result_path.read_text())
             except (OSError, ValueError):
                 continue
+            attestations = facts.get("readiness_attestations", {})
+            gates = ("bootstrap_manifest", "authenticated_registration", "repository_ci")
             if (facts.get("provider_id") == host.provider_id
                     and facts.get("profile_version") == pool.profile.version
                     and facts.get("bootstrap_version") == pool.profile.bootstrap_version
                     and facts.get("source_head") == pool.profile.version
+                    and all(attestations.get(gate) is True for gate in gates)
                     and run.get("status") == "done"
-                    and run.get("finished_at")):
-                return True, f"durable task result {run.get('run_id', facts_path.parent.name)} returned"
-        return None, "awaiting pinned registration and a durable real-task result"
+                    and run.get("finished_at")
+                    and returned.get("result", {}).get("status") == "done"):
+                return True, ("bootstrap manifest, authenticated registration, repository/CI "
+                              f"doctor and durable task result {run.get('run_id', facts_path.parent.name)} verified")
+        return None, ("awaiting bootstrap manifest, authenticated registration, repository/CI "
+                      "doctor and a durable real-task result")
 
     return check

@@ -27,7 +27,7 @@ def test_single_scale_cli_reports_bounded_resumable_operation(tmp_path, monkeypa
             calls.append((pool.desired, deadline.isoformat(), aggregate_spend_limit_usd))
             return ScaleStatus("op", 2, 1, 0, 0, "ami-pinned/source-sha/bootstrap-sha",
                                deadline.isoformat(), 1.0, 80, 80, 4, 4, 16384, 40, (),
-                               {"workers-1": ("dedicated model identity",)}, (),
+                               {"workers-1": ("dedicated model identity",)}, (), (),
                                "provider billing can arrive after teardown")
 
     monkeypatch.setattr("garden.cli.hosts._build_operation", lambda *args: Operation())

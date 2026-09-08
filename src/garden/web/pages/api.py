@@ -51,6 +51,17 @@ def register(app: FastAPI, site: Site) -> None:
                         or item < 0 or item > 2**63 - 1 or not math.isfinite(item):
                     raise HTTPException(422, f"host_facts.{name} must be a finite number between 0 and 2**63-1")
                 facts[name] = item
+        attestations = value.get("readiness_attestations")
+        if attestations is not None:
+            allowed_attestations = {
+                "bootstrap_manifest", "authenticated_registration", "repository_ci"
+            }
+            if (not isinstance(attestations, dict)
+                    or set(attestations) - allowed_attestations
+                    or any(item is not True and item is not False
+                           for item in attestations.values())):
+                raise HTTPException(422, "host_facts.readiness_attestations must contain known booleans")
+            facts["readiness_attestations"] = attestations
         return facts
 
     def persist_host_facts(run: Any, value: Any) -> None:

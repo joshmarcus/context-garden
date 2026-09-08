@@ -157,9 +157,17 @@ def main():
     command("python3", "-m", "venv", "/opt/garden-worker")
     command("/opt/garden-worker/bin/pip", "install", "--disable-pip-version-check",
             "context-garden @ git+https://github.com/joshmarcus/context-garden@" + source)
+    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
+    identity = pwd.getpwnam("garden-worker")
+    uid, gid = identity.pw_uid, identity.pw_gid
     browsers = "/var/lib/garden-worker/browsers"
-    command("env", "PLAYWRIGHT_BROWSERS_PATH=" + browsers,
+    command("install", "-d", "-o", "garden-worker", "-g", "garden-worker", "-m", "700", browsers)
+    command("runuser", "-u", "garden-worker", "--", "env", "PLAYWRIGHT_BROWSERS_PATH=" + browsers,
             "/opt/garden-worker/bin/python", "-m", "playwright", "install", "chromium")
+    command("runuser", "-u", "garden-worker", "--", "env", "PLAYWRIGHT_BROWSERS_PATH=" + browsers,
+            "/opt/garden-worker/bin/python", "-c",
+            "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); "
+            "b=p.chromium.launch(headless=True); b.close(); p.stop()")
     command("chmod", "-R", "a+rX", "/opt/garden-worker")
     version = "1.102.3"
     data = fetch("https://pkgs.tailscale.com/stable/tailscale_" + version + "_amd64.tgz")
@@ -183,9 +191,6 @@ def main():
                 "--accept-dns=true", "--accept-routes=false")
     finally:
         key.unlink(missing_ok=True)
-    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
-    identity = pwd.getpwnam("garden-worker")
-    uid, gid = identity.pw_uid, identity.pw_gid
     # Block IMDS (both address families) before starting unprivileged workload code.
     command("iptables", "-I", "OUTPUT", "-d", "169.254.169.254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
     command("ip6tables", "-I", "OUTPUT", "-d", "fd00:ec2::254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
@@ -210,6 +215,7 @@ def main():
         hp.chmod(0o755)
         write_worker_files({".gitconfig": '[http "' + secret["endpoint"] + '/git/"]\n    extraHeader = Authorization: Bearer ' + git_token + '\n'}, uid, gid)
     else:
+        repository = secret["git_repo"]
         files = production_files(secret)
         install_codex()
         write_worker_files(files, uid, gid)
@@ -218,6 +224,16 @@ def main():
         # Verify dedicated account credentials without starting a model.
         command("runuser", "-u", "garden-worker", "--", "env",
                 "CODEX_HOME=/var/lib/garden-worker/.codex", "/usr/local/bin/codex", "login", "status")
+        command("runuser", "-u", "garden-worker", "--", "env",
+                "HOME=/var/lib/garden-worker", "GIT_CONFIG_GLOBAL=/var/lib/garden-worker/.gitconfig",
+                "GIT_SSH_COMMAND=/usr/bin/ssh -i /var/lib/garden-worker/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/garden-worker/.ssh/known_hosts",
+                "git", "ls-remote", "https://github.com/" + repository + ".git", "HEAD")
+        command("runuser", "-u", "garden-worker", "--", "gh", "--version")
+        command("runuser", "-u", "garden-worker", "--", "make", "--version")
+        secret["readiness_attestations"] = {
+            "bootstrap_manifest": True,
+            "repository_ci": True,
+        }
     public_key = secret.pop("operator_ssh_public_key", "")
     if public_key:
         if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]+)?", public_key):
