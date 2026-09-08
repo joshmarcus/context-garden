@@ -850,7 +850,11 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     rendering its own templates, while the disposable QA garden makes page data deterministic.
     """
     out_dir = Path(str(spec["out_dir"]))
-    worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
+    # The check context is rebound to the checkout that actually executes the job.  This
+    # matters for remote checks: the serialized spec was created by the controller and may
+    # still contain its local absolute path, which is neither meaningful nor necessarily
+    # readable on the worker host.  Locally both values name the same checkout.
+    worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():
         return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
