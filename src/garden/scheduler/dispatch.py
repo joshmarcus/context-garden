@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import shutil
 import time
 from pathlib import Path
@@ -333,8 +332,23 @@ class DispatchMixin:
             raise RuntimeError("operator evidence is required before checkout work can dispatch")
         runner = runner or self.runner_for(task)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
-        branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        attached_pr = None
+        if completion_mode == "external" and external_pr:
+            attached_pr = self.resolve_pr_attachment(task, external_pr)
+            if branch_override and branch_override != attached_pr.head:
+                raise RuntimeError(
+                    f"external branch {branch_override!r} does not match PR head {attached_pr.head!r}"
+                )
+            task.branch, task.pr = attached_pr.head, attached_pr.url
+            st.update({"pr_number": attached_pr.number, "head_sha": attached_pr.head_sha,
+                       "pr_state": attached_pr.state, "pr_base": attached_pr.base,
+                       "pr_draft": attached_pr.is_draft, "checks": attached_pr.checks,
+                       "failed_checks": list(attached_pr.failed_checks),
+                       "review_decision": attached_pr.review_decision})
+            self.store.save(task)
+            self.state.save()
+        branch = branch_override or task.branch or task.default_branch()
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -342,11 +356,8 @@ class DispatchMixin:
         # callers may still use branch_override without changing the task identity.
         if completion_mode == "external":
             task.branch = branch
-            if external_pr:
-                task.pr = external_pr
-                match = re.search(r"/pull/(\d+)", external_pr)
-                if match:
-                    st["pr_number"] = int(match.group(1))
+            if attached_pr is not None:
+                task.pr = attached_pr.url
             self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
