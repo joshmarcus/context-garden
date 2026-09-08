@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Any
 
@@ -102,11 +103,22 @@ def register(app: FastAPI, site: Site) -> None:
         captures = [{"name": p.relative_to(run.path).as_posix(),
                      "href": f"/runs/{task_id}/{run_id}/captures/{p.relative_to(run.path).as_posix()}"}
                     for p in recorded_captures(run)]
+        recovery = None
+        if run.runner == "remote" and run.status == "running" and run.lease_expires_at:
+            recovery_expires_at = run.recovery_expires_at or (
+                dt.datetime.fromisoformat(run.lease_expires_at) + dt.timedelta(
+                    seconds=int(s.config.get("workers.recovery_seconds", 300))
+                )
+            ).isoformat()
+            remaining = max(0, int((dt.datetime.fromisoformat(recovery_expires_at)
+                                    - dt.datetime.now(dt.UTC)).total_seconds()))
+            if run.lease_expires_at <= dt.datetime.now(dt.UTC).isoformat() and remaining:
+                recovery = {"remaining": remaining}
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
-            captures=captures))
+            captures=captures, recovery=recovery))
 
     @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):
