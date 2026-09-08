@@ -124,7 +124,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
 
             check_data = dict(run.get("checks") or {})
             ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
-            results = run_check_job({**check_data, "ctx": ctx, "cwd": str(repo), "setup": setup})
+            # A managed consumer passes the product command above so admission covers it.
+            # Do not repeat it inside the check job. A standalone worker may instead
+            # supply its own setup override; without one the check job prepares the product.
+            check_setup = {**setup, "command": ""} if setup_command else setup
+            results = run_check_job({**check_data, "ctx": ctx, "cwd": str(repo), "setup": check_setup})
             final, parsed, usage, cost, error, rc = "", {"checks": results}, {}, 0.0, "", 0
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))

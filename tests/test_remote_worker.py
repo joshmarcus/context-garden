@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import threading
 import time
 
@@ -124,6 +125,41 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
+
+
+def test_claim_and_heartbeat_persist_only_bounded_host_facts(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    expected = {
+        "profile_version": "worker-v1", "bootstrap_version": "bootstrap-v2",
+        "source_head": "a" * 40, "provider_id": "i-123", "memory_available_bytes": 1024,
+        "memory_total_bytes": 2048, "disk_free_bytes": 4096, "cpu_count": 4,
+        "observed_at": 1.5,
+    }
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                           "host_facts": {**expected, "controller_token": "must-not-persist"}},
+                           headers=auth)
+    assert response.status_code == 200
+    assert json.loads((run.path / "host_facts.json").read_text()) == expected
+
+    payload = response.json()
+    too_long = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                           json={"lease_token": payload["lease_token"],
+                                 "host_facts": {"provider_id": "x" * 129}}, headers=auth)
+    assert too_long.status_code == 422
+    assert json.loads((run.path / "host_facts.json").read_text()) == expected
+    for invalid in (-1, True, 10**400):
+        response = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                               json={"lease_token": payload["lease_token"],
+                                     "host_facts": {"disk_free_bytes": invalid}}, headers=auth)
+        assert response.status_code == 422
+        assert json.loads((run.path / "host_facts.json").read_text()) == expected
+    response = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                           json={"lease_token": payload["lease_token"],
+                                 "host_facts": {**expected, "disk_free_bytes": 8192}}, headers=auth)
+    assert response.status_code == 200
+    assert json.loads((run.path / "host_facts.json").read_text()) == {**expected, "disk_free_bytes": 8192}
 
 
 def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
@@ -330,13 +366,15 @@ def test_worker_cli_setup_option(monkeypatch, tmp_path):
     assert calls == [{"setup_command": "echo host-owned"}]
 
 
-def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github):
+@pytest.mark.parametrize("managed", [False, True], ids=["standalone", "managed"])
+def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github, managed):
     """Real TCP HTTP and a separate CLI process; GitHub is the only external fake.
 
     This proves process/transport separation, not VM or EC2 provisioning.
     """
     import json
     import os
+    import shlex
     import socket
     import subprocess
     import sys
@@ -347,8 +385,28 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
 
     _, store = remote_client(garden, monkeypatch)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["products"]["demo"]["setup"] = {"command": "echo scheduler-secret-must-not-travel"}
+    config["products"]["demo"]["setup"] = {
+        "command": "echo configured-product-setup", "timeout_seconds": 37,
+        "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
+    }
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    if managed:
+        # Real setup in each worker subprocess must observe the machine lock already held.
+        setup_code = """import fcntl
+from pathlib import Path
+with (Path.cwd().parents[1] / 'host.lock').open('a') as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise RuntimeError('setup executed outside the managed host lock')
+p = Path('.git/setup-count')
+p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
+"""
+        config["products"]["demo"]["setup"]["command"] = "python3 -c " + shlex.quote(setup_code)
+        config["checks"]["pre_pr"][0]["command"] += " && test -f .git/setup-count"
+        (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     store = Store(garden)
     from garden.model import Status
     for other in store.tasks().values():
@@ -385,7 +443,9 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
             assert scheduler.tick().dispatched
             auth = {"Authorization": "Bearer secret-token"}
             claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
-            assert "scheduler-secret" not in json.dumps(claim)
+            assert claim["setup"] == {"command": config["products"]["demo"]["setup"]["command"], "timeout_seconds": 37}
+            assert "PRIVATE_SETUP_VALUE" not in json.dumps(claim)
+            assert "must-not-travel" not in json.dumps(claim)
             run = scheduler.runs.latest("DM-001")
             run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
             run.save()
@@ -396,15 +456,36 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
                    {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
+            setup_counts = {}
+            worker_config = {
+                "endpoint": url, "worker_token": "secret-token", "host": "build-1",
+                "work_dir": str(tmp_path / "http-host"), "harnesses": ["claude"],
+                "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
+                "source_head": "a" * 40, "provider_id": "disposable-http-host",
+                "memory_reserve_mib": 0, "disk_reserve_mib": 0,
+            }
+            config_file = tmp_path / "managed-worker.json"
+            config_file.write_text(json.dumps(worker_config))
             def worker(mode, task_id="DM-001"):
-                result = subprocess.run([sys.executable, "-m", "garden", "worker", "--garden", url,
-                                         "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
-                                         "--harness", "claude", "--once"], env=env, cwd=tmp_path,
+                command = ([sys.executable, "-m", "garden.managed_worker", "--config", str(config_file), "--once"]
+                           if managed else [sys.executable, "-m", "garden", "worker", "--garden", url,
+                           "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
+                           "--harness", "claude", "--once"])
+                result = subprocess.run(command, env=env, cwd=tmp_path,
                                         capture_output=True, text=True, timeout=30)
                 assert result.returncode == 0, result.stderr
                 latest = scheduler.runs.latest(task_id)
                 assert latest.mode == mode and latest.process_finished()
-                events.append({"mode": mode, "run": latest.run_id, "host": latest.host})
+                if managed:
+                    setup_counts[task_id] = setup_counts.get(task_id, 0) + 1
+                    marker = tmp_path / "http-host" / "repos" / task_id / ".git/setup-count"
+                    assert int(marker.read_text()) == setup_counts[task_id], "setup must run exactly once per claim"
+                    facts = json.loads((latest.path / "host_facts.json").read_text())
+                    assert facts["provider_id"] == "disposable-http-host"
+                    assert facts["profile_version"] == "fixture-v1"
+                    assert facts["disk_free_bytes"] > 0
+                events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
+                               "setup_count": setup_counts.get(task_id), "managed": managed})
             worker("work")
             scheduler.tick()
             worker("check")
@@ -433,8 +514,8 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
                 ).stdout.strip(),
                 "test": "tests/test_remote_worker.py::test_remote_lifecycle_over_served_http",
                 "transport": "real TCP HTTP",
-                "worker_process": "separate python -m garden worker CLI process",
-                "worker_command": "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
+                "worker_process": "separate python -m garden.managed_worker process" if managed else "separate python -m garden worker CLI process",
+                "worker_command": "python -m garden.managed_worker --config isolated-config --once" if managed else "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
                 "actions": [
                     "reject unauthenticated and cross-origin claims",
                     "claim then expire a work lease and reject its stale heartbeat",
@@ -442,7 +523,9 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
                     "open the run page and drain the queue",
                 ],
                 "observations": {
-                    "scheduler_secret_absent_from_claim": True,
+                    "setup_environment_absent_from_claim": True,
+                    "managed_setup_once_inside_host_lock": managed,
+                    "managed_host_attribution_persisted": managed,
                     "stale_heartbeat_status": 409,
                     "review_verdict": "approve",
                     "pr_opened": True,

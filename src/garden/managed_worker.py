@@ -79,7 +79,8 @@ def run(config: dict, *, once: bool = False):
                     return
                 time.sleep(3)
                 continue
-            execute_claim(claim, root, client)
+            setup = dict(claim.get("setup") or {})
+            execute_claim(claim, root, client, setup_command=str(setup.get("command") or ""))
             if once:
                 return
 
