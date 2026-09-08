@@ -74,7 +74,7 @@ def _tick_thread_lock(path: Path) -> Iterator[None]:
 
 __all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "_TaskState"]
 
-WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase"})  # count against max_parallel
+WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase", "investigation"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
 CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
 
