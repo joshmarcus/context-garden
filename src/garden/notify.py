@@ -8,6 +8,7 @@ with the task details in environment variables. See `notify.command` in `garden.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -19,11 +20,10 @@ from .host_identity import scrub_shared_text
 LOGGER = logging.getLogger("garden.notify")
 
 # GARDEN_MESSAGE (and the other GARDEN_* env vars) carry worker-written text: they can
-# contain quotes, backslashes or newlines. A command that splices one straight into what
-# looks like a JSON literal (an escaped quote nearby, no jq/python in the pipeline) will
-# break on such a message, or let it inject extra JSON — see notify: in
-# examples/garden.work.yaml for a command that quotes correctly with `jq -n --arg`.
-_GARDEN_VARS = ("GARDEN_MESSAGE", "GARDEN_TASK_ID", "GARDEN_STATUS", "GARDEN_PR")
+# contain quotes, backslashes or newlines. `GARDEN_NOTIFICATION_JSON` is constructed with
+# json.dumps before the command runs; send that variable quoted instead of splicing a
+# worker-written variable into a hand-built payload.
+_GARDEN_VARS = ("GARDEN_MESSAGE", "GARDEN_TASK_ID", "GARDEN_STATUS", "GARDEN_PR", "GARDEN_NOTIFICATION_JSON")
 _LOOKS_LIKE_JSON = re.compile(r'\\"|\{\s*\\?"')
 _HAS_QUOTING_TOOL = re.compile(r"\bjq\b|\bpython3?\s+-c\b")
 
@@ -66,6 +66,31 @@ def _run_command(command: str, env: dict[str, str], timeout: float) -> tuple[boo
     return True, ""
 
 
+def _payload(task_id: str, status: str, message: str, pr_url: str, recipient: str) -> str:
+    """Build the delivery payload without interpreting task or worker text as code."""
+    return json.dumps({
+        "recipient": recipient,
+        "task_id": task_id,
+        "status": status,
+        "message": message,
+        "pr_url": pr_url,
+    })
+
+
+def _notification_env(cfg: dict[str, Any], task_id: str, status: str, message: str,
+                      pr_url: str) -> dict[str, str]:
+    """Return delivery variables, including a JSON payload safe for a static command to send."""
+    cmd_config = cfg.get("notify", {}) if isinstance(cfg.get("notify"), dict) else {}
+    recipient = str(cmd_config.get("recipient") or "")
+    env = os.environ.copy()
+    env["GARDEN_TASK_ID"] = task_id
+    env["GARDEN_STATUS"] = status
+    env["GARDEN_MESSAGE"] = message
+    env["GARDEN_PR"] = pr_url
+    env["GARDEN_NOTIFICATION_JSON"] = _payload(task_id, status, message, pr_url, recipient)
+    return env
+
+
 def notify(
     cfg: dict[str, Any],
     task_id: str,
@@ -87,11 +112,7 @@ def notify(
 
     timeout = float(cmd_config.get("timeout_seconds", 30))
 
-    env = os.environ.copy()
-    env["GARDEN_TASK_ID"] = task_id
-    env["GARDEN_STATUS"] = status
-    env["GARDEN_MESSAGE"] = scrub_shared_text(message, cfg)
-    env["GARDEN_PR"] = pr_url
+    env = _notification_env(cfg, task_id, status, scrub_shared_text(message, cfg), pr_url)
 
     ok, detail = _run_command(command, env, timeout)
     if not ok:
@@ -111,9 +132,7 @@ def notify_test(cfg: dict[str, Any]) -> tuple[bool, str] | None:
         return None
 
     timeout = float(cmd_config.get("timeout_seconds", 30))
-    env = os.environ.copy()
-    env["GARDEN_TASK_ID"] = "DOCTOR-TEST"
-    env["GARDEN_STATUS"] = "doctor_test"
-    env["GARDEN_MESSAGE"] = "garden doctor: test notification"
-    env["GARDEN_PR"] = ""
+    env = _notification_env(
+        cfg, "DOCTOR-TEST", "doctor_test", "garden doctor: test notification", "",
+    )
     return _run_command(command, env, timeout)

@@ -21,6 +21,9 @@ ssh:
 github:
   use_gh: true
   draft_pr: true
+  trusted_bots: ["review-app[bot]"] # only opted-in bot findings can request a revise round
+  bot_notice_patterns: ["usage limit", "no issues", "looks good"]
+  automerge: false                  # retain human approval and merge authority
 
 checks:
   ci:                             # replaces the home list entirely (lists do not merge)
@@ -59,19 +62,17 @@ review:
 
 # Runs whenever a task needs you: awaiting_triage (after its review verdict is in),
 # waiting_human, failed, a changes_requested past max_revisions, or a stall/budget event.
-# Gets GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR as environment variables.
+# Gets GARDEN_TASK_ID, GARDEN_STATUS, GARDEN_MESSAGE, GARDEN_PR and a safely constructed
+# GARDEN_NOTIFICATION_JSON payload as environment variables. The recipient is fixed in config.
 # `garden doctor` runs this for real with a synthetic payload, so a typo or a dead webhook
 # shows up there instead of the first time a task actually needs you.
 notify:
-  # GARDEN_MESSAGE is worker-written text, so it can hold a quote, a backslash or a
-  # newline: build the JSON with `jq -n --arg` (quotes each value) rather than splicing
-  # the variables into a hand-written "{\"text\": \"...\"}" string, which a stray quote
-  # in the message would break (or use to inject extra JSON).
+  # GARDEN_NOTIFICATION_JSON is constructed before the static command runs, so worker-written
+  # text cannot become shell code or alter its fixed recipient. Quote the expansion unchanged.
+  recipient: operator@example.invalid
   command: >-
     curl -sS -X POST -H 'Content-type: application/json'
-    --data "$(jq -n --arg status "$GARDEN_STATUS" --arg task "$GARDEN_TASK_ID"
-    --arg message "$GARDEN_MESSAGE" --arg pr "$GARDEN_PR"
-    '{text: "[\($status)] \($task): \($message) \($pr)"}')"
+    --data "$GARDEN_NOTIFICATION_JSON"
     "$SLACK_WEBHOOK_URL"
   timeout_seconds: 15
 
