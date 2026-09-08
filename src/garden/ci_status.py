@@ -192,8 +192,11 @@ def status_reason(status: CIStatus) -> str:
     if status.green:
         return ""
     detail = f" ({', '.join(status.failures)})" if status.failures else ""
-    label = "github checks" if status.provider == "github" else f"{status.provider} CI"
-    return f"{label} for {status.queried_sha[:12] or 'unknown head'} is {status.state}{detail}"
+    head = status.queried_sha[:12] or "unknown head"
+    if status.provider == "github" and status.state == "missing":
+        return f"GitHub CI has no CI result for {head} (checks are missing)"
+    noun = "CI checks" if status.provider == "github" else "CI"
+    return f"{status.provider} {noun} for {head} are {status.state}{detail}"
 
 
 StatusProvider = Callable[[Path, str, Any, dict[str, Any]], CIStatus]

@@ -308,7 +308,10 @@ class PollMixin:
             st.pop("ci_rerun_waiting_for", None)
         if waiting_for_rerun:
             st.pop("ci_failed_at", None)
-        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
+        failure_key = (
+            f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}:"
+            f"{','.join(ci_status.failures)}:{pr.updated_at}"
+        )
         github_ci_failure = (provider in ("actions", "status", "legacy")
                              and pr.checks == "FAILURE"
                              and not waiting_for_rerun

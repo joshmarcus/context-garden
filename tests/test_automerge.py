@@ -610,3 +610,5 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
         },
     }))
     assert sched._automerge_gate(t, pr)[0]
+     ok, reason = sched._automerge_gate(t, pr)
+     assert ok, reason

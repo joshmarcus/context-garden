@@ -208,6 +208,14 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
 def test_onboard_this_repository_preserves_documented_publishing_ci_helper(tmp_path, monkeypatch):
     repo = Path(__file__).parents[1]
     garden = tmp_path / "garden"
+    real_run = subprocess.run
+
+    def github_origin(command, *args, **kwargs):
+        if command == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(command, 0, "https://github.com/example/context-garden.git\n", "")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr("garden.onboard.subprocess.run", github_origin)
     info = discover_project(repo)
     backlog_item, source = info.backlog[0]
     real_run = subprocess.run
