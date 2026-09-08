@@ -443,19 +443,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/trials" class="">Trials</a>
     <a href="/runs" class="">Runs</a>
     <a href="/costs" class="">Costs</a>
-    
+
     <a href="/config" class="">Config</a>
   </nav>
   <div>
     <h4>Phases</h4>
     <a class="drawer " href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
-    
-    
+
+
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
     <span class="faint">0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured</span>
-    
+
     <div class="running-now">
       <span class="faint">nothing running</span>
     </div>
@@ -470,17 +470,17 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <noscript><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    
-    
+
+
   </div>
   <div class="notify" id="notify">
     <label class="check"><input type="checkbox" id="notify-toggle"> Notify me in this browser</label>
     <span class="notify-state faint" id="notify-state"></span>
   </div>
   <div class="foot">
-    
+
     <span>scheduler loop on · tick <span data-tick-at>02:17:17Z</span></span>
-    
+
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
@@ -508,31 +508,31 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <option value="demo/p1" data-name="p1" selected>p1</option>
     </select>
   </form>
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
   <form class="inline" method="post" action="/tasks/DM-003/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()"><option value="easy" selected>easy</option><option value="medium">medium</option><option value="hard">hard</option></select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/DM-003/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()"><option value="0">first · 0</option><option value="1" selected>next · 1</option><option value="2">normal · 2</option><option value="3">later · 3</option><option value="4">someday · 4</option></select><span class="autosave-mark" aria-live="polite"></span></form>
-  
+
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
-  
+
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
-  
+
   <button class="quiet" data-toggle="trial-form">Model trial…</button>
-  
+
   <form class="inline" method="post" action="/tasks/DM-003/cancel"><button class="quiet danger">Cancel</button></form>
 </div>
 <div id="persona-form" class="panel" hidden><form method="post" action="/tasks/DM-003/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: designer, product-manager, project-manager, security, staff-engineer, usability-expert, user</span></form></div>
 <div id="trial-form" class="panel" hidden>
   <div class="eyebrow">Start a model trial</div>
-  
+
   <form method="post" action="/tasks/DM-003/trial" class="trial-form" data-trial-form data-harnesses='{"claude": ["qa-easy", "qa-medium", "qa-hard", "sonnet", "opus", "haiku", "fable", "claude-sonnet-5", "claude-opus-4-8"]}' data-default-harness="claude">
     <input type="hidden" name="note">
-    
+
     <div class="trial-rows"></div>
     <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">Start trial</button></div>
   </form>
@@ -571,50 +571,50 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <div class="panel"><div class="eyebrow">Acceptance criteria</div>
       <table style="margin-top:6px;width:100%">
         <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>
-        
+
         <tr>
           <td style="vertical-align:top">The plain task lands with a passing test.</td>
           <td style="vertical-align:top"><span class="faint">—</span></td>
           <td style="vertical-align:top"><span class="faint">—</span></td>
         </tr>
-        
+
       </table>
     </div>
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+
+
+
+
+
+
+
+
+
+
+
+
     <div class="panel"><div class="eyebrow">Runs</div>
       <div id="runs" data-poll="/partials/tasks/DM-003/runs" data-every="5000" style="margin-top:6px"><span class="faint">no runs yet</span></div>
     </div>
-    
-    
+
+
   </div>
   <div class="stack">
     <div class="panel">
       <dl class="kv">
         <dt>file</dt><dd class="mono">demo/p1/tasks/DM-003-planned-a-plain-task.md</dd>
-        
-        
-        
-        
+
+
+
+
         <dt>depends on</dt><dd><span class="faint">—</span></dd>
         <dt>unblocks</dt><dd><a href="/tasks/DM-004">DM-004</a> </dd>
         <dt>reading</dt><dd><span class="mono">demo/p1/specs/spec.md</span><br></dd>
         <dt>branch</dt><dd class="mono">—</dd>
         <dt>PR</dt><dd><span class="faint">—</span></dd>
-        
-        
-        
-        
+
+
+
+
         <dt>attempts</dt><dd>0</dd>
         <dt>runner</dt><dd>default / default harness</dd>
         <dt>updated</dt><dd class="mono">2026-09-08T02:17</dd>

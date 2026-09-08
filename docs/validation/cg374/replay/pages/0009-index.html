@@ -443,19 +443,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/trials" class="">Trials</a>
     <a href="/runs" class="">Runs</a>
     <a href="/costs" class="">Costs</a>
-    
+
     <a href="/config" class="">Config</a>
   </nav>
   <div>
     <h4>Phases</h4>
     <a class="drawer " href="/phases/demo/p1"><span class="thumb"><img src="/static/plates/pea-thumb.webp" alt="" width="38" height="58" loading="lazy"></span><span class="k"><b>p1</b><i>Plate I · Pisum sativum</i><span>demo · 4 tasks</span></span></a><a href="/phases/demo/p1#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>
-    
-    
+
+
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
     <span class="faint">0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured</span>
-    
+
     <div class="running-now">
       <span class="faint">nothing running</span>
     </div>
@@ -470,7 +470,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <noscript><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    
+
     <span class="faint" style="display:block">$0.06/hr last hour</span>
   </div>
   <div class="notify" id="notify">
@@ -478,9 +478,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span class="notify-state faint" id="notify-state"></span>
   </div>
   <div class="foot">
-    
+
     <span>scheduler loop on · tick <span data-tick-at>02:17:19Z</span></span>
-    
+
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
@@ -497,7 +497,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <div class="kpi"><div class="v">0/4</div><div class="l">workers running</div></div>
   <div class="kpi"><div class="v">0/4</div><div class="l">reviews running</div></div>
   <div class="kpi"><div class="v">1</div><div class="l">PRs open</div></div>
-  
+
   <div class="kpi"><div class="v">$0.06</div><div class="l">spent in 24h</div></div>
 </div>
 
@@ -505,67 +505,67 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 
 <section class="group ">
   <header><span class="stamp">question</span><h2>Questions to answer</h2><p>A worker, kickoff, or retrospective is waiting for your answer.</p></header>
-  
+
   <div class="item q-open">
     <div><svg class="stage" viewBox="0 0 24 24" width="26" height="26" role="img" aria-label="bud, tagged"><title>bud, tagged</title><use href="#st-tag"/></svg></div>
     <div class="who"><a class="id" href="/tasks/DM-001">DM-001</a><span class="state s-waiting_human">waiting human</span><span class="age">bud, tagged · easy · 0m</span></div>
     <div class="what decision-content">
       <div class="t"><a href="/tasks/DM-001" style="text-decoration:none">A worker that asks a question</a></div>
-      
+
       <div class="panel decision-card" style="border-color:var(--s-waiting_human);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--s-waiting_human)">The worker is waiting for you</div>
   <p style="margin:6px 0 2px"><b>Postgres or SQLite?</b></p>
   <p class="muted" style="margin:2px 0 8px">Its session resumes with your answer.</p>
   <ul class="decision-evidence" style="margin:0 0 10px;padding-left:18px"><li class="muted">run 20260908T021719Z-work (work): waiting — need a decision</li></ul>
-  
-  
+
+
     <form method="post" action="/tasks/DM-001/answer"><textarea name="note" placeholder="Your answer. The worker resumes with it."></textarea><div class="actions" style="margin-top:8px"><button class="primary">Answer and resume</button></div></form>
-  
+
 </div>
-      
-      
-      
-      
-      
+
+
+
+
+
     </div>
     <div class="card-actions decision-actions">
     <div class="do">
-      
-      
+
+
     </div>
-    
+
     </div>
   </div>
-  
+
 </section>
 
 <section class="group ">
   <header><span class="stamp">triage</span><h2>Triage a draft PR</h2><p>A worker finished and opened a draft. Your first look decides: ready for review, or send it back.</p></header>
-  
+
   <div class="item ">
     <div><svg class="stage" viewBox="0 0 24 24" width="26" height="26" role="img" aria-label="in bud"><title>in bud</title><use href="#st-bud"/></svg></div>
     <div class="who"><a class="id" href="/tasks/DM-003">DM-003</a><span class="state s-awaiting_triage">awaiting triage</span><span class="age">in bud · easy · 0m</span></div>
     <div class="what decision-content">
       <div class="t"><a href="/tasks/DM-003" style="text-decoration:none">Planned: a plain task</a></div>
       <div class="why">draft PR open · 1 file changed, 1 insertion(+)</div>
-      
-      
-      
-      
-      
-      
+
+
+
+
+
+
     </div>
     <div class="card-actions decision-actions">
     <div class="do">
-      
+
         <form method="post" action="/tasks/DM-003/triage-ready"><button class="primary">Ready for review</button><a class="btn quiet" href="/qa/github/pull/1" target="_blank">Open PR ↗</a></form>
         <form method="post" action="/tasks/DM-003/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
-      
+
     </div>
-    
+
     </div>
   </div>
-  
+
 </section>
 
 <div class="grid2" style="margin-top:8px">

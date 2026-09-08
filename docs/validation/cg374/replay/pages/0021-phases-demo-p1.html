@@ -443,19 +443,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <a href="/trials" class="">Trials</a>
     <a href="/runs" class="">Runs</a>
     <a href="/costs" class="">Costs</a>
-    
+
     <a href="/config" class="">Config</a>
   </nav>
   <div>
     <h4>Phases</h4>
-    
+
     <span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">demo has no open phase — <code>garden new-phase</code> starts the next one</span>
     <a class="drawer " href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>1 closed phase</span></span></a>
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
     <span class="faint">0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured</span>
-    
+
     <div class="running-now">
       <span class="faint">nothing running</span>
     </div>
@@ -470,7 +470,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <noscript><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    
+
     <span class="faint" style="display:block">$0.22/hr last hour</span>
   </div>
   <div class="notify" id="notify">
@@ -478,9 +478,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span class="notify-state faint" id="notify-state"></span>
   </div>
   <div class="foot">
-    
+
     <span>scheduler loop on · tick <span data-tick-at>02:17:22Z</span></span>
-    
+
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
   </div>
 </aside>
@@ -494,7 +494,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </div>
 <div class="grid2">
   <div class="stack">
-    
+
     <div class="panel"><div class="eyebrow">Persona reviews</div>
       <div class="empty">no persona reviews were run in this phase</div>
     </div>
@@ -509,7 +509,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
           <td>$0.22</td>
           <td class="mono">2026-09-08 → 2026-09-07</td></tr>
       </table>
-      
+
       <table style="margin-top:10px; font-size:12.5px"><tr><th>tier</th><th>tasks</th><th>done</th><th>avg rev</th><th>first-pass</th><th>cost</th></tr>
       <tr><td>easy</td><td>3</td><td>3</td><td>0.67</td><td></td><td>$0.22</td></tr></table>
     </div>
@@ -519,39 +519,39 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
         <tr><td><a href="/qa/github/pull/2" target="_blank">#2</a></td><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td class="title">A worker that asks a question</td><td>easy</td><td class="mono">2026-09-08</td></tr>
         <tr><td><a href="/qa/github/pull/3" target="_blank">#3</a></td><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td class="title">A round with nothing to change</td><td>easy</td><td class="mono">2026-09-08</td></tr>
         <tr><td><a href="/qa/github/pull/1" target="_blank">#1</a></td><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td class="title">Planned: a plain task</td><td>easy</td><td class="mono">2026-09-08</td></tr>
-        
+
       </table></div>
-      
+
     </div>
     <div class="panel"><div class="eyebrow">Tasks</div>
       <div class="scroll"><table>
         <tr><th>id</th><th>status</th><th>tier</th><th>title</th><th>pr</th><th>cost</th></tr>
-        
+
         <tr><td><a class="id" href="/tasks/DM-001">DM-001</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A worker that asks a question</td>
           <td><a href="/qa/github/pull/2" target="_blank">#2</a></td>
           <td class="mono">$0.06</td></tr>
-        
+
         <tr><td><a class="id" href="/tasks/DM-002">DM-002</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">A round with nothing to change</td>
           <td><a href="/qa/github/pull/3" target="_blank">#3</a></td>
           <td class="mono">$0.06</td></tr>
-        
+
         <tr><td><a class="id" href="/tasks/DM-003">DM-003</a></td><td><span class="state s-done" title="in fruit"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="in fruit"><title>in fruit</title><use href="#st-fruit"/></svg>done</span></td><td>easy</td><td class="title">Planned: a plain task</td>
           <td><a href="/qa/github/pull/1" target="_blank">#1</a></td>
           <td class="mono">$0.10</td></tr>
-        
+
         <tr><td><a class="id" href="/tasks/DM-004">DM-004</a></td><td><span class="state s-cancelled" title="pressed"><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pressed"><title>pressed</title><use href="#st-pressed"/></svg>cancelled</span></td><td>easy</td><td class="title">Planned: a follow-up</td>
           <td></td>
           <td class="mono"></td></tr>
-        
+
       </table></div>
     </div>
   </div>
   <div class="stack">
     <div class="specimen" style="min-height:520px; padding:26px 18px 120px">
       <span class="tape" style="left:46%; top:150px; transform:rotate(-8deg)"></span>
-      
+
       <div class="plate-mount"><img class="plate" src="/static/plates/pea.webp" alt="Pisum sativum, plate from Thomé, Flora von Deutschland, 1885" width="300" height="420"></div>
-      
+
       <span class="tape" style="left:18%; top:390px; transform:rotate(11deg)"></span>
       <div class="lbl" style="right:16px; bottom:16px"><b>demo · plate I</b><br>p1<br><i>Pisum sativum</i> — garden pea<br>3 of 4 tasks done · 3 merged<br>closed 2026-09-07 · spent $0.22<br><span class="muted">plate: Thomé, Flora von Deutschland, 1885</span></div>
       <div style="position:absolute; left:18px; bottom:32px"><span class="stamp">pressed</span></div>
@@ -559,8 +559,8 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <div class="panel"><div class="eyebrow">Artifacts</div>
       <ul style="margin:8px 0 0; padding-left:18px; font-size:13px">
         <li><a href="/phases/demo/p1/doc/specs/spec.md">demo/p1/specs/spec.md</a></li>
-        
-        
+
+
       </ul>
     </div>
   </div>
