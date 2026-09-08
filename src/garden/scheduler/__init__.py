@@ -195,6 +195,9 @@ class Scheduler(
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
+        # A private class may be selected only from operator configuration.  Preserve the
+        # entire registration map so its configured alias continues to resolve at reap.
+        cfg["_runner_adapters"] = dict(self.cfg.get("runner_adapters") or {})
         return get_runner(name, cfg, harness)
 
     def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:

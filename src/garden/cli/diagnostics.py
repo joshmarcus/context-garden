@@ -272,6 +272,9 @@ def doctor():
             cfg = dict(store.config.get("ssh" if name == "ssh" else "workers", {}) or {}) \
                 if name in {"ssh", "remote"} else {}
             cfg["worker_env"] = dict(store.config.get("worker_env") or {})
+            # Doctor intentionally resolves configured adapters so a missing private package
+            # is actionable; ordinary config reads never import adapter modules.
+            cfg["_runner_adapters"] = dict(store.config.get("runner_adapters") or {})
             r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
             probs = r.doctor()
         except Exception as e:  # noqa: BLE001
