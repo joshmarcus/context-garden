@@ -29,7 +29,8 @@ def test_served_reviewer_clarification_failure_and_recovery(garden, fake_github)
     store = Store(garden)
     task = store.task("DM-001")
     task.status = Status.IN_REVIEW
-    task.pr = "https://example.com/pull/101"
+    pr = fake_github.create_pr("test/demo", "garden/dm-001", "main", "First task", "Review fixture")
+    task.pr = pr.url
     store.save(task)
     scheduler = Scheduler(store, github=fake_github)
     scheduler.state.get(task.id)["needs_human"] = {
