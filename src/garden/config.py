@@ -176,7 +176,9 @@ DEFAULTS: dict[str, Any] = {
     "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
     "stall": {"enabled": True},   # escalate to a human when revise rounds stop changing the diff
     "budgets": {},                # "<product>/<phase>": usd cap; also products.<name>.budget_usd
-    "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 600},
+    # One hard execution budget for worker-issued validations and detached checks. Admission
+    # waiting is reported separately by run_supervisor and does not consume this clock.
+    "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 900},
     "review": {
         "enabled": True,
         "max_rounds": 2,          # positive automated-review cap per PR; null means unlimited

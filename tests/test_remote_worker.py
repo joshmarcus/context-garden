@@ -27,7 +27,7 @@ from garden.store import Store
 from garden.web.app import create_app
 
 
-def remote_client(garden, monkeypatch):
+def remote_client(garden, monkeypatch, *, validation_timeout=900):
     path = garden / "garden.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN", "max_parallel": 1}]}
@@ -35,11 +35,18 @@ def remote_client(garden, monkeypatch):
     cfg["products"]["demo"]["runner"] = "remote"
     cfg["checks"] = {"pre_pr": [
         {"name": "remote-context", "command": "test \"$GARDEN_BRANCH\" = garden/dm-001-first-task"}
-    ], "ci": []}
+    ], "ci": [], "timeout_seconds": validation_timeout}
     cfg["review"] = {"enabled": True, "max_rounds": 1}
     path.write_text(yaml.safe_dump(cfg))
     monkeypatch.setenv("BUILD_TOKEN", "secret-token")
     return TestClient(create_app(Store(garden), watch=False, host="testserver")), Store(garden)
+
+
+def isolated_execution_runtime(tmp_path, monkeypatch):
+    """Keep synthetic worker supervisors out of an enclosing validation's host slot."""
+    runtime = tmp_path / "worker-runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
 
 
 def queued_run(store):
@@ -218,7 +225,7 @@ def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
-    client, store = remote_client(garden, monkeypatch)
+    client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     run = queued_run(store)
     auth = {"Authorization": "Bearer secret-token"}
 
@@ -230,6 +237,7 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert payload["id"] == run.run_id and payload["brief"] == "safe brief"
     assert payload["lease_token"] and "secret-token" not in str(payload)
     assert set(payload) >= {"repo", "branch", "base", "push_ref", "setup", "turn_cap", "env_allowlist"}
+    assert payload["validation_timeout_seconds"] == 731
     assert payload["push_ref"].startswith(f"refs/heads/garden-worker/{run.run_id}/")
 
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
@@ -531,7 +539,7 @@ def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypat
     assert time.monotonic() - started < 0.5
 
 
-def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
+def test_heartbeat_uses_full_controller_recovery_window():
     """The worker and controller fence the same generation at the 120 + 300 boundary."""
     now = 0.0
     controller_online = False
@@ -549,8 +557,6 @@ def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
         "id": "run-1", "lease_token": "lease", "heartbeat_seconds": 120,
         "recovery_seconds": 300, "recovery_window_seconds": 420,
     }
-    heartbeat = _LeaseHeartbeat(run, RecoveringClient())
-
     def advance(delay):
         nonlocal now, controller_online
         now += delay
@@ -558,8 +564,9 @@ def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
             controller_online = True
         return False
 
-    monkeypatch.setattr(time, "monotonic", monotonic)
-    monkeypatch.setattr(heartbeat.stop_event, "wait", advance)
+    heartbeat = _LeaseHeartbeat(
+        run, RecoveringClient(), clock=monotonic, retry_wait=advance,
+    )
     heartbeat.ensure_current()
     assert now >= 301
     assert heartbeat.recovery_deadline == pytest.approx(now + 420)
@@ -571,7 +578,8 @@ def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
 
 
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
-    client, store = remote_client(garden, monkeypatch)
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     scheduler = Scheduler(store, github=fake_github)
     report = scheduler.tick()  # dispatch work
     assert report.dispatched, report
@@ -600,6 +608,12 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert "exec_root" not in check_claim["checks"]["ctx"]
     assert set(check_claim["checks"]["config"]) == {"worker_env"}
     execute_claim(check_claim, tmp_path / "independent-host", PostingClient())
+    check_execution = next(
+        path for path in (tmp_path / "independent-host/runs").iterdir()
+        if (path / "checks_input.json").exists()
+    )
+    execution = json.loads((check_execution / "execution.json").read_text())
+    assert execution["state"] == "finished" and execution["timeout_seconds"] == 731
     scheduler.tick()  # reap check, open PR, and dispatch review
     store.invalidate_tasks()
     task = store.task("DM-001")
@@ -635,6 +649,8 @@ def test_remote_harness_receives_working_owned_validation(
         "outer = Path(os.environ['GARDEN_EXECUTION_RUN_DIR'])\n"
         "assert outer.is_dir() and os.environ['GARDEN_EXECUTION_OWNER'] != 'wrong-owner'\n"
         "assert os.environ['GARDEN_VALIDATION_RUNNER'] != '/missing/controller/python'\n"
+        "assert os.environ['GARDEN_VALIDATION_TIMEOUT_SECONDS'] == '900'\n"
+        "assert 'GARDEN_EXECUTION_TIMEOUT_SECONDS' not in os.environ\n"
         "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
         "sys.executable, '-c', 'import sys; sys.exit(" + str(validation_exit) + ")']\n"
         "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
@@ -650,11 +666,10 @@ def test_remote_harness_receives_working_owned_validation(
     for key, value in {"GARDEN_EXECUTION_OWNER": "wrong-owner",
                        "GARDEN_EXECUTION_RUN_DIR": str(tmp_path / "wrong-run"),
                        "GARDEN_VALIDATION_RUNNER": "/missing/controller/python",
+                       "GARDEN_EXECUTION_TIMEOUT_SECONDS": "0.01",
                        "GARDEN_HEAVY_EXECUTION": "1", "GARDEN_OWNER_SCOPED": "1"}.items():
         monkeypatch.setenv(key, value)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir(mode=0o700)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    isolated_execution_runtime(tmp_path, monkeypatch)
     payload["env_allowlist"] = [*payload["env_allowlist"], "GARDEN_*", "XDG_RUNTIME_DIR", "PYTHONPATH"]
     # The source path is needed only because this fixture exercises a worktree, not an install.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1] / "src"))
@@ -675,6 +690,7 @@ def test_remote_harness_receives_working_owned_validation(
     assert not (tmp_path / "wrong-run").exists()
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
+    isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch)
     config_path = garden / "garden.yaml"
     config = yaml.safe_load(config_path.read_text())
