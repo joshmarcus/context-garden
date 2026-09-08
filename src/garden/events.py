@@ -18,7 +18,7 @@ from typing import Any
 
 from .model import now_iso
 
-# Keep the established table API for existing callers. Now 2's acceptance cohorts
+# Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
 from .outcomes import difficulty_by_model as windowed_difficulty_by_model
 

@@ -1,4 +1,4 @@
-"""Now 1: what the garden is doing right now, what it will do next, where the phase is and
+"""Now: what the garden is doing right now, what it will do next, where the phase is and
 how the last period went (docs/design/now-1.md; the spec is the Now page's).
 
 `snapshot` assembles the page's four regions into one dict from the store, the state file,

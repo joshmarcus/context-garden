@@ -172,7 +172,7 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     timings = []
     scans = rs.scan_count
     reads = rs.read_count
-    urls = ("/", "/board", "/partials/board", "/now2", "/now2/period")
+    urls = ("/", "/board", "/partials/board", "/now", "/partials/now/period")
     for interval in range(3):
         for url in urls * 4:
             started = time.perf_counter()
@@ -2044,7 +2044,7 @@ def test_action_and_get_stay_fast_while_a_tick_runs_a_slow_check(garden, monkeyp
                 responses.extend([
                     c.post("/tasks/DM-001/priority", data={"note": "3"}, follow_redirects=False),
                     c.get("/"),
-                    c.get("/now1"),
+                    c.get("/now"),
                 ])
             finally:
                 requests_finished.set()
@@ -2176,7 +2176,7 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
     timings = {}
     requests = (
         ("inbox", lambda: c.get("/inbox")),
-        ("now", lambda: c.get("/now1")),
+        ("now", lambda: c.get("/now")),
         ("task-control", lambda: c.post("/tasks/DM-001/priority", data={"note": "2"},
                                          follow_redirects=False)),
         ("pause", lambda: c.post("/pause", data={"reason": "bounded workload evidence"},

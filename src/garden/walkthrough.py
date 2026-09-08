@@ -93,18 +93,12 @@ def pages_for(store: Store, phase: Phase) -> list[PageSpec]:
     """The pages to capture, in the order a person uses them, with the data this phase has."""
     key = phase.key
     specs = [
-        PageSpec("now2", "/now2", "Now 2",
-                 "Live work, dispatch and merge queues, phase progress and windowed outcomes.",
-                 "Can you see what is running and what that work adds up to?"),
-        PageSpec("now", "/", "Now",
+        PageSpec("inbox", "/", "Inbox",
                  "The first page: everything that needs the operator now.",
                  "Can a person immediately tell what needs action?"),
-        PageSpec("now1", "/now1", "Now 1",
+        PageSpec("now", "/now", "Now",
                  "What is running, what is next, where the phase is and the last period, live from the events stream.",
                  "Can you say what the garden is doing and what comes next within five seconds?"),
-        PageSpec("inbox", "/inbox", "Inbox",
-                 "What needs a decision and what is only a notice; the rail badge counts decisions only.",
-                 "Is the split between a decision and a notice clear, and is the empty state designed?"),
         PageSpec("board", "/board", "Board (columns)",
                  "The board in columns, one per status in the loop's order.",
                  "Do the columns read left to right as the loop moves work?"),
