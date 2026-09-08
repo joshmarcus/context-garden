@@ -365,6 +365,7 @@ def test_host_local_admission_routes_on_fresh_resources_and_capabilities(tmp_pat
     ("admission_change", "requirements_change", "reason"),
     [
         ({"measured_at": 1}, {}, "resource probe is stale"),
+        ({"measured_at": float("nan")}, {}, "resource probe timestamp is invalid"),
         ({"host_class": "small"}, {}, "host class 'small'"),
         ({"environment": "other"}, {}, "environment 'other'"),
         ({"capabilities": []}, {}, "missing capabilities: python"),
