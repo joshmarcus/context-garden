@@ -123,7 +123,10 @@ def test_deployment_prerequisite_is_an_operator_recovery_card(garden):
     _set_task(store, "DM-001", Status.FAILED, pr="https://example.com/pull/7")
     _set_state(garden, "DM-001", needs_human={"kind": "deployment", "reason": "deploy the verified build to the staging host",
                                               "prior_status": "in_review", "at": "2026-09-04T00:00:00+00:00"})
-    it = _attention(garden, "DM-001")
+    store = Store(garden)
+    sched = Scheduler(store, github=FakeGitHub(), log=lambda m: None)
+    it = next(item for item in build_inbox(store, sched)
+              if item["group"] == "operator" and item["task"] == "DM-001")
     assert it["kind_title"] == "Deployment prerequisite"
     assert "deploy the verified build" in it["reason"]
     assert "operational work" in it["kind_blurb"]

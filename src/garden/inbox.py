@@ -341,7 +341,10 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
         }
     attention = attention_view(t, st, runs)
     if attention is not None:
-        return {"type": "attention", "title": f"Needs a decision: {attention['kind_title']}",
+        title = (f"Operator recovery: {attention['kind_title']}"
+                 if attention["kind"] == "deployment"
+                 else f"Needs a decision: {attention['kind_title']}")
+        return {"type": "attention", "title": title,
                 "reason": attention["reason"], "blurb": attention["kind_blurb"], "final": "",
                 "evidence": attention["evidence"], "attention": attention}
     return None
@@ -434,6 +437,15 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                     card["attention"]["actions"], kind="state_mismatch", kind_title="Waiting state is incomplete",
                     kind_blurb=card["blurb"], reason=card["reason"], resume_to="", evidence=card["evidence"],
                     discuss="", decision_card=card, card_task=t)
+        elif t.status == Status.IN_REVIEW and (st.get("review_run") or st.get("pending_reviews")):
+            # A queued review owns the next step even when an earlier stop remains in state.
+            # The scheduler's fresh review is the authority for this head; showing the old
+            # stop as a human action would invite a person to bypass that workflow.
+            add("automated_review", t, _automated_review_wait(t, st, sched), [],
+                prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
+                review_head=str(st.get("last_review_head") or ""),
+                current_head=str(st.get("head_sha") or ""))
+            continue
         elif t.status == Status.AWAITING_TRIAGE:
             rev = st.get("last_review") or {}
             why = "draft PR open"
@@ -460,12 +472,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 continue
             # A current approval is actionable only after every automated review of this
             # head has finished. A queued or running follow-up remains scheduler-owned.
-            if st.get("review_run") or st.get("pending_reviews"):
-                add("automated_review", t, _automated_review_wait(t, st, sched), [],
-                    prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
-                    review_head=str(st.get("last_review_head") or ""),
-                    current_head=str(st.get("head_sha") or ""))
-            elif _automated_review_is_current(st):
+            if _automated_review_is_current(st):
                 why = "automated review approved this PR head"
                 if st.get("checks"):
                     why += f" · CI {st['checks'].lower()}"
@@ -481,7 +488,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
             att = attention_view(t, st, runs)
             if att:
-                add("operator" if att.get("delegated") else "attention", t,
+                add("operator" if att.get("delegated") or att["kind"] == "deployment" else "attention", t,
                     f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
                     **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")},
                     decision_card=decision_card_view(t, st, runs), card_task=t)
