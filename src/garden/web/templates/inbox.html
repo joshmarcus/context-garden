@@ -82,6 +82,11 @@
         <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
+      {% elif it.group == 'manual' %}
+        <form method="post" action="/tasks/{{ it.task }}/take"><button class="primary">{{ it.actions[0].label }}</button></form>
+        <a class="btn quiet" href="/tasks/{{ it.task }}">Open task packet ↗</a>
+      {% elif it.group == 'manual_waiting' and it.actions %}
+        <a class="btn quiet" href="{{ it.actions[0].href }}">{{ it.actions[0].label }} ↗</a>
       {% elif it.group == 'operator' and it.get('kind') == 'operator_scope' %}
         <form method="post" action="/tasks/{{ it.task }}/operator-evidence" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><button class="primary">Record evidence and continue</button><span class="faint">{{ it.actions[0].detail }}</span></form>
       {% elif it.group == 'attention' and it.get('decision_kind') == 'question' %}
