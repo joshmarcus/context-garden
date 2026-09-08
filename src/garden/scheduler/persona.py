@@ -75,7 +75,20 @@ class PersonaMixin:
             raise RuntimeError(f"{task.id} has no branch to review")
         base = self.base_for(task)
         branch = task.branch or task.default_branch()
-        wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        harness_name = str(self.cfg.get("review.harness") or "")
+        runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
+        runner = self.runner_for(task, runner_name, harness_name)
+        run = None
+        canonical = None
+        if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
+            run = (self.runs.new_run(task.id, runner_name, mode="persona")
+                   if runner_name == "remote" else self._new_local_run(task.id, "persona", "persona"))
+            run.branch, run.base = branch, base
+            canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+        wt = canonical or gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        if run is not None:
+            run.worktree = str(wt)
+            run.save()
         diff = gitops.diff(wt, base)
         pr_title, pr_body = task.title, ""
         latest = self.runs.latest(task.id)
@@ -93,7 +106,8 @@ class PersonaMixin:
                         int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes,
                                                          "required_evidence": required_evidence},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
+                                 harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
+                                 prepared_run=run)
 
     def _finding_target_phase(self, phase: Phase) -> Phase:
         """Where a persona finding is filed: the reviewed phase, unless it is frozen or closed
