@@ -599,6 +599,44 @@ def test_expired_lease_waits_for_durable_recovery_window(garden, monkeypatch):
     page = client.get(f"/runs/DM-001/{run.run_id}")
     assert "Reconnecting after a controller interruption" in page.text
     assert "seconds to reconnect before this lease can be reassigned" in page.text
+    if capture_dir := os.environ.get("GARDEN_REMOTE_RECOVERY_CAPTURES"):
+        import socket
+
+        import uvicorn
+        from playwright.sync_api import sync_playwright
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        application = create_app(Store(garden), watch=False, host="127.0.0.1")
+        server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        output = Path(capture_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                for width in (1280, 390):
+                    for scheme in ("light", "dark"):
+                        context = browser.new_context(
+                            viewport={"width": width, "height": 900}, color_scheme=scheme,
+                        )
+                        browser_page = context.new_page()
+                        browser_page.goto(f"http://127.0.0.1:{port}/runs/DM-001/{run.run_id}")
+                        assert browser_page.locator("body").evaluate("el => el.scrollWidth") == width
+                        browser_page.screenshot(
+                            path=str(output / f"run-reconnecting-{width}-{scheme}.png"), full_page=True,
+                        )
+                        context.close()
+                browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            sock.close()
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
                        json={"lease_token": claim["lease_token"]}, headers=auth)
     assert beat.status_code == 200
