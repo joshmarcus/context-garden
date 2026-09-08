@@ -431,7 +431,10 @@ def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
     review = {"summary": "Prior review", "criteria": [{"criterion": "Original criterion", "met": False,
               "reason": "not yet verified", "evidence": "review evidence"}],
               "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
-                            "summary": "Original finding", "fix": "Make the original fix."}]}
+                            "summary": "Original finding", "fix": "Make the original fix."},
+                           {"severity": "nit", "summary": "Finding without a supplied fix"}],
+              "description_ok": False, "description_feedback": "Old description feedback",
+              "improvements": [{"area": "docs", "suggestion": "Old optional suggestion"}]}
     source_run = sched.runs.new_run(task.id, "local", mode="review")
     source_run.status = "done"
     source_run.env_snapshot = {"review_head": "a" * 40}
@@ -455,6 +458,15 @@ def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
     assert "Superseded automated review record" in superseded
     assert "do not repeat its requests" in superseded
     assert "Original finding" in superseded and "a" * 40 in superseded
+    assert "Applicable automated review" not in superseded
+    assert "Findings to address" not in superseded
+    assert "Automated review provenance" in superseded
+    assert "Recorded findings" in superseded
+    assert "Recorded PR description assessment" in superseded
+    assert "Recorded optional improvements" in superseded
+    assert "put the new description" not in superseded
+    assert "Take or decline each item" not in superseded
+    assert "determine the smallest correct change" not in superseded
 
     recovery = feedback_with_operator_note(
         review, "Retry after the operator cleared the stop.", kind="recovery",
@@ -488,8 +500,14 @@ def test_operator_triage_resolves_selected_finding_and_keeps_unmatched_review(sc
     assert "Resolved automated review items" in resolved
     assert "Already fixed" in resolved and fixed_id in resolved
     assert "Still outstanding" not in resolved
+    assert "Applicable automated review" not in resolved
+    assert "Findings to address" not in resolved
+    assert "Automated review provenance" in resolved
+    assert "Recorded findings" in resolved
     assert "Still outstanding" in applicable and outstanding_id in applicable
     assert "Already fixed" not in applicable
+    assert "Applicable automated review" in applicable
+    assert "Findings to address" in applicable
     assert "Unmatched items remain applicable" in feedback
 
     task.status = Status.AWAITING_TRIAGE
