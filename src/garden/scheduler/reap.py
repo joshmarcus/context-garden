@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import shutil
 from pathlib import Path
@@ -187,11 +188,16 @@ class ReapMixin:
         admission_reason = run.supervisor_waiting_reason()
         if admission_reason is not None:
             admission_wait_min = float(self.cfg.get("resources.admission_wait_minutes", 30) or 0)
-            if admission_wait_min and run.elapsed_minutes() >= admission_wait_min:
+            waiting_since = run.supervisor_waiting_since()
+            waiting_minutes = (
+                max(0.0, (dt.datetime.now(dt.UTC) - waiting_since).total_seconds() / 60)
+                if waiting_since is not None else 0.0
+            )
+            if admission_wait_min and waiting_minutes >= admission_wait_min:
                 run.kill()
                 run.status = "timeout"
                 run.finished_at = now_iso()
-                run.error = f"admission wait {round(run.elapsed_minutes())} min ({admission_reason})"
+                run.error = f"admission wait {round(waiting_minutes)} min ({admission_reason})"
                 run.save()
                 return True
             # A waiting supervisor has made its reason visible. It is awaiting operator-owned

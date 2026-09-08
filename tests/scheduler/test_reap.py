@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -662,15 +663,102 @@ def test_check_admission_wait_has_a_bounded_truthful_timeout(sched):
     task = sched.store.task("DM-001")
     run = sched.runs.new_run(task.id, "local", mode="check")
     run.pid = os.getpid()
-    run.started_at = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+    run.started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     run.save()
     (run.path / "execution.json").write_text(json.dumps({
         "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+        "waiting_since": (datetime.now(UTC) - timedelta(minutes=31)).isoformat(),
     }))
 
     assert sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
     assert run.status == "timeout"
     assert "admission wait 31 min (heavy-test budget full (limit 1))" == run.error
+
+
+def test_late_admission_wait_gets_its_full_window(sched):
+    """A long-running check is charged only from its published admission wait."""
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.pid = os.getpid()
+    run.started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    run.save()
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+        "waiting_since": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+    }))
+
+    assert not sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
+    assert run.status == "running"
+
+
+def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(sched, tmp_path, monkeypatch):
+    """A real supervisor wait survives old checkout mtimes, then releases without a retry."""
+    from garden.runner.local import LocalRunner
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["resources"]["heavy_test_parallel"] = 1
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    runner = LocalRunner(sched.cfg.data)
+    checkout = tmp_path / "old-checkout"
+    checkout.mkdir()
+    (checkout / "unchanged.py").write_text("# old checkout\n")
+    old = datetime.now(UTC).timestamp() - 22 * 60
+    os.utime(checkout / "unchanged.py", (old, old))
+
+    holder = sched.runs.new_run("lease-holder", "local", mode="check")
+    runner.start_checks(holder, checkout, {
+        "specs": [{"name": "hold", "command": "sleep 0.4"}], "cwd": str(checkout),
+        "setup": {}, "config": sched.cfg.data, "timeout": 30,
+    })
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        state = json.loads((holder.path / "execution.json").read_text()) if (holder.path / "execution.json").exists() else {}
+        if state.get("state") == "running":
+            break
+        time.sleep(0.01)
+    assert state.get("state") == "running"
+
+    task = sched.store.task("DM-001")
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    marker = tmp_path / "executed-once"
+    runner.start_checks(check, checkout, {
+        "specs": [{"name": "once", "command": f"printf ran >> {marker}"}], "cwd": str(checkout),
+        "setup": {}, "config": sched.cfg.data, "timeout": 30,
+    })
+    while time.monotonic() < deadline:
+        execution = json.loads((check.path / "execution.json").read_text()) if (check.path / "execution.json").exists() else {}
+        if execution.get("state") == "waiting":
+            break
+        time.sleep(0.01)
+    assert execution["reason"] == "heavy-test budget full (limit 1)"
+    assert execution.get("waiting_since")
+    assert not sched._finished_or_timed_out(check, runner)
+
+    os.waitpid(holder.pid, 0)
+    os.waitpid(check.pid, 0)
+    assert check.process_finished() and check.read_exit_code() == 0
+    assert marker.read_text() == "ran"
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+    silent = sched.runs.new_run(task.id, "local", mode="check")
+    runner.start_checks(silent, checkout, {
+        "specs": [{"name": "silent", "command": "sleep 5"}], "cwd": str(checkout),
+        "setup": {}, "config": sched.cfg.data, "timeout": 30,
+    })
+    while time.monotonic() < deadline:
+        execution = json.loads((silent.path / "execution.json").read_text()) if (silent.path / "execution.json").exists() else {}
+        if execution.get("state") == "running":
+            break
+        time.sleep(0.01)
+    assert execution.get("state") == "running"
+    make_idle(silent, 6)
+    assert sched._finished_or_timed_out(silent, runner)
+    assert silent.status == "timeout" and "idle 6 min" in silent.error
+    assert silent.stop(timeout=2)
 
 
 def test_running_card_shows_idle_time(sched, monkeypatch):

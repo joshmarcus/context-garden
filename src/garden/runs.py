@@ -235,6 +235,31 @@ class Run:
         reason = str(execution.get("reason") or "heavy-validation capacity is unavailable")
         return reason
 
+    def supervisor_waiting_since(self) -> dt.datetime | None:
+        """When the supervisor most recently entered its current admission wait.
+
+        Older supervisors did not write ``waiting_since``.  Their execution-state mtime is
+        the best durable start for the wait and prevents a compatibility path from charging
+        a run for time before it first reported waiting.
+        """
+        path = self.path / "execution.json"
+        try:
+            execution = json.loads(path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(execution, dict) or execution.get("state") != "waiting":
+            return None
+        recorded = execution.get("waiting_since")
+        if isinstance(recorded, str) and recorded:
+            try:
+                return dt.datetime.fromisoformat(recorded)
+            except ValueError:
+                pass
+        try:
+            return dt.datetime.fromtimestamp(path.stat().st_mtime, dt.UTC)
+        except OSError:
+            return None
+
     def kill(self) -> None:
         # The in-process test runner uses the scheduler process as the liveness sentinel.
         # Never let a corrupt or synthetic run record terminate the process doing the reap.
