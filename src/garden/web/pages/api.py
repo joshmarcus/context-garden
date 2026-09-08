@@ -109,6 +109,13 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(409, "repository remote is not a safe clone URL") from None
         if port:
             host = f"{host}:{port}"
+        if parts.scheme == "ssh":
+            if parts.password is not None:
+                raise HTTPException(409, "repository remote is not a safe clone URL")
+            if parts.username is not None:
+                if not re.fullmatch(r"[A-Za-z0-9._-]+", parts.username):
+                    raise HTTPException(409, "repository remote is not a safe clone URL")
+                host = f"{parts.username}@{host}"
         return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
     @app.get("/api/tasks")

@@ -255,7 +255,8 @@ def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch
 
 @pytest.mark.parametrize("remote", [
     "oauth2:secret@example.test:team/repo.git",
-    "deploy@example.test:team/repo.git",
+    "ssh://deploy:secret@example.test/team/repo.git",
+    "ssh://deploy%40other@example.test/team/repo.git",
     "https://user:secret@example.test:bad/repo.git",
 ])
 def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch, remote):
@@ -276,14 +277,21 @@ def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch
     assert "secret" not in response.text
 
 
-def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
+@pytest.mark.parametrize("remote", [
+    "git@example.test:team/repo.git",
+    "deploy@example.test:team/repo.git",
+    "acct-1234@example.test:team/repo.git",
+    "ssh://git@example.test/team/repo.git",
+    "ssh://acct-1234@example.test:443/team/repo.git",
+])
+def test_claim_preserves_safe_ssh_transport_usernames(garden, monkeypatch, remote):
     client, store = remote_client(garden, monkeypatch)
     queued_run(store)
     original_git = __import__("garden.gitops", fromlist=["git"]).git
 
     def safe_remote(*args, **kwargs):
         if args == ("remote", "get-url", "origin"):
-            return "git@example.test:team/repo.git"
+            return remote
         return original_git(*args, **kwargs)
 
     monkeypatch.setattr("garden.web.pages.api.gitops.git", safe_remote)
@@ -291,7 +299,7 @@ def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
                            headers={"Authorization": "Bearer secret-token"})
 
     assert response.status_code == 200
-    assert response.json()["repo"] == "git@example.test:team/repo.git"
+    assert response.json()["repo"] == remote
 
 
 def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
