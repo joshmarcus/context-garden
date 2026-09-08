@@ -55,10 +55,10 @@ def in_process_workers(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_ambient_garden_root(monkeypatch):
-    """Strip any GARDEN_ROOT / GARDEN_EXEC_ROOT inherited from the process environment
-    before each test, so this suite passes the same way in a developer's shell, in CI and
-    under the check runner (see garden.checks module docstring: a product's tests must not
-    depend on the garden's environment variables).
+    """Strip live-garden and execution identity inherited from the process environment.
+
+    This keeps the suite identical in a developer shell, CI, and a supervised validation.
+    Tests of either guard or nested execution set the relevant values explicitly.
 
     When this suite itself runs as the pre-PR `tests` check (see garden.checks.run_check),
     the check runner sets GARDEN_ROOT in the subprocess environment to a non-existent
@@ -70,6 +70,11 @@ def _no_ambient_garden_root(monkeypatch):
     """
     monkeypatch.delenv("GARDEN_ROOT", raising=False)
     monkeypatch.delenv("GARDEN_EXEC_ROOT", raising=False)
+    monkeypatch.delenv("GARDEN_EXECUTION_LEASED", raising=False)
+    monkeypatch.delenv("GARDEN_EXECUTION_OWNER", raising=False)
+    monkeypatch.delenv("GARDEN_EXECUTION_RUN_DIR", raising=False)
+    monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
+    monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
 
 
 @pytest.fixture(autouse=True)
