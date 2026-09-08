@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from garden.events import EventLog, digest
 from garden.model import Status, Task
 
@@ -364,6 +366,31 @@ def test_touches_guarded_path_predicate():
     for p in ("src/garden/foo.py", "README.md", "docs/tasks.md", "principles.md",
               "not_garden.yaml.txt"):
         assert not _touches_guarded_path(p), p
+
+
+def test_product_protected_path_holds_automerge_without_relaxing_defaults(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["protected_paths"] = ["deployment/**"]
+    _commit_in_worktree(sched.worktree_for(t), "deployment/live.yaml", "enabled: true\n")
+    guarded = sched._guarded_diff_paths(t)
+    assert "deployment/live.yaml" in guarded
+    assert not sched._automerge_gate(t, pr)[0]
+
+
+def test_invalid_branch_ownership_and_protected_paths_fail_config_load(tmp_path):
+    from garden.config import Config
+
+    (tmp_path / "garden.yaml").write_text(
+        "products:\n  demo:\n    stack_owner: another-tool\n    protected_paths: deployment/**\n"
+    )
+    with pytest.raises(ValueError, match="stack_owner"):
+        Config.load(tmp_path)
+
+    (tmp_path / "garden.yaml").write_text(
+        "products:\n  demo:\n    stack_owner: external\n    protected_paths: deployment/**\n"
+    )
+    with pytest.raises(ValueError, match="protected_paths"):
+        Config.load(tmp_path)
 
 
 def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):

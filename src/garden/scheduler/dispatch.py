@@ -75,7 +75,9 @@ class DispatchMixin:
         max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
             tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
-            if mode != "work" or not self.state.get(task.id).get("needs_human")]
+            if (mode != "work" or not self.state.get(task.id).get("needs_human"))
+            and (mode != "work" or self.stack_enabled_for(task)
+                 or not blockers(task, tasks, stack=False))]
         queue = [(task, mode, (
             "rebase round, goes first" if mode == "rebase" else
             f"substantive revise round {int(self.state.get(task.id).get('substantive_revisions', self.state.get(task.id).get('revisions', 0))) + 1}"
@@ -195,8 +197,10 @@ class DispatchMixin:
         (resume with one more round, or send it back) instead of sitting silent."""
         tasks = self.store.tasks()
         active = {r.task_id for r in self.runs.active()}
-        ready_ids = {t.id for t in ready(tasks, stack=self.stack_enabled)}
-        max_rev = 10**9 if self.cfg.revision_policy()["enabled"] else int(self.cfg.get("max_revisions", 3))
+        ready_ids = {t.id for t in tasks.values()
+                     if t in ready(tasks, stack=self.stack_enabled_for(t))}
+        max_rev = (10**9 if self.cfg.revision_policy()["enabled"]
+                   else int(self.cfg.get("max_revisions", 3)))
         for t in tasks.values():
             if t.status.terminal or t.status == Status.RUNNING:
                 continue  # running/terminal tasks are accounted for (reap handles a lost run)
@@ -319,6 +323,8 @@ class DispatchMixin:
 
     def _stack_for(self, task: Task) -> dict[str, Any] | None:
         """Decide the base for a fresh run: a stack parent's branch, or the product base."""
+        if self.external_stack_owner(task):
+            return None
         st = self.state.get(task.id)
         if st.get("stack_parent"):
             parent = self.store.tasks().get(st["stack_parent"])
@@ -416,7 +422,7 @@ class DispatchMixin:
         # run, so a restart and every task-facing surface describe the claimed work
         # rather than falling back to the scheduler-generated default branch. Internal
         # callers may still use branch_override without changing the task identity.
-        if completion_mode == "external":
+        if completion_mode in ("external", "pushed"):
             task.branch = branch
             if external_pr:
                 task.pr = external_pr
@@ -521,6 +527,10 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
+        if completion_mode == "pushed" and not start_head:
+            repo = self.repo_for(task)
+            gitops.fetch(repo)
+            start_head = gitops.remote_head(repo, branch)
         # Capture this before rendering the brief.  A task edit made after this
         # point belongs to the next revise note, not this worker's contract.
         criteria_snapshot = parse_criteria(task.body)

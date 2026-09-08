@@ -1,0 +1,17 @@
+INFO:     Started server process [723672]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:37991 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53768 - "GET /api/tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34158 - "GET /now1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34160 - "GET /inbox HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34170 - "GET /config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34182 - "GET /now1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34194 - "GET /inbox HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34208 - "GET /config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34224 - "GET /cg380-intentional-missing HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:34236 - "GET /now1 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [723672]

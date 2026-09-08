@@ -25,6 +25,7 @@ from ..model import Status, Task, now_iso
 from ..preflight import mechanical_results
 from ..review import validation_plan, visual_source_digest
 from ..runs import Run
+from ..validation import validation_timeout_result
 from .report import TickReport
 
 # Which stages report their results under which `check` event stage: the base probe and the CI
@@ -233,6 +234,14 @@ class CheckRunMixin:
                                       backend=str(info.get("backend") or run.runner),
                                       provenance=str(info.get("provenance") or ""))
             return True
+        if stage == "interaction_replay" and check_failures(results):
+            # A broken replay selector, fixture, or artifact path is a verification
+            # continuation, not evidence that unchanged implementation source needs revision.
+            self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
+                                      int(info.get("retries", 0)), rep,
+                                      backend=str(info.get("backend") or run.runner),
+                                      provenance=str(info.get("provenance") or ""))
+            return True
         handler = {
             "interaction_replay": self._after_interaction_replay_check,
             "pre_pr": self._after_pre_pr_check,
@@ -260,6 +269,8 @@ class CheckRunMixin:
             return True
         return any("check did not finish (killed" in str(result.get("summary") or "")
                    or "check run produced no results" in str(result.get("summary") or "")
+                   or "check execution timed out" in str(result.get("summary") or "")
+                   or "check execution did not complete" in str(result.get("summary") or "")
                    for result in results)
 
     def _retry_or_park_check(self, task: Task, run: Run, stage: str, cont: dict[str, Any],
@@ -303,14 +314,22 @@ class CheckRunMixin:
             return "timed out"
         for result in results:
             summary = str(result.get("summary") or "")
-            if "check did not finish" in summary or "check run produced no results" in summary:
+            if ("check did not finish" in summary
+                    or "check run produced no results" in summary
+                    or "check execution timed out" in summary
+                    or "check execution did not complete" in summary):
                 details = str(result.get("details") or "").strip()
                 return f"{summary}\n\n{details}".strip() if details else summary
+            if result.get("status") not in ("pass", "passed", "done") and summary:
+                return summary
         return "no check result"
 
     def _collect_check_results(self, run: Run) -> list[dict[str, Any]]:
         path = run.path / "checks.json"
         if not path.exists():
+            timeout_result = validation_timeout_result(run.path, run.read_exit_code())
+            if timeout_result is not None:
+                return [timeout_result]
             return [{"name": "checks", "status": "error", "summary": "check run produced no results", "details": run.stderr_text()[-2000:]}]
         try:
             data = json.loads(path.read_text())

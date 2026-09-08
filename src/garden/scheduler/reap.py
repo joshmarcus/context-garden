@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import shutil
 from pathlib import Path
@@ -110,7 +111,9 @@ class ReapMixin:
         # has completed the run record but has not yet written the task
         # transition (run.finished_at set, task still RUNNING).
         if run is not None and run.runner == "manual":
-            return False
+            submitted = bool((run.env_snapshot or {}).get("pushed_completion_submitted"))
+            if not (run.completion_mode == "pushed" and submitted and run.process_finished()):
+                return False
         if self._is_unreaped(task, run):
             # The run record already reached a terminal status (written by a
             # prior finalize() call) but the task is still RUNNING: an earlier
@@ -188,6 +191,24 @@ class ReapMixin:
             run.error = "timed out"
             run.save()
             return True
+        admission_reason = run.supervisor_waiting_reason()
+        if admission_reason is not None:
+            admission_wait_min = float(self.cfg.get("resources.admission_wait_minutes", 30) or 0)
+            waiting_since = run.supervisor_waiting_since()
+            waiting_minutes = (
+                max(0.0, (dt.datetime.now(dt.UTC) - waiting_since).total_seconds() / 60)
+                if waiting_since is not None else 0.0
+            )
+            if admission_wait_min and waiting_minutes >= admission_wait_min:
+                run.kill()
+                run.status = "timeout"
+                run.finished_at = now_iso()
+                run.error = f"admission wait {round(waiting_minutes)} min ({admission_reason})"
+                run.save()
+                return True
+            # A waiting supervisor has made its reason visible. It is awaiting operator-owned
+            # resource admission, not silently failing to make code progress.
+            return False
         idle_kill_min = float(self.cfg.get("idle_kill_minutes", 0) or 0)
         idle_min = run.idle_minutes() if idle_kill_min else 0.0
         if idle_kill_min and idle_min >= idle_kill_min:
@@ -416,7 +437,8 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} -> waiting_human")
             return
 
-        if status == "no_change" and not self._no_change_changes_outcome(result):
+        if (status == "no_change" and run.completion_mode != "pushed"
+                and not self._no_change_changes_outcome(result)):
             run.status = status
             run.save()
             self._file_discovered(task, run, result)
@@ -442,7 +464,8 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} no-change -> verification")
             return
 
-        if status in ("wont_do", "no_change"):
+        if (status == "wont_do" or (status == "no_change" and
+                (run.completion_mode != "pushed" or self._no_change_changes_outcome(result)))):
             run.status = status
             run.save()
             self._file_discovered(task, run, result)
@@ -461,6 +484,17 @@ class ReapMixin:
 
         self._file_discovered(task, run, result)
 
+        if status == "no_change":
+            reason = str(result.get("reason") or result.get("summary") or "(no reason given)")
+            st = self.state.get(task.id)
+            st["no_change_reconciliation"] = {
+                "head": str(result.get("pushed_sha") or st.get("head_sha") or ""),
+                "run": run.run_id,
+            }
+            task.log(f"worker found no change to make: {reason}; reconciling the declared pushed head")
+            self.store.save(task)
+            self.events.emit("no_change_reconciled", task.id, reason=reason, run=run.run_id)
+
         missing = missing_preflight(result.get("pre_flight"))
         if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
             run.status = "failed"
@@ -475,7 +509,7 @@ class ReapMixin:
         branch = run.branch or task.branch or task.default_branch()
         repo = self.repo_for(task)
 
-        if runner.remote:
+        if runner.remote or run.completion_mode == "pushed":
             gitops.fetch(repo)
             try:
                 if run.pushed_ref:
@@ -502,7 +536,7 @@ class ReapMixin:
                 ahead = 0
                 if run.pushed_head:
                     run.error = str(e)
-            if ahead == 0:
+            if ahead == 0 and not (run.completion_mode == "pushed" and status == "no_change"):
                 run.status = "failed"
                 run.error = "no commits pushed"
                 run.save()
@@ -518,9 +552,14 @@ class ReapMixin:
                 else:
                     gitops.prepare_worktree(repo, wt, branch, base)
             except gitops.GitError as e:
-                self.log(f"{task.id}: could not materialise local worktree: {e}")
+                run.status = "failed"
+                run.error = f"could not materialise local worktree: {e}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
             task.branch = branch
-            self._after_push(task, run, wt, branch, base, result, rep, cost)
+            self._after_push(task, run, wt, branch, base, result, rep, cost,
+                             check_stall=status != "no_change")
             return
 
         worktree = Path(run.worktree) if run.worktree else self.worktree_for(task)
@@ -561,6 +600,16 @@ class ReapMixin:
             if note:
                 self.log(f"{task.id}: {note}")
         except gitops.LeaseRejected as e:
+            if self.external_stack_owner(task):
+                reason = (f"external stack owner changed `{e.branch}` while this run was active "
+                          f"(expected {e.expected[:12] or '?'}, now {e.actual[:12] or '?'}); "
+                          "garden did not rebase or force-push it")
+                self.events.emit("lease_rejected", task.id, run=run.run_id, branch=e.branch,
+                                 expected=e.expected, actual=e.actual, owner="external")
+                self._set_needs_human(task, "external_head_changed", reason)
+                self._transition(task, Status.WAITING_HUMAN, reason)
+                rep.transitions.append(f"{task.id} waiting_human (external head changed)")
+                return
             if not self._retry_lease_push(task, run, worktree, base, e):
                 self._transition(task, Status.FAILED, f"push failed: {e}{cost}")
                 rep.transitions.append(f"{task.id} -> failed (push)")
@@ -1028,6 +1077,9 @@ class ReapMixin:
             self._transition(task, Status.WAITING_HUMAN, f"{note}; the pending question and session are restored, answer again once it resumes")
             rep.transitions.append(f"{task.id} -> waiting_human (env_error: {kind})")
             return
+        if harness_name and kind != "resource":
+            self.state.get(task.id)["harness_hold"] = harness_name
+            self.state.save()
         self._transition(task, Status.READY, note)
         rep.transitions.append(f"{task.id} -> ready (env_error: {kind})")
 

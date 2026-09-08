@@ -698,7 +698,11 @@ whenever a task needs a human: `awaiting_triage` (once a pending review's verdic
 known — see "Draft first" above), `waiting_human`, `failed`, `changes_requested` past
 `max_revisions`, plus `stalled`, `needs_human` and `budget` events. It gets the task in
 environment variables — `GARDEN_TASK_ID`, `GARDEN_STATUS`, `GARDEN_MESSAGE`, `GARDEN_PR`
-— and `notify.timeout_seconds` (default 30) bounds how long it may run. It is empty by
+and `GARDEN_NOTIFICATION_JSON`. The JSON payload is built before the static command runs;
+it contains the fixed `notify.recipient`, task details and scrubbed message, so delivery
+commands can forward it without interpreting worker text or choosing a recipient from it.
+Quote `$GARDEN_NOTIFICATION_JSON` unchanged in the command. `notify.timeout_seconds`
+(default 30) bounds how long it may run. It is empty by
 default (no notifications); see `notify:` in `examples/garden.work.yaml` for a working
 example to copy. `garden doctor` runs the configured command for real, with a synthetic
 `GARDEN_TASK_ID=DOCTOR-TEST` payload, and reports whether it exited zero — a broken

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ctypes
+import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import signal
 import stat
@@ -166,6 +168,22 @@ def _write_execution_state(run_dir: Path, status: dict[str, object]) -> None:
     temporary.replace(path)
 
 
+def _recorded_waiting_since(run_dir: Path) -> str | None:
+    try:
+        previous = json.loads((run_dir / "execution.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        previous = {}
+    recorded = previous.get("waiting_since") if previous.get("state") == "waiting" else None
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    return None
+
+
+def _waiting_since(run_dir: Path) -> str:
+    """Keep one admission-clock origin while a supervisor remains waiting."""
+    return _recorded_waiting_since(run_dir) or dt.datetime.now(dt.UTC).isoformat()
+
+
 def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = False) -> object:
     """Take one authoritative host-wide heavy-work lease, released by the kernel."""
     limit = int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1"))
@@ -191,6 +209,7 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
                 _write_execution_state(run_dir, {
                     "state": "waiting", "reason": "another validation in this run is active",
                     "limit": 1, "inherited": True, "owner": owner,
+                    "waiting_since": _waiting_since(run_dir),
                 })
                 time.sleep(0.1)
                 continue
@@ -216,14 +235,22 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
             except BlockingIOError:
                 handle.close()
                 continue
-            _write_execution_state(run_dir, {
+            waiting_since = _recorded_waiting_since(run_dir)
+            running = {
                 "state": "running", "slot": slot, "limit": authoritative, "pid": os.getpid(),
                 "requested_limit": limit, "conflict": conflict, "owner_scoped": owner_scoped,
-            })
+            }
+            if waiting_since:
+                running.update({
+                    "admission_wait_started_at": waiting_since,
+                    "admitted_at": dt.datetime.now(dt.UTC).isoformat(),
+                })
+            _write_execution_state(run_dir, running)
             return handle, owner_handle
         _write_execution_state(run_dir, {
             "state": "waiting", "reason": conflict or f"heavy-test budget full (limit {authoritative})",
             "limit": authoritative, "requested_limit": limit, "conflict": conflict,
+            "waiting_since": _waiting_since(run_dir),
         })
         time.sleep(0.1)
 
@@ -283,6 +310,92 @@ def _signal_descendants(sig: int) -> None:
             os.kill(pid, sig)
         except ProcessLookupError:
             pass
+
+
+def _reap_exited_children(*, excluding: int | None = None) -> None:
+    """Reap exited children owned by this supervisor, except the run leader.
+
+    Targeting current direct children individually avoids consuming the leader's exit
+    status between ``Popen.poll`` calls.  Orphaned descendants become direct children
+    of this subreaper, so this reaps only processes this run owns.
+    """
+    for pid in _children(os.getpid()):
+        if pid == excluding:
+            continue
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+
+def _execution_timeout_seconds() -> float | None:
+    """Return this supervisor's hard execution budget, when explicitly requested.
+
+    Ordinary worker supervisors retain their task-level timeout. ``garden.validation`` and
+    detached check launchers translate the configured validation budget into this private
+    supervisor input; model-session launchers do not.
+    """
+    raw = os.environ.get("GARDEN_EXECUTION_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("execution timeout must be a positive number of seconds") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise RuntimeError("execution timeout must be a positive number of seconds")
+    return seconds
+
+
+def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tuple[float, str]:
+    """Publish one fixed execution-clock origin after admission has completed."""
+    started_monotonic = time.monotonic()
+    started_at = dt.datetime.now(dt.UTC).isoformat()
+    if timeout_seconds is None:
+        return started_monotonic, started_at
+    try:
+        status = json.loads((run_dir / "execution.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        status = {"state": "running", "pid": os.getpid()}
+    status.update({
+        "execution_started_at": started_at,
+        "timeout_seconds": timeout_seconds,
+        "deadline_at": (
+            dt.datetime.fromisoformat(started_at) + dt.timedelta(seconds=timeout_seconds)
+        ).isoformat(),
+    })
+    _write_execution_state(run_dir, status)
+    return started_monotonic, started_at
+
+
+def _record_execution_timeout(
+    run_dir: Path, timeout_seconds: float, started_at: str, *, exit_code: int = 124
+) -> None:
+    """Persist a timeout result before signalling this supervisor's descendants."""
+    timed_out_at = dt.datetime.now(dt.UTC).isoformat()
+    result = {
+        "kind": "validation_execution_timeout",
+        "timeout_seconds": timeout_seconds,
+        "execution_started_at": started_at,
+        "timed_out_at": timed_out_at,
+        "pid": os.getpid(),
+        "exit_code": exit_code,
+        "reason": f"validation execution exceeded {timeout_seconds:g} seconds",
+    }
+    (run_dir / "validation_timeout.json").write_text(json.dumps(result, indent=2))
+    try:
+        status = json.loads((run_dir / "execution.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        status = {}
+    status.update({
+        "state": "timeout",
+        "execution_started_at": started_at,
+        "timeout_seconds": timeout_seconds,
+        "timed_out_at": timed_out_at,
+        "reason": result["reason"],
+        "exit_code": exit_code,
+    })
+    _write_execution_state(run_dir, status)
 
 
 def _run_setup(run_dir: Path) -> bool:
@@ -346,8 +459,49 @@ def main() -> int:
             return 1
     elif not _run_setup(run_dir):
         return 1
+    try:
+        timeout_seconds = _execution_timeout_seconds()
+    except RuntimeError as exc:
+        (run_dir / "stderr.log").write_text(f"{exc}\n")
+        (run_dir / "exit_code").write_text("2")
+        del slot
+        return 2
+    execution_started, execution_started_at = _mark_execution_started(run_dir, timeout_seconds)
+    execution_deadline = execution_started + timeout_seconds if timeout_seconds is not None else None
     child = subprocess.Popen(["sh", "-c", script])
-    code = child.wait()
+    kill_deadline = None
+    timed_out = False
+
+    def enforce_deadline() -> None:
+        nonlocal kill_deadline, timed_out
+        now = time.monotonic()
+        if not timed_out and execution_deadline is not None and now >= execution_deadline:
+            timed_out = True
+            assert timeout_seconds is not None
+            try:
+                _record_execution_timeout(run_dir, timeout_seconds, execution_started_at)
+            except OSError as exc:
+                # A full or disappearing result filesystem must not leave the owned workload
+                # running beyond its budget. Preserve the metadata failure when possible.
+                try:
+                    with (run_dir / "stderr.log").open("a") as error_log:
+                        error_log.write(f"could not record validation timeout: {exc}\n")
+                except OSError:
+                    pass
+            finally:
+                _signal_descendants(signal.SIGTERM)
+            kill_deadline = now + 5.0
+        elif timed_out and kill_deadline is not None and now >= kill_deadline:
+            _signal_descendants(signal.SIGKILL)
+
+    while (code := child.poll()) is None:
+        _reap_exited_children(excluding=child.pid)
+        if stopping:
+            kill_deadline = kill_deadline or time.monotonic() + 5.0
+            if time.monotonic() >= kill_deadline:
+                _signal_descendants(signal.SIGKILL)
+        enforce_deadline()
+        time.sleep(0.05)
     deadline = time.monotonic() + 5.0 if stopping else None
     while True:
         try:
@@ -357,9 +511,12 @@ def main() -> int:
         if waited == 0:
             if deadline is not None and time.monotonic() >= deadline:
                 _signal_descendants(signal.SIGKILL)
+            enforce_deadline()
             time.sleep(0.05)
+    if timed_out:
+        code = 124
     (run_dir / "exit_code").write_text(str(code))
-    if slot is not None:
+    if slot is not None and not timed_out:
         _set_execution_state(run_dir, "finished")
     del slot  # keep the flock alive until every adopted descendant has exited
     return code

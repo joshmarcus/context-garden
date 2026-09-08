@@ -1,0 +1,25 @@
+# Human-gated profile for an enterprise source-control environment. Copy this to the
+# garden root as garden.enterprise.yaml, then set GARDEN_ENV=enterprise. Keep endpoint
+# credentials and host routes in the ignored garden.local.yaml overlay.
+
+github:
+  draft_pr: true                    # a person must triage each draft before review/merge
+  trusted_bots: ["review-app[bot]"] # only this installed review bot may request a revision
+  bot_notice_patterns: ["usage limit", "no issues", "looks good"]
+  automerge: false                  # human approval and merge stay mandatory
+
+products:
+  service:
+    repo: https://source.example.invalid/team/service.git
+    base_branch: release
+
+notify:
+  # This is the configured calling user, not worker-controlled text. The command receives
+  # one JSON document in GARDEN_NOTIFICATION_JSON; quote the expansion so the shell does
+  # not interpret its contents. `garden doctor` sends its synthetic diagnostic only when
+  # explicitly invoked.
+  recipient: operator@example.invalid
+  command: >-
+    curl -sS -X POST -H 'Content-type: application/json'
+    --data "$GARDEN_NOTIFICATION_JSON" "$NOTIFY_ENDPOINT"
+  timeout_seconds: 15

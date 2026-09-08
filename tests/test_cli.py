@@ -760,6 +760,24 @@ def test_status_shows_a_paused_harness(garden):
     assert "harness claude paused" in out and "quota limit hit on claude" in out
 
 
+def test_status_names_tasks_waiting_for_a_paused_harness(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    sched = Scheduler(store)
+    sched.pause_harness("claude", "quota limit hit on claude")
+    sched.state.get("DM-001")["harness_hold"] = "claude"
+    sched.state.save()
+
+    out = run(garden, "status").output
+    assert "waiting for claude to resume: DM-001" in out
+
+    sched.resume_harness("claude")
+    out = run(garden, "status").output
+    assert "waiting for claude to resume" not in out
+
+
 def test_config_accept_with_nothing_held(garden):
     r = run(garden, "config", "accept")
     assert r.exit_code == 1
@@ -884,6 +902,29 @@ def test_take_rejects_external_pr_outside_the_configured_repository(garden, fake
     assert result.exit_code == 1
     assert "GitHub URL for this repository" in result.output
     assert not called
+
+
+def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_github, monkeypatch):
+    """Manual adoption validates the product route, rather than github.com's ambient host."""
+    import yaml
+
+    import garden.cli.loop as loop
+    from garden.github import PRInfo
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["demo"]["github"] = {"slug": "test/demo", "host": "forge-one.test"}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    monkeypatch.setattr(fake_github, "get_pr", lambda slug, number: PRInfo(
+        number=number, url="https://forge-one.test/test/demo/pull/71", state="OPEN", head="operator/work",
+    ))
+
+    result = run(garden, "take", "DM-001", "--pr", "https://forge-one.test/test/demo/pull/71", "-q")
+
+    assert result.exit_code == 0, result.output
 
 
 def test_take_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
