@@ -53,6 +53,10 @@ class PRInfo:
     updated_at: str = ""
     body: str = ""
     head_sha: str = ""
+    # The repository which owns ``head``.  An empty value is retained for older
+    # providers, but providers that expose it let attachment reject fork heads:
+    # a scheduler cannot safely revise a branch it cannot push.
+    head_repo: str = ""
     is_draft: bool = False
     node_id: str = ""
 
@@ -401,7 +405,7 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             rollup = p.get("statusCheckRollup") or []
@@ -410,12 +414,15 @@ class GitHub:
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
                 checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
-                body=p.get("body") or "", head_sha=p.get("headRefOid") or "", is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
+                body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
+                head_repo=str((p.get("headRepository") or {}).get("nameWithOwner") or ""),
+                is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
+        info.head_repo = str(((p.get("head") or {}).get("repo") or {}).get("full_name") or "")
         if info.head_sha:
             try:
                 runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
