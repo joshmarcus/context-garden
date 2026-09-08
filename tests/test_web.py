@@ -582,6 +582,18 @@ def test_page_store_snapshot_scans_once_and_refreshes_next_request(garden, monke
     response = c.get("/board")
     assert "Fresh task title" in response.text
 
+def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
+    scheduler = Scheduler(Store(garden), read_only=True)
+    scheduler.state.get("DM-001")["ci_status"] = {
+        "provider": "worker_check", "state": "mismatched", "queried_sha": "abc123",
+        "stale": True, "exists_for_sha": False, "evidence_url": "", "failures": [],
+    }
+    scheduler.state.save()
+    page = client(garden).get("/tasks/DM-001").text
+    assert "exact-head CI" in page
+    assert "worker_check · mismatched" in page
+    assert "abc123" in page and "stale" in page
+
 
 def test_read_generation_is_copy_on_write_across_an_action(garden):
     """An action publishes a new complete generation without changing a reader it overlaps."""
