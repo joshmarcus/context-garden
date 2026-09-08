@@ -253,3 +253,45 @@ def test_gh_rejects_a_pr_url_from_another_host(monkeypatch):
     monkeypatch.setattr(gh, "_gh", lambda *args, input_=None: "https://forge-two.test/team/repo/pull/7\n")
     with pytest.raises(GitHubError, match="outside"):
         gh.create_pr("team/repo", "feature", "release", "title", "body")
+
+
+@pytest.mark.parametrize("copy_kind", ["shallow", "deep", "pickle"])
+def test_repository_host_survives_copy_and_serialization(copy_kind):
+    import copy
+    import pickle
+
+    slug = RepositorySlug("Team/Repo", "FORGE-ONE.TEST.")
+    copied = {"shallow": copy.copy, "deep": copy.deepcopy,
+              "pickle": lambda value: pickle.loads(pickle.dumps(value))}[copy_kind](slug)
+    assert copied == "Team/Repo"
+    assert copied.host == "forge-one.test"
+
+
+def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
+    default = GitHub(use_gh=False, token="public")
+    enterprise = GitHub(use_gh=False, host="forge-one.test", token="enterprise")
+    router = GitHubRouter(default, {("forge-one.test", "team/repo"): enterprise})
+    calls = []
+    monkeypatch.setattr(default, "mark_ready", lambda slug, number: calls.append((str(slug), number)))
+    monkeypatch.setattr(enterprise, "mark_ready", lambda *args: pytest.fail("cross-host route"))
+
+    router.mark_ready(RepositorySlug("team/repo", "github.com"), 7)
+
+    assert calls == [("team/repo", 7)]
+
+
+@pytest.mark.parametrize("slug", [
+    RepositorySlug("team/repo", "unconfigured.test"),
+    "team/repo",
+])
+def test_unconfigured_or_ambiguous_host_never_uses_ambient_client(monkeypatch, slug):
+    default = GitHub(use_gh=False, token="public")
+    one = GitHub(use_gh=False, host="forge-one.test", token="one")
+    two = GitHub(use_gh=False, host="forge-two.test", token="two")
+    router = GitHubRouter(default, {("forge-one.test", "team/repo"): one,
+                                  ("forge-two.test", "team/repo"): two})
+    for client in (default, one, two):
+        monkeypatch.setattr(client, "mark_ready", lambda *args: pytest.fail("unknown host made a request"))
+
+    with pytest.raises(GitHubError, match="host|ambiguous"):
+        router.mark_ready(slug, 7)

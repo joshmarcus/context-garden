@@ -90,8 +90,9 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
     """Return an ``owner/repo`` only for an unambiguous remote on ``host``.
 
     Enterprise remotes occur in HTTPS, SSH URL, and conventional SCP forms.  Rejecting
-    user-info, ports, and unexpected hosts keeps a configured product from silently
-    borrowing a credential or API route intended for another server.
+    credential-bearing URLs and unexpected hosts keeps a configured product from
+    borrowing a credential or API route intended for another server. SSH transport
+    usernames and explicit SSH ports remain part of the repository URL.
     """
     expected = host.lower().rstrip(".")
     value = url.strip()
@@ -611,6 +612,11 @@ class RepositorySlug(str):
         value.host = host.lower().rstrip(".")
         return value
 
+    def __getnewargs__(self) -> tuple[str, str]:
+        # State snapshots copy values before flushing them; preserve the route when
+        # copy/deepcopy or pickle reconstruct this immutable string subclass.
+        return str(self), self.host
+
 
 class GitHubRouter:
     """Route repository operations to the GitHub client configured for that repository.
@@ -660,7 +666,17 @@ class GitHubRouter:
 
         def routed(slug: str, *args: Any, **kwargs: Any) -> Any:
             host = getattr(slug, "host", "")
-            client = self.routes.get((host, slug.lower())) if host else self._legacy_routes.get(slug.lower(), self.default)
+            key = slug.lower()
+            if host:
+                client = self.routes.get((host, key))
+                if client is None and host == getattr(self.default, "host", "github.com"):
+                    client = self.default
+                if client is None:
+                    raise GitHubError(f"no GitHub client configured for host {host!r} and repository {slug!r}")
+            else:
+                if key in self._routes_by_slug() and key not in self._legacy_routes:
+                    raise GitHubError(f"ambiguous GitHub host for repository {slug!r}; supply its explicit host")
+                client = self._legacy_routes.get(key, self.default)
             return getattr(client, name)(slug, *args, **kwargs)
 
         return routed
