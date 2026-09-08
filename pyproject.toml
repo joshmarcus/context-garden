@@ -40,6 +40,7 @@ testpaths = ["tests"]
 markers = [
     "stress: explicit opt-in load, scale, resource-pressure, or latency experiments",
     "needs_remote_clone: test executes an SSH worker against the remote-host checkout",
+    "stress: opt-in stress/load experiment excluded from ordinary test runs and CI",
 ]
 
 [tool.ruff]
