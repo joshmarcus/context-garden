@@ -423,6 +423,7 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
 
     run_dir = tmp_path / "nested"
     run_dir.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "outer-run")
     monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
     slot = supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
