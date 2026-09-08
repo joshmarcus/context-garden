@@ -64,7 +64,7 @@
     </select>
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
-  {% if task.status.value in ('ready','changes_requested') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
+  {% if task.status.value in ('ready','changes_requested') and (not manual_runner or not manual_take_reason) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
@@ -81,6 +81,7 @@
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
+{% if manual_take_reason %}<p class="muted" style="margin:-6px 0 14px">{{ manual_take_reason }}</p>{% endif %}
 {% if manual_runner and task.status.value == 'running' and latest_run and latest_run.runner == 'manual' %}
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Manual session claimed</div>
