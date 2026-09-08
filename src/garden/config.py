@@ -40,7 +40,7 @@ def no_live_garden_root(base: Path) -> str:
 # fence manifest until the run is reaped or an operator confirms it (CG-242): live reload must
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
-EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "checks", "worker_env.pass")
+EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "notify.recipient", "checks", "worker_env.pass")
 
 
 def executable_signature(data: dict[str, Any]) -> dict[str, Any]:

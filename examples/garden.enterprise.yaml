@@ -1,6 +1,10 @@
 # Human-gated profile for an enterprise source-control environment. Copy this to the
 # garden root as garden.enterprise.yaml, then set GARDEN_ENV=enterprise. Keep endpoint
 # credentials and host routes in the ignored garden.local.yaml overlay.
+# Also require approval on the protected target branch in your GitHub organization
+# and explicit authorization in the deployment pipeline. This overlay disables Garden
+# auto-merge; it does not configure those external controls or grant deployment rights.
+# Preserve your organization's required PR-description sections when adapting the profile.
 
 github:
   draft_pr: true                    # a person must triage each draft before review/merge
