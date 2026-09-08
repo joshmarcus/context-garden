@@ -645,7 +645,17 @@ identity; the supervisor supplies `GARDEN_VALIDATION_RUNNER` and `GARDEN_EXECUTI
 Workers can invoke `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` exactly as
 the brief says. Validation remains serialized per owner and uses the host's heavy-work
 admission and service limits. Controller paths and inherited execution ownership are not
-forwarded as a substitute. Nonzero command results propagate through the wrapper.
+forwarded as a substitute. The controller's `checks.timeout_seconds` value travels with a
+remote claim and in the scrubbed local/SSH worker environment. Its hard clock starts only
+after owner and host admission, remains fixed through primary-command execution and adopted
+descendant drain, and never resets for output or retries. On expiry the supervisor records
+`validation_timeout.json` plus `execution.json` state `timeout`, returns 124, terminates only
+its owned descendants, and releases its validation slot while the parent model remains live.
+Nonzero command results propagate through the wrapper.
+
+Detached check claims use the same supervisor and capped post-admission clock around their
+whole check batch. The private execution-timeout input is removed from ordinary work, review,
+and persona environments, so this validation budget never shortens a model session.
 
 This requires a versioned worker runtime update. Updating only the controller's briefs or
 exporting the interpreter variable on its own does not repair an already running worker.

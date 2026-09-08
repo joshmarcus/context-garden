@@ -232,6 +232,9 @@ def register(app: FastAPI, site: Site) -> None:
                     "setup": {"command": str(setup.get("command") or ""),
                               "timeout_seconds": int(setup.get("timeout_seconds") or 600)},
                     "env_allowlist": pass_env_patterns(hub.store.config.data),
+                    "validation_timeout_seconds": int(
+                        hub.store.config.get("checks.timeout_seconds", 900) or 900
+                    ),
                     "harness": run.harness, "model": run.model, "difficulty": run.difficulty,
                     # Command arguments may contain inline API keys. Remote hosts use the
                     # built-in harness defaults; only inert executable/output settings cross.
