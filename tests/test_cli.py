@@ -1100,6 +1100,31 @@ def test_take_rejects_external_pr_outside_the_configured_repository(garden, fake
     assert not called
 
 
+@pytest.mark.parametrize("url", [
+    "https://operator:synthetic-password@github.com/test/demo/pull/7",
+    "https://operator@github.com/test/demo/pull/7",
+    "https://github.com/test/demo/pull/7?access=synthetic-token",
+    "https://github.com/test/demo/pull/7#synthetic-fragment",
+])
+def test_take_rejects_unsafe_pr_urls_without_persisting_them(garden, fake_github, monkeypatch, url):
+    """Rejected links never reach provider lookup, task metadata, or a run record."""
+    import garden.cli.loop as loop
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    monkeypatch.setattr(fake_github, "get_pr", lambda *_: pytest.fail("unsafe PR URL was looked up"))
+
+    result = run(garden, "take", "DM-001", "--pr", url)
+
+    assert result.exit_code == 1
+    assert "GitHub URL for this repository" in result.output
+    assert Store(garden).task("DM-001").pr == ""
+    assert not RunStore(garden / ".garden").all_runs()
+
+
 def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_github, monkeypatch):
     """Manual adoption validates the product route, rather than github.com's ambient host."""
     import yaml

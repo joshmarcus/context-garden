@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 from .. import gitops
 from ..brief import build_brief
 from ..criteria import parse_criteria
+from ..github import pull_request_number
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -352,12 +352,15 @@ class DispatchMixin:
         # rather than falling back to the scheduler-generated default branch. Internal
         # callers may still use branch_override without changing the task identity.
         if completion_mode in ("external", "pushed"):
+            if external_pr:
+                slug = self.slug_for(task)
+                pr_number = pull_request_number(external_pr, slug, getattr(slug, "host", "github.com")) if slug else None
+                if not pr_number:
+                    raise RuntimeError("external PR must be a GitHub URL for this repository")
             task.branch = branch
             if external_pr:
                 task.pr = external_pr
-                match = re.search(r"/pull/(\d+)", external_pr)
-                if match:
-                    st["pr_number"] = int(match.group(1))
+                st["pr_number"] = pr_number
             self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
