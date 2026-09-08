@@ -117,7 +117,13 @@ def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor
 
 @action("take")
 def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
-    sched.take_manual(t)
+    try:
+        sched.take_manual(t)
+    except RuntimeError as exc:
+        # A stale form is a claim conflict, not a successful redirect.  Returning a
+        # conflict lets callers distinguish a refused take from the 303 that confirms
+        # a real assignment, while the scheduler remains the authoritative guard.
+        raise HTTPException(409, str(exc)) from exc
     return f"{t.id} claimed. Open the assigned task packet to begin."
 
 
