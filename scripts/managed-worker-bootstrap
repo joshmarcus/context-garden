@@ -101,7 +101,7 @@ def install_codex(destination=Path("/usr/local/bin/codex"), package_root=None):
     ):
         link.unlink(missing_ok=True)
         link.symlink_to(target.resolve())
-    actual = subprocess.check_output([str(path), "--version"], text=True).strip()
+    actual = subprocess.check_output([str(destination), "--version"], text=True).strip()
     if actual != "codex-cli " + CODEX_VERSION:
         raise ValueError("installed Codex version mismatch")
 
