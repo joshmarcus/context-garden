@@ -28,6 +28,49 @@ def test_ambiguous_enterprise_remotes_are_rejected(remote: str):
     assert repo_slug_from_remote(remote, "forge-one.test") is None
 
 
+@pytest.mark.parametrize("remote", [
+    "https://forge-one.test/tEam/rEpo.git",
+    "ssh://git@forge-one.test/tEam/rEpo.git",
+    "ssh://acct-1234@forge-one.test/tEam/rEpo.git",
+    "acct-1234@forge-one.test:tEam/rEpo.git",
+])
+def test_scheduler_accepts_case_variants_of_configured_repository(garden, monkeypatch, remote):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {"host": "forge-one.test", "slug": "Team/Repo"}
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr("garden.scheduler.gitops.remote_url", lambda _repo: remote)
+
+    identity = sched.slug_for(store.task("DM-001"))
+
+    assert str(identity) == "Team/Repo"
+    assert identity.host == "forge-one.test"
+
+
+@pytest.mark.parametrize("remote", [
+    "https://forge-two.test/Team/Repo.git",
+    "https://forge-one.test/Other/Repo.git",
+    "ssh://acct-1234@forge-one.test/Team/Other.git",
+    "https://token@forge-one.test/Team/Repo.git",
+])
+def test_scheduler_rejects_a_different_or_invalid_repository(garden, monkeypatch, remote):
+    from garden.gitops import GitError
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {"host": "forge-one.test", "slug": "Team/Repo"}
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr("garden.scheduler.gitops.remote_url", lambda _repo: remote)
+
+    with pytest.raises(GitError, match="does not match configured GitHub host and repository"):
+        sched.slug_for(store.task("DM-001"))
+
+
 def test_gh_operations_qualify_the_enterprise_host(monkeypatch):
     gh = GitHub(use_gh=False, host="forge-one.test", token="one")
     gh.gh = "/usr/bin/gh"

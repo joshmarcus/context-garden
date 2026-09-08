@@ -289,7 +289,7 @@ class Scheduler(
                 remote = gitops.remote_url(self.repo_for(task))
                 if remote and is_git_remote_url(remote):
                     actual = repo_slug_from_remote(remote, route["host"])
-                    if actual != route["slug"]:
+                    if actual is None or actual.casefold() != route["slug"].casefold():
                         raise gitops.GitError(
                             f"product {task.product} remote does not match configured GitHub host and repository"
                         )
