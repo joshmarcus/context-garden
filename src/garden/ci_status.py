@@ -70,8 +70,10 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
         if required_command and command != required_command:
             continue
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
+        run_id = path.parents[2].name
+        evidence_url = f"/runs/{task_id}/{run_id}" if run_id else log
         return CIStatus("success" if exit_code == 0 else "failure", sha,
-                        exists_for_sha=True, evidence_url=log, failures=failures,
+                        exists_for_sha=True, evidence_url=evidence_url, failures=failures,
                         provider="worker_check")
     state = "mismatched" if mismatched else "malformed" if malformed else "missing"
     return CIStatus(state, sha, stale=mismatched, provider="worker_check")
