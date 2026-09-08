@@ -6,8 +6,10 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from garden import gitops
 from garden.cli import app
 from garden.events import EventLog
+from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler
 from garden.stabilization import RECOVERY_EXERCISES, gate, intervene, record_outcome, sample, start
 from garden.store import Store
@@ -144,6 +146,25 @@ def test_sample_detects_operator_action_event_and_resets_automatically(garden):
     data = json.loads((phase.path / "docs" / "stabilization-evidence.json").read_text())
     assert data["started_at"] == repair["at"]
     assert data["interventions"] == [{"at": repair["at"], "kind": "retry", "reason": "unstick worker"}]
+
+
+def test_sample_excludes_a_completed_merged_external_pr_from_unattended_work(sched, fake_github, monkeypatch):
+    """An operator's accepted PR must not make a supervised soak look productive."""
+    phase = protected_phase(sched.store.root)
+    start(phase, "build-a")
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.state, pr.head_sha = "MERGED", "verified-head"
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    sched.finish_manual(task, {"status": "done", "summary": "implemented", "pr": pr.url})
+
+    row = sample(phase, sched.events, at="2026-09-06T04:00:00+00:00")
+    assert task.status.value == "done"
+    assert row["completed_tasks"] == 0
 
 
 def test_complete_current_build_report_passes_and_cites_evidence(garden):

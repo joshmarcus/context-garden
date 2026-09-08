@@ -556,8 +556,109 @@ class HumanMixin:
         run = self.runs.latest(task.id)
         if run is None or run.status != "running":
             raise RuntimeError(f"{task.id} has no active run to finish")
+        if run.completion_mode == "external":
+            # A branch-first external session can truthfully end blocked before a PR
+            # exists. Its outcome is still guarded and finalized exactly like an
+            # ordinary manual run; only successful external work needs PR reconciliation.
+            if result.get("status") == "blocked":
+                ManualRunner.finish(run, result)
+                rep = TickReport()
+                self.finalize(task, run, self.runner_for(task, run.runner), rep)
+                self.state.save()
+                return rep
+            return self._finish_external_manual(task, run, result)
         ManualRunner.finish(run, result)
         rep = TickReport()
         self.finalize(task, run, self.runner_for(task, run.runner), rep)
+        self.state.save()
+        return rep
+
+    def _finish_external_manual(self, task: Task, run: Run, result: dict[str, Any]) -> TickReport:
+        """Finalize an operator-owned branch by its PR facts, never a coincidental path."""
+        from ..runner.manual import ManualRunner
+
+        url = str(result.get("pr") or run.external_pr or task.pr or "")
+        match = re.search(r"/pull/(\d+)", url)
+        pr_number = int(match.group(1)) if match else None
+
+        def record_refusal(reason: str) -> None:
+            attempt = {"at": now_iso(), "status": "refused", "reason": reason,
+                       "cost_usd": None, "pr_url": url, "pr_number": pr_number}
+            run.completion_attempts.append(attempt)
+            run.save()
+            self.events.emit("external_completion_refused", task.id, run=run.run_id, reason=reason,
+                             cost_usd=None, supervised=True, pr_url=url, pr_number=pr_number)
+
+        def refuse(reason: str) -> None:
+            record_refusal(reason)
+            raise RuntimeError(reason)
+
+        # An external claim still shares the dispatch's live-garden and Git-internals
+        # protection.  Check Git first: the ordinary fence invokes git against the clone,
+        # which must never happen after its metadata has changed.
+        rep = TickReport()
+        git_guard_violations = self._git_guard_check(task, run)
+        if git_guard_violations:
+            record_refusal("external completion refused: clone git internals changed since dispatch")
+            self._release_fence_bookkeeping(task)
+            self._git_guard_fail(task, run, git_guard_violations, rep)
+            self.state.save()
+            return rep
+        violations = self._fence_check(task, run)
+        self._release_fence_bookkeeping(task)
+        if violations:
+            record_refusal("external completion refused: worktree fence violation")
+            self._fence_fail(task, run, violations, rep)
+            self.state.save()
+            return rep
+
+        slug = self.slug_for(task)
+        if not match or not slug or not self.github.available:
+            refuse("external completion needs an accessible PR URL")
+        try:
+            pr = self.github.get_pr(slug, pr_number)
+        except (GitHubError, KeyError) as e:
+            refuse(f"could not read external PR: {e}")
+        if not run.branch or pr.head != run.branch:
+            refuse(
+                f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
+                "claim it again with `garden take ID --pr URL`"
+            )
+        if pr.state == "MERGED":
+            head = pr.head_sha or f"origin/{pr.head}"
+            try:
+                repo = self.repo_for(task)
+                gitops.fetch(repo)
+                merged = gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
+            except gitops.GitError as e:
+                refuse(f"could not verify merged PR ancestry: {e}")
+            if not merged:
+                refuse(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
+        elif pr.state != "OPEN":
+            refuse(f"external PR is {pr.state.lower()}, not open or merged")
+        st = self.state.get(task.id)
+        task.pr, task.branch = pr.url, pr.head
+        st.update({"pr_number": pr.number, "pr_state": pr.state, "pr_base": pr.base,
+                   "head_sha": pr.head_sha, "checks": pr.checks,
+                   "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
+        ManualRunner.finish(run, {**result, "pr": pr.url})
+        run.result = {**result, "pr": pr.url}
+        run.finished_at = now_iso()
+        run.cost_usd = float(result["cost_usd"]) if isinstance(result.get("cost_usd"), (int, float)) else None
+        run.status = "done"
+        run.save()
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode,
+                         harness="human", status="done", cost_usd=run.cost_usd,
+                         external=True, supervised=True)
+        if pr.state == "MERGED":
+            self._transition(task, Status.DONE, f"external PR merged and verified on {self.final_base_for(task)}")
+            rep.transitions.append(f"{task.id} -> done (external merged PR)")
+            # This follows the ordinary merged-PR lifecycle, but deliberately leaves the
+            # operator-owned checkout alone rather than calling `_cleanup`.
+            self._on_merged(task, rep, head_sha=pr.head_sha)
+        elif pr.state == "OPEN":
+            self._transition(task, Status.IN_REVIEW, f"external PR attached at {pr.head}; existing CI is {pr.checks or 'unknown'}")
+            rep.transitions.append(f"{task.id} -> in_review (external PR)")
+            self._maybe_review(task, run, rep)
         self.state.save()
         return rep

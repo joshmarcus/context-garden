@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
     PANEL_BOARD,
@@ -320,6 +321,9 @@ def redispatch(task_id: str = typer.Argument(..., help="The task whose current w
 def take(
     task_id: str,
     worktree: bool = typer.Option(False, help="Also create the git worktree and print its path"),
+    branch: str = typer.Option("", "--branch", help="Existing branch for externally implemented work"),
+    external_worktree: Path | None = typer.Option(None, "--external-worktree", help="Existing operator-owned checkout (never managed by garden)"),
+    pr_url: str = typer.Option("", "--pr", help="Existing PR; records its actual branch"),
     quiet: bool = typer.Option(False, "-q", help="Only print the brief path"),
 ):
     """Claim a task for a human-driven session and print its brief (manual runner)."""
@@ -343,9 +347,34 @@ def take(
             raise typer.Exit(1) from None
         if warning:
             err.print(f"[yellow]{warning}[/yellow]")
+    if worktree and external_worktree:
+        err.print("[red]--worktree and --external-worktree are mutually exclusive[/red]")
+        raise typer.Exit(1)
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
+    external = bool(branch or external_worktree or pr_url)
+    if pr_url:
+        slug = sched.slug_for(t)
+        pr_number = pull_request_number(pr_url, slug) if slug else None
+        if not pr_number or not sched.github.available:
+            err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
+            raise typer.Exit(1)
+        try:
+            info = sched.github.get_pr(slug, pr_number)
+        except Exception as e:  # GitHub clients expose provider-specific errors
+            err.print(f"[red]could not read PR: {e}[/red]")
+            raise typer.Exit(1) from None
+        if branch and branch != info.head:
+            err.print(f"[red]--branch {branch} does not match PR head {info.head}[/red]")
+            raise typer.Exit(1)
+        branch = info.head
+    if external and not branch:
+        err.print("[red]external work needs --branch or --pr[/red]")
+        raise typer.Exit(1)
     try:
-        run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree)
+        run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
+                             branch_override=branch, worktree_override=external_worktree,
+                             completion_mode="external" if external else "managed",
+                             external_pr=pr_url)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -357,7 +386,8 @@ def take(
     if worktree:
         console.print(f"worktree: {run.worktree} (branch {run.branch})")
     else:
-        console.print(f"work on branch [bold]{run.branch}[/bold] from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
+        where = f" in external worktree {run.worktree}" if external_worktree else ""
+        console.print(f"work on branch [bold]{run.branch}[/bold]{where} from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
     print()
     print(brief_path.read_text())
 
@@ -385,7 +415,6 @@ def finish(
         result["summary"] = summary
     if pr_url:
         result["pr"] = pr_url
-        t.pr = pr_url
     if cost is not None:
         result["cost_usd"] = cost
     rep = _scheduler(store).finish_manual(t, result)

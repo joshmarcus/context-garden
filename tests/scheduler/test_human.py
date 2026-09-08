@@ -3,7 +3,10 @@
 
 import pytest
 
+from garden import gitops
+from garden.github import GitHubError
 from garden.model import Status
+from garden.runner.manual import ManualRunner
 from tests.scheduler.conftest import statuses
 
 
@@ -235,6 +238,175 @@ def test_mark_done_requires_pr_commits_on_the_base_unless_forced(sched, monkeypa
 
     sched.mark_done(task, force=True)
     assert statuses(sched)["DM-001"] == "done"
+
+
+def test_external_open_pr_uses_claimed_identity_and_review_without_managed_worktree(sched, fake_github):
+    """An operator-owned directory is audit data, not a signal to push or test it."""
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    coincidental_path = sched.worktree_for(task)
+    coincidental_path.mkdir(parents=True)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override="operator/fix", completion_mode="external",
+                         external_pr=pr.url, worktree_override=coincidental_path)
+    assert run.completion_mode == "external" and run.worktree == str(coincidental_path)
+
+    sched.finish_manual(task, {"status": "done", "summary": "implemented", "pr": pr.url})
+
+    task = sched.store.task("DM-001")
+    assert task.status == Status.IN_REVIEW and task.branch == "operator/fix"
+    assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+
+
+def test_external_claim_persists_actual_identity_before_finish(sched, fake_github):
+    """A restart after take retains the operator's branch and PR, not a generated default."""
+    from garden.store import Store
+
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    reloaded = Store(sched.store.root).task(task.id)
+    assert reloaded.branch == "operator/actual"
+    assert reloaded.pr == pr.url
+    assert sched.state.get(task.id)["pr_number"] == pr.number
+
+
+def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="garden/DM-001-generated", completion_mode="external")
+
+    with pytest.raises(RuntimeError, match="does not match claimed branch"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    assert sched.store.task(task.id).status == Status.RUNNING
+    failed = sched.runs.latest(task.id)
+    assert failed.status == "running"
+    assert failed.completion_attempts[-1]["status"] == "refused"
+    assert failed.completion_attempts[-1]["cost_usd"] is None
+    assert failed.completion_attempts[-1]["pr_url"] == pr.url
+    assert failed.completion_attempts[-1]["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+@pytest.mark.parametrize("error_type", [GitHubError, KeyError])
+def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    def unavailable(*_):
+        raise error_type("unavailable")
+
+    monkeypatch.setattr(sched.github, "get_pr", unavailable)
+
+    with pytest.raises(RuntimeError, match="could not read external PR: .*unavailable"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.store.task(task.id).pr == pr.url
+    refused = sched.runs.latest(task.id).completion_attempts[-1]
+    assert refused["pr_url"] == pr.url and refused["pr_number"] == pr.number
+    assert refused["cost_usd"] is None
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+def test_external_blocked_result_uses_ordinary_manual_completion(sched, fake_github):
+    task = sched.store.task("DM-001")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="operator/blocked", completion_mode="external")
+
+    rep = sched.finish_manual(task, {"status": "blocked", "summary": "waiting on access"})
+
+    assert sched.store.task(task.id).status == Status.FAILED
+    assert "failed" in rep.transitions[0]
+    assert sched.runs.latest(task.id).result["status"] == "blocked"
+
+
+def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
+    pr.state, pr.head_sha = "MERGED", "verified-head"
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    rep = sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.DONE
+    assert "external merged PR" in rep.transitions[0]
+    assert sched.runs.latest(task.id).run_id == run.run_id
+    assert not any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+    with pytest.raises(RuntimeError, match="no active run to finish"):
+        sched.finish_manual(sched.store.task(task.id), {"status": "done", "pr": pr.url})
+def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
+    """An external parent merge shares the normal stacked-child lifecycle."""
+    parent = sched.store.task("DM-001")
+    child = sched.store.task("DM-002")
+    pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
+    pr.state, pr.head_sha = "MERGED", "verified-head"
+    sched.state.get(child.id)["stack_parent"] = parent.id
+    restacked: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
+    monkeypatch.setattr(sched, "_restack", lambda task, _: restacked.append(task.id))
+    sched.dispatch(parent, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    sched.finish_manual(parent, {"status": "done", "pr": pr.url})
+
+    assert restacked == [child.id]
+
+
+def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base(sched, fake_github, monkeypatch):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
+    pr.state, pr.head_sha = "MERGED", "stacked-head"
+    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_: False)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    with pytest.raises(RuntimeError, match="not included in final base"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    assert sched.store.task(task.id).status == Status.RUNNING
+    failed = sched.runs.latest(task.id)
+    assert failed.run_id == run.run_id and failed.status == "running"
+    assert "not included in final base" in failed.completion_attempts[-1]["reason"]
+    assert failed.completion_attempts[-1]["pr_url"] == pr.url
+    assert failed.completion_attempts[-1]["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+def test_external_completion_git_guard_violation_is_refused_and_failed(sched, fake_github):
+    """External completion must not skip the metadata guard captured at dispatch."""
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    created_before = len(fake_github.created)
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    clone = sched.repo_for(task)
+    config = clone / ".git" / "config"
+    config.write_text(config.read_text() + "\n[core]\n\thooksPath = /tmp/garden-test-evil-hooks\n")
+
+    rep = sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.FAILED
+    assert "git guard" in rep.transitions[0]
+    refused = sched.runs.latest(task.id).completion_attempts[-1]
+    assert refused["status"] == "refused"
+    assert refused["pr_url"] == pr.url and refused["pr_number"] == pr.number
+    event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
+    assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+    assert len(fake_github.created) == created_before
+    with pytest.raises(gitops.GitError):
+        gitops.git("status", cwd=clone)
 
 
 def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github):

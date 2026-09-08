@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -88,6 +89,26 @@ class Feedback:
 def repo_slug_from_remote(url: str) -> str | None:
     m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url.strip())
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def pull_request_number(url: str, slug: str) -> int | None:
+    """Return a GitHub PR number only when *url* identifies this repository.
+
+    A PR number is meaningful only within its repository.  Validating the complete
+    public GitHub URL before looking it up prevents a same-numbered PR in the
+    configured repository from being mistaken for an operator-supplied external PR.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.port not in (None, 443):
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 4 or parts[2] != "pull" or "/".join(parts[:2]).lower() != slug.lower():
+        return None
+    try:
+        number = int(parts[3])
+    except ValueError:
+        return None
+    return number if number > 0 else None
 
 
 # Appended to every comment the garden posts, so its own comments can be told apart from a
