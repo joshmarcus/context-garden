@@ -145,7 +145,7 @@ def doctor():
     from ..github import GitHub
     from ..graph import validate as _validate
     from ..host_identity import tracked_connection_target_fields
-    from ..runner import get_runner
+    from ..runner import BUILTIN_NAMES, adapter_registration_problem, get_runner
     from ..runner.base import scrubbed_env
 
     store = _store()
@@ -272,14 +272,27 @@ def doctor():
             cfg = dict(store.config.get("ssh" if name == "ssh" else "workers", {}) or {}) \
                 if name in {"ssh", "remote"} else {}
             cfg["worker_env"] = dict(store.config.get("worker_env") or {})
-            # Doctor intentionally resolves configured adapters so a missing private package
-            # is actionable; ordinary config reads never import adapter modules.
-            cfg["_runner_adapters"] = dict(store.config.get("runner_adapters") or {})
-            r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
-            probs = r.doctor()
+            adapters = store.config.get("runner_adapters") or {}
+            registration = adapters.get(name) if isinstance(adapters, dict) else None
+            if registration is not None:
+                # Private modules can execute arbitrary code at import time.  Doctor is a
+                # read-only controller diagnostic, so it only checks the declarative
+                # registration; runner construction validates the runtime contract later.
+                problem = adapter_registration_problem(name, registration)
+                probs = [problem] if problem else []
+                deferred = name not in BUILTIN_NAMES
+            else:
+                cfg["_runner_adapters"] = dict(adapters) if isinstance(adapters, dict) else adapters
+                r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
+                probs = r.doctor()
+                deferred = False
         except Exception as e:  # noqa: BLE001
             probs = [str(e)]
-        console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
+            deferred = False
+        status = "[yellow]registration syntax ok; runtime validation deferred until dispatch[/yellow]" if deferred else (
+            "[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"
+        )
+        console.print(f"runner {name}: {status}")
         if probs:
             fail(f"runner {name}")
     from ..scheduler import State

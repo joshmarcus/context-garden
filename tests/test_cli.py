@@ -410,6 +410,50 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
+def test_doctor_does_not_import_private_runner_adapters(garden, tmp_path, monkeypatch):
+    """A read-only diagnostic must not execute an adapter's import-time code."""
+    import subprocess
+    from types import SimpleNamespace
+    from unittest import mock
+
+    sentinel = tmp_path / "adapter-imported"
+    (tmp_path / "side_effect_adapter.py").write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('imported')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["runner_adapters"] = {"synthetic": {"path": "side_effect_adapter.Runner"}}
+    config["products"]["demo"]["runner"] = "synthetic"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setattr("garden.cli.diagnostics.shutil.disk_usage", lambda path: SimpleNamespace(free=1024 * 1024))
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    if "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                elif _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                elif "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
+                elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        result = run(garden, "doctor")
+
+    assert result.exit_code == 0, result.output
+    assert "runner synthetic:" in result.output
+    assert "runtime validation deferred" in result.output
+    assert not sentinel.exists()
+
+
 def test_doctor_wraps_long_diagnostics_to_console_width(garden, monkeypatch):
     from rich.console import Console
 
