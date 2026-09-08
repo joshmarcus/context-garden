@@ -255,6 +255,10 @@ def register(app: FastAPI, site: Site) -> None:
                     "lease_token": run.lease_token,
                     "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
                     "recovery_seconds": int(hub.store.config.get("workers.recovery_seconds", 300)),
+                    "recovery_window_seconds": (
+                        int(hub.store.config.get("workers.lease_seconds", 120))
+                        + int(hub.store.config.get("workers.recovery_seconds", 300))
+                    ),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
