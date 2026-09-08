@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from dataclasses import replace
 
@@ -222,6 +223,62 @@ def test_unbound_acquisition_is_exclusive_across_lifecycle_instances(tmp_path):
 
     first.cancel_acquisition(host.provider_id)
     assert second.acquire_ready(command_pool(), **kwargs).provider_id == host.provider_id
+
+
+def test_overlapping_acquisition_is_exclusive_across_lifecycle_instances(tmp_path):
+    wrapper = Wrapper()
+    first_inspect_started = threading.Event()
+    allow_first_inspect = threading.Event()
+    second_acquisition_started = threading.Event()
+    original_run = wrapper.run
+
+    def blocking_run(argv, stdin, *, timeout_seconds):
+        if argv[-1] == "inspect" and not first_inspect_started.is_set():
+            first_inspect_started.set()
+            assert allow_first_inspect.wait(timeout=2)
+        return original_run(argv, stdin, timeout_seconds=timeout_seconds)
+
+    wrapper.run = blocking_run
+    path = tmp_path / "hosts.json"
+    lifecycles = [
+        HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+        for _ in range(2)
+    ]
+    kwargs = {
+        "workspace": "/work/product",
+        "revision": "abc123",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+    outcomes = []
+
+    def acquire(lifecycle, *, started=None):
+        if started is not None:
+            started.set()
+        try:
+            outcomes.append(lifecycle.acquire_ready(command_pool(), **kwargs))
+        except EnvironmentStop as exc:
+            outcomes.append(exc)
+
+    threads = [
+        threading.Thread(target=acquire, args=(lifecycles[0],)),
+        threading.Thread(
+            target=acquire,
+            args=(lifecycles[1],),
+            kwargs={"started": second_acquisition_started},
+        ),
+    ]
+    threads[0].start()
+    assert first_inspect_started.wait(timeout=2)
+    threads[1].start()
+    assert second_acquisition_started.wait(timeout=2)
+    allow_first_inspect.set()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert sum(isinstance(outcome, EnvironmentStop) for outcome in outcomes) == 1
+    assert [call[0][-1] for call in wrapper.calls].count("acquire") == 1
 
 
 def test_stale_unbound_acquisition_recovers_after_bound(tmp_path):
