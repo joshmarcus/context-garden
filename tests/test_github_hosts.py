@@ -81,6 +81,7 @@ def test_enterprise_ssh_ports_keep_the_configured_host_identity(remote: str):
 @pytest.mark.parametrize("remote", [
     "ssh://acct-1234@forge-one.test:0/team/repo.git",
     "ssh://acct-1234@forge-one.test:65536/team/repo.git",
+    f"ssh://acct-1234@forge-one.test:{'9' * 5_000}/team/repo.git",
     "ssh://acct-1234@forge-one.test:bad/team/repo.git",
     "ssh://acct-1234:secret@forge-one.test:443/team/repo.git",
 ])
