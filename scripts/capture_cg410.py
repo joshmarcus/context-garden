@@ -99,7 +99,7 @@ def main() -> int:
             events.append(
                 {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "POST",
                  "url": "/tasks/DM-001/take", "status_code": _request(opener, base_url, "POST", "/tasks/DM-001/take"),
-                 "observed": "a stale take returns its refusal redirect and does not create another run"}
+                 "observed": "a stale take returns a conflict response and does not create another run"}
             )
             events.append(
                 {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "POST",

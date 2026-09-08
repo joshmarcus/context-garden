@@ -63,7 +63,7 @@
       "method": "POST",
       "url": "/tasks/DM-001/take",
       "status_code": 409,
-      "observed": "a stale take returns its refusal redirect and does not create another run"
+      "observed": "a stale take returns a conflict response and does not create another run"
     },
     {
       "kind": "http_request",
