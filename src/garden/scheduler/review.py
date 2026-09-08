@@ -427,6 +427,9 @@ class ReviewMixin:
                         clarifies_review_run: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
+        investigation = self.state.get(task.id).get("investigation") or {}
+        if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
+            raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
         runner = self.runner_for(task, runner_name, harness_name)

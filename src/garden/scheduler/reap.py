@@ -679,7 +679,7 @@ class ReapMixin:
             st["pending_feedback_rebase"] = True
         else:
             max_rev = int(self.cfg.get("max_revisions", 3))
-            if int(st.get("revisions", 0)) >= max_rev:
+            if not self.cfg.revision_policy()["enabled"] and int(st.get("revisions", 0)) >= max_rev:
                 # Cap reached: hand it to a human like the review path, rather than leaving a
                 # task in changes_requested that the dispatch queue skips forever.
                 reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"

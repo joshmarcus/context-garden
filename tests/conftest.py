@@ -181,6 +181,7 @@ def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
         "name": "test",
         "max_attempts": 2,
         "max_revisions": 2,
+        "revision_policy": {"enabled": False, "every": 2, "decision_after": 6},
         "max_parallel": 2,
         "timeout_minutes": 1,
         "review": {"enabled": False},
