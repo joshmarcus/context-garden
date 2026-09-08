@@ -9,6 +9,7 @@ from garden.model import (
     effective_owner,
     ensure_open,
     join_frontmatter,
+    slugify,
     split_frontmatter,
 )
 
@@ -127,6 +128,36 @@ def test_owner_rejects_contact_details_but_allows_unknown_logical_ids(tmp_path):
     assert Task.parse(tmp_path / "x.md", text.replace("future-team", "unassigned")).owner_unassigned
     with pytest.raises(ValueError, match="stable logical identifier"):
         Task.parse(tmp_path / "x.md", text.replace("future-team", "person@example.com"))
+
+
+def test_slugify_lowercases_and_collapses_and_strips_separators():
+    assert slugify("  Hello   World!!  ") == "hello-world"
+    assert slugify("--Hello--") == "hello"
+    assert slugify("HELLO") == "hello"
+
+
+def test_slugify_truncates_at_max_len():
+    assert slugify("a" * 60) == "a" * 48
+
+
+def test_slugify_truncation_landing_on_a_separator_never_ends_in_a_hyphen():
+    # After lowercasing and collapsing, the separator between the two runs
+    # falls exactly at index 47 (the 48th character), so a naive slice
+    # would end the slug in "-": assert the trailing rstrip removes it.
+    text = "a" * 47 + " " + "b" * 10
+    result = slugify(text)
+    assert not result.endswith("-")
+    assert result == "a" * 47
+
+
+def test_slugify_falls_back_to_task_for_empty_input():
+    assert slugify("") == "task"
+
+
+def test_slugify_falls_back_to_task_for_all_punctuation_input():
+    assert slugify("!!!") == "task"
+    assert slugify("---") == "task"
+    assert slugify("   ") == "task"
 
 
 def test_elapsed_minutes_never_negative(tmp_path):
