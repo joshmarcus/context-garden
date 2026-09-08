@@ -193,6 +193,21 @@ def test_investigation_drains_then_uses_shared_admission_and_preserves_failed_ru
         sched.retry_investigation(task)
 
 
+def test_request_more_investigation_archives_report_and_creates_fresh_request(sched):
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    st["investigation"] = {"status": "report_ready", "request_id": "first",
+                           "report": {"recommendation": "repair environment/verification"}}
+
+    sched.pause_for_investigation(task, "verify the repaired fixture", owner="agent")
+
+    assert st["investigation_history"][-1]["request_id"] == "first"
+    assert st["investigation"]["request_id"] != "first"
+    assert st["investigation"]["status"] == "requested"
+    assert st["investigation"]["reason"] == "verify the repaired fixture"
+    assert st["needs_human"]["kind"] == "investigation"
+
+
 def test_investigation_report_is_separate_from_revision_cost_and_waits_for_followup(sched):
     task = sched.store.task("DM-001")
     task.status = Status.RUNNING
@@ -226,8 +241,18 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
     st = sched.state.get(task.id)
+    prior = sched.runs.new_run(task.id, "local", mode="revise")
+    prior.status = "done"
+    prior.pushed_head = "abc123"
+    prior.diff_stat = " 2 files changed, 8 insertions(+), 1 deletion(-)"
+    prior.save()
     st.update({"pending_feedback": "same finding", "substantive_revisions": 4,
-               "review_rounds": 3, "checks": "failure"})
+               "review_rounds": 3, "checks": "failure",
+               "troubled_decisions": [{"allowance": 1, "counter": 4, "at": "then"}],
+               "approach_changes": [{"approach": "replace parser", "at": "later"}],
+               "troubled_deferred": {"reason": "await fixture", "at": "yesterday"},
+               "investigation_history": [{"request_id": "old", "status": "report_ready",
+                                           "reason": "first diagnosis"}]})
     sched.pause_for_investigation(task, "why does the same finding recur?", owner="agent",
                                   scope="read-only diagnosis; no fix", budget="$2 or 20 minutes")
     runner = sched.runner_for(task)
@@ -247,6 +272,12 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     assert "diagnosing only. Do not edit files" in captured["prompt"]
     assert "same finding" in captured["prompt"] and "reviews=3" in captured["prompt"]
     assert "$2 or 20 minutes" in captured["prompt"]
+    assert "head abc123" in captured["prompt"]
+    assert "2 files changed, 8 insertions(+), 1 deletion(-)" in captured["prompt"]
+    assert "continue: allowance 1" in captured["prompt"]
+    assert "changed approach: replace parser" in captured["prompt"]
+    assert "deferred: await fixture" in captured["prompt"]
+    assert "prior investigation old: report_ready" in captured["prompt"]
     assert run.env_snapshot["requires_preflight"] is False
 
 
