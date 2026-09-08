@@ -160,6 +160,7 @@ def _approve_in_state(sched: Any, task_id: str) -> None:
 def _scheduler_for(garden: Path, github: MemoryGitHub) -> Any:
     from .scheduler import Scheduler
 
+    github.remote = garden.parent / "remote.git"
     return Scheduler(Store(garden), github=github)
 
 

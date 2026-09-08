@@ -112,6 +112,7 @@ class MemoryGitHub:
 
     def __init__(self) -> None:
         self.available = True
+        self.remote: Path | None = None
         self.prs: dict[str, PRInfo] = {}  # head branch -> PR
         self.comments: dict[int, list[str]] = {}
         self.deleted_branches: set[str] = set()
@@ -154,6 +155,12 @@ class MemoryGitHub:
 
     def get_pr(self, slug: str, number: int) -> PRInfo:
         pr = self._by_number(number)
+        if self.remote is not None:
+            found = subprocess.run(
+                ["git", "ls-remote", str(self.remote), f"refs/heads/{pr.head}"],
+                capture_output=True, text=True, check=False,
+            ).stdout.split()
+            pr.head_sha = found[0] if found else ""
         left = self._check_pending.get(number, 0)
         if left > 0:
             self._check_pending[number] = left - 1
