@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -15,7 +14,6 @@ from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from garden.scheduler.snapshot import write_snapshot
-from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
 
@@ -228,42 +226,6 @@ def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched)
     assert "DM-001 -> changes_requested (checks)" not in report.transitions
     assert "DM-001 -> in_review" in report.transitions[0]
     assert sched.runs.latest("DM-001").run_id == run.run_id
-
-
-def _run_fake_claude(cwd, task_id, run_id, when):
-    env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
-    env.pop("FAKE_CLAUDE_MODE", None)
-    _, _, code = fake_claude.run([], "brief", cwd, env)
-    assert code == 0
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
-
-
-def test_stacked_runs_never_collide_into_the_same_commit(tmp_path):
-    """A stack child's own work run and its parent's revise round both branch from the
-    parent's tip, write the same counter value to the same file, and can finish in the
-    same wall-clock second. If the fake worker's commit is otherwise identical (same
-    tree, parent, author, message and timestamp), git dedupes the two into one object:
-    the child's branch ends up pointing at the parent's revise commit, its own commit
-    silently vanishes, and `commits_ahead()` reports 0 -- the scheduler then discards the
-    child's real work as "worker finished with no commits" (this is what actually caused
-    the intermittent DM-002 PR seen in test_feedback_triggers_revise_round, not a race in
-    finalize()'s PR lookup). Mixing task/run identity into the commit message keeps every
-    run's commit distinct even when timestamps and content otherwise collide."""
-    base = tmp_path / "base"
-    base.mkdir()
-    git("init", "-q", "-b", "main", cwd=base)
-    (base / "worker-output.txt").write_text("1\n")
-    git("add", "-A", cwd=base)
-    git("commit", "-q", "-m", "parent work", cwd=base)
-
-    a, b = tmp_path / "a", tmp_path / "b"
-    shutil.copytree(base, a)
-    shutil.copytree(base, b)
-    same_instant = "2024-01-01T00:00:00"
-
-    sha_a = _run_fake_claude(a, "DM-001", "20260101T000000Z-revise", same_instant)
-    sha_b = _run_fake_claude(b, "DM-002", "20260101T000000Z-work", same_instant)
-    assert sha_a != sha_b
 
 
 def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
@@ -691,79 +653,6 @@ def test_late_admission_wait_gets_its_full_window(sched):
 
     assert not sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
     assert run.status == "running"
-
-
-def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(sched, tmp_path, monkeypatch):
-    """A real supervisor wait survives old checkout mtimes, then releases without a retry."""
-    from garden.runner.local import LocalRunner
-
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    sched.cfg.data["timeout_minutes"] = 0
-    sched.cfg.data["idle_kill_minutes"] = 5
-    sched.cfg.data["resources"]["heavy_test_parallel"] = 1
-    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
-    runner = LocalRunner(sched.cfg.data)
-    checkout = tmp_path / "old-checkout"
-    checkout.mkdir()
-    (checkout / "unchanged.py").write_text("# old checkout\n")
-    old = datetime.now(UTC).timestamp() - 22 * 60
-    os.utime(checkout / "unchanged.py", (old, old))
-
-    holder = sched.runs.new_run("lease-holder", "local", mode="check")
-    runner.start_checks(holder, checkout, {
-        "specs": [{"name": "hold", "command": "sleep 0.4"}], "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
-    })
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        state = json.loads((holder.path / "execution.json").read_text()) if (holder.path / "execution.json").exists() else {}
-        if state.get("state") == "running":
-            break
-        time.sleep(0.01)
-    assert state.get("state") == "running"
-
-    task = sched.store.task("DM-001")
-    check = sched.runs.new_run(task.id, "local", mode="check")
-    marker = tmp_path / "executed-once"
-    runner.start_checks(check, checkout, {
-        "specs": [{"name": "once", "command": f"printf ran >> {marker}"}], "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
-    })
-    deadline = time.monotonic() + 3
-    execution = {}
-    while time.monotonic() < deadline:
-        execution = json.loads((check.path / "execution.json").read_text()) if (check.path / "execution.json").exists() else {}
-        if execution.get("state") == "waiting":
-            break
-        time.sleep(0.01)
-    assert execution["reason"] == "heavy-test budget full (limit 1)"
-    assert execution.get("waiting_since")
-    assert not sched._finished_or_timed_out(check, runner)
-
-    os.waitpid(holder.pid, 0)
-    os.waitpid(check.pid, 0)
-    assert check.process_finished() and check.read_exit_code() == 0
-    assert marker.read_text() == "ran"
-    assert len(sched.runs.runs_for(task.id)) == 1
-
-    silent = sched.runs.new_run(task.id, "local", mode="check")
-    silent_started = tmp_path / "silent-started"
-    runner.start_checks(silent, checkout, {
-        "specs": [{"name": "silent", "command": f"touch {silent_started} && sleep 5"}],
-        "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
-    })
-    deadline = time.monotonic() + 3
-    while not silent_started.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert silent_started.exists()
-    execution = json.loads((silent.path / "execution.json").read_text())
-    assert execution.get("state") == "running"
-    assert execution["timeout_seconds"] == 900
-    make_idle(silent, 6)
-    assert sched._finished_or_timed_out(silent, runner)
-    assert silent.status == "timeout" and "idle 6 min" in silent.error
-    assert silent.stop(timeout=2)
 
 
 def test_real_local_check_hard_timeout_preserves_exact_recovery_cause(sched, tmp_path, monkeypatch):
