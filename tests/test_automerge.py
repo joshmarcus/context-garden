@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from garden import gitops
 from garden.events import EventLog, digest
 from garden.model import Status, Task
 
@@ -23,8 +24,24 @@ def _in_review(sched, fake_github, *, automerge=True):
     t = sched.store.task("DM-001")
     assert t.status == Status.IN_REVIEW
     st = sched.state.get("DM-001")
-    st["last_review"] = {"verdict": "approve", "summary": "looks good"}
-    st["last_review_run"] = "rev-1"
+    review = {"verdict": "approve", "summary": "looks good"}
+    wt = sched.worktree_for(t)
+    base = sched.base_for(t)
+    review_run = sched.runs.new_run(t.id, "local", mode="review", run_id="rev-1")
+    review_run.status = "done"
+    review_run.branch, review_run.base, review_run.worktree = t.branch, base, str(wt)
+    review_run.result = review
+    review_run.env_snapshot = {
+        "review_head": gitops.head_sha(wt),
+        "review_base_head": gitops.rev_parse(wt, gitops.base_ref(wt, base)),
+        "review_diff_hash": gitops.diff_hash(wt, base),
+    }
+    review_run.save()
+    st["last_review"] = review
+    st["last_review_run"] = review_run.run_id
+    st["last_review_head"] = review_run.env_snapshot["review_head"]
+    st["last_review_base_head"] = review_run.env_snapshot["review_base_head"]
+    st["last_diff_hash"] = review_run.env_snapshot["review_diff_hash"]
     st["review_rounds"] = 1
     sched.state.save()
     pr = fake_github.prs[BRANCH]
