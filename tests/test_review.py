@@ -4,6 +4,8 @@ import json
 import pytest
 
 from garden.brief import build_brief
+from garden import interaction_replay
+from garden.inbox import build_inbox
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
@@ -67,6 +69,95 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st2.get("last_review_run") == run_id
     assert st2.get("last_review_head") == st.get("last_review_head")
     assert st2.get("last_review_head") == review_run.env_snapshot["review_head"]
+
+
+@pytest.mark.parametrize("failure", ["unclaimed timeout", "admission timeout", "startup environment failure"])
+def test_unstarted_review_failures_keep_one_durable_current_head_continuation(
+        sched, fake_github, failure):
+    """The three observed pre-claim failures refund the round and survive restart once."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000,
+                                "recovery_attempts": 2, "recovery_backoff_seconds": 300}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = next(r for r in sched.runs.runs_for(task.id) if r.run_id == st["review_run"])
+    for name in ("stdout.json", "final.md", "remote_result.json"):
+        (run.path / name).unlink(missing_ok=True)
+    run.runner = "remote"
+    run.pid = None
+    run.host = ""
+    run.claimed_at = ""
+    run.status = "timeout"
+    run.finished_at = "2026-09-08T16:00:00+00:00"
+    run.error = failure
+    run.save()
+
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+    assert st["review_rounds"] == 0
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["started"] is False
+    assert st["review_recovery"]["head"] == run.env_snapshot["review_head"]
+    assert [item.get("kind") for item in build_inbox(sched.store, sched)].count("review_recovery") == 1
+
+    fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    fresh.dispatch_ready(TickReport())
+    recovered = fresh.state.get(task.id)
+    assert recovered["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert recovered["review_recovery"]["attempts"] == 1
+
+
+def test_claimed_review_recovery_preserves_logical_round_and_exhausts_to_decision(sched, fake_github):
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000,
+                                "recovery_attempts": 1, "recovery_backoff_seconds": 0}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = next(r for r in sched.runs.runs_for(task.id) if r.run_id == st["review_run"])
+    run.runner = "remote"
+    run.claimed_at = "2026-09-08T16:00:00+00:00"
+    run.status = "timeout"
+    run.error = "claimed worker timed out"
+    run.save()
+
+    assert sched.reap_review(task, TickReport())
+    assert st["review_rounds"] == 1
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    st["review_run"] = "missing-after-restart"
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+    assert st["needs_human"]["kind"] == "review_recovery_exhausted"
+    assert not st.get("pending_reviews")
+    assert not st.get("last_review")
+
+
+def test_review_audit_restores_a_lost_additional_round_once(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    sched.cfg.data["products"][task.product]["automerge_min_review_rounds"] = 2
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1, "last_review": {"verdict": "approve"}})
+    prior = sched.runs.new_run(task.id, "local", mode="review")
+    prior.status = "done"
+    prior.env_snapshot = {"review_head": "current"}
+    prior.result = {"verdict": "approve"}
+    prior.save()
+    assert sched.cfg.product(task.product)["automerge_min_review_rounds"] == 2
+    assert sched._review_round_pending(st)
+    assert sched.store.tasks()[task.id].status == Status.IN_REVIEW
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert rep.transitions == ["DM-001 missing review continuation restored"]
 
 
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
