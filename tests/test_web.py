@@ -194,7 +194,19 @@ def test_owner_inheritance_reassignment_and_inbox_filter(garden):
     assert c.post("/tasks/DM-001/owner", data={"note": ""}, headers={"Origin": "http://testserver"},
                   follow_redirects=False).status_code == 303
     task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["owner"] == "unassigned"
+    assert task["effective_owner"] == "" and task["owner_source"] == "unassigned"
+    assert c.post("/tasks/DM-001/owner", data={"note": "inherit"}, headers={"Origin": "http://testserver"},
+                  follow_redirects=False).status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
     assert task["effective_owner"] == "platform-team" and task["owner_source"] == "phase"
+
+
+def test_owner_filtered_empty_inbox_has_consistent_count_and_message(garden):
+    c = client(garden)
+    page = c.get("/inbox?owner=no-such-owner").text
+    assert "<div class=\"v\">0</div><div class=\"l\">need you</div>" in page
+    assert "No work assigned to no-such-owner" in page
 
 
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):

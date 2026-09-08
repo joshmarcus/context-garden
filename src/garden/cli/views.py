@@ -158,21 +158,22 @@ def ls(
         if discovered and not t.discovered_from:
             continue
         ph = store.phase(t.product, t.phase)
-        task_owner, _ = effective_owner(t, ph)
+        task_owner, owner_source = effective_owner(t, ph)
         if owner is not None and task_owner != ("" if owner == "-" else owner):
             continue
         eff = effective_status(t, tasks, stack)
         if status_ and eff != status_:
             continue
-        rows.append((t, eff, task_owner))
+        rows.append((t, eff, task_owner, owner_source))
     if json_out:
         print(json.dumps([{**t.to_frontmatter(), "effective_status": eff, "effective_owner": task_owner,
-                           "path": store.rel(t.path)} for t, eff, task_owner in rows], indent=2))
+                           "owner_source": owner_source, "path": store.rel(t.path)}
+                          for t, eff, task_owner, owner_source in rows], indent=2))
         return
     table = Table(show_lines=False)
     for c in ("id", "status", "owner", "pri", "diff", "title", "phase", "deps", "pr"):
         table.add_column(c)
-    for t, eff, task_owner in rows:
+    for t, eff, task_owner, _ in rows:
         deps = ",".join(t.depends_on)
         if eff == "blocked":
             deps = "[yellow]" + ",".join(blockers(t, tasks, stack)) + "[/yellow]"
