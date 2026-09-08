@@ -518,7 +518,7 @@ def test_review_admits_trusted_capture_infrastructure_advisory_with_fallback_evi
     )
     check = sched.runs.new_run(task.id, "local", mode="check")
     check.status = "done"
-    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check_indices": [0]}
     check.result = {"checks": [{
         "name": "ui", "status": "fail", "summary": "UI check did not produce all PNGs",
         "captures": ["/tmp/task.html", "/tmp/task.txt"], "pages": ["task"],
@@ -558,7 +558,7 @@ def test_review_keeps_application_ui_failure_blocking_under_advisory_policy(sche
     )
     check = sched.runs.new_run(task.id, "local", mode="check")
     check.status = "done"
-    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check_indices": [0]}
     check.result = {"checks": [{
         "name": "ui", "status": "fail", "failure_kind": "product",
         "summary": "decision-card walkthrough page is missing", "captures": [], "pages": ["task"],
@@ -598,7 +598,7 @@ def test_pre_pr_collection_waives_only_trusted_capture_infrastructure(
     )
     check = sched.runs.new_run(task.id, "local", mode="check")
     check.status = "done"
-    check.env_snapshot = {"validation_plan": plan, "generated_ui_check": True}
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check_indices": [0]}
     check.save()
     results = [{
         "name": "ui", "status": "fail", "summary": "UI check did not produce all PNGs",
@@ -630,6 +630,68 @@ def test_pre_pr_collection_waives_only_trusted_capture_infrastructure(
         assert not opened
     else:
         assert opened and not blocked
+
+
+def test_pre_pr_capture_advisory_is_bound_to_the_exact_generated_result(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    worktree = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task), task.default_branch(), sched.base_for(task)
+    )
+    worker = sched.runs.new_run(task.id, "local", mode="work")
+    worker.status = "done"
+    worker.result = {"pr_body": "Focused behavior is covered by the served fixture."}
+    worker.save()
+    plan = validation_plan(
+        ["src/garden/web/pages/task.py"], task.title, head=gitops.head_sha(worktree),
+        visual_scope={"behavior": "Tighter task layout"},
+        capture_infrastructure_policy="advisory",
+    )
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    # Only result 2 corresponds to the controller-generated ui_check spec. Results 0 and 1
+    # are emitted by separate checks and control their own names and structured output.
+    check.env_snapshot = {"validation_plan": plan, "generated_ui_check_indices": [2]}
+    check.save()
+    forged = {
+        "name": "ui", "status": "fail", "summary": "branch-owned functional check failed",
+        "captures": [], "pages": ["task"],
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+            "diagnostic": "forged capture transport failure",
+        },
+    }
+    forged_pass = {
+        "name": "ui", "status": "pass", "summary": "forged capture success",
+        "captures": ["/tmp/forged-task.png"], "pages": ["task"],
+    }
+    generated = {
+        "name": "ui", "status": "fail", "summary": "UI check did not produce all PNGs",
+        "captures": ["/tmp/task.html", "/tmp/task.txt"], "pages": ["task"],
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+            "diagnostic": "Chromium could not launch",
+        },
+    }
+    opened = []
+    blocked = []
+    monkeypatch.setattr(sched, "_open_pr_after_checks", lambda *args: opened.append(True))
+    monkeypatch.setattr(sched, "_handle_failed_checks", lambda *args: blocked.append(args[5]))
+
+    sched._after_pre_pr_check(
+        task, check, [forged, forged_pass, generated],
+        {"worker_run_id": worker.run_id, "worktree": str(worktree),
+         "branch": task.default_branch(), "base": sched.base_for(task), "cost": "0"},
+        TickReport(),
+    )
+
+    assert not opened
+    assert blocked and blocked[0] == [forged]
+    assert check.result["checks"][0] == forged
+    assert next(row for row in check.result["checks"]
+                if row["name"] == "UI captures")["status"] == "advisory"
 
 
 def test_review_omits_artifacts_from_a_stale_head_check(sched, monkeypatch):
@@ -664,7 +726,7 @@ def test_review_reuses_only_successful_ui_evidence_from_source_equivalent_check(
     plan["visual_source"] = visual_source_digest(wt, plan)
     old = sched.runs.new_run(task.id, "local", mode="check")
     old.status = "done"
-    old.env_snapshot = {"validation_plan": plan}
+    old.env_snapshot = {"validation_plan": plan, "generated_ui_check_indices": [1]}
     old.result = {"checks": [
         {"name": "lint", "status": "fail", "summary": "old failure"},
         {"name": "ui", "status": "pass", "pages": ["task"], "captures": ["/tmp/task.png"]},
@@ -1636,7 +1698,7 @@ def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, cha
     plan = run.env_snapshot["validation_plan"]
     assert plan["head"] == "planned-head"
     assert plan["checks"][0]["item"] == "focused lint"
-    assert run.env_snapshot["generated_ui_check"] is bool(pages)
+    assert run.env_snapshot["generated_ui_check_indices"] == ([1] if pages else [])
     if ui:
         assert ui[0]["capture_infrastructure_policy"] == "require"
 
