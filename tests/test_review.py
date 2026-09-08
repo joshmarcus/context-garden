@@ -1419,6 +1419,39 @@ def test_remote_authored_portable_check_remains_remote(sched):
     }
 
 
+def test_remote_authored_pre_pr_ui_capture_uses_controller_run_paths(sched, monkeypatch):
+    """The generated capture spec declares its controller-owned input and output before routing."""
+    from garden.scheduler import checkruns
+
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    task.extra["visual_scope"] = {"behavior": "Tighten the task layout"}
+    sched.store.save(task)
+    monkeypatch.setattr(checkruns.gitops, "diff_names", lambda *_: ["src/garden/web/pages/task.py"])
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    check = sched._dispatch_check_run(
+        task, worktree=sched.store.root, branch=task.default_branch(), base="main",
+        specs=[{"name": "lint", "command": "true"}], stage="pre_pr", cont={}, rep=TickReport(),
+    )
+
+    assert check.runner == "local"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "local", "provenance": "controller-owned UI capture inputs",
+    }
+    payload = submitted[0][1]
+    assert payload["specs"][0] == {"name": "lint", "command": "true"}
+    ui = payload["specs"][1]
+    assert ui["execution_owner"] == "controller"
+    assert ui["worktree"] == str(sched.store.root)
+    assert ui["out_dir"] == str(check.path / "ui")
+    assert ui["pages"] == ["task"]
+    assert check.path.is_relative_to(sched.cfg.garden_dir / "runs")
+
+
 def test_interaction_replay_retry_preserves_local_backend_and_continuation(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.runner = "remote"

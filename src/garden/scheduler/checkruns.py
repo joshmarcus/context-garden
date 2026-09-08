@@ -86,16 +86,12 @@ class CheckRunMixin:
         # for the next reap/poll rather than publishing a duplicate check record.
         if stage != "interaction_replay" and self.review_slots_free() > 0 and self._queued_review_precedes(task):
             self._drain_pending_reviews(self.store.tasks(), rep)
-        runner_name, provenance = self._check_execution(task, stage, specs, backend, provenance)
-        runner = self.runner_for(task, runner_name)
-        run = (self.runs.new_run(task.id, runner_name, mode="check")
-               if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
-        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
-        run.save()
+        ui_spec: dict[str, Any] | None = None
+        plan: dict[str, Any] | None = None
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
-        if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"}:
+        if stage in {"pre_pr", "rebase_recheck", "merge_rebase", "scratch_merge"} and worktree.exists():
             try:
                 changed = gitops.diff_names(worktree, base)
             except gitops.GitError as exc:
@@ -113,10 +109,24 @@ class CheckRunMixin:
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
-                specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
-                                  "out_dir": str(run.path / "ui"), "worktree": str(worktree),
-                                  "changed": changed, "pages": plan["pages"]}]
+                # The generated capture imports from the controller worktree and writes into
+                # its run record.  It cannot run on an implementation worker that only has its
+                # own clone and filesystem, so declare that ownership before choosing a runner.
+                ui_spec = {"name": "ui", "python": "garden.walkthrough:ui_check",
+                           "execution_owner": "controller", "worktree": str(worktree),
+                           "changed": changed, "pages": plan["pages"]}
+                specs = [*specs, ui_spec]
+                provenance = provenance or "controller-owned UI capture inputs"
+        runner_name, provenance = self._check_execution(task, stage, specs, backend, provenance)
+        runner = self.runner_for(task, runner_name)
+        run = (self.runs.new_run(task.id, runner_name, mode="check")
+               if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
+        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
+        if ui_spec is not None:
+            ui_spec["out_dir"] = str(run.path / "ui")
+        if plan is not None:
             run.env_snapshot["validation_plan"] = plan
+        run.save()
         run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
