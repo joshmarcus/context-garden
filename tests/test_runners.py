@@ -67,6 +67,17 @@ def _stop_and_reap_local_run(run: Run) -> None:
         pass
 
 
+def _standalone_supervisor_env(**updates: str) -> dict[str, str]:
+    """Build fixture env without inheriting the containing run's execution lease."""
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
+    env.update(updates)
+    return env
+
+
 @contextmanager
 def _launched_local_run(
     runner: LocalRunner,
@@ -449,8 +460,9 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     release = tmp_path / "release"
     with _launched_local_run(
         runner, run, tmp_path, brief,
-        {**os.environ, "ORPHAN_SCRIPT": str(orphan), "ORPHAN_PIDS": str(pids),
-         "LEADER_RELEASE": str(release)},
+        _standalone_supervisor_env(
+            ORPHAN_SCRIPT=str(orphan), ORPHAN_PIDS=str(pids), LEADER_RELEASE=str(release)
+        ),
         cleanup=release.touch,
     ):
         deadline = time.monotonic() + 3
@@ -476,6 +488,7 @@ def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_pa
     result = subprocess.run(
         [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.25 & exit 7"],
         check=False,
+        env=_standalone_supervisor_env(),
     )
 
     assert result.returncode == 7
