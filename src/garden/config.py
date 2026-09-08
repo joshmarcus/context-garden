@@ -257,6 +257,13 @@ DEFAULTS: dict[str, Any] = {
                                                  # rounds and the garden's own scratch-merge check; off to
                                                  # keep hard-tier merges by hand
     },
+    "ci": {
+        # github preserves the existing PR-rollup gate. worker_check accepts only durable
+        # receipts written by the supervised validation runner for the current source SHA.
+        "status_provider": "github",  # github | worker_check
+        "required": False,
+        "worker_check": {"command": ""},
+    },
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
