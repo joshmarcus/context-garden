@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from garden.checks import github_actions_failures
 from garden.github import (
     GitHub,
     GitHubError,
@@ -592,6 +593,61 @@ def test_repository_host_survives_copy_and_serialization(copy_kind):
               "pickle": lambda value: pickle.loads(pickle.dumps(value))}[copy_kind](slug)
     assert copied == "Team/Repo"
     assert copied.host == "forge-one.test"
+
+
+def test_check_context_serializes_the_configured_repository_host(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {"host": "forge-one.test", "slug": "team/repo"}
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr("garden.scheduler.gitops.remote_url", lambda _repo: "https://forge-one.test/team/repo.git")
+
+    ctx = json.loads(json.dumps(sched.check_ctx(store.task("DM-001"), "feature", "main")))
+
+    assert ctx["repo_slug"] == "team/repo"
+    assert ctx["repo_host"] == "forge-one.test"
+
+
+def test_actions_analyser_qualifies_each_host_in_cli_and_rerun_commands(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = (
+                '[{"databaseId": 42, "name": "test", "conclusion": "failure", "headSha": "head"}]'
+                if command[2] == "list" else "intermittent failure"
+            )
+
+        return Result()
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", fake_run)
+    spec = {"rerun": True, "flaky_patterns": ["intermittent"]}
+    first = github_actions_failures(
+        {"repo_slug": "team/repo", "repo_host": "forge-one.test", "branch": "feature", "head_sha": "head"}, spec,
+    )
+    second = github_actions_failures(
+        {"repo_slug": "team/repo", "repo_host": "forge-two.test", "branch": "feature", "head_sha": "head"}, spec,
+    )
+    public = github_actions_failures(
+        {"repo_slug": "team/repo", "branch": "feature", "head_sha": "head"}, spec,
+    )
+
+    assert [command[command.index("-R") + 1] for command in commands] == [
+        "forge-one.test/team/repo", "forge-one.test/team/repo",
+        "forge-two.test/team/repo", "forge-two.test/team/repo",
+        "github.com/team/repo", "github.com/team/repo",
+    ]
+    assert first["retry_command"] == "/fake/gh run rerun 42 -R forge-one.test/team/repo --failed"
+    assert second["retry_command"] == "/fake/gh run rerun 42 -R forge-two.test/team/repo --failed"
+    assert public["retry_command"] == "/fake/gh run rerun 42 -R github.com/team/repo --failed"
 
 
 def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
