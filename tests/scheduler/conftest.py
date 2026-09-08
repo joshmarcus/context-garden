@@ -22,6 +22,11 @@ def make_idle(run, minutes):
                 os.utime(p, (old, old))
             except OSError:
                 pass
+    # Synthetic silence also needs a run old enough to have been silent that long:
+    # production does not let pre-existing checkout files predate a newly created run.
+    import datetime as dt
+    run.started_at = dt.datetime.fromtimestamp(old, dt.UTC).isoformat()
+    run.save()
 
 
 def stub_finished_run(sched, task_id, mode, cost=0.02):

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -348,6 +350,65 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert modes["review"].status == "done"
     assert "@build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
 
+
+
+@pytest.mark.parametrize("validation_exit", [0, 7])
+def test_remote_harness_receives_working_owned_validation(
+    garden, monkeypatch, tmp_path, fake_github, validation_exit,
+):
+    """The real harness child invokes the advertised wrapper, including its failure path."""
+    client, store = remote_client(garden, monkeypatch)
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.tick()
+    auth = {"Authorization": "Bearer secret-token"}
+    payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                          headers=auth).json()
+    probe = tmp_path / "validation_harness.py"
+    probe.write_text(
+        "import json, os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "sys.stdin.read()\n"
+        "outer = Path(os.environ['GARDEN_EXECUTION_RUN_DIR'])\n"
+        "assert outer.is_dir() and os.environ['GARDEN_EXECUTION_OWNER'] != 'wrong-owner'\n"
+        "assert os.environ['GARDEN_VALIDATION_RUNNER'] != '/missing/controller/python'\n"
+        "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
+        "sys.executable, '-c', 'import sys; sys.exit(" + str(validation_exit) + ")']\n"
+        "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
+        "assert result.returncode == " + str(validation_exit) + ", result.stderr\n"
+        "states = list((outer / 'validations').glob('*/execution.json'))\n"
+        "assert states and json.loads(states[0].read_text())['state'] == 'finished'\n"
+        "Path('.git/validation-probe.json').write_text(json.dumps({'outer': str(outer), "
+        "'owner': os.environ['GARDEN_EXECUTION_OWNER'], 'exit': result.returncode}))\n"
+        "print(json.dumps({'type': 'result', 'result': 'GARDEN_RESULT: {\"status\":\"done\"}'}))\n"
+    )
+    payload["harness_config"] = {"command": [sys.executable, str(probe)], "output": "claude-json"}
+    # Even an overly broad allowlist cannot reuse another process's control identity.
+    for key, value in {"GARDEN_EXECUTION_OWNER": "wrong-owner",
+                       "GARDEN_EXECUTION_RUN_DIR": str(tmp_path / "wrong-run"),
+                       "GARDEN_VALIDATION_RUNNER": "/missing/controller/python",
+                       "GARDEN_HEAVY_EXECUTION": "1", "GARDEN_OWNER_SCOPED": "1"}.items():
+        monkeypatch.setenv(key, value)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    payload["env_allowlist"] = [*payload["env_allowlist"], "GARDEN_*", "XDG_RUNTIME_DIR", "PYTHONPATH"]
+    # The source path is needed only because this fixture exercises a worktree, not an install.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1] / "src"))
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            return response.status_code, response.json()
+
+    host_root = tmp_path / "validation-host"
+    execute_claim(payload, host_root, PostingClient())
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.read_exit_code() == 0, saved.stderr_text()
+    evidence = json.loads((host_root / "repos/DM-001/.git/validation-probe.json").read_text())
+    assert evidence["exit"] == validation_exit
+    assert str(host_root / "runs") in evidence["outer"]
+    assert evidence["owner"] != "wrong-owner"
+    assert not (tmp_path / "wrong-run").exists()
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
     client, store = remote_client(garden, monkeypatch)

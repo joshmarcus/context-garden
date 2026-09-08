@@ -259,6 +259,17 @@ def test_snapshot_scrubs_sensitive_strings_not_just_field_names():
     assert "abc123" not in text and "ghp_secret" not in text and "xyz" not in text
 
 
+def test_snapshot_replaces_configured_connection_targets_with_aliases():
+    target = "operator@host-203-0-113-10.internal"
+    value = _safe(
+        {"message": f"failed on {target}; credential=not-for-sharing"},
+        config={"ssh": {"hosts": [{"name": "build-a", "host": target}]}},
+    )
+    text = str(value)
+    assert target not in text and "not-for-sharing" not in text
+    assert "build-a" in text and "credential=<redacted>" in text
+
+
 def test_run_page_links_and_serves_every_capture_type(garden):
     run_dir = garden / ".garden" / "runs" / "DM-001" / "capture-run"
     run = Run(task_id="DM-001", run_id="capture-run", dir=str(run_dir), runner="local",

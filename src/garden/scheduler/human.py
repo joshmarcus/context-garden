@@ -166,6 +166,16 @@ class HumanMixin:
         note_txt = f" ({note.strip()})" if note.strip() else ""
         task.log(f"no-change accepted by the person{note_txt}; resuming the round without a new work run")
         self.store.save(task)
+        # The decision card is represented by WAITING_HUMAN, but accepting it hands the
+        # unchanged branch back to the normal PR/review pipeline. Move out of the human stop
+        # before that pipeline can dispatch a detached check; otherwise a check continuation
+        # can preserve the waiting status and leave an Inbox question card with no question.
+        if task.status == Status.WAITING_HUMAN:
+            # A branch without a PR is still in the revise pipeline while its pre-PR check
+            # runs. Keep that check's continuation out of the human-stop state too; it records
+            # the current status and would otherwise restore waiting_human on the next tick.
+            target = self._pr_status(task) if task.pr else Status.CHANGES_REQUESTED
+            self._transition(task, target, "no-change accepted; returning to the work pipeline")
         if worktree.exists():
             try:
                 self._preserve_dirty_worktree(task, run, worktree)
@@ -288,7 +298,7 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
-        self._transition(task, Status.DONE, note or "marked done")
+        self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""
@@ -515,6 +525,7 @@ class HumanMixin:
             base=str(check.get("cont", {}).get("base") or self.base_for(task)),
             specs=list(check["specs"]), stage=str(check["stage"]),
             cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
+            backend=str(check.get("backend") or ""), provenance=str(check.get("provenance") or ""),
         )
         used.add(fingerprint)
         st["delegated_recovery_fingerprints"] = sorted(used)
@@ -595,6 +606,8 @@ class HumanMixin:
         run = self.runs.latest(task.id)
         if run is None or run.status != "running":
             raise RuntimeError(f"{task.id} has no active run to finish")
+        if run.completion_mode == "pushed":
+            return self._finish_pushed_manual(task, run, result)
         if run.completion_mode == "external":
             # A branch-first external session can truthfully end blocked before a PR
             # exists. Its outcome is still guarded and finalized exactly like an
@@ -608,6 +621,67 @@ class HumanMixin:
             return self._finish_external_manual(task, run, result)
         ManualRunner.finish(run, result)
         rep = TickReport()
+        self.finalize(task, run, self.runner_for(task, run.runner), rep)
+        self.state.save()
+        return rep
+
+    def _finish_pushed_manual(self, task: Task, run: Run, result: dict[str, Any]) -> TickReport:
+        """Verify a separately-authored remote tip, then use normal remote finalization."""
+        from ..runner.manual import ManualRunner
+
+        repository = str(result.get("repository") or "")
+        branch = str(result.get("branch") or "")
+        pushed_sha = str(result.get("pushed_sha") or "")
+
+        def refuse(reason: str) -> None:
+            attempt = {"at": now_iso(), "status": "refused", "reason": reason,
+                       "repository": repository, "branch": branch, "pushed_sha": pushed_sha,
+                       "cost_usd": None}
+            run.completion_attempts.append(attempt)
+            run.save()
+            self.events.emit("external_completion_refused", task.id, run=run.run_id,
+                             reason=reason, repository=repository, branch=branch,
+                             pushed_sha=pushed_sha, cost_usd=None, supervised=True)
+            raise RuntimeError(reason)
+
+        if result.get("status") == "blocked":
+            ManualRunner.finish(run, result)
+            rep = TickReport()
+            self.finalize(task, run, self.runner_for(task, run.runner), rep)
+            self.state.save()
+            return rep
+
+        rep = TickReport()
+        git_guard_violations = self._git_guard_check(task, run)
+        if git_guard_violations:
+            refuse("pushed completion refused: clone git internals changed since dispatch")
+        violations = self._fence_check(task, run)
+        if violations:
+            refuse("pushed completion refused: worktree fence violation")
+
+        expected_repository = self.slug_for(task) or ""
+        if not repository or repository.lower() != expected_repository.lower():
+            refuse(f"pushed completion repository {repository!r} does not match configured repository {expected_repository!r}")
+        if not branch or branch != run.branch:
+            refuse(f"pushed completion branch {branch!r} does not match claimed branch {run.branch!r}")
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", pushed_sha):
+            refuse("pushed completion needs an exact full commit SHA")
+        repo = self.repo_for(task)
+        if not gitops.fetch(repo):
+            refuse("could not fetch the configured repository")
+        try:
+            remote_head = gitops.git("rev-parse", "--verify", f"refs/remotes/origin/{branch}", cwd=repo).strip()
+        except gitops.GitError:
+            refuse(f"pushed completion branch {branch!r} was not found on the configured repository")
+        if remote_head.lower() != pushed_sha.lower():
+            refuse(f"pushed completion SHA is stale or does not match origin/{branch}")
+        if run.start_head and not gitops.is_ancestor(repo, run.start_head, remote_head):
+            refuse(f"origin/{branch} replaced the branch claimed at dispatch; take it again to authorize the new history")
+
+        run.pushed_head = remote_head
+        ManualRunner.finish(run, result)
+        run.env_snapshot["pushed_completion_submitted"] = True
+        run.save()
         self.finalize(task, run, self.runner_for(task, run.runner), rep)
         self.state.save()
         return rep

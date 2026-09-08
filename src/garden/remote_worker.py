@@ -5,8 +5,10 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -135,9 +137,21 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             final_path = repo.parent / f"{run['id']}-final.md"
             argv = harness.command(str(run.get("model") or ""), final_path,
                                    difficulty=str(run.get("difficulty") or "medium"), worktree=repo)
+            # The same supervisor used by local workers supplies a usable validation
+            # interpreter plus host-local run ownership. Merely exporting the interpreter
+            # would leave garden.validation without the ownership fence it requires.
+            runs_dir = root / "runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            execution_dir = Path(tempfile.mkdtemp(prefix="claim-", dir=runs_dir))
+            execution_env = dict(env)
+            for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
+                        "GARDEN_VALIDATION_RUNNER", "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED"):
+                execution_env.pop(key, None)
+            supervised = [sys.executable, "-m", "garden.run_supervisor",
+                          str(execution_dir), shlex.join(argv)]
             with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
-                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
-                                        text=True, cwd=repo, env=env)
+                proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
+                                        text=True, cwd=repo, env=execution_env)
                 assert proc.stdin is not None
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()

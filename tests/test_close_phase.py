@@ -246,7 +246,7 @@ def test_closed_phase_with_run_records_shows_counts(garden):
 
     log = EventLog(garden / ".garden" / "events.jsonl")
     log.emit("dispatch", "DM-001", mode="work")
-    log.emit("transition", "DM-001", to="done")
+    log.emit("transition", "DM-001", to="done", base_merged=True)
     rs = RunStore(garden / ".garden")
     rn = rs.new_run("DM-001", "local", mode="work")
     rn.status = "done"
@@ -296,7 +296,7 @@ def test_phase_summary_figures():
         {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
         {"at": "2026-09-01T11:00:00+00:00", "kind": "review", "task": "DM-001", "verdict": "approve"},
         {"at": "2026-09-01T12:00:00+00:00", "kind": "run_finished", "task": "DM-001", "cost_usd": 2.5},
-        {"at": "2026-09-02T10:00:00+00:00", "kind": "transition", "task": "DM-001", "to": "done"},
+        {"at": "2026-09-02T10:00:00+00:00", "kind": "transition", "task": "DM-001", "to": "done", "base_merged": True},
     ]
     s = phase_summary(events, tasks)
     assert s["first_dispatch"] == "2026-09-01"

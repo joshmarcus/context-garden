@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import datetime as dt
 import fcntl
 import hashlib
 import json
@@ -166,6 +167,18 @@ def _write_execution_state(run_dir: Path, status: dict[str, object]) -> None:
     temporary.replace(path)
 
 
+def _waiting_since(run_dir: Path) -> str:
+    """Keep one admission-clock origin while a supervisor remains waiting."""
+    try:
+        previous = json.loads((run_dir / "execution.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        previous = {}
+    recorded = previous.get("waiting_since") if previous.get("state") == "waiting" else None
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
 def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = False) -> object:
     """Take one authoritative host-wide heavy-work lease, released by the kernel."""
     limit = int(os.environ.get("GARDEN_HEAVY_TEST_PARALLEL", "1"))
@@ -191,6 +204,7 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
                 _write_execution_state(run_dir, {
                     "state": "waiting", "reason": "another validation in this run is active",
                     "limit": 1, "inherited": True, "owner": owner,
+                    "waiting_since": _waiting_since(run_dir),
                 })
                 time.sleep(0.1)
                 continue
@@ -224,6 +238,7 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
         _write_execution_state(run_dir, {
             "state": "waiting", "reason": conflict or f"heavy-test budget full (limit {authoritative})",
             "limit": authoritative, "requested_limit": limit, "conflict": conflict,
+            "waiting_since": _waiting_since(run_dir),
         })
         time.sleep(0.1)
 
@@ -282,6 +297,22 @@ def _signal_descendants(sig: int) -> None:
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
+            pass
+
+
+def _reap_exited_children(*, excluding: int | None = None) -> None:
+    """Reap exited children owned by this supervisor, except the run leader.
+
+    Targeting current direct children individually avoids consuming the leader's exit
+    status between ``Popen.poll`` calls.  Orphaned descendants become direct children
+    of this subreaper, so this reaps only processes this run owns.
+    """
+    for pid in _children(os.getpid()):
+        if pid == excluding:
+            continue
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
             pass
 
 
@@ -347,7 +378,14 @@ def main() -> int:
     elif not _run_setup(run_dir):
         return 1
     child = subprocess.Popen(["sh", "-c", script])
-    code = child.wait()
+    kill_deadline = None
+    while (code := child.poll()) is None:
+        _reap_exited_children(excluding=child.pid)
+        if stopping:
+            kill_deadline = kill_deadline or time.monotonic() + 5.0
+            if time.monotonic() >= kill_deadline:
+                _signal_descendants(signal.SIGKILL)
+        time.sleep(0.05)
     deadline = time.monotonic() + 5.0 if stopping else None
     while True:
         try:

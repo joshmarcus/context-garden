@@ -354,7 +354,7 @@ class DispatchMixin:
         # run, so a restart and every task-facing surface describe the claimed work
         # rather than falling back to the scheduler-generated default branch. Internal
         # callers may still use branch_override without changing the task identity.
-        if completion_mode == "external":
+        if completion_mode in ("external", "pushed"):
             task.branch = branch
             if attached_pr is not None:
                 task.pr = attached_pr.url
@@ -455,6 +455,10 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
+        if completion_mode == "pushed" and not start_head:
+            repo = self.repo_for(task)
+            gitops.fetch(repo)
+            start_head = gitops.remote_head(repo, branch)
         # Capture this before rendering the brief.  A task edit made after this
         # point belongs to the next revise note, not this worker's contract.
         criteria_snapshot = parse_criteria(task.body)

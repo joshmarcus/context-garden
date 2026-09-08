@@ -27,8 +27,8 @@ WORKER = Path(__file__).with_name("worker.py")
 SEED_TASKS = [
     ("DM-001", "A worker that asks a question", "needs_input",
      "The worker stops half way to ask which database to use; the person answers on the task page."),
-    ("DM-002", "A round with nothing to change", "no_change",
-     "The first round finishes; a revise round finds nothing to change and says so."),
+    ("DM-002", "A round with nothing to change", "no_change_decision",
+     "The first round finishes; a revise round finds that a promised outcome should not change, and a person accepts that call."),
 ]
 
 
