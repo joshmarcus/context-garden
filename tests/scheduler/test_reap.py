@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from garden import gitops
@@ -605,6 +606,7 @@ def test_auxiliary_reapers_do_not_dispatch_work_directly():
 def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
     sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["timeout_minutes"] = 0
     sched.cfg.data["max_attempts"] = 1  # terminal on first failure: no second stall worker
     sched.tick()  # dispatch DM-001; the worker goes silent and never writes exit_code
     run = sched.runs.latest("DM-001")
@@ -616,6 +618,59 @@ def test_idle_worker_is_stopped_before_timeout(sched, monkeypatch):
     assert statuses(sched)["DM-001"] == "failed"
     run = sched.runs.latest("DM-001")
     assert run.status == "timeout" and "idle" in run.error
+
+
+def test_check_admission_wait_does_not_inherit_old_checkout_idle_time(sched, tmp_path):
+    """A queued heavy check remains live, then resumes the ordinary idle policy on release."""
+    sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    checkout = tmp_path / "old-checkout"
+    checkout.mkdir()
+    (checkout / "unchanged.py").write_text("# pre-existing checkout\n")
+    run.worktree = str(checkout)
+    run.pid = os.getpid()  # the in-process liveness sentinel, with no exit_code
+    run.save()
+    old = datetime.now(UTC).timestamp() - 22 * 60
+    for path in Path(run.worktree).rglob("*"):
+        try:
+            os.utime(path, (old, old))
+        except OSError:
+            pass
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+    }))
+
+    runner = sched.runner_for(task, run.runner)
+    assert not sched._finished_or_timed_out(run, runner)
+    assert run.status == "running"  # admission waiting neither retries nor creates another check
+
+    # Capacity becomes available.  The supervisor no longer reports waiting, and a genuinely
+    # silent run is still stopped by the normal idle safeguard.
+    (run.path / "execution.json").write_text(json.dumps({"state": "running", "limit": 1}))
+    make_idle(run, 8)
+    assert sched._finished_or_timed_out(run, runner)
+    assert run.status == "timeout"
+    assert "idle 8 min" in run.error
+
+
+def test_check_admission_wait_has_a_bounded_truthful_timeout(sched):
+    sched.cfg.data["timeout_minutes"] = 0
+    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.pid = os.getpid()
+    run.started_at = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+    run.save()
+    (run.path / "execution.json").write_text(json.dumps({
+        "state": "waiting", "reason": "heavy-test budget full (limit 1)", "limit": 1,
+    }))
+
+    assert sched._finished_or_timed_out(run, sched.runner_for(task, run.runner))
+    assert run.status == "timeout"
+    assert "admission wait 31 min (heavy-test budget full (limit 1))" == run.error
 
 
 def test_running_card_shows_idle_time(sched, monkeypatch):

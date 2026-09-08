@@ -184,6 +184,19 @@ class ReapMixin:
             run.error = "timed out"
             run.save()
             return True
+        admission_reason = run.supervisor_waiting_reason()
+        if admission_reason is not None:
+            admission_wait_min = float(self.cfg.get("resources.admission_wait_minutes", 30) or 0)
+            if admission_wait_min and run.elapsed_minutes() >= admission_wait_min:
+                run.kill()
+                run.status = "timeout"
+                run.finished_at = now_iso()
+                run.error = f"admission wait {round(run.elapsed_minutes())} min ({admission_reason})"
+                run.save()
+                return True
+            # A waiting supervisor has made its reason visible. It is awaiting operator-owned
+            # resource admission, not silently failing to make code progress.
+            return False
         idle_kill_min = float(self.cfg.get("idle_kill_minutes", 0) or 0)
         idle_min = run.idle_minutes() if idle_kill_min else 0.0
         if idle_kill_min and idle_min >= idle_kill_min:

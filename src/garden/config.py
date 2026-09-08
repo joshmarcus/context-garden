@@ -143,6 +143,10 @@ DEFAULTS: dict[str, Any] = {
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
         "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
         "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
+        # A detached check can wait for the host-wide heavy-validation lease without looking
+        # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
+        # supervisor reports admission state, while idle detection reports missing progress.
+        "admission_wait_minutes": 30,
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
