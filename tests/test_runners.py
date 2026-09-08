@@ -301,6 +301,21 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     assert run.read_exit_code() == 0
 
 
+def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
+    """The leader's real status is retained while completion waits for live work."""
+    run_dir = tmp_path / "nonzero"
+    run_dir.mkdir()
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.25 & exit 7"],
+        check=False,
+    )
+
+    assert result.returncode == 7
+    assert (run_dir / "exit_code").read_text() == "7"
+    assert time.monotonic() - started >= 0.2
+
+
 def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
     """Independent launchers queue on the host lease; exit releases it without cleanup."""
     from garden.harness import Harness
