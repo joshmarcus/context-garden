@@ -791,6 +791,13 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     # still contain its local absolute path, which is neither meaningful nor necessarily
     # readable on the worker host.  Locally both values name the same checkout.
     worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
+    serialized_worktree = Path(str(spec.get("worktree") or worktree))
+    if worktree != serialized_worktree:
+        # The controller's run directory is no more portable than its worktree. Remote
+        # workers expose a supervised execution directory specifically for run-owned output.
+        execution_dir = os.environ.get("GARDEN_EXECUTION_RUN_DIR")
+        if execution_dir:
+            out_dir = Path(execution_dir) / "ui"
     source = worktree / "src"
     if not source.is_dir():
         return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}

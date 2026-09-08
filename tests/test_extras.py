@@ -154,6 +154,27 @@ def test_flaky_rerun_command_runs_scrubbed(tmp_path, monkeypatch):
     assert home != os.environ.get("HOME") and ".garden-home-" in home
 
 
+def test_check_job_binds_context_to_its_execution_checkout(tmp_path, monkeypatch):
+    from garden import checkrun
+
+    checkout = tmp_path / "remote-checkout"
+    checkout.mkdir()
+    seen = {}
+
+    def checks(specs, ctx, **kwargs):
+        seen.update(ctx=ctx, cwd=kwargs["cwd"])
+        return []
+
+    monkeypatch.setattr(checkrun, "run_checks", checks)
+    checkrun.run_check_job({
+        "specs": [{"name": "ui", "python": "garden.walkthrough:ui_check"}],
+        "ctx": {"worktree": "/controller/worktree"},
+        "cwd": str(checkout),
+    })
+
+    assert seen == {"ctx": {"worktree": str(checkout)}, "cwd": checkout}
+
+
 def test_pre_pr_checks_gate_the_pr(sched, fake_github, garden):
     marker = garden / "checked"
     # Passes at the base (no worker-output.txt yet), so the base probe (CG-131) sees a clean

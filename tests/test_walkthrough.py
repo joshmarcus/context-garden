@@ -284,8 +284,11 @@ def test_ui_check_prefers_execution_checkout_over_serialized_controller_path(tmp
     controller_path = tmp_path / "unavailable-controller-worktree"
     seen = {}
 
+    execution_dir = tmp_path / "execution"
+    monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(execution_dir))
+
     def run(argv, **kwargs):
-        seen["cwd"], seen["env"] = kwargs["cwd"], kwargs["env"]
+        seen["argv"], seen["cwd"], seen["env"] = argv, kwargs["cwd"], kwargs["env"]
         return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["task"]}\n', "")
 
     monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
@@ -297,6 +300,7 @@ def test_ui_check_prefers_execution_checkout_over_serialized_controller_path(tmp
     assert result["status"] == "pass"
     assert seen["cwd"] == worktree
     assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
+    assert seen["argv"][4] == str(execution_dir / "ui")
 
 
 def test_browser_is_prepared_automatically(monkeypatch):
