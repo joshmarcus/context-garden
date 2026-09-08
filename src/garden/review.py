@@ -807,14 +807,16 @@ def review_item_ids(rev: dict[str, Any]) -> set[str]:
     return out
 
 
-def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: str = "") -> str:
+def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: str = "",
+                         actionable: bool = True) -> str:
     """Return the complete review record needed by the next revision author.
 
     A short scheduler or operator note is useful for triage, but is not a substitute for
     the review that made the author revise.  Keep the finding fixes and failed criterion
     assessments verbatim so a criterion-only rejection remains actionable too.
     """
-    items = ["### Applicable automated review\n"]
+    items = ["### Applicable automated review\n" if actionable
+             else "### Automated review provenance\n"]
     source = "automated review"
     if run_id:
         source += f" run `{run_id}`"
@@ -826,7 +828,8 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
     criteria = [criterion for criterion in rev.get("criteria") or []
                 if isinstance(criterion, dict) and criterion.get("met") is not True]
     if criteria:
-        items.append("\n### Failed acceptance criteria\n")
+        items.append("\n### Failed acceptance criteria\n" if actionable
+                     else "\n### Recorded criterion assessments\n")
         for criterion in criteria:
             text = str(criterion.get("criterion") or "unnamed criterion")
             reason = str(criterion.get("reason") or "reviewer did not provide a reason")
@@ -834,7 +837,8 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
             item_id = review_item_id("criterion", criterion)
             items.append(f"- **{text}** (`{item_id}`)\n  - **Reason:** {reason}\n  - **Evidence:** {evidence}")
     if rev.get("findings"):
-        items.append("\n### Findings to address\n")
+        items.append("\n### Findings to address\n" if actionable
+                     else "\n### Recorded findings\n")
     for f in rev.get("findings") or []:
         if not isinstance(f, dict):
             continue
@@ -843,15 +847,22 @@ def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: 
         item_id = review_item_id("finding", f)
         line = ("- **automated review** " + severity + _where(f) + ": "
                 + str(f.get("summary", "")) + f" (`{item_id}`)")
-        items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
+        missing_fix = ("reviewer did not provide one; determine the smallest correct change."
+                       if actionable else "reviewer did not provide one.")
+        items.append(line + (f"\n  - **Fix:** {fix}" if fix else f"\n  - **Fix:** {missing_fix}"))
     if not rev.get("description_ok", True):
-        items.append("- **automated review** PR description: " + str(rev.get("description_feedback") or "rewrite it to give broader context and remove scar tissue") +
-                     " (put the new description in `pr_body`; it replaces the current one)")
+        description = str(rev.get("description_feedback") or (
+            "rewrite it to give broader context and remove scar tissue" if actionable
+            else "reviewer did not provide details"))
+        items.append(("- **automated review** PR description: " + description +
+                      " (put the new description in `pr_body`; it replaces the current one)")
+                     if actionable else "- **Recorded PR description assessment:** " + description)
     improvements = [i for i in (rev.get("improvements") or []) if isinstance(i, dict)]
     if improvements:
-        items.append("\n### Optional improvements\n\nTake or decline each item. In your result, set `improvements_taken` "
-                     "to the suggestions you took and `improvements_declined` to objects with `suggestion` and `reason`; "
-                     "declined items are kept for the retro.")
+        items.append(("\n### Optional improvements\n\nTake or decline each item. In your result, set `improvements_taken` "
+                      "to the suggestions you took and `improvements_declined` to objects with `suggestion` and `reason`; "
+                      "declined items are kept for the retro.") if actionable
+                     else "\n### Recorded optional improvements\n")
         for item in improvements:
             area = str(item.get("area") or "general")
             effort = str(item.get("effort") or "")
@@ -869,14 +880,16 @@ def feedback_with_operator_note(rev: dict[str, Any], note: str, *, kind: str,
     label = "Operator triage note" if kind == "triage" else "Operator recovery note"
     handoff = f"## {label}\n\n{note.strip()}"
     resolved = set(resolved_items or [])
-    record = feedback_from_review(rev, run_id=run_id, source_head=source_head)
     if superseded:
         handoff += ("\n\nThe automated review record below is **superseded for this revision** "
                     "by this handoff. Retain it for provenance; do not repeat its requests "
                     "unless this note explicitly raises them again.")
+        record = feedback_from_review(
+            rev, run_id=run_id, source_head=source_head, actionable=False)
         return f"{handoff}\n\n## Superseded automated review record\n\n{record}"
     if not resolved:
         handoff += "\n\nThe automated review record below remains applicable and this note supplements it."
+        record = feedback_from_review(rev, run_id=run_id, source_head=source_head)
         return f"{handoff}\n\n## Applicable automated review record\n\n{record}"
 
     applicable = dict(rev)
@@ -896,7 +909,7 @@ def feedback_with_operator_note(rev: dict[str, Any], note: str, *, kind: str,
     handoff += ("\n\nOnly the explicitly selected review items are resolved for this revision. "
                 "Unmatched items remain applicable.")
     return (f"{handoff}\n\n## Resolved automated review items\n\n"
-            f"{feedback_from_review(selected, run_id=run_id, source_head=source_head)}\n\n"
+            f"{feedback_from_review(selected, run_id=run_id, source_head=source_head, actionable=False)}\n\n"
             "## Applicable automated review record\n\n"
             f"{feedback_from_review(applicable, run_id=run_id, source_head=source_head)}")
 
