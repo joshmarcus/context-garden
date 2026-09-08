@@ -129,6 +129,19 @@ def test_inbox_reads_event_history_once(garden, monkeypatch):
     assert reads == 1
 
 
+def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
+    scheduler = Scheduler(Store(garden), read_only=True)
+    scheduler.state.get("DM-001")["ci_status"] = {
+        "provider": "worker_check", "state": "mismatched", "queried_sha": "abc123",
+        "stale": True, "exists_for_sha": False, "evidence_url": "", "failures": [],
+    }
+    scheduler.state.save()
+    page = client(garden).get("/tasks/DM-001").text
+    assert "exact-head CI" in page
+    assert "worker_check · mismatched" in page
+    assert "abc123" in page and "stale" in page
+
+
 def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
     """An operator can clear a live-config prerequisite without exposing it to a worker."""
     store = Store(garden)
