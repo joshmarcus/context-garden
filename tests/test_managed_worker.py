@@ -40,7 +40,7 @@ def test_setup_runs_inside_host_slot_before_managed_work(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     events = []
-    claim = {"setup": {"command": "prepare product", "timeout_seconds": 37}}
+    claim = {"setup": {"command": "prepare product", "timeout_seconds": 37}, "env_allowlist": ["PATH"]}
     monkeypatch.setattr(worker, "resources", lambda root: {
         "memory_available_bytes": 2 * 1024**3, "disk_free_bytes": 2 * 1024**3,
     })
@@ -55,11 +55,12 @@ def test_setup_runs_inside_host_slot_before_managed_work(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "execute_claim", execute)
     worker.run({"work_dir": str(tmp_path), "endpoint": "https://garden.example",
                 "worker_token": "synthetic", "host": "build-1", "harnesses": ["claude"],
-                "memory_reserve_mib": 1,
+                "memory_reserve_mib": 1, "env_pass": ["GIT_SSH_COMMAND"],
                 "disk_reserve_mib": 1}, once=True)
 
     assert events == [(claim, "prepare product")]
     assert claim["setup"]["timeout_seconds"] == 37
+    assert claim["env_allowlist"] == ["PATH", "GIT_SSH_COMMAND"]
 
 
 def test_verified_artifact_bootstrap():
@@ -72,3 +73,15 @@ def test_verified_artifact_bootstrap():
 def test_unpinned_or_credentialed_artifact_rejected(url, digest):
     with pytest.raises(ValueError):
         EC2Provider._user_data(declaration(bootstrap_path="/opt/bootstrap", bootstrap_url=url, bootstrap_sha256=digest))
+
+
+@pytest.mark.parametrize("seconds", [0, True, 21601])
+def test_bootstrap_refuses_unbounded_runtime(seconds):
+    with pytest.raises(ValueError, match="bootstrap_runtime_seconds"):
+        EC2Provider._user_data(declaration(bootstrap_path="/opt/bootstrap", bootstrap_runtime_seconds=seconds))
+
+
+def test_bootstrap_runtime_is_explicit_and_secret_free():
+    data = EC2Provider._user_data(declaration(bootstrap_path="/opt/bootstrap", bootstrap_runtime_seconds=21600))
+    assert '"runtime_seconds": 21600' in data
+    assert "codex_auth" not in data and "PRIVATE KEY" not in data
