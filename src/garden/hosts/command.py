@@ -14,9 +14,11 @@ from typing import Any
 
 from .models import (
     CONTRACT_VERSION,
+    HostAdmission,
     HostDeclaration,
     HostFacts,
     HostReadiness,
+    HostRequirements,
     HostState,
     ProviderCapabilities,
 )
@@ -218,3 +220,57 @@ class _BoundCommandProvider(CommandProvider):
             smoke_probe=value.get("smoke_probe") is True,
             detail=str(value.get("detail", "")),
         )
+
+    @staticmethod
+    def _admission(value: Any) -> HostAdmission:
+        if not isinstance(value, dict):
+            raise ProviderError("command returned invalid admission evidence")
+        try:
+            return HostAdmission(
+                eligible=value.get("eligible") is True,
+                measured_at=float(value["measured_at"]),
+                host_class=str(value["host_class"]),
+                environment=str(value["environment"]),
+                capabilities=tuple(str(item) for item in value.get("capabilities", [])),
+                memory_available_mib=int(value["memory_available_mib"]),
+                disk_free_gib=int(value["disk_free_gib"]),
+                lease_id=str(value.get("lease_id", "")),
+                lease_expires_at=float(value.get("lease_expires_at", 0)),
+                detail=str(value.get("detail", "")),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(f"command returned invalid admission evidence: {exc}") from exc
+
+    def admit(
+        self, provider_id: str, *, requirements: HostRequirements, acquisition_id: str
+    ) -> HostAdmission:
+        value = self._invoke(
+            "admit",
+            {
+                "provider_id": provider_id,
+                "acquisition_id": acquisition_id,
+                "activity": requirements.activity,
+                "host_class": requirements.host_class,
+                "environment": requirements.environment,
+                "capabilities": list(requirements.capabilities),
+                "memory_mib": requirements.memory_mib,
+                "disk_gib": requirements.disk_gib,
+                "heavy": requirements.heavy,
+                "probe_max_age_seconds": requirements.probe_max_age_seconds,
+                "lease_seconds": requirements.lease_seconds,
+            },
+            self.options,
+        )
+        return self._admission(value)
+
+    def renew_admission(self, provider_id: str, *, lease_id: str) -> HostAdmission:
+        return self._admission(
+            self._invoke("renew-admission", {"provider_id": provider_id, "lease_id": lease_id}, self.options)
+        )
+
+    def release_admission(self, provider_id: str, *, lease_id: str) -> None:
+        value = self._invoke(
+            "release-admission", {"provider_id": provider_id, "lease_id": lease_id}, self.options
+        )
+        if not isinstance(value, dict) or value.get("released") is not True:
+            raise ProviderError("command did not confirm admission lease release")
