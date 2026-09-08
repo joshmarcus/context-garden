@@ -1,4 +1,4 @@
-"""Now 1: the live view of what is running, what is next, where the phase is and the last
+"""Now: the live view of what is running, what is next, where the phase is and the last
 period (docs/design/now-1.md). The route renders `now1.snapshot`; each region is also a
 partial the page re-fetches when the stream says it changed; the stream is server-sent
 events off the tick's path."""
@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from markupsafe import Markup
 
 from ... import now1
@@ -44,19 +44,25 @@ def register(app: FastAPI, site: Site) -> None:
         return now1.snapshot(s, hub.reader(), window=window if window in WINDOW_KEYS else "hour", tick=hub.tick_state())
 
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
-        return ctx(request, page="now1", f=FORMAT, snap=snap(window), **kw)
+        return ctx(request, page="now", f=FORMAT, snap=snap(window), **kw)
 
-    @app.get("/now1", response_class=HTMLResponse)
-    def now1_page(request: Request, window: str = "hour"):
+    @app.get("/now", response_class=HTMLResponse)
+    def now_page(request: Request, window: str = "hour"):
         return templates.TemplateResponse(request, "now1.html", page_ctx(request, window))
 
-    @app.get("/partials/now1/{region}", response_class=HTMLResponse)
+    @app.get("/now1", include_in_schema=False)
+    @app.get("/now2", include_in_schema=False)
+    def legacy_now_page(request: Request) -> RedirectResponse:
+        query = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(f"/now{query}", status_code=308)
+
+    @app.get("/partials/now/{region}", response_class=HTMLResponse)
     def now1_partial(request: Request, region: str, window: str = "hour"):
         if region not in REGIONS:
             raise HTTPException(404)
         return templates.TemplateResponse(request, f"_now1_{region}.html", page_ctx(request, window))
 
-    @app.get("/partials/now1/strip/{task_id}/{run_id}", response_class=HTMLResponse)
+    @app.get("/partials/now/strip/{task_id}/{run_id}", response_class=HTMLResponse)
     def now1_strip(request: Request, task_id: str, run_id: str):
         """One strip, for a run the stream said arrived or finished; rendered from the run
         record, so a finished run carries its verdict and `data-stopped`."""
@@ -69,9 +75,9 @@ def register(app: FastAPI, site: Site) -> None:
 
         typical = now1.typical_seconds(runs.all_runs(), dt.datetime.now(dt.UTC))
         strip = now1.strip_for_run(run, s.tasks(), s, typical)
-        return templates.TemplateResponse(request, "_now1_strip.html", ctx(request, page="now1", f=FORMAT, s=strip))
+        return templates.TemplateResponse(request, "_now1_strip.html", ctx(request, page="now", f=FORMAT, s=strip))
 
-    @app.get("/now1/stream")
+    @app.get("/now/stream")
     def now1_stream(request: Request, start: int | None = None, limit: int | None = None, seconds: float | None = None):
         """Server-sent events for the page: each new event log line, run progress and the
         tick. `start` (a byte offset into events.jsonl, 0 to replay), `limit` and `seconds`

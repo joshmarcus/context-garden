@@ -24,8 +24,7 @@ INTERACTION_PATHS = (
     "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
     "src/garden/checks.py", "src/garden/gitops.py",
     "src/garden/github.py", "src/garden/harness.py", "src/garden/inbox.py",
-    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py",
-    "src/garden/now2.py", "src/garden/now2_stream.py", "src/garden/onboard.py",
+    "src/garden/kickoff.py", "src/garden/notify.py", "src/garden/now1.py", "src/garden/onboard.py",
     "src/garden/model.py", "src/garden/outcomes.py", "src/garden/profiles.py", "src/garden/qa/",
     "src/garden/review.py", "src/garden/run_supervisor.py", "src/garden/runner/",
     "src/garden/runs.py", "src/garden/scheduler/__init__.py", "src/garden/scheduler/aux.py",
@@ -51,8 +50,8 @@ SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
 _PAGE_MODULES = {
     "board": ("board", "board-list"), "config": ("config",), "costs": ("costs",),
-    "events": ("events",), "inbox": ("now", "inbox"), "now1": ("now1",),
-    "now2": ("now2",), "phase": ("phase",), "runs": ("runs", "run"),
+    "events": ("events",), "inbox": ("inbox",), "now1": ("now",),
+    "phase": ("phase",), "runs": ("runs", "run"),
     "task": ("task",), "trellis": ("trellis",), "trials": ("trials",),
 }
 _SHARED_UI_PATHS = ("src/garden/web/app.py", "src/garden/web/common.py",

@@ -320,7 +320,7 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
     assert ui["worktree"] == str(worktree)
     assert "garden_root" not in ui
-    assert ui["pages"] == ["inbox", "now"]
+    assert ui["pages"] == ["inbox"]
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
