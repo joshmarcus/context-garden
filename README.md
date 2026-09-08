@@ -149,6 +149,22 @@ garden serve
 ```
 
 `doctor` checks configuration, repositories, graph and logins in the worker environment.
+
+For a product on GitHub Enterprise, scope its repository identity, API base, and token
+source together. This keeps its operations independent of the host selected in a local
+`gh` session:
+
+```yaml
+products:
+  internal-service:
+    repo: git@forge.example.test:team/internal-service.git
+    base_branch: release
+    github:
+      slug: team/internal-service
+      host: forge.example.test
+      api_base: https://forge.example.test/api/v3
+      token_env: INTERNAL_SERVICE_GITHUB_TOKEN
+```
 It sends a small harness prompt and executes a configured notification command, so it is
 not an offline check. Resolve its failures and validate the product's setup/test/lint
 commands in a disposable checkout before approving. `validate` checks the task graph and
