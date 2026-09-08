@@ -1,8 +1,9 @@
 # Focused test suites
 
 Run pytest serially while iterating. A targeted pass proves only the named
-responsibility; `python3 scripts/check_ci.py` remains the full-suite regression gate
-for the final committed branch.
+responsibility; `python3 scripts/check_ci.py` remains the full ordinary-suite regression gate
+for the final committed branch. Stress/load experiments are excluded from both ordinary
+pytest commands and routine CI.
 
 ```bash
 .venv/bin/python -m pytest tests/test_retro_documents.py -q
@@ -13,6 +14,33 @@ for the final committed branch.
 
 The commands above cover, respectively, pure retro document rendering/parsing, retro
 orchestration with its temporary Git topology, fixture Git cleanup, and scheduler lifecycle.
+
+
+## Stress and load experiments are opt-in
+
+`pytest -q` and focused test-file commands exclude tests marked `stress` before their
+fixtures run. The default CI workflow uses this same policy. Explicitly naming a stress
+node or using `-m stress` does not opt in by itself.
+
+Stress tests include large retained-history latency measurements, generated CPU/memory
+workloads, and concurrent served overload journeys. Keep deterministic functional tests,
+including small concurrency/locking regressions, in the ordinary suite. Mark future tests
+that deliberately generate sustained load, pressure, large histories, or benchmark latency
+with `@pytest.mark.stress`.
+
+Run a deliberate, separately bounded experiment only in a disposable environment:
+
+```bash
+# Inspect the opt-in selection without running any workload.
+.venv/bin/python -m pytest --run-stress -m stress --collect-only -q
+# Explicitly authorized stress experiment; normal worker/CI validation never needs this.
+.venv/bin/python -m pytest --run-stress -m stress tests/test_web.py -q
+```
+
+Use the task's CPU, memory, process and time limits for the experiment. A worker addressing
+a functional failure should select the relevant ordinary tests; do not opt in to stress
+as a substitute for obtaining CI failure details. A stress failure belongs to this separate
+experiment and must not force unrelated implementation revisions.
 
 ## Select the smallest relevant suite
 
