@@ -324,6 +324,7 @@ def take(
     branch: str = typer.Option("", "--branch", help="Existing branch for externally implemented work"),
     external_worktree: Path | None = typer.Option(None, "--external-worktree", help="Existing operator-owned checkout (never managed by garden)"),
     pr_url: str = typer.Option("", "--pr", help="Existing PR; records its actual branch"),
+    pushed_result: bool = typer.Option(False, "--pushed-result", help="Finish from an exact branch SHA pushed by another clone"),
     quiet: bool = typer.Option(False, "-q", help="Only print the brief path"),
 ):
     """Claim a task for a human-driven session and print its brief (manual runner)."""
@@ -351,7 +352,13 @@ def take(
         err.print("[red]--worktree and --external-worktree are mutually exclusive[/red]")
         raise typer.Exit(1)
     mode = "revise" if t.status == Status.CHANGES_REQUESTED else "work"
-    external = bool(branch or external_worktree or pr_url)
+    external = bool(branch or external_worktree or pr_url or pushed_result)
+    if pushed_result and pr_url:
+        err.print("[red]--pushed-result and --pr are mutually exclusive completion contracts[/red]")
+        raise typer.Exit(1)
+    if pushed_result and external_worktree:
+        err.print("[red]--pushed-result materialises its own worktree; do not pass --external-worktree[/red]")
+        raise typer.Exit(1)
     if pr_url:
         slug = sched.slug_for(t)
         pr_number = pull_request_number(pr_url, slug) if slug else None
@@ -373,7 +380,7 @@ def take(
     try:
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
                              branch_override=branch, worktree_override=external_worktree,
-                             completion_mode="external" if external else "managed",
+                             completion_mode="pushed" if pushed_result else ("external" if external else "managed"),
                              external_pr=pr_url)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
@@ -387,7 +394,14 @@ def take(
         console.print(f"worktree: {run.worktree} (branch {run.branch})")
     else:
         where = f" in external worktree {run.worktree}" if external_worktree else ""
-        console.print(f"work on branch [bold]{run.branch}[/bold]{where} from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
+        if pushed_result:
+            console.print(
+                f"push branch [bold]{run.branch}[/bold] from another clone; when done: "
+                f"garden finish {t.id} --repository <owner/repo> --branch {run.branch} "
+                "--pushed-sha <full-sha> --summary '...'"
+            )
+        else:
+            console.print(f"work on branch [bold]{run.branch}[/bold]{where} from {run.base}; when done: garden finish {t.id} --pr <url> --summary '...'")
     print()
     print(brief_path.read_text())
 
@@ -401,6 +415,9 @@ def finish(
     result_file: Path | None = typer.Option(None, "--result-file"),
     blocked: bool = typer.Option(False, help="Report the task as blocked"),
     cost: float | None = typer.Option(None, help="What this round cost in USD, so manual work counts toward the same cost metrics as a worker run"),
+    repository: str = typer.Option("", "--repository", help="Configured OWNER/REPO for a pushed-result completion"),
+    branch: str = typer.Option("", "--branch", help="Declared remote branch for a pushed-result completion"),
+    pushed_sha: str = typer.Option("", "--pushed-sha", help="Exact remote branch tip for a pushed-result completion"),
 ):
     """Complete a manually-taken task: pushes and opens the PR if the runner made a worktree."""
     store = _store()
@@ -417,6 +434,12 @@ def finish(
         result["pr"] = pr_url
     if cost is not None:
         result["cost_usd"] = cost
+    if repository:
+        result["repository"] = repository
+    if branch:
+        result["branch"] = branch
+    if pushed_sha:
+        result["pushed_sha"] = pushed_sha
     rep = _scheduler(store).finish_manual(t, result)
     console.print(rep.summary())
 
