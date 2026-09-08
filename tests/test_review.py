@@ -1379,6 +1379,70 @@ def test_interaction_replay_defers_model_review_and_survives_collection(sched, m
     assert sched.state.get(task.id)["review_rounds"] == 1
 
 
+def test_remote_authored_interaction_replay_stays_on_controller_and_records_ownership(sched, monkeypatch):
+    """A replay command contains controller paths, so task runner inheritance is unsafe."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
+
+    check = sched.dispatch_review(task)
+
+    assert check.runner == "local"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "local", "provenance": "controller-owned replay inputs",
+    }
+    assert sched.state.get(task.id)["check_run"]["backend"] == "local"
+    command = submitted[0][1]["specs"][0]["command"]
+    assert str(sched.worktree_for(task)) in command
+    assert str(sched.cfg.garden_dir / "interaction-replays") in command
+
+
+def test_remote_authored_portable_check_remains_remote(sched):
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    sched.store.save(task)
+
+    check = sched._dispatch_check_run(
+        task, worktree=sched.store.root, branch=task.default_branch(), base="main",
+        specs=[{"name": "portable", "command": "true"}], stage="ci", cont={}, rep=TickReport(),
+    )
+
+    assert check.runner == "remote"
+    assert check.env_snapshot["check_execution"] == {
+        "backend": "remote", "provenance": "portable check payload",
+    }
+
+
+def test_interaction_replay_retry_preserves_local_backend_and_continuation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.runner = "remote"
+    sched.store.save(task)
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks", lambda *_args: None)
+    cont = {"head": "controller-head", "nonce": "replay-nonce", "manifest": "/controller/replay.json"}
+    first = sched._dispatch_check_run(
+        task, worktree=sched.worktree_for(task), branch=task.default_branch(), base="main",
+        specs=[{"name": "interaction replay", "command": "controller-only"}],
+        stage="interaction_replay", cont=cont, rep=TickReport(),
+    )
+    (first.path / "exit_code").write_text("1\n")
+
+    assert sched.reap_check(task, TickReport())
+    info = sched.state.get(task.id)["check_run"]
+    retry = sched._run_by_id(task, info["run_id"])
+    assert retry is not None and retry.run_id != first.run_id and retry.runner == "local"
+    assert task.runner == "remote"
+    assert info["backend"] == "local"
+    assert info["cont"] == cont
+    assert retry.env_snapshot["check_execution"] == first.env_snapshot["check_execution"]
+
+
 def test_scoped_backend_preflight_does_not_reintroduce_capture_all(garden, monkeypatch):
     from garden import gitops
     from garden.preflight import mechanical_results
