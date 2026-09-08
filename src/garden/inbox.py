@@ -97,6 +97,7 @@ ATTENTION_KINDS = {
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
+    "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
 }
 
 
@@ -420,6 +421,14 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
+        recovery = st.get("review_recovery") or {}
+        if recovery and st.get("pending_reviews") and not st.get("needs_human"):
+            add("operator", t,
+                f"automatic review recovery {recovery.get('attempts', 0)}/{recovery.get('limit', 0)} queued · scheduler owns the retry",
+                [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
+                kind="review_recovery", kind_title="Automatic review recovery",
+                kind_blurb="The scheduler retained the current-head review request and will retry after admission and backoff permit it.",
+                reason=str(recovery.get("reason") or "review did not produce a verdict"), evidence=[])
         if st.get("decision") and not t.status.terminal:
             dec = st.get("decision") or {}
             kind = str(dec.get("kind") or "")
