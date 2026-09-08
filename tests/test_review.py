@@ -194,6 +194,48 @@ def test_pending_reviews_admit_remote_independently_of_occupied_local_capacity(s
     assert not sched.state.get(local.id).get("pending_reviews")
 
 
+def test_pending_remote_persona_ignores_occupied_local_capacity(sched):
+    """A queued persona uses its task's remote backend, not local review capacity."""
+    local = sched.store.task("DM-001")
+    local.status = Status.IN_REVIEW
+    local.priority = 0
+    local.order = 10
+    sched.store.save(local)
+    sched.state.get(local.id)["pending_reviews"] = [
+        {"kind": "review", "count_round": True},
+    ]
+
+    remote = sched.store.task("DM-002")
+    remote.status = Status.IN_REVIEW
+    remote.priority = 0
+    remote.order = 20
+    remote.depends_on = []
+    remote.runner = "remote"
+    remote.branch = remote.default_branch()
+    sched.store.save(remote)
+    sched.state.get(remote.id)["pending_reviews"] = [
+        {"kind": "persona", "name": "security", "required": False},
+    ]
+
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    occupant = sched.runs.new_run("occupied-local", "local", mode="work")
+    occupant.status = "running"
+    occupant.save()
+
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    assert rep.dispatched == ["DM-002(persona:security)"], rep.errors
+    persona_run = sched.runs.latest(remote.id)
+    assert persona_run is not None
+    assert (persona_run.runner, persona_run.mode) == ("remote", "persona")
+    assert sched.state.get(local.id)["pending_reviews"] == [
+        {"kind": "review", "count_round": True},
+    ]
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+
+
 def test_review_atomic_local_admission_race_requeues_without_charging_round(sched, monkeypatch):
     from garden.scheduler.resources import ResourcePressureError
 
