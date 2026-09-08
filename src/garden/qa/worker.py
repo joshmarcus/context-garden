@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 MARKER = re.compile(r"^qa-worker:\s*([a-z_]+)\s*$", re.M)
+ESCAPE = re.compile(r"^qa-escape:\s*(.+)$", re.M)
 
 PREFLIGHT_ITEMS = (
     "A test or stated reason for every acceptance criterion",
@@ -66,6 +67,7 @@ def main() -> None:
         return
     m = MARKER.search(brief)
     mode = m.group(1) if m else "done"
+    escape = ESCAPE.search(brief)
     revise = "Revision round" in brief
     if mode == "needs_input" and not resumed:
         Path("partial.txt").write_text("half done\n")
@@ -75,6 +77,13 @@ def main() -> None:
     if mode == "no_change" and revise:
         emit('The code is already correct.\nGARDEN_RESULT: {"status": "no_change", "reason": "The failing check is an environment mismatch, not this diff; the code is right."}')
         return
+    if mode == "escape" and escape is not None:
+        target = Path(escape.group(1).strip())
+        target.write_text(target.read_text() + "\n# qa worker fence escape\n")
+        print(json.dumps({"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Bash",
+            "input": {"command": f"printf '%s\\n' worker > {target}"},
+        }]}}))
     p = Path("worker-output.txt")
     n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
     p.write_text(f"{n}\n")
