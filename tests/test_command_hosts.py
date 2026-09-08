@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from dataclasses import replace
 
 import pytest
@@ -13,6 +14,7 @@ from garden.hosts import (
     EnvironmentProfile,
     EnvironmentStop,
     HostLifecycle,
+    HostRequirements,
     JsonStateStore,
     PoolDeclaration,
 )
@@ -24,6 +26,15 @@ class Wrapper:
         self.calls = []
         self.ready = True
         self.ready_error = ""
+        self.admissions = {}
+        self.admission = {
+            "eligible": True,
+            "host_class": "large",
+            "environment": "linux",
+            "capabilities": ["python", "browser"],
+            "memory_available_mib": 8192,
+            "disk_free_gib": 50,
+        }
 
     def run(self, argv, stdin, *, timeout_seconds):
         action = argv[-1]
@@ -51,6 +62,33 @@ class Wrapper:
                 "smoke_probe": self.ready,
                 "detail": "verified" if self.ready else "checkout reconciliation failed",
             }
+        elif action == "admit":
+            lease_id = f"lease-{request['acquisition_id']}"
+            if request["heavy"] and self.admissions:
+                value = {
+                    **self.admission,
+                    "eligible": False,
+                    "measured_at": time.time(),
+                    "detail": "heavy-check capacity is full",
+                }
+            else:
+                value = {
+                    "measured_at": time.time(),
+                    "lease_id": lease_id,
+                    "lease_expires_at": time.time() + request["lease_seconds"],
+                    **self.admission,
+                }
+                if value["lease_id"]:
+                    self.admissions[value["lease_id"]] = value
+        elif action == "renew-admission":
+            value = self.admissions.get(request["lease_id"])
+            if value is None:
+                return CommandResult(tuple(argv), stdin, b"", b"lease lost", 4)
+            value = {**value, "lease_expires_at": time.time() + 120}
+            self.admissions[request["lease_id"]] = value
+        elif action == "release-admission":
+            self.admissions.pop(request["lease_id"], None)
+            value = {"released": True}
         elif action == "retire":
             value = {**self.hosts[0], "state": "terminated"}
             self.hosts[:] = [value]
@@ -284,3 +322,110 @@ def test_readiness_wrapper_error_records_environment_stop_and_recovers(tmp_path,
     wrapper.ready_error = ""
     assert lifecycle.acquire_ready(spec, **kwargs).provider_id == "provider-1"
     assert "workers" not in json.loads(path.read_text())["environment_stops"]
+
+
+def _requirements(**changes):
+    value = HostRequirements(
+        activity="check", host_class="large", environment="linux",
+        capabilities=("python",), memory_mib=4096, disk_gib=20, heavy=True,
+    )
+    return replace(value, **changes)
+
+
+def test_host_local_admission_routes_on_fresh_resources_and_capabilities(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+
+    request = next(call[1] for call in wrapper.calls if call[0][-1] == "admit")
+    assert request["activity"] == "check"
+    assert request["capabilities"] == ["python"]
+    assert request["memory_mib"] == 4096
+    lease = json.loads(path.read_text())["leases"][host.provider_id]["admission"]
+    assert lease["host_class"] == "large"
+    assert lease["memory_available_mib"] == 8192
+    lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+    assert not wrapper.admissions
+
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lifecycle.release(command_pool(), host.provider_id)
+    assert not wrapper.admissions
+    assert "release-admission" in [call[0][-1] for call in wrapper.calls]
+
+
+@pytest.mark.parametrize(
+    ("admission_change", "requirements_change", "reason"),
+    [
+        ({"measured_at": 1}, {}, "resource probe is stale"),
+        ({"host_class": "small"}, {}, "host class 'small'"),
+        ({"environment": "other"}, {}, "environment 'other'"),
+        ({"capabilities": []}, {}, "missing capabilities: python"),
+        ({"memory_available_mib": 1000}, {}, "host memory 1000 MiB"),
+        ({"disk_free_gib": 1}, {}, "host disk 1 GiB"),
+        ({"lease_id": "", "lease_expires_at": 0}, {}, "lease is missing or expired"),
+    ],
+)
+def test_ineligible_host_admission_fails_closed_with_alias(
+    tmp_path, admission_change, requirements_change, reason
+):
+    wrapper = Wrapper()
+    wrapper.admission.update(admission_change)
+    if "measured_at" in admission_change:
+        # Wrapper normally supplies its measured time; retain the deliberately stale value.
+        original = wrapper.run
+
+        def run(argv, stdin, *, timeout_seconds):
+            result = original(argv, stdin, timeout_seconds=timeout_seconds)
+            if argv[-1] == "admit" and result.exit_code == 0:
+                value = json.loads(result.stdout)
+                value["measured_at"] = admission_change["measured_at"]
+                return replace(result, stdout=json.dumps(value).encode())
+            return result
+
+        wrapper.run = run
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+
+    with pytest.raises(EnvironmentStop, match=reason):
+        lifecycle.acquire_ready(
+            command_pool(), workspace="/work", revision="abc", harness="codex",
+            process_terminal=lambda _: True, requirements=_requirements(**requirements_change),
+        )
+    detail = json.loads((tmp_path / "hosts.json").read_text())["environment_stops"]["workers"]["detail"]
+    assert detail.startswith("workers-0:")
+    assert "provider-1" not in detail
+    assert not wrapper.admissions
+
+
+@pytest.mark.parametrize("activity", ["work", "setup", "base_probe", "check", "review"])
+def test_all_activities_share_host_owned_heavy_lease_across_controllers(tmp_path, activity):
+    wrapper = Wrapper()
+    first = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "controller-one.json")
+    )
+    second = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "controller-two.json")
+    )
+    kwargs = dict(
+        pool=command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(activity=activity),
+    )
+    host = first.acquire_ready(**kwargs)
+
+    with pytest.raises(EnvironmentStop, match="workers-0: heavy-check capacity is full"):
+        second.acquire_ready(**kwargs)
+    renewed = first.renew_admission(command_pool(), host.provider_id)
+    assert renewed.lease_id
+
+    wrapper.admissions.clear()
+    with pytest.raises(EnvironmentStop, match="host admission lease lost"):
+        first.renew_admission(command_pool(), host.provider_id)
