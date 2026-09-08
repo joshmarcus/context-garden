@@ -292,6 +292,66 @@ def investigation_report(task_id: str, report: str = typer.Argument(...)):
     console.print(f"{task_id}: investigation report ready for decision")
 
 
+@app.command("investigation-take", rich_help_panel=PANEL_DECIDE)
+def investigation_take(task_id: str):
+    """Claim an operator-owned investigation while implementation remains paused."""
+    store = _store()
+    try:
+        _scheduler(store).take_investigation(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: operator investigation active")
+
+
+@app.command("investigation-retry", rich_help_panel=PANEL_DECIDE)
+def investigation_retry(task_id: str):
+    """Retry one failed bounded investigation while retaining its evidence and cost."""
+    store = _store()
+    try:
+        _scheduler(store).retry_investigation(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation agent retry queued")
+
+
+@app.command("troubled-change-approach", rich_help_panel=PANEL_DECIDE)
+def troubled_change_approach(task_id: str, approach: str = typer.Argument(...)):
+    """Queue one bounded preserved revision with an explicit new approach."""
+    store = _store()
+    try:
+        _scheduler(store).change_troubled_approach(_task(store, task_id), approach)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: changed approach queued")
+
+
+@app.command("troubled-defer", rich_help_panel=PANEL_DECIDE)
+def troubled_defer(task_id: str, reason: str = typer.Argument(...)):
+    """Keep troubled work preserved and paused with an owner reason."""
+    store = _store()
+    try:
+        _scheduler(store).defer_troubled(_task(store, task_id), reason)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: deferred with work preserved")
+
+
+@app.command("troubled-cancel", rich_help_panel=PANEL_DECIDE)
+def troubled_cancel(task_id: str, reason: str = typer.Argument(...)):
+    """Cancel a drained troubled task with a durable reason, retaining its work."""
+    store = _store()
+    try:
+        _scheduler(store).cancel_troubled(_task(store, task_id), reason)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: cancelled with branch and artifacts preserved")
+
+
 @app.command("recover", rich_help_panel=PANEL_DECIDE)
 def recover(task_id: str):
     """Use one delegated, bounded recovery continuation without changing product scope."""

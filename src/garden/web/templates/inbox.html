@@ -106,6 +106,12 @@
           {% elif a.kind == 'review-again' %}<form method="post" action="/tasks/{{ it.task }}/review"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'retry' %}<form method="post" action="/tasks/{{ it.task }}/retry"><button>{{ a.label }}</button></form>
           {% elif a.kind == 'troubled-continue' %}<form method="post" action="/tasks/{{ it.task }}/troubled-continue"><button class="primary">{{ a.label }}</button></form>
+          {% elif a.kind == 'change-approach' %}<form method="post" action="/tasks/{{ it.task }}/troubled-change-approach"><textarea name="note" placeholder="new approach" required></textarea><button>{{ a.label }}</button></form>
+          {% elif a.kind == 'defer' %}<form method="post" action="/tasks/{{ it.task }}/troubled-defer"><textarea name="note" placeholder="reason" required></textarea><button>{{ a.label }}</button></form>
+          {% elif a.kind == 'investigation-take' %}<form method="post" action="/tasks/{{ it.task }}/investigation-take"><button>{{ a.label }}</button></form>
+          {% elif a.kind == 'investigation-retry' %}<form method="post" action="/tasks/{{ it.task }}/investigation-retry"><button>{{ a.label }}</button></form>
+          {% elif a.kind == 'troubled-cancel' %}<form method="post" action="/tasks/{{ it.task }}/troubled-cancel"><textarea name="note" placeholder="required reason" required></textarea><button class="quiet danger">{{ a.label }}</button></form>
+          {% elif a.kind == 'troubled-continue' %}<form method="post" action="/tasks/{{ it.task }}/troubled-continue"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'investigate' %}<form method="post" action="/tasks/{{ it.task }}/investigate" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Investigation scope" required></textarea><button>{{ a.label }}</button></form>
           {% elif a.kind == 'defer' %}<form method="post" action="/tasks/{{ it.task }}/investigate"><input type="hidden" name="note" value="deferred by owner"><button class="quiet">{{ a.label }}</button></form>
           {% elif a.kind == 'investigation-report' %}<form method="post" action="/tasks/{{ it.task }}/investigation-report" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="Diagnosis, evidence, alternatives, recommendation" required></textarea><button>{{ a.label }}</button></form>

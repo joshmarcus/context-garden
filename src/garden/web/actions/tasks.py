@@ -282,6 +282,31 @@ def investigation_report(s: Store, sched: Scheduler, t: Task, note: str, applies
     sched.complete_investigation(t, note)
 
 
+@action("investigation-take")
+def investigation_take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.take_investigation(t)
+
+
+@action("investigation-retry")
+def investigation_retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.retry_investigation(t)
+
+
+@action("troubled-change-approach")
+def troubled_change_approach(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.change_troubled_approach(t, note)
+
+
+@action("troubled-defer")
+def troubled_defer(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.defer_troubled(t, note)
+
+
+@action("troubled-cancel")
+def troubled_cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.cancel_troubled(t, note)
+
+
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
