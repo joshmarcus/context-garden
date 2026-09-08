@@ -28,6 +28,10 @@ from .provider import (
 )
 
 
+class EnvironmentStop(RuntimeError):
+    """Host preparation failed before a task attempt was dispatched."""
+
+
 class JsonStateStore:
     """Small atomic store for operation identities and lifecycle events."""
 
@@ -74,6 +78,9 @@ class HostLifecycle:
             )
         provider.validate_options(pool.provider_options)
         provider.validate_options(pool.profile.provider_options)
+        binder = getattr(provider, "bind", None)
+        if binder is not None:
+            provider = binder(self._declaration(pool, 0))
         return provider
 
     @staticmethod
@@ -165,6 +172,7 @@ class HostLifecycle:
                     h
                     for h in provider.discover(pool.owner, pool.name)
                     if h.operation_id == declaration.operation_id
+                    and h.state != HostState.TERMINATED
                 ),
                 None,
             )
@@ -267,6 +275,7 @@ class HostLifecycle:
                 h
                 for h in provider.discover(pool.owner, pool.name)
                 if h.operation_id == declaration.operation_id
+                and h.state != HostState.TERMINATED
             ),
             None,
         )
@@ -322,3 +331,106 @@ class HostLifecycle:
         assert isinstance(event_rows, list)
         event_rows.extend(asdict(e) for e in events)
         self.state.write(data)
+
+    def acquire_ready(
+        self,
+        pool: PoolDeclaration,
+        *,
+        workspace: str,
+        revision: str,
+        harness: str,
+        process_terminal: Callable[[str], bool],
+        now: Callable[[], float] = time.time,
+    ) -> HostFacts:
+        """Acquire one verified host, preferring an eligible warm host.
+
+        The durable lease is written only after every read-only readiness check succeeds.
+        Callers perform this before incrementing a task attempt; ``EnvironmentStop`` is an
+        infrastructure outcome, not worker failure.
+        """
+        checked = self.reconcile(pool)
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        provider = self._provider(pool)
+        readiness = getattr(provider, "readiness", None)
+        if readiness is None:
+            raise EnvironmentStop(f"provider {provider.name!r} does not support readiness")
+        current_time = now()
+        candidates: list[HostFacts] = []
+        for host in checked:
+            if host.state != HostState.READY:
+                continue
+            lease = leases.get(host.provider_id, {})
+            if isinstance(lease, dict):
+                acquired = float(lease.get("acquired_at", current_time))
+                if current_time - acquired > pool.maximum_age_minutes * 60:
+                    self.destroy(
+                        pool,
+                        host.provider_id,
+                        delete_storage=not pool.profile.persistent_workspace,
+                    )
+                    leases.pop(host.provider_id, None)
+                    continue
+                previous = str(lease.get("run_id", ""))
+                if previous and not process_terminal(previous):
+                    continue
+            candidates.append(host)
+        failures: list[str] = []
+        for host in candidates:
+            evidence = readiness(
+                host.provider_id, workspace=workspace, revision=revision, harness=harness
+            )
+            if not evidence.ready:
+                failures.append(f"{host.host_id}: {evidence.detail or 'readiness checks failed'}")
+                continue
+            leases[host.provider_id] = {
+                "acquired_at": current_time,
+                "last_used_at": current_time,
+                "workspace": workspace,
+                "revision": revision,
+                "harness": harness,
+                "run_id": "",
+            }
+            self.state.write(data)
+            return host
+        self.state.write(data)
+        detail = "; ".join(failures) or "no ready host is available"
+        raise EnvironmentStop(detail)
+
+    def attach_run(self, provider_id: str, run_id: str) -> None:
+        """Persist the controller run identity after dispatch."""
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        lease = leases.get(provider_id)
+        if not isinstance(lease, dict):
+            raise ValueError(f"host {provider_id!r} is not acquired")
+        lease["run_id"] = run_id
+        self.state.write(data)
+
+    def cancel_acquisition(self, provider_id: str) -> None:
+        data = self.state.read()
+        leases = data.setdefault("leases", {})
+        assert isinstance(leases, dict)
+        leases.pop(provider_id, None)
+        self.state.write(data)
+
+    def release(self, pool: PoolDeclaration, provider_id: str) -> HostFacts:
+        """Release a warm host and remove its durable process lease."""
+        released = self.stop(pool, provider_id)
+        self.cancel_acquisition(provider_id)
+        return released
+
+    def orphaned(self, *, process_terminal: Callable[[str], bool]) -> list[str]:
+        data = self.state.read()
+        leases = data.get("leases", {})
+        if not isinstance(leases, dict):
+            return []
+        return sorted(
+            provider_id
+            for provider_id, lease in leases.items()
+            if isinstance(lease, dict)
+            and (run_id := str(lease.get("run_id", "")))
+            and process_terminal(run_id)
+        )

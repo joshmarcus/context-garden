@@ -39,7 +39,12 @@ class FakeProvider:
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         existing = next(
-            (h for h in self.hosts.values() if h.operation_id == declaration.operation_id), None
+            (
+                h
+                for h in self.hosts.values()
+                if h.operation_id == declaration.operation_id and h.state != HostState.TERMINATED
+            ),
+            None,
         )
         if existing:
             return existing
