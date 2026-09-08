@@ -51,8 +51,6 @@ class PollMixin:
         if not number:
             return
         pr = self.github.get_pr(slug, number)
-        if not pr.head_sha:
-            pr.head_sha = str(st.get("head_sha") or "")
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
@@ -112,7 +110,10 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
+        failure_key = (
+            f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}:"
+            f"{','.join(ci_status.failures)}:{pr.updated_at}"
+        )
         if ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
             st["ci_failed_at"] = failure_key
             names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
