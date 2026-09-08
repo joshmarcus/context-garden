@@ -14,6 +14,8 @@ import re
 import subprocess
 from typing import Any
 
+from .host_identity import scrub_shared_text
+
 LOGGER = logging.getLogger("garden.notify")
 
 # GARDEN_MESSAGE (and the other GARDEN_* env vars) carry worker-written text: they can
@@ -88,7 +90,7 @@ def notify(
     env = os.environ.copy()
     env["GARDEN_TASK_ID"] = task_id
     env["GARDEN_STATUS"] = status
-    env["GARDEN_MESSAGE"] = message
+    env["GARDEN_MESSAGE"] = scrub_shared_text(message, cfg)
     env["GARDEN_PR"] = pr_url
 
     ok, detail = _run_command(command, env, timeout)
