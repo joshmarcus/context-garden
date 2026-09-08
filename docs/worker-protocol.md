@@ -591,3 +591,18 @@ journeys, and explicit phase evidence holds still block. An unavailable referenc
 reported honestly; this policy does not manufacture a performed test or interaction.
 Final current-head checks and CI remain required. Reviewers should reuse inspectable
 passing evidence and identify the concrete defect or unmet outcome behind a send-back.
+
+
+### Remote model validation supervision
+
+Remote work, review and persona harnesses run through the same execution supervisor as
+local harnesses. The host creates a private per-claim metadata directory and a fresh owner
+identity; the supervisor supplies `GARDEN_VALIDATION_RUNNER` and `GARDEN_EXECUTION_RUN_DIR`.
+Workers can invoke `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` exactly as
+the brief says. Validation remains serialized per owner and uses the host's heavy-work
+admission and service limits. Controller paths and inherited execution ownership are not
+forwarded as a substitute. Nonzero command results propagate through the wrapper.
+
+This requires a versioned worker runtime update. Updating only the controller's briefs or
+exporting the interpreter variable on its own does not repair an already running worker.
+Stress/load experiments remain outside the ordinary suite and require separate opt-in.
