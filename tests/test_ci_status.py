@@ -36,7 +36,7 @@ def test_worker_check_is_exact_head_and_authoritative(tmp_path):
     result.write_text(json.dumps({"source_sha": "new", "command": "pytest -q",
                                   "exit_code": 0, "log_location": "/logs/1"}))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
-    assert status.green and status.exists_for_sha and status.evidence_url == "/logs/1"
+    assert status.green and status.exists_for_sha and status.evidence_url == "/runs/CG-1/run"
 
 
 def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
