@@ -72,7 +72,10 @@ The tool defaults to the Claude harness; set `harness: codex` in `garden.yaml` b
 planning if that is your harness. [Codex setup](docs/codex.md) explains its configuration.
 Workers have a private HOME and a scrubbed environment. Saved harness credentials are
 copied into private directories per dispatch; `worker_env.config_dirs` can specify their
-sources. Keep secrets out of tracked YAML.
+sources. Additional approved tool files can be named individually under
+`worker_env.config_files`, with a host-local `source`, a `destination` relative to the
+private HOME, and optional `required: true`. Only those files are copied, with private
+permissions; keep their contents and other secrets out of tracked YAML.
 
 ## First project and first PR
 
