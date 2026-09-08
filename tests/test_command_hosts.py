@@ -29,6 +29,7 @@ class Wrapper:
         self.ready = True
         self.ready_error = ""
         self.acquire_response = DEFAULT_ACQUIRE
+        self.before_action = {}
         self.admissions = {}
         self.admission = {
             "eligible": True,
@@ -43,6 +44,9 @@ class Wrapper:
         action = argv[-1]
         request = json.loads(stdin)
         self.calls.append((tuple(argv), request, timeout_seconds))
+        callback = self.before_action.pop(action, None)
+        if callback is not None:
+            callback()
         if action == "inspect":
             value = self.hosts
         elif action == "acquire":
@@ -529,3 +533,47 @@ def test_all_activities_share_host_owned_heavy_lease_across_controllers(tmp_path
     wrapper.admissions.clear()
     with pytest.raises(EnvironmentStop, match="host admission lease lost"):
         first.renew_admission(command_pool(), host.provider_id)
+
+
+def _record_unrelated_lease(store, provider_id):
+    with store.locked():
+        data = store.read()
+        leases = data.setdefault("leases", {})
+        leases[provider_id] = {"run_id": "other-run", "released": False}
+        store.write(data)
+
+
+def test_renew_admission_preserves_concurrent_state_update(tmp_path):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    wrapper.before_action["renew-admission"] = lambda: _record_unrelated_lease(
+        store, "unrelated-provider"
+    )
+
+    lifecycle.renew_admission(command_pool(), host.provider_id)
+
+    assert store.read()["leases"]["unrelated-provider"]["run_id"] == "other-run"
+
+
+def test_release_preserves_concurrent_state_update(tmp_path):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    wrapper.before_action["release-admission"] = lambda: _record_unrelated_lease(
+        store, "unrelated-provider"
+    )
+
+    lifecycle.release(command_pool(), host.provider_id)
+
+    data = store.read()
+    assert data["leases"]["unrelated-provider"]["run_id"] == "other-run"
+    assert data["leases"][host.provider_id]["released"] is True
