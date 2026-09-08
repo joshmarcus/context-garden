@@ -856,10 +856,31 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():
-        return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source),
-                "capture_infrastructure": _trusted_capture_infrastructure(
-                    "capture_path_unavailable", f"UI check source path is unavailable: {source}"
-                )}
+        # This is the source under review, not screenshot transport.  A missing source tree
+        # is contradictory provenance and must stay blocking under every capture policy.
+        return {"status": "error", "summary": "UI check worktree source is missing",
+                "details": str(source)}
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".garden-capture-probe-", dir=out_dir,
+                                         delete=False) as probe:
+            probe_path = Path(probe.name)
+        probe_path.unlink()
+    except OSError as exc:
+        try:
+            captures = [str(path) for path in sorted(out_dir.iterdir())
+                        if path.is_file() and path.suffix in {".html", ".txt", ".md"}]
+        except OSError:
+            captures = []
+        return {
+            "status": "error",
+            "summary": "UI capture output path is unavailable",
+            "details": f"{out_dir}: {exc}",
+            "captures": captures,
+            "capture_infrastructure": _trusted_capture_infrastructure(
+                "capture_path_unavailable", f"UI capture output path is unavailable: {out_dir}: {exc}"
+            ),
+        }
     # This runs in the controller-owned wrapper and in the check's already scrubbed process
     # environment. The worktree renderer cannot manufacture this classification: its returned
     # dict is stripped below before trusted metadata is attached.

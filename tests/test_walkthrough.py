@@ -344,15 +344,40 @@ def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch)
     assert seen["argv"][1:3] == ["-m", "garden.walkthrough"]
 
 
-def test_ui_check_marks_missing_generated_capture_path_from_trusted_wrapper(tmp_path):
+def test_ui_check_keeps_missing_proposed_source_blocking_in_advisory_mode(tmp_path):
     result = ui_check(
         {"worktree": str(tmp_path / "missing-worktree")},
         {"out_dir": str(tmp_path / "captures"), "capture_infrastructure_policy": "advisory"},
     )
 
     assert result["status"] == "error"
+    assert result["summary"] == "UI check worktree source is missing"
+    assert "capture_infrastructure" not in result
+
+
+def test_ui_check_marks_unavailable_capture_output_path_from_trusted_wrapper(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    output_path = tmp_path / "captures"
+    output_path.mkdir()
+    fallback = output_path / "task.html"
+    fallback.write_text("<main>rendered fallback</main>")
+
+    def unavailable(*_args, **_kwargs):
+        raise PermissionError("capture filesystem is read-only")
+
+    monkeypatch.setattr("garden.walkthrough.tempfile.NamedTemporaryFile", unavailable)
+
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(output_path), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI capture output path is unavailable"
     assert result["capture_infrastructure"]["source"] == "garden.walkthrough:ui_check"
     assert result["capture_infrastructure"]["kind"] == "capture_path_unavailable"
+    assert result["captures"] == [str(fallback)]
 
 
 def test_ui_check_keeps_renderer_traceback_blocking_in_advisory_mode(tmp_path, monkeypatch):
