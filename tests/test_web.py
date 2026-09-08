@@ -1581,6 +1581,9 @@ def test_config_page_renders(garden):
     assert "max_parallel" in r.text
     assert "auto_dispatch" in r.text
     assert "Config" in r.text
+    assert "Rounds and loop friction" in r.text
+    assert "null</code> for unlimited automated rounds" in r.text
+    assert "review_parallel" in r.text
 
 
 def test_task_page_names_the_review_ladder_rung(garden):

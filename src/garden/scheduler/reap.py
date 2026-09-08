@@ -13,6 +13,7 @@ from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
+from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
 from .report import TickReport
@@ -270,8 +271,43 @@ class ReapMixin:
         # streak; ordinary worker failures are handled by the normal attempt cap below.
         self.state.get(task.id).pop("consecutive_env_errors", None)
         self.state.save()
-
+        if run.exit_code not in (0, None) and not result:
+            run.status = "failed"
+            run.save()
+            self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
+            return
         status = str(result.get("status", "")).lower()
+        # New briefs make the pre-flight result part of the worker contract.  Do this
+        # before missing-result salvage can synthesize a summary and send the branch
+        # directly to review.  Publish any committed work first, so the revise worker
+        # builds on it instead of dispatch's normal sync shelving it on a backup branch.
+        if not status and bool((run.env_snapshot or {}).get("requires_preflight")):
+            base = run.base or self.base_for(task)
+            branch = run.branch or task.branch or task.default_branch()
+            if not runner.remote and worktree.exists():
+                try:
+                    if gitops.commits_ahead(worktree, base):
+                        gitops.push(worktree, branch, base=base, lease=run.start_head)
+                        task.branch = branch
+                        self.store.save(task)
+                except gitops.GitError as exc:
+                    run.status = "failed"
+                    run.error = f"could not preserve commits before pre-flight revise: {exc}"
+                    run.save()
+                    self._retry_or_fail(task, run, rep, run.error)
+                    return
+            run.status = "failed"
+            run.error = "missing review pre-flight: result block and review pre-flight checklist"
+            run.save()
+            criteria = list((run.env_snapshot or {}).get("criteria") or [])
+            criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
+            failed = [{"name": "review pre-flight", "status": "fail",
+                       "summary": "missing items: result block and review pre-flight checklist",
+                       "details": ""}]
+            self._start_check_revise(task, failed, rep, cost,
+                                     feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
+                                     + criteria_note)
+            return
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
         # commits before treating the missing protocol marker as a failed attempt.  A reported
@@ -295,11 +331,6 @@ class ReapMixin:
                 result = {"summary": summary}
                 run.result = result
                 run.save()
-        if run.exit_code not in (0, None) and not result:
-            run.status = "failed"
-            run.save()
-            self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
-            return
         if not result:
             run.status = "failed"
             run.save()
@@ -371,6 +402,16 @@ class ReapMixin:
 
         self._file_discovered(task, run, result)
 
+        missing = missing_preflight(result.get("pre_flight"))
+        if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
+            run.status = "failed"
+            run.error = "missing review pre-flight: " + ", ".join(missing)
+            run.save()
+            failed = [{"name": "review pre-flight", "status": "fail",
+                       "summary": "missing items: " + ", ".join(missing), "details": ""}]
+            self._start_check_revise(task, failed, rep, cost)
+            return
+
         base = run.base or self.base_for(task)
         branch = run.branch or task.branch or task.default_branch()
         repo = self.repo_for(task)
@@ -378,10 +419,30 @@ class ReapMixin:
         if runner.remote:
             gitops.fetch(repo)
             try:
-                gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo)
-                ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
-            except gitops.GitError:
+                if run.pushed_ref:
+                    staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
+                    remote_head = gitops.git("rev-parse", "--verify", staged, cwd=repo).strip()
+                    if not run.pushed_head or remote_head != run.pushed_head:
+                        raise gitops.GitError("the staged commit does not match the head reported by the worker")
+                    ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..{staged}", cwd=repo).strip() or 0)
+                    # Empty start_head deliberately means "the branch must not exist".
+                    # This lease protects promotion from both stale workers and any other
+                    # writer that moved (or created) the task branch during the run.
+                    if ahead:
+                        gitops.git("push", f"--force-with-lease={branch}:{run.start_head}", "origin",
+                                   f"{run.pushed_head}:refs/heads/{branch}", cwd=repo)
+                        gitops.fetch(repo)
+                else:
+                    # SSH runners push the task branch themselves and predate the pull-based
+                    # worker's lease-specific staging transport.
+                    remote_head = gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo).strip()
+                    if run.pushed_head and remote_head != run.pushed_head:
+                        raise gitops.GitError("the pushed branch head does not match the head reported by the worker")
+                    ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
+            except gitops.GitError as e:
                 ahead = 0
+                if run.pushed_head:
+                    run.error = str(e)
             if ahead == 0:
                 run.status = "failed"
                 run.error = "no commits pushed"
@@ -520,7 +581,7 @@ class ReapMixin:
         return results
 
     def _start_check_revise(self, task: Task, failed: list[dict[str, Any]], rep: TickReport, cost: str, note: str = "",
-                            is_rebase: bool = False) -> None:
+                            is_rebase: bool = False, feedback_note: str = "") -> None:
         """Queue a revise round (or hand off to a human at the cap) for a pre-PR check the branch
         actually owns. Mirrors the historic inline behaviour of `_after_push`. `is_rebase` marks a
         stale-base rebase that failed to apply cleanly (CG-131): mechanical bookkeeping, not a
@@ -528,6 +589,19 @@ class ReapMixin:
         st = self.state.get(task.id)
         names = ", ".join(str(f.get("name")) for f in failed)
         feedback = to_feedback(failed, "pre-PR check")
+        if feedback_note:
+            feedback = f"{feedback}\n\n{feedback_note}" if feedback else feedback_note
+        # A pre-PR failure can be the first reason this worker is sent back, before a
+        # review run exists to add the frozen-criteria delta. Keep the contract that
+        # failed worker received with the mechanical feedback, so a task-file edit made
+        # while it worked is actionable in the immediately following revise brief.
+        for worker_run in reversed(self.runs.runs_for(task.id)):
+            if worker_run.mode not in ("work", "revise", "resume"):
+                continue
+            criteria_note = self._criteria_changed_note(task, worker_run)
+            if criteria_note:
+                feedback = f"{feedback}\n\n{criteria_note}" if feedback else criteria_note
+            break
         if not feedback.strip():
             # A killed or empty check leaves nothing to revise against; storing it as
             # empty feedback would make dispatch skip the task forever. Flag it instead.
@@ -578,6 +652,19 @@ class ReapMixin:
                 v = r.result.get("verified")
                 if isinstance(v, list) and v:
                     return v
+        return None
+
+    def _last_worker_preflight(self, task: Task) -> list[dict[str, Any]] | None:
+        """The most recent complete pre-flight, for reviews re-queued without their worker run.
+
+        A poll or restart can dispatch a review from the PR alone. Keep the same author
+        checklist visible in that path as in the normal work-run handoff.
+        """
+        for r in reversed(self.runs.runs_for(task.id)):
+            if r.mode in ("work", "revise", "resume") and isinstance(r.result, dict):
+                pre_flight = r.result.get("pre_flight")
+                if isinstance(pre_flight, list):
+                    return pre_flight
         return None
 
     def _reprobe_base_broken(self, task: Task, rep: TickReport) -> bool:
@@ -712,7 +799,11 @@ class ReapMixin:
                            rep: TickReport, cost: str) -> None:
         slug = self.slug_for(task)
         summary = str(result.get("summary") or "")
-        criteria = parse_criteria(task.body)
+        # Verification belongs to the contract the worker received.  The task
+        # may have been edited while the run was in flight; that delta is a
+        # separate revise note, not a retroactive requirement for this PR.
+        snapshot = run.env_snapshot or {}
+        criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
         verified = result.get("verified")
         st = self.state.get(task.id)
         if not slug or not self.github.available:
@@ -763,6 +854,9 @@ class ReapMixin:
                 st["pr_number"] = pr.number
                 st["revisions"] = 0
                 st["review_rounds"] = 0
+                st.pop("review_loop_friction", None)
+                st.pop("review_heads", None)
+                st.pop("review_feedback_history", None)
                 st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
                 self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""), draft=st["pr_draft"])
                 nxt = self._pr_status(task)
@@ -969,7 +1063,7 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner == "manual":
+            if run.runner in ("manual", "remote"):
                 continue
             no_exit_code = not (run.path / "exit_code").exists()
             process_missing = run.pid is None

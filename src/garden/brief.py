@@ -13,9 +13,11 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .criteria import parse_criteria
 from .model import Task, estimate_tokens, goals_text
+from .preflight import preflight_section
 from .store import Store
 
 RESULT_MARKER = "GARDEN_RESULT:"
@@ -36,6 +38,7 @@ OPERATING_RULES = """\
 - In a supervised local run, launch each potentially heavy validation as
   `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
   within its execution budget. Run ordinary lightweight inspection commands directly.
+ - The run ends when you stop: run long commands in the foreground, never background a command to await a notification, and write your result only after the checks have returned.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
@@ -329,6 +332,8 @@ def build_brief(
     stack: dict | None = None,
     qa: list[dict] | None = None,
     commits_ahead: list[str] | None = None,
+    validation_plan: dict[str, Any] | None = None,
+    criteria_snapshot: list[str] | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -390,6 +395,12 @@ def build_brief(
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
+    frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
+    if frozen:
+        sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
+                         "\n".join(f"- {item}" for item in frozen) + "\n"))
+    if include_rules:
+        sections.append(("pre_flight", preflight_section()))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []
@@ -440,6 +451,8 @@ def build_brief(
                          + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
+    if validation_plan is not None:
+        sections.append(("validation_plan", "## Validation plan\n\nThis frozen, head-bound plan is shared with the pre-check and reviewer. Keep its acceptance claims and valid current-head evidence; report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
     if qa:
         lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
         for i, item in enumerate(qa, 1):

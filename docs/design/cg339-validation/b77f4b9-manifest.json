@@ -1,0 +1,748 @@
+{
+  "producer": "garden.scheduler.interaction-replay/v1",
+  "head": "b77f4b94d2a5cc78381df019b29d5b59a71d60a7",
+  "nonce": "operator-bounded-cg339-b77f4b9",
+  "started_at": "2026-09-07T14:33:48.523293+00:00",
+  "finished_at": "2026-09-07T14:33:53.202868+00:00",
+  "status": "pass",
+  "environment": "disposable",
+  "flows": [
+    {
+      "name": "add a task",
+      "ok": true,
+      "page": "/phases/demo/p1",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791629.134531,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.1906035,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/phases/demo/p1",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.1940408,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/phases/demo/p1/plan",
+          "status_code": 303
+        },
+        {
+          "at": 1788791629.197025,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.4116027,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.4153988,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.4299347,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/phases/demo/p1",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.4330745,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "approve",
+      "ok": true,
+      "page": "/tasks/DM-003",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791629.4864779,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.493418,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-003/approve",
+          "status_code": 303
+        },
+        {
+          "at": 1788791629.496276,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.5100424,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/phases/demo/p1",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.5147598,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/phases/demo/p1/approve-all",
+          "status_code": 303
+        },
+        {
+          "at": 1788791629.5173378,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "dispatch",
+      "ok": true,
+      "page": "/tasks/DM-003",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791629.5235279,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.5734541,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-003/dispatch",
+          "status_code": 303
+        },
+        {
+          "at": 1788791629.5767808,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.5800784,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.58412,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.5962577,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791629.8056931,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791629.8533752,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.0686507,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.0778913,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "answer a worker's question",
+      "ok": true,
+      "page": "/tasks/DM-001",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791630.084483,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-001",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.1290486,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-001/dispatch",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.132208,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.1354418,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.1477075,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.362758,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.3856459,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.589573,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.60545,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-001",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.635406,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.6913507,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-001/answer",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.6948557,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.6985064,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.7017112,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.7160363,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791630.9296074,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791630.9791746,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.1886277,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.1975439,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-001",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "send back with a note",
+      "ok": true,
+      "page": "/tasks/DM-003",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791631.2064433,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.2131832,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-003/triage-changes",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.2163036,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.2251067,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.2798154,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-003/dispatch",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.282997,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.2859461,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.3001862,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.5142233,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.5631382,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.7706134,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.7816646,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "triage",
+      "ok": true,
+      "page": "/inbox",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791631.7888076,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.7957897,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-003/triage-ready",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.7988653,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.8056405,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-001/triage-ready",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.8087761,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "reconcile a nothing-to-change report",
+      "ok": true,
+      "page": "/tasks/DM-002",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791631.816,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-002",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.864491,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-002/dispatch",
+          "status_code": 303
+        },
+        {
+          "at": 1788791631.8681,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.8714378,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791631.8869696,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.095022,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.1066456,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-002/triage-changes",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.163285,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-002/dispatch",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.166707,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.1698163,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.185797,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.4013603,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.4333923,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.6370637,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6462963,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-002",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.649744,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6566029,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-002/triage-ready",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.6597197,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "merge",
+      "ok": true,
+      "page": "/qa/github",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791632.661249,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/qa/github",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6643627,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6655695,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/qa/github/pull/2/merge",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.6685488,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.669712,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/qa/github/pull/3/merge",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.672705,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6737807,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/qa/github/pull/1/merge",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.676858,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.6799102,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.7120445,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tick",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.9245932,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.9280877,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.931169,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.9344275,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.937435,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.946677,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-003",
+          "status_code": 200
+        }
+      ]
+    },
+    {
+      "name": "close a phase",
+      "ok": true,
+      "page": "/phases/demo/p1",
+      "note": "",
+      "requests": [
+        {
+          "at": 1788791632.9540553,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/tasks/DM-004",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.96065,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/tasks/DM-004/cancel",
+          "status_code": 303
+        },
+        {
+          "at": 1788791632.9637282,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/api/tasks",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.9792826,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/phases/demo/p1",
+          "status_code": 200
+        },
+        {
+          "at": 1788791632.9843411,
+          "method": "POST",
+          "url": "http://127.0.0.1:59959/phases/demo/p1/close",
+          "status_code": 303
+        },
+        {
+          "at": 1788791633.0067675,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/phases/demo/p1",
+          "status_code": 200
+        },
+        {
+          "at": 1788791633.0197194,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/herbarium",
+          "status_code": 200
+        },
+        {
+          "at": 1788791633.0268815,
+          "method": "GET",
+          "url": "http://127.0.0.1:59959/",
+          "status_code": 200
+        }
+      ]
+    }
+  ],
+  "states": {
+    "affected": {
+      "status": "pass",
+      "action": "approve",
+      "observed": "approved a draft and observed it become ready"
+    },
+    "failure": {
+      "status": "pass",
+      "action": "send back with a note",
+      "observed": "observed changes requested and a revise action"
+    },
+    "recovery": {
+      "status": "pass",
+      "action": "send back with a note",
+      "observed": "dispatched revision and observed return to triage"
+    },
+    "empty": {
+      "status": "pass",
+      "action": "close a phase",
+      "observed": "completed the journey and observed Inbox zero"
+    }
+  },
+  "events": [
+    {
+      "state": "affected",
+      "action": "approve",
+      "observed": "approved a draft and observed it become ready",
+      "at": 1788791629.4864779
+    },
+    {
+      "state": "failure",
+      "action": "send back with a note",
+      "observed": "observed changes requested and a revise action",
+      "at": 1788791631.2064433
+    },
+    {
+      "state": "recovery",
+      "action": "send back with a note",
+      "observed": "dispatched revision and observed return to triage",
+      "at": 1788791631.2064433
+    },
+    {
+      "state": "empty",
+      "action": "close a phase",
+      "observed": "completed the journey and observed Inbox zero",
+      "at": 1788791632.9540553
+    }
+  ],
+  "artifacts": [
+    "/home/joshua/work/operator-test-tmp/fast-forward-20260907/cg339-replay/result.json",
+    "/home/joshua/work/operator-test-tmp/fast-forward-20260907/cg339-replay/tick-log.json",
+    "/home/joshua/work/operator-test-tmp/fast-forward-20260907/cg339-replay/pages"
+  ]
+}
