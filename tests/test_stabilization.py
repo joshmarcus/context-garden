@@ -243,7 +243,7 @@ def test_distinct_same_second_owner_events_are_each_retained_and_reset_once(gard
     ]
 
 
-def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
+def test_served_app_replay_covers_delegated_retry_empty_failure_and_recovery(garden):
     import httpx
 
     phase = protected_phase(garden)
@@ -277,11 +277,23 @@ def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
                 time.sleep(0.02)
         else:
             raise AssertionError("disposable served app did not start")
-        response = httpx.post(
+        affected = httpx.post(
             f"{base}/tasks/DM-001/retry", data={"actor": "delegated_operator"},
             headers={"Origin": base}, follow_redirects=False, timeout=5,
         )
-        assert response.status_code == 303
+        empty = httpx.get(f"{base}/inbox", timeout=5)
+        failed = httpx.post(
+            f"{base}/tasks/DM-404/retry", data={"actor": "delegated_operator"},
+            headers={"Origin": base}, follow_redirects=False, timeout=5,
+        )
+        recovery = httpx.post(
+            f"{base}/tasks/DM-001/retry", data={"actor": "delegated_operator"},
+            headers={"Origin": base}, follow_redirects=False, timeout=5,
+        )
+        assert affected.status_code == 303
+        assert empty.status_code == 200 and "Inbox zero" in empty.text
+        assert failed.status_code == 404
+        assert recovery.status_code == 303
     finally:
         process.terminate()
         process.wait(timeout=5)
@@ -290,7 +302,10 @@ def test_web_delegated_retry_is_recorded_and_preserves_passing_window(garden):
 
     assert gate(phase, build_sha="build-a") == (True, [])
     actions = json.loads(data_path.read_text())["interventions"]
-    assert [(a["kind"], a["actor"]) for a in actions] == [("retry", "delegated_operator")]
+    assert [(a["kind"], a["actor"]) for a in actions] == [
+        ("retry", "delegated_operator"),
+        ("retry", "delegated_operator"),
+    ]
 
 
 def test_unknown_nonoperative_event_log_entries_do_not_block_a_passing_window(garden):

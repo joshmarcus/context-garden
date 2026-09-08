@@ -1,0 +1,55 @@
+{
+  "artifact": "docs/stabilization/artifacts/cg-375-served-app.json",
+  "chronological": true,
+  "disposable": true,
+  "event_log": [
+    {
+      "actor": "delegated_operator",
+      "kind": "retry",
+      "task": "DM-001"
+    },
+    {
+      "actor": "delegated_operator",
+      "kind": "retry",
+      "task": "DM-001"
+    }
+  ],
+  "events": [
+    {
+      "body_contains": false,
+      "location": "/tasks/DM-001",
+      "observed": "delegated retry accepted",
+      "phase": "affected",
+      "request": "POST /tasks/DM-001/retry",
+      "status": 303
+    },
+    {
+      "body_contains": true,
+      "location": "",
+      "observed": "Inbox zero rendered",
+      "phase": "empty",
+      "request": "GET /inbox",
+      "status": 200
+    },
+    {
+      "body_contains": false,
+      "location": "",
+      "observed": "missing task rejected",
+      "phase": "failure",
+      "request": "POST /tasks/DM-404/retry",
+      "status": 404
+    },
+    {
+      "body_contains": false,
+      "location": "/tasks/DM-001",
+      "observed": "delegated retry accepted after failure",
+      "phase": "recovery",
+      "request": "POST /tasks/DM-001/retry",
+      "status": 303
+    }
+  ],
+  "result": "PASS",
+  "reviewed_commit": "3a0f84d1017db755ed02d1c50e233da2684331a9",
+  "schema": "context-garden.served-interaction.v1",
+  "server": "uvicorn via tests/served_incident_app.py"
+}
