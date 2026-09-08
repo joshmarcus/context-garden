@@ -563,6 +563,21 @@ class DispatchMixin:
         if mode == "revise" and not st.get("pending_feedback_easy") and not st.get("pending_feedback_rebase"):
             self._apply_revision_policy(task, st)
         claimed_pr = None
+        attached_pr = None
+        if completion_mode == "external" and external_pr:
+            attached_pr = self.resolve_pr_attachment(task, external_pr)
+            if branch_override and branch_override != attached_pr.head:
+                raise RuntimeError(
+                    f"external branch {branch_override!r} does not match PR head {attached_pr.head!r}"
+                )
+            task.branch, task.pr = attached_pr.head, attached_pr.url
+            st.update({"pr_number": attached_pr.number, "head_sha": attached_pr.head_sha,
+                       "pr_state": attached_pr.state, "pr_base": attached_pr.base,
+                       "pr_draft": attached_pr.is_draft, "checks": attached_pr.checks,
+                       "failed_checks": list(attached_pr.failed_checks),
+                       "review_decision": attached_pr.review_decision})
+            self.store.save(task)
+            self.state.save()
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -599,7 +614,9 @@ class DispatchMixin:
                     if not claimed_pr.head_sha or not claimed_pr.base:
                         raise RuntimeError("external PR is missing immutable head or base metadata")
             task.branch = branch
-            if external_pr:
+            if attached_pr is not None:
+                task.pr = attached_pr.url
+            elif external_pr:
                 task.pr = external_pr
                 if external_pr_number is not None:
                     st["pr_number"] = external_pr_number
