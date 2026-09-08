@@ -24,6 +24,12 @@ from .report import TickReport
 from .state import _TaskState
 
 
+INVESTIGATION_RECOMMENDATIONS = frozenset({
+    "resume unchanged", "raise difficulty", "repair environment/verification",
+    "change scope/approach", "defer", "cancel",
+})
+
+
 class HumanMixin:
     def _apply_revision_policy(self, task: Task, st: _TaskState) -> None:
         """Raise the implementation floor at each durable substantive threshold.
@@ -93,9 +99,21 @@ class HumanMixin:
         status = "draining" if active else "requested"
         st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
             "requester": requester, "owner": owner, "scope": scope, "budget": budget,
-            "requested_at": now_iso(), "task": task.id}
+            "requested_at": now_iso(), "task": task.id, "task_status": task.status.value,
+            "request_id": f"{task.id}-{now_iso()}"}
         self._set_needs_human(task, "investigation", f"investigation {status}: {reason.strip() or 'troubled task'}")
         self.events.emit("investigation_requested", task.id, status=status, owner=owner, scope=scope, budget=budget)
+        self.state.save()
+
+    def take_investigation(self, task: Task) -> None:
+        """Let the operator claim a ready investigation without changing task work."""
+        ensure_open(task)
+        inv = self.state.get(task.id).get("investigation")
+        if not isinstance(inv, dict) or inv.get("owner") != "operator" or inv.get("status") != "requested":
+            raise RuntimeError(f"{task.id} has no operator investigation ready to take")
+        inv.update({"status": "active", "taken_at": now_iso()})
+        self._set_needs_human(task, "investigation", "operator investigation active; implementation remains paused")
+        self.events.emit("investigation_taken", task.id, owner="operator", request_id=inv["request_id"])
         self.state.save()
 
     def complete_investigation(self, task: Task, report: str) -> None:
@@ -110,6 +128,46 @@ class HumanMixin:
         self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
         self.state.save()
+
+    def defer_troubled(self, task: Task, reason: str) -> None:
+        """Keep preserved work paused with an explicit durable owner reason."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        info = st.get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to defer")
+        if not reason.strip():
+            raise RuntimeError("a defer reason is required")
+        st["troubled_deferred"] = {"reason": reason.strip(), "at": now_iso(), "counter": int(st.get("substantive_revisions", 0))}
+        self._set_needs_human(task, "troubled_task", f"deferred: {reason.strip()}")
+        self.events.emit("troubled_deferred", task.id, reason=reason.strip())
+        self.state.save()
+
+    def change_troubled_approach(self, task: Task, approach: str, allowance: int = 1) -> None:
+        """Queue one preserved revision with the owner's distinct revised approach."""
+        if not approach.strip():
+            raise RuntimeError("the changed approach is required")
+        st = self.state.get(task.id)
+        info = st.get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to change")
+        old_feedback = str(st.get("pending_feedback") or "").strip()
+        st["pending_feedback"] = (old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()).strip()
+        st.setdefault("approach_changes", []).append({"at": now_iso(), "approach": approach.strip()})
+        self.continue_troubled(task, allowance=allowance)
+
+    def cancel_troubled(self, task: Task, reason: str) -> None:
+        """Cancel from a troubled decision while retaining all branch/run artifacts."""
+        ensure_open(task)
+        info = self.state.get(task.id).get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to cancel")
+        if not reason.strip():
+            raise RuntimeError("a cancellation reason is required")
+        if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
+            raise RuntimeError(f"{task.id} has a run in flight; cancellation decision is stale")
+        self._transition(task, Status.CANCELLED, f"cancelled after troubled-task decision: {reason.strip()}")
+        self.events.emit("troubled_cancelled", task.id, reason=reason.strip(), preserved_branch=task.branch, preserved_pr=task.pr)
 
     def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
         """Idempotently grant bounded preserved revisions without erasing lifetime history."""
