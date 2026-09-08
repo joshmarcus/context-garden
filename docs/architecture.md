@@ -131,7 +131,7 @@ of the loop touch different files.
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
 | `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
 | `kickoff.py` | the kickoff brief and verdict parsing |
-| `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
+| `planner.py`, `plants.py`, `notify.py`, `host_identity.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; host-alias and shared-text redaction boundary; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
 | `web/pages/api.py` | JSON task, recent-event, and decision-notification endpoints under `/api/`, backed by the task store and event log |
 | `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
