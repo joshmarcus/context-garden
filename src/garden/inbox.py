@@ -100,6 +100,9 @@ ATTENTION_KINDS = {
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
     "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
+    "troubled_task": ("Troubled task", "Substantive revisions are not converging. New implementation dispatch is paused for an explicit bounded decision."),
+    "investigation": ("Investigation requested", "Implementation and review mutations are paused while the preserved work reaches a safe boundary for diagnosis."),
+    "investigation_report": ("Investigation report ready", "Diagnosis is complete. The report does not restart, cancel, or merge the task; choose the next action explicitly."),
 }
 
 
@@ -235,6 +238,18 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
         out.append(f"{st['revisions']} revision round(s) used")
     if st.get("review_rounds"):
         out.append(f"{st['review_rounds']} automated review round(s) used")
+    history = list(st.get("difficulty_escalations") or [])
+    for row in history[-3:]:
+        out.append(f"escalated {row.get('from')} → {row.get('to')} at revision {row.get('counter')} · model {row.get('model') or 'runner default'}")
+    all_runs = runs.runs_for(t.id) if runs else []
+    known_cost = sum(float(r.cost_usd or 0) for r in all_runs)
+    if known_cost:
+        out.append(f"cost so far: ${known_cost:.2f}")
+    if st.get("troubled") or st.get("investigation") or (
+        isinstance(st.get("needs_human"), dict)
+        and st["needs_human"].get("kind") in ("troubled_task", "investigation", "investigation_report")
+    ):
+        out.append(f"current owner: {str((st.get('investigation') or {}).get('owner') or 'product owner')}")
     return out
 
 
@@ -297,7 +312,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if delegated:
         actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
-    if can_resume and not reviewer_owned and not check_recovery:
+    troubled = info["kind"] in ("troubled_task", "investigation", "investigation_report")
+    if can_resume and not reviewer_owned and not check_recovery and not troubled:
         label = "Deployment completed, resume" if info["kind"] == "deployment" else "Nothing to fix, resume"
         actions.append({"label": label, "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
@@ -310,7 +326,18 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "One more automated review", "kind": "review-again",
                         "command": f"garden review {t.id}",
                         "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
-    if not reviewer_owned and not check_recovery:
+    if troubled:
+        actions.append({"label": "Continue one revision", "kind": "troubled-continue", "command": f"garden troubled-continue {t.id}",
+                        "detail": "grants one bounded revision under normal capacity; lifetime counts, feedback, branch and PR remain"})
+        actions.append({"label": "Pause for investigation", "kind": "investigate", "command": f'garden investigate {t.id} "..."',
+                        "detail": "records a bounded read-only diagnosis request; active work drains safely and no implementation restarts"})
+        actions.append({"label": "Defer", "kind": "defer", "command": f'garden investigate {t.id} "deferred"',
+                        "detail": "keeps all work and leaves implementation paused until an explicit later decision"})
+        if info["kind"] == "investigation":
+            actions.append({"label": "Publish investigation report", "kind": "investigation-report",
+                            "command": f'garden investigation-report {t.id} "..."',
+                            "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
+    elif not reviewer_owned and not check_recovery:
         actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
                         "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
@@ -319,6 +346,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                     "detail": "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else "")})
     if t.pr:
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
+    investigation = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+    if investigation.get("report"):
+        evidence.insert(0, "investigation report: " + str(investigation["report"]))
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
             "resume_to": resume_to if can_resume else "", "evidence": evidence, "actions": actions,
             "delegated": delegated,

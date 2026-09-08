@@ -263,11 +263,23 @@ def integrate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -
 
 @action("reset-revisions")
 def reset_revisions(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    st = sched.state.get(t.id)
-    st["revisions"] = 0
-    sched.state.save()
-    t.log("revision counter reset (web)")
-    s.save(t)
+    sched.continue_troubled(t, allowance=1)
+
+
+@action("troubled-continue")
+def troubled_continue(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    tier = applies_to.strip()
+    sched.continue_troubled(t, allowance=1, difficulty=tier)
+
+
+@action("investigate")
+def investigate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.pause_for_investigation(t, note, owner=applies_to.strip() or "operator")
+
+
+@action("investigation-report")
+def investigation_report(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.complete_investigation(t, note)
 
 
 def register(app: FastAPI, site: Site) -> None:
