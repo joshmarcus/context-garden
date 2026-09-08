@@ -96,6 +96,9 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
     """
     expected = host.lower().rstrip(".")
     value = url.strip()
+    github_ssh_prefix = "ssh://git@ssh.github.com:443/"
+    if expected == "github.com" and value.lower().startswith(github_ssh_prefix):
+        value = "ssh://git@github.com/" + value[len(github_ssh_prefix):]
     patterns = (
         r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
         r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",

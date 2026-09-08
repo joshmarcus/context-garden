@@ -28,6 +28,12 @@ def test_ambiguous_enterprise_remotes_are_rejected(remote: str):
     assert repo_slug_from_remote(remote, "forge-one.test") is None
 
 
+def test_official_github_ssh_port_remote_is_recognized():
+    remote = "ssh://git@ssh.github.com:443/team/repo.git"
+    assert repo_slug_from_remote(remote) == "team/repo"
+    assert repo_slug_from_remote(remote, "ssh.github.com") is None
+
+
 @pytest.mark.parametrize("remote", [
     "https://forge-one.test/tEam/rEpo.git",
     "ssh://git@forge-one.test/tEam/rEpo.git",
