@@ -29,13 +29,27 @@ ADAPTER_VERSION = 1
 ADAPTER_CAPABILITIES = frozenset({"detached", "remote"})
 
 
-def _adapter_class(name: str, registration: dict[str, Any]) -> type[Runner]:
+def adapter_registration_problem(name: str, registration: object) -> str | None:
+    """Return a read-only registration error without importing private adapter code."""
+    if name in BUILTIN_NAMES:
+        return f"runner adapter {name!r} cannot replace built-in runner"
+    if not isinstance(registration, dict):
+        return f"runner adapter {name!r} registration must be a mapping"
     path = registration.get("path")
     if not isinstance(path, str) or not path.strip():
-        raise RunnerError(f"runner adapter {name!r} needs a dotted 'path'")
+        return f"runner adapter {name!r} needs a dotted 'path'"
     module_name, separator, class_name = path.strip().rpartition(".")
     if not separator or not module_name or not class_name:
-        raise RunnerError(f"runner adapter {name!r} path must be a dotted class path, got {path!r}")
+        return f"runner adapter {name!r} path must be a dotted class path, got {path!r}"
+    return None
+
+
+def _adapter_class(name: str, registration: dict[str, Any]) -> type[Runner]:
+    problem = adapter_registration_problem(name, registration)
+    if problem:
+        raise RunnerError(problem)
+    path = registration["path"].strip()
+    module_name, _, class_name = path.rpartition(".")
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
@@ -74,8 +88,10 @@ def get_runner(name: str, config: dict[str, Any], harness: Harness | None = None
     adapters = config.get("_runner_adapters") or {}
     if not isinstance(adapters, dict):
         raise RunnerError("runner adapters must be configured as a mapping")
-    if name in BUILTIN_NAMES and name in adapters:
-        raise RunnerError(f"runner adapter {name!r} cannot replace built-in runner")
+    if name in adapters:
+        problem = adapter_registration_problem(name, adapters[name])
+        if problem:
+            raise RunnerError(problem)
     if name in REGISTRY:
         return REGISTRY[name](config, harness)
     registration = adapters.get(name)
