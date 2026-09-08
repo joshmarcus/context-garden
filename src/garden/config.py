@@ -287,6 +287,7 @@ class Config:
                     raise ValueError(f"{name}: top level must be a mapping")
                 data = _merge(data, raw)
                 sources.append(name)
+        _validate_product_policies(data)
         return cls(root=root, data=data, sources=sources, env=env)
 
     def source_names(self) -> list[str]:
@@ -345,6 +346,18 @@ class Config:
 
     def product_base_branch(self, name: str) -> str:
         return str(self.product(name).get("base_branch") or "main")
+
+    def product_stack_owner(self, name: str) -> str:
+        """Who may rewrite stacked branch history for a product.
+
+        ``garden`` is the established default. ``external`` means another stack tool owns
+        dependency branches, so scheduler recovery must leave their bases and heads alone.
+        """
+        return str(self.product(name).get("stack_owner") or "garden")
+
+    def product_protected_paths(self, name: str) -> list[str]:
+        """Additional product paths that always require a human merge."""
+        return [str(pattern) for pattern in self.product(name).get("protected_paths", [])]
 
     def product_runner(self, name: str) -> str:
         r = str(self.product(name).get("runner") or self.get("runner"))
@@ -473,6 +486,22 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def _validate_product_policies(data: dict[str, Any]) -> None:
+    """Reject ambiguous branch-ownership and protected-path configuration early."""
+    products = data.get("products") or {}
+    if not isinstance(products, dict):
+        raise ValueError("products must be a mapping")
+    for name, product in products.items():
+        if not isinstance(product, dict):
+            raise ValueError(f"products.{name} must be a mapping")
+        owner = product.get("stack_owner", "garden")
+        if owner not in ("garden", "external"):
+            raise ValueError(f"products.{name}.stack_owner must be 'garden' or 'external'")
+        paths = product.get("protected_paths", [])
+        if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
+            raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
 
 
 def find_root(start: Path | None = None) -> Path:

@@ -74,7 +74,9 @@ class DispatchMixin:
         max_rev = int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
             tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
-            if mode != "work" or not self.state.get(task.id).get("needs_human")]
+            if (mode != "work" or not self.state.get(task.id).get("needs_human"))
+            and (mode != "work" or self.stack_enabled_for(task)
+                 or not blockers(task, tasks, stack=False))]
         queue = [(task, mode, (
             "rebase round, goes first" if mode == "rebase" else
             f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
@@ -125,7 +127,8 @@ class DispatchMixin:
         (resume with one more round, or send it back) instead of sitting silent."""
         tasks = self.store.tasks()
         active = {r.task_id for r in self.runs.active()}
-        ready_ids = {t.id for t in ready(tasks, stack=self.stack_enabled)}
+        ready_ids = {t.id for t in tasks.values()
+                     if t in ready(tasks, stack=self.stack_enabled_for(t))}
         max_rev = int(self.cfg.get("max_revisions", 3))
         for t in tasks.values():
             if t.status.terminal or t.status == Status.RUNNING:
@@ -249,6 +252,8 @@ class DispatchMixin:
 
     def _stack_for(self, task: Task) -> dict[str, Any] | None:
         """Decide the base for a fresh run: a stack parent's branch, or the product base."""
+        if self.external_stack_owner(task):
+            return None
         st = self.state.get(task.id)
         if st.get("stack_parent"):
             parent = self.store.tasks().get(st["stack_parent"])
