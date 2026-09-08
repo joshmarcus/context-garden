@@ -11,6 +11,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
 from ..github import Feedback, GitHubError, PRInfo
+from ..ci_status import CIStatus, resolve_status, status_reason
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
@@ -33,6 +34,14 @@ def _touches_guarded_path(rel: str) -> bool:
 
 
 class PollMixin:
+    def _ci_status(self, task: Task, pr: PRInfo) -> CIStatus:
+        provider = str(self.cfg.get("ci.status_provider", "github") or "github")
+        required = bool(self.cfg.get("ci.required", False)
+                        or self.cfg.product_setup(task.product).get("worker_push") is True)
+        policy = dict(self.cfg.get("ci", {}) or {})
+        policy["required"] = required
+        return resolve_status(provider, self.cfg.garden_dir, task.id, pr, policy)
+
     # ---- poll --------------------------------------------------------------
     def poll(self, task: Task, rep: TickReport) -> None:
         if not self.github.available:
@@ -45,6 +54,8 @@ class PollMixin:
         if not number:
             return
         pr = self.github.get_pr(slug, number)
+        if not pr.head_sha:
+            pr.head_sha = str(st.get("head_sha") or "")
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
@@ -63,6 +74,11 @@ class PollMixin:
         else:
             st.pop("ci_diagnostic", None)
         st["failed_checks"] = list(pr.failed_checks)
+        ci_status = self._ci_status(task, pr)
+        previous_ci = st.get("ci_status") or {}
+        st["ci_status"] = ci_status.to_dict()
+        if previous_ci != st["ci_status"]:
+            self.events.emit("ci_status", task.id, **ci_status.to_dict())
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
             final_base = self.final_base_for(task)
@@ -109,9 +125,10 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
-            st["ci_failed_at"] = pr.updated_at
-            names = ", ".join(pr.failed_checks) or "unknown"
+        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
+        if ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
+            st["ci_failed_at"] = failure_key
+            names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
             if specs:
@@ -361,6 +378,9 @@ class PollMixin:
                 return False, "worker CI is enabled but the PR has no CI result yet"
             if pr.checks not in ("SUCCESS", ""):
                 return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+        ci_status = self._ci_status(task, pr)
+        if ci_status.state != "not_required" and not ci_status.green:
+            return False, status_reason(ci_status)
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
         if pr.review_decision == "CHANGES_REQUESTED":
