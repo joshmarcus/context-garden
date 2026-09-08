@@ -170,6 +170,31 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     return env
 
 
+def _host_check_data(run: dict[str, Any], repo: Path) -> dict[str, Any]:
+    """Replace controller-local paths in a portable check payload.
+
+    Python checks may carry their worktree and output directory in the individual spec,
+    in addition to the shared context.  Neither controller path exists on an independent
+    host, so give every such check a lease-local artifact directory beside the clone.
+    """
+    check_data = dict(run.get("checks") or {})
+    artifact_root = repo.parent / f"{run['id']}-check-artifacts"
+    specs = []
+    for index, original in enumerate(check_data.get("specs") or []):
+        spec = dict(original)
+        if "worktree" in spec:
+            spec["worktree"] = str(repo)
+        if "out_dir" in spec:
+            spec["out_dir"] = str(artifact_root / f"{index}-{spec.get('name') or 'check'}")
+        specs.append(spec)
+    check_data["specs"] = specs
+    check_data["ctx"] = {
+        **dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo),
+    }
+    check_data["cwd"] = str(repo)
+    return check_data
+
+
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
     heartbeat = _LeaseHeartbeat(run, client)
@@ -189,8 +214,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
                            timeout=int(setup.get("timeout_seconds") or 600), check=True)
         if run.get("mode") == "check":
-            check_data = dict(run.get("checks") or {})
-            ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
+            check_data = _host_check_data(run, repo)
+            ctx = check_data["ctx"]
             # A managed consumer passes the product command above so admission covers it.
             # Do not repeat it inside the check job. A standalone worker may instead
             # supply its own setup override; without one the check job prepares the product.
