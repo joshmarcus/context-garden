@@ -15,6 +15,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
+from ..validation import bounded_validation_timeout_seconds
 from .base import Runner, RunnerError, run_temp_dir, scrubbed_env
 
 
@@ -52,6 +53,9 @@ class LocalRunner(Runner):
         because the path below does not contain a garden.yaml."""
         wt = worktree if worktree is not None else (Path(run.worktree) if run.worktree else None)
         env = scrubbed_env(self.config, setup, worktree=wt)
+        # This private supervisor input belongs only to a detached check or nested
+        # garden.validation invocation. Never let an enclosing process cap a model run.
+        env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
         env["GARDEN_ROOT"] = no_live_garden_root(run.path)
@@ -66,6 +70,9 @@ class LocalRunner(Runner):
         )
         env["GARDEN_EXECUTION_CGROUP"] = str(
             self.config.get("resources", {}).get("execution_cgroup", "") or ""
+        )
+        env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] = str(
+            int(self.config.get("checks", {}).get("timeout_seconds", 900) or 900)
         )
         return env
 
@@ -121,6 +128,8 @@ class LocalRunner(Runner):
         d = run.path
         env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
         env["GARDEN_HEAVY_EXECUTION"] = "1"
+        execution_timeout = bounded_validation_timeout_seconds(env.get("GARDEN_VALIDATION_TIMEOUT_SECONDS"))
+        env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
         if env.get("TMPDIR"):
             payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
