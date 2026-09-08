@@ -229,10 +229,15 @@ def test_ssh_in_place_refuses_competing_active_claim(garden, tmp_path):
     assert (lease / "run-id").read_text() == "active-run\n"
 
 
-@pytest.mark.parametrize("consumer", ["review", "persona", "rebase"])
+@pytest.mark.parametrize("consumer", ["review", "persona", "rebase", "retro"])
 @pytest.mark.parametrize("unsafe", ["dirty", "drift", "competing"])
-def test_every_canonical_consumer_claims_before_git_operations(garden, fake_github, consumer, unsafe):
+def test_every_canonical_consumer_claims_before_git_operations(
+    garden, fake_github, consumer, unsafe, monkeypatch
+):
     repo = (garden / "../repo").resolve()
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["products"]["demo"]["self"] = True
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
     scheduler = Scheduler(_enable(garden, repo), github=fake_github)
     task = scheduler.store.task("DM-001")
     task.branch = task.default_branch()
@@ -248,15 +253,48 @@ def test_every_canonical_consumer_claims_before_git_operations(garden, fake_gith
         active.worktree = str(repo)
         active.save()
         expected = "leased by active run"
+    mutations: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda *_: mutations.append("fetch"))
+    monkeypatch.setattr(gitops, "prepare_worktree", lambda *_: mutations.append("prepare"))
     with pytest.raises(CanonicalCheckoutError, match=expected):
         if consumer == "review":
             scheduler.dispatch_review(task)
         elif consumer == "persona":
             scheduler.dispatch_persona_pr(task, "security")
-        else:
+        elif consumer == "rebase":
             scheduler._rebase_and_record(task, "main")
+        else:
+            scheduler._dispatch_reconcile({
+                "product": "demo", "phase_name": "p1", "self_product": "demo",
+                "personas": [], "next_phase": "p2",
+            })
+    assert mutations == []
     if unsafe == "dirty":
         assert (repo / "operator.txt").read_text() == "preserve\n"
+
+
+def test_retro_uses_canonical_root_without_preparing_worktree(garden, fake_github, monkeypatch):
+    repo = (garden / "../repo").resolve()
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["products"]["demo"]["self"] = True
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+    scheduler = Scheduler(_enable(garden, repo), github=fake_github)
+    monkeypatch.setattr(gitops, "fetch", lambda *_: pytest.fail("retro fetched before canonical dispatch"))
+    monkeypatch.setattr(
+        gitops, "prepare_worktree", lambda *_: pytest.fail("retro prepared a disposable worktree")
+    )
+
+    entry = {
+        "product": "demo", "phase_name": "p1", "self_product": "demo",
+        "personas": [], "next_phase": "p2",
+    }
+    scheduler._dispatch_reconcile(entry)
+
+    run = scheduler.runs.latest(entry["recon_task"])
+    assert run is not None
+    assert run.worktree == str(repo)
+    assert entry["worktree"] == str(repo)
+    assert gitops.git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo).strip() == "garden/retro-demo-p1"
 
 
 def test_default_checkout_still_uses_linked_worktree(garden, fake_github):
