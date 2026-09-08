@@ -18,8 +18,8 @@ from ..notify import notify
 from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
-from .report import TickReport
 from .human import INVESTIGATION_RECOMMENDATIONS
+from .report import TickReport
 
 
 class ReapMixin:
