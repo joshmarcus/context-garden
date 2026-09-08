@@ -60,10 +60,22 @@ STRESS_NODES = (
     "tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest",
     "tests/test_web.py::test_served_incident_controls_retry_and_restart_during_overload",
 )
+POLICY_ADDOPTS = tuple(f"--deselect={node}" for node in STRESS_NODES)
 
 
 class ValidationPolicyError(RuntimeError):
     """The current policy cannot safely govern the requested validation command."""
+
+
+def enforce_validation_policy_env(env: dict[str, str]) -> None:
+    """Make even a branch-issued plain pytest command obey the current default policy."""
+    existing = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    env["PYTEST_ADDOPTS"] = shlex.join([*existing, *(opt for opt in POLICY_ADDOPTS if opt not in existing)])
+
+
+def _enable_stress_opt_in(env: dict[str, str]) -> None:
+    existing = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    env["PYTEST_ADDOPTS"] = shlex.join([opt for opt in existing if opt not in POLICY_ADDOPTS])
 
 
 def _pytest_command(argv: list[str]) -> bool:
@@ -143,6 +155,8 @@ def main() -> int:
     except ValidationPolicyError as exc:
         print(f"validation policy block: {exc}", file=sys.stderr)
         return 2
+    if policy.get("stress_opt_in"):
+        _enable_stress_opt_in(os.environ)
     if inherits_validation_lease():
         # The enclosing validation supervisor already owns the host slot and this
         # run's owner lock.  Reacquiring either would wait on that ancestor until
