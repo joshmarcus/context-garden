@@ -43,10 +43,13 @@ applies; only a correctly token-authenticated runs API request bypasses it. Clai
 contain no token or environment value. Repository URL user-info, query strings, and fragments
 are stripped. Of SCP-style remotes, only the conventional `git@host:path` form is accepted;
 other user identities and malformed URL-like remotes fail closed. Configured harness arguments
-are not transported because they may contain inline credentials. The scheduler's
-`setup.command` is executable configuration and is not transported for the same reason; use
-`garden worker --setup-command ...` for host-owned setup. Git, setup, and harness credentials
-belong to the host.
+are not transported because they may contain inline credentials. The product's trusted
+`setup.command` and timeout are transported so a managed consumer can prepare every execution
+mode inside its admitted host slot; `setup.env` values are not transported. Git, setup, and
+harness credentials belong to the host. A standalone `garden worker` continues to use
+`--setup-command ...` for host-owned preparation. That explicit command also overrides
+product setup for checks. The configured command is sent verbatim to the authenticated host;
+keep credentials in host-local environment/configuration, never inline in that command.
 
 ```yaml
 runner: remote

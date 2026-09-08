@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Pinned Ubuntu bootstrap for a one-slot garden worker; root executes once.
+
+Userdata contains only this artifact's digest and a Secrets Manager reference.
+The secret contains consumer configuration and scoped enrollment material.
+"""
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import re
+import subprocess
+import tarfile
+import urllib.request
+from pathlib import Path
+
+
+def command(*args):
+    subprocess.run(args, check=True, timeout=600)
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return response.read()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    declaration = json.loads(Path(parser.parse_args().config).read_text())
+    os.umask(0o077)
+    # Independent of the controller and the worker. Launch must specify termination
+    # on OS shutdown; the operator also arms an external termination deadline.
+    command("systemd-run", "--unit=garden-canary-deadline", "--on-active=25min", "/sbin/shutdown", "-h", "now")
+    for path in Path("/etc/apt").rglob("*"):
+        if path.is_file() and path.suffix in {".list", ".sources"}:
+            path.write_text(path.read_text().replace("http://", "https://"))
+    command("apt-get", "update", "-qq")
+    command("apt-get", "install", "-y", "-qq", "python3-venv", "python3-boto3", "git", "iptables")
+    import boto3
+    secret = json.loads(boto3.client("secretsmanager", region_name="us-east-1").get_secret_value(
+        SecretId=declaration["secret_ref"])["SecretString"])
+    for key in ("host", "endpoint", "profile_version", "bootstrap_version"):
+        if secret[key] != declaration[key]:
+            raise ValueError("enrollment declaration mismatch: " + key)
+    source = secret["source_head"]
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise ValueError("worker source must be an exact commit")
+    command("python3", "-m", "venv", "/opt/garden-worker")
+    command("/opt/garden-worker/bin/pip", "install", "--disable-pip-version-check",
+            "context-garden @ git+https://github.com/joshmarcus/context-garden@" + source)
+    command("chmod", "-R", "a+rX", "/opt/garden-worker")
+    version = "1.102.3"
+    data = fetch("https://pkgs.tailscale.com/stable/tailscale_" + version + "_amd64.tgz")
+    if hashlib.sha256(data).hexdigest() != "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5":
+        raise ValueError("tailscale checksum mismatch")
+    archive = Path("/run/tailscale.tgz")
+    archive.write_bytes(data)
+    with tarfile.open(archive) as tar:
+        tar.extractall("/opt", filter="data")
+    base = "/opt/tailscale_" + version + "_amd64/"
+    command("install", "-m", "755", base + "tailscale", base + "tailscaled", "/usr/local/bin/")
+    Path("/etc/systemd/system/tailscaled.service").write_text(
+        "[Service]\nExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state\n"
+        "Restart=on-failure\nStateDirectory=tailscale\n[Install]\nWantedBy=multi-user.target\n")
+    command("systemctl", "daemon-reload")
+    command("systemctl", "enable", "--now", "tailscaled")
+    key = Path("/run/garden-tailnet-key")
+    key.write_text(secret.pop("tailscale_auth_key"))
+    try:
+        command("tailscale", "up", "--auth-key=file:" + str(key), "--hostname=" + declaration["host"],
+                "--accept-dns=true", "--accept-routes=false")
+    finally:
+        key.unlink(missing_ok=True)
+    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
+    uid = pwd.getpwnam("garden-worker").pw_uid
+    # Block IMDS (both address families) before starting unprivileged workload code.
+    command("iptables", "-I", "OUTPUT", "-d", "169.254.169.254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
+    command("ip6tables", "-I", "OUTPUT", "-d", "fd00:ec2::254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
+    firewall = Path("/usr/local/bin/garden-worker-firewall")
+    firewall.write_text("#!/bin/sh\nset -eu\n"
+        + "iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner " + str(uid) + " -j REJECT\n"
+        + "ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner " + str(uid) + " -j REJECT\n")
+    firewall.chmod(0o700)
+    Path("/etc/systemd/system/garden-worker-firewall.service").write_text(
+        "[Unit]\nBefore=garden-worker.service\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/bin/garden-worker-firewall\nRemainAfterExit=yes\n")
+    token = fetch_imds("api/token", token=True)
+    secret["provider_id"] = fetch_imds("meta-data/instance-id", token=token)
+    secret["work_dir"] = "/var/lib/garden-worker/work"
+    git_token = secret.pop("git_token")
+    cfg = Path("/etc/garden-worker.json")
+    cfg.write_text(json.dumps(secret))
+    os.chown(cfg, uid, pwd.getpwnam("garden-worker").pw_gid)
+    cfg.chmod(0o400)
+    # The canary uses a deterministic harness, never a copied model credential.
+    if secret.get("canary"):
+        harness = fetch("https://raw.githubusercontent.com/joshmarcus/context-garden/" + source + "/tests/fake_claude.py")
+        hp = Path("/usr/local/bin/claude")
+        hp.write_bytes(harness)
+        hp.chmod(0o755)
+    gitconfig = Path("/var/lib/garden-worker/.gitconfig")
+    gitconfig.write_text('[http "' + secret["endpoint"] + '/git/"]\n    extraHeader = Authorization: Bearer ' + git_token + '\n')
+    os.chown(gitconfig, uid, pwd.getpwnam("garden-worker").pw_gid)
+    gitconfig.chmod(0o400)
+    Path("/etc/systemd/system/garden-worker.service").write_text(
+        "[Unit]\nRequires=garden-worker-firewall.service\nAfter=garden-worker-firewall.service network-online.target\n"
+        "[Service]\nUser=garden-worker\nGroup=garden-worker\n"
+        "Environment=HOME=/var/lib/garden-worker\nEnvironment=PATH=/opt/garden-worker/bin:/usr/local/bin:/usr/bin:/bin\n"
+        "ExecStart=/opt/garden-worker/bin/python -m garden.managed_worker --config /etc/garden-worker.json\n"
+        "StandardOutput=journal+console\nStandardError=journal+console\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\n"
+        "ReadWritePaths=/var/lib/garden-worker\nPrivateTmp=yes\nMemoryMax=12G\nMemorySwapMax=0\nCPUQuota=300%\n"
+        "[Install]\nWantedBy=multi-user.target\n")
+    command("systemctl", "daemon-reload")
+    command("systemctl", "enable", "--now", "garden-worker")
+
+
+def fetch_imds(path, token):
+    url = "http://169.254.169.254/latest/" + path
+    req = urllib.request.Request(url, method="PUT" if token is True else "GET",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"} if token is True else {"X-aws-ec2-metadata-token": token})
+    with urllib.request.urlopen(req, timeout=5) as response:
+        return response.read().decode()
+
+
+if __name__ == "__main__":
+    main()

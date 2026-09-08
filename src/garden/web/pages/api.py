@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 import secrets
@@ -23,6 +24,36 @@ from ..common import Site
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+
+    def host_facts(value: Any) -> dict[str, Any] | None:
+        """Validate the small, durable host-attribution record at the HTTP boundary."""
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise HTTPException(422, "host_facts must be an object")
+        text_fields = ("profile_version", "bootstrap_version", "source_head", "provider_id")
+        number_fields = ("memory_available_bytes", "memory_total_bytes", "disk_free_bytes",
+                         "cpu_count", "observed_at")
+        facts: dict[str, Any] = {}
+        for name in text_fields:
+            item = value.get(name)
+            if item is not None:
+                if not isinstance(item, str) or not item or len(item) > 128:
+                    raise HTTPException(422, f"host_facts.{name} must be 1-128 characters")
+                facts[name] = item
+        for name in number_fields:
+            item = value.get(name)
+            if item is not None:
+                if isinstance(item, bool) or not isinstance(item, (int, float)) \
+                        or item < 0 or item > 2**63 - 1 or not math.isfinite(item):
+                    raise HTTPException(422, f"host_facts.{name} must be a finite number between 0 and 2**63-1")
+                facts[name] = item
+        return facts
+
+    def persist_host_facts(run: Any, value: Any) -> None:
+        facts = host_facts(value)
+        if facts is not None:
+            (run.path / "host_facts.json").write_text(json.dumps(facts))
 
     def worker_host(authorization: str) -> dict[str, Any]:
         if not authorization.startswith("Bearer "):
@@ -181,7 +212,9 @@ def register(app: FastAPI, site: Site) -> None:
                     run.start_head = gitops.remote_head(scheduler_repo, run.branch)
                 except (AttributeError, gitops.GitError):
                     run.start_head = ""
+                persist_host_facts(run, body.get("host_facts"))
                 run.save()
+                setup = hub.store.config.product_setup(product) or {}
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
                     "lease_token": run.lease_token,
@@ -190,7 +223,10 @@ def register(app: FastAPI, site: Site) -> None:
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
                     "repo": repo_value,
-                    "setup": {"timeout_seconds": int((hub.store.config.product_setup(product) or {}).get("timeout_seconds") or 600)},
+                    # The product command is trusted executable configuration. Values from
+                    # setup.env stay host-local; execution uses the claim's scrubbed env.
+                    "setup": {"command": str(setup.get("command") or ""),
+                              "timeout_seconds": int(setup.get("timeout_seconds") or 600)},
                     "env_allowlist": pass_env_patterns(hub.store.config.data),
                     "harness": run.harness, "model": run.model, "difficulty": run.difficulty,
                     # Command arguments may contain inline API keys. Remote hosts use the
@@ -227,6 +263,7 @@ def register(app: FastAPI, site: Site) -> None:
         body = await request.json()
         with hub.action_lock:
             run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            persist_host_facts(run, body.get("host_facts"))
             chunk = str(body.get("transcript") or "")
             if chunk:
                 with (run.path / "stdout.json").open("a") as f:
