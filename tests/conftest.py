@@ -316,7 +316,7 @@ class FakeGitHub:
 
     def create_pr(self, slug, head, base, title, body, draft=False, reviewers=None):
         self._n += 1
-        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, body=body, updated_at="t1", is_draft=draft)
+        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, body=body, updated_at="t1", head_sha=f"head-{self._n}", head_repo=slug, is_draft=draft)
         self.prs[head] = pr
         self.created.append({"head": head, "base": base, "title": title, "body": body})
         if self.check_latency > 0:  # a fresh push starts CI: PENDING until it settles

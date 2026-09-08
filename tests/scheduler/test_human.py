@@ -284,6 +284,7 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     task = sched.store.task("DM-001")
     assert task.status == Status.IN_REVIEW and task.branch == "operator/fix"
     assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert sched.state.get(task.id)["head_sha"] == pr.head_sha
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
 
 
@@ -457,6 +458,48 @@ def test_pushed_manual_submitted_result_resumes_finalization_after_restart(sched
 
     assert restarted.store.task(task.id).status == Status.IN_REVIEW
     assert gitops.git("rev-parse", "HEAD", cwd=restarted.worktree_for(task)).strip() == pushed_sha
+def test_attach_pr_adopts_verified_identity_and_keeps_feedback_history(sched, fake_github):
+    task = sched.store.task("DM-001")
+    old = fake_github.create_pr("test/demo", "operator/old", "main", "old", "")
+    new = fake_github.create_pr("test/demo", "operator/non-default", "main", "new", "")
+    st = sched.state.get(task.id)
+    st.update({"pr_number": old.number, "head_sha": "stale", "review_run": "stale-run",
+               "automerge_blocked": "stale queue", "pending_feedback": "- keep this request"})
+    sched.state.save()
+
+    sched.attach_pr(task, new.url)
+
+    reloaded = sched.store.task(task.id)
+    state = sched.state.get(task.id)
+    assert reloaded.branch == "operator/non-default" and reloaded.pr == new.url
+    assert state["head_sha"] == new.head_sha and state["pr_number"] == new.number
+    assert state["pending_feedback"] == "- keep this request"
+    assert "review_run" not in state and "automerge_blocked" not in state
+
+
+@pytest.mark.parametrize("attribute, value, message", [
+    ("head", "", "resolved head branch and SHA"),
+    ("head_sha", "", "resolved head branch and SHA"),
+    ("head_repo", "another/fork", "fork head"),
+])
+def test_attach_pr_refuses_unusable_head_identity(sched, fake_github, attribute, value, message):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    setattr(pr, attribute, value)
+
+    with pytest.raises(RuntimeError, match=message):
+        sched.attach_pr(task, pr.url)
+    assert task.branch == "" and task.pr == ""
+
+
+def test_attach_pr_refuses_a_checkout_owned_by_an_active_run(sched, fake_github):
+    task = sched.store.task("DM-001")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False, branch_override="operator/live",
+                   completion_mode="external")
+    pr = fake_github.create_pr("test/demo", "operator/replacement", "main", "external", "")
+
+    with pytest.raises(RuntimeError, match="active run"):
+        sched.attach_pr(task, pr.url)
 
 
 def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
