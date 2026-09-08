@@ -1657,6 +1657,49 @@ def test_run_page_running_tails_the_same_view(garden):
     assert c.get("/runs/DM-001/nope").status_code == 404
 
 
+def test_run_page_renders_codex_transcript_and_escapes_item_content(garden):
+    """Saved Codex JSONL remains a readable transcript after the run has finished."""
+    import json
+
+    stdout = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "I will inspect <script>alert(1)</script>."}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "command": "rg Codex", "aggregated_output": "<result>found</result>"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "file_change", "changes": [{"path": "src/garden/web/pages/runs.py", "kind": "update"}]}}),
+        json.dumps({"type": "turn.completed", "usage": {}}),
+    ]) + "\n"
+    run = _record_run(garden, harness="codex", stdout=stdout)
+
+    c = client(garden)
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "I will inspect &lt;script&gt;alert(1)&lt;/script&gt;." in body
+    assert "<script>alert(1)</script>" not in body
+    assert "command" in body and "rg Codex" in body
+    assert "&lt;result&gt;found&lt;/result&gt;" in body
+    assert "file change" in body and "runs.py" in body
+    assert "/partials/runs/DM-001/" not in body
+
+
+def test_run_page_detects_codex_before_output_and_handles_bad_events(garden):
+    """Configured Codex runs tail immediately; malformed or unrecognized JSONL is harmless."""
+    import json
+
+    run = _record_run(garden, status="running", harness="codex")
+    c = client(garden)
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "no output yet" in body
+    assert f"data-poll=\"/partials/runs/DM-001/{run.run_id}/stdout\"" in body
+
+    (run.path / "stdout.json").write_text("not json\n[]\n" + json.dumps({"type": "unknown"}) + "\n" +
+                                           json.dumps({"type": "item.completed", "item": []}) + "\n")
+    partial = c.get(f"/partials/runs/DM-001/{run.run_id}/stdout")
+    assert partial.status_code == 200
+    assert "unknown" in partial.text
+
+
 def test_timeline_formats_the_new_event_kinds(garden):
     """The Timeline gives a phrase to the states phase-03 added: mechanical and agent rebases,
     the merge-queue head and its drops, ignored feedback, a failed retro step, a stale-base
