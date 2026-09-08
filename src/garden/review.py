@@ -63,9 +63,6 @@ _CAPTURE_ARTIFACT_NAMES = {"docs/design/snapshot.json"}
 # A path says where a change lives, not whether a person can see it.  The task and PR
 # describe the intended behaviour; use that declaration to distinguish a route or
 # authentication change in a web module from a rendered change in the same module.
-_VISUAL_BEHAVIOR = re.compile(
-    r"\b(?:visual|visible|render(?:ed|ing)?|layout|style(?:sheet)?|css|theme|colour|color|"
-    r"spacing|typograph(?:y|ic)|responsive|viewport|rail|chrome|panel|button|form)\b", re.I)
 _REPRESENTATIVE_SHARED_PAGES = ("board", "inbox")
 
 
@@ -74,13 +71,20 @@ def _is_capture_artifact(path: str) -> bool:
     return path in _CAPTURE_ARTIFACT_NAMES or path.startswith(_CAPTURE_ARTIFACT_PREFIXES)
 
 
-def _visible_behavior(review_context: tuple[str, ...]) -> str:
-    """Return the declared visible behaviour, or an empty string for nonvisual work."""
-    for context in review_context:
-        for line in context.splitlines():
-            if _VISUAL_BEHAVIOR.search(line):
-                return line.strip()[:240]
-    return ""
+def _visual_scope(scope: Any) -> tuple[str, list[str]]:
+    """Read the task's explicit visual-scope declaration, if it has one.
+
+    Free text can describe a visual change or explicitly deny one.  It is therefore not a
+    reliable policy input.  The declaration is intentionally small: a named behaviour and,
+    optionally, the exact affected page slugs.
+    """
+    if not isinstance(scope, dict) or not isinstance(scope.get("behavior"), str):
+        return "", []
+    behavior = scope["behavior"].strip()
+    pages = scope.get("pages", [])
+    if not behavior or not isinstance(pages, list) or not all(isinstance(page, str) for page in pages):
+        return "", []
+    return behavior[:240], sorted(set(page for page in pages if page))
 
 
 def visual_source_digest(worktree: Path, plan: dict[str, Any]) -> str:
@@ -124,7 +128,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 
 
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
-                    check_specs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                    check_specs: list[dict[str, Any]] | None = None,
+                    visual_scope: Any = None) -> dict[str, Any]:
     """Return the head-bound functional and visual evidence decision for a change.
 
     A screenshot is evidence for a named visible behaviour, never a side effect of touching
@@ -137,7 +142,7 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
     unknown: list[str] = []
     visual_paths: set[str] = set()
     shared = False
-    behavior = _visible_behavior(review_context)
+    behavior, declared_pages = _visual_scope(visual_scope)
     for path in changed:
         if _is_capture_artifact(path):
             continue
@@ -153,7 +158,7 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
             continue
         match = re.search(r"(?:pages/|templates/)([a-z0-9_]+)\.(?:py|html)$", path)
         if behavior and match and match.group(1) in _PAGE_MODULES:
-            names = _PAGE_MODULES[match.group(1)]
+            names = tuple(declared_pages) or _PAGE_MODULES[match.group(1)]
             pages.update(names)
             visual_paths.add(path)
             reasons.append({"item": ", ".join(names),
@@ -161,11 +166,13 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
         elif path.startswith("src/garden/web/") or "/templates/" in path:
             unknown.append(path)
     if shared and behavior:
-        pages.update(_REPRESENTATIVE_SHARED_PAGES)
+        pages.update(declared_pages or _REPRESENTATIVE_SHARED_PAGES)
         visual_paths.update(path for path in changed if path in _SHARED_UI_PATHS or path.startswith(_SHARED_UI_PREFIXES)
                             or path.endswith((".css", ".scss")))
-        reasons.append({"item": ", ".join(_REPRESENTATIVE_SHARED_PAGES),
-                        "reason": f"visible shared behavior: {behavior}; representative consumers cover distinct board and inbox layouts"})
+        selected_pages = declared_pages or list(_REPRESENTATIVE_SHARED_PAGES)
+        selection_reason = "declared affected pages" if declared_pages else "representative consumers cover distinct board and inbox layouts"
+        reasons.append({"item": ", ".join(selected_pages),
+                        "reason": f"visible shared behavior: {behavior}; {selection_reason}"})
     elif shared:
         reasons.append({"item": "no screenshot scope",
                         "reason": "shared UI path changed without a declared visible behavior; retain functional evidence"})

@@ -434,7 +434,8 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
-        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head, check_specs=self._pre_pr_specs(task))
+        plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head,
+                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"))
         plan["visual_source"] = visual_source_digest(wt, plan)
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
@@ -460,10 +461,12 @@ class ReviewMixin:
                     and checked_plan.get("pages") == plan["pages"]
                     and checked_plan.get("visual_source") == plan["visual_source"]):
                 reusable_capture_check = check_run
-        evidence_check = current_check or reusable_capture_check
-        if evidence_check is not None:
-            check_results = list((evidence_check.result or {}).get("checks", []))
-            ui_results = [result for result in check_results if result.get("name") == "ui"]
+        if current_check is not None:
+            check_results = list((current_check.result or {}).get("checks", []))
+        capture_check = current_check or reusable_capture_check
+        if capture_check is not None:
+            ui_results = [result for result in (capture_check.result or {}).get("checks", [])
+                          if result.get("name") == "ui" and result.get("status") == "pass"]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
@@ -520,7 +523,7 @@ class ReviewMixin:
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
                             "scalability_required": needs_scalability,
-                            "validation_check_current": current_check is not None or reusable_capture_check is not None or (not stale_validation_check and not plan["pages"]),
+                            "validation_check_current": current_check is not None or (not stale_validation_check and not plan["pages"]),
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
                             "interaction_replay_nonce": replay_nonce,
                             "interaction_replay_digest": replay_digest,

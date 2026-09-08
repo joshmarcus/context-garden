@@ -44,6 +44,20 @@ automated review is dispatched, and their state is shown on the task page. Faile
 checks enter the normal mechanical changes-requested path with their diagnostic in the
 revise brief.
 
+When a task materially changes rendered behavior, its frontmatter declares that scope
+explicitly instead of relying on prose or the path it edits:
+
+```yaml
+visual_scope:
+  behavior: Tighter task-page spacing in the activity panel
+  pages: [task]
+```
+
+`behavior` names what a person will see. `pages` is optional when the changed page module
+identifies one affected page; shared styles without an explicit page list use representative
+consumers. A task without this declaration has no screenshot requirement merely because it
+edits a web module; its functional validation remains required.
+
 Before dispatching a task that explicitly requires captures, the scheduler performs one
 bounded Chromium launch in the product check's final scrubbed child environment. A failed
 probe holds only capture-dependent tasks and is cached for five minutes; unrelated work

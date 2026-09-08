@@ -305,6 +305,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
 def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.title = "Tighten inbox layout"
+    task.extra["visual_scope"] = {"behavior": "Tighter inbox layout"}
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
     captured = []
