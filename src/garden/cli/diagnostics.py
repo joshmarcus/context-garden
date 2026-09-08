@@ -251,6 +251,9 @@ def doctor():
     for name in sorted(runner_names):
         try:
             cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}
+            # Doctor intentionally resolves configured adapters so a missing private package
+            # is actionable; ordinary config reads never import adapter modules.
+            cfg["_runner_adapters"] = dict(store.config.get("runner_adapters") or {})
             r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
             probs = r.doctor()
         except Exception as e:  # noqa: BLE001

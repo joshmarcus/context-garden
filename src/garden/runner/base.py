@@ -233,6 +233,11 @@ class Runner(ABC):
     name: str = "base"
     detached: bool = True  # False = a human drives the session; completion comes via `garden finish`
     remote: bool = False  # True = the worker pushes the branch itself; no local worktree during the run
+    # Third-party adapters declare this stable contract before the scheduler will use them.
+    # The declarations make their scheduling-relevant behavior inspectable without granting
+    # adapters a path around the normal dispatch, fence, reap, or review flows.
+    adapter_version: int = 1
+    capabilities: dict[str, bool] = {"detached": True, "remote": False}
 
     def __init__(self, config: dict[str, Any], harness: Harness | None = None):
         self.config = config

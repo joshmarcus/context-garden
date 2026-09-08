@@ -17,6 +17,62 @@ from garden.runner.local import LocalRunner
 from garden.runner.manual import ManualRunner
 
 
+def _private_adapter(tmp_path: Path, *, version: str = "1", capabilities: str = "{'detached': True, 'remote': False}") -> str:
+    """Package a synthetic adapter outside garden, as an operator would."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    package_name = f"private_adapter_{abs(hash(tmp_path))}"
+    package = tmp_path / package_name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "runner.py").write_text(
+        "from garden.runner.base import Runner\n"
+        "class SyntheticRunner(Runner):\n"
+        f"    adapter_version = {version}\n"
+        f"    capabilities = {capabilities}\n"
+        "    def start(self, run, worktree, brief_text): pass\n"
+        "    def collect(self, run): return {}\n"
+    )
+    return f"{package_name}.runner.SyntheticRunner"
+
+
+def test_private_runner_adapter_resolves_from_operator_configuration(tmp_path, monkeypatch):
+    """A separately packaged adapter needs no change to the public garden package."""
+    from garden.harness import Harness
+    from garden.runner import get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path)
+    runner = get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}}, Harness("claude", {}))
+
+    assert runner.name == "synthetic"
+    assert runner.capabilities == {"detached": True, "remote": False}
+
+
+def test_private_runner_adapter_rejects_bad_contract_and_builtin_replacement(tmp_path, monkeypatch):
+    from garden.runner import RunnerError, get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path, version="2")
+    with pytest.raises(RunnerError, match="interface version 2; expected 1"):
+        get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}})
+    bad_capabilities = _private_adapter(tmp_path / "bad-capabilities", capabilities="{}")
+    monkeypatch.syspath_prepend(str(tmp_path / "bad-capabilities"))
+    with pytest.raises(RunnerError, match="must declare capabilities"):
+        get_runner("capability-test", {"_runner_adapters": {"capability-test": {"path": bad_capabilities}}})
+    with pytest.raises(RunnerError, match="cannot replace built-in"):
+        get_runner("local", {"_runner_adapters": {"local": {"path": path}}})
+
+
+def test_private_runner_adapter_reports_missing_import_without_config_load_importing(tmp_path):
+    from garden.config import Config
+    from garden.runner import RunnerError, get_runner
+
+    config = Config(root=tmp_path, data={"runner_adapters": {"synthetic": {"path": "missing_adapter.Runner"}}})
+    assert config.runner_adapter("synthetic") == {"path": "missing_adapter.Runner"}
+    with pytest.raises(RunnerError, match="could not import 'missing_adapter'"):
+        get_runner("synthetic", {"_runner_adapters": config.get("runner_adapters")})
+
+
 def _wait_for_child(run) -> None:
     """The ssh runner is the one path in the suite that still launches a real command: its
     remote script is shell, so fake_ssh runs it with `sh`, which runs fake_claude as a
