@@ -155,6 +155,48 @@ def test_cli_and_web_inbox_show_the_scheduler_review_wait_reason(garden):
     assert_wait("no review slot (2 of 2 busy)")
 
 
+
+def test_queued_review_outranks_an_old_human_stop(garden):
+    """A new automated review owns the current head, even if an old stop remains recorded."""
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "pending_reviews": [{"kind": "review"}],
+        "needs_human": {"kind": "review_cap", "reason": "prior review cap", "at": "now"},
+    })
+    state.save()
+
+    page = run(garden, "inbox")
+
+    assert page.exit_code == 0
+    assert "inbox zero" in page.output
+    assert "automated review queued: queued: the next tick starts it" in re.sub(r"\s+", " ", page.output)
+    assert "Automated review rounds used" not in page.output
+
+
+def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    target = "operator@host-203-0-113-10.internal"
+    config["ssh"]["hosts"][0]["host"] = target
+    config_path.write_text(yaml.safe_dump(config))
+    subprocess.run(["git", "init", "-q"], cwd=garden, check=True)
+    subprocess.run(["git", "add", "garden.yaml"], cwd=garden, check=True)
+
+    result = run(garden, "doctor")
+
+    assert result.exit_code == 1
+    assert "host identities" in result.output
+    assert "ssh.hosts[0].host" in result.output
+    assert target not in result.output
 def test_status_shows_retro_waiting_for_personas(garden):
     from garden.scheduler import Scheduler
     from garden.store import Store
