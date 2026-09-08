@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -533,6 +534,8 @@ class HostLifecycle:
     ) -> str:
         if not admission.eligible:
             return admission.detail or "host-local admission rejected"
+        if not math.isfinite(admission.measured_at):
+            return "resource probe timestamp is invalid"
         if admission.measured_at > current_time + 5:
             return "resource probe timestamp is in the future"
         age = current_time - admission.measured_at
@@ -552,7 +555,11 @@ class HostLifecycle:
             )
         if admission.disk_free_gib < requirements.disk_gib:
             return f"host disk {admission.disk_free_gib} GiB is below {requirements.disk_gib} GiB"
-        if not admission.lease_id or admission.lease_expires_at <= current_time:
+        if (
+            not admission.lease_id
+            or not math.isfinite(admission.lease_expires_at)
+            or admission.lease_expires_at <= current_time
+        ):
             return "host-local admission lease is missing or expired"
         return ""
 
