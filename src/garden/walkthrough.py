@@ -844,7 +844,10 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     rendering its own templates, while the disposable QA garden makes page data deterministic.
     """
     out_dir = Path(str(spec["out_dir"]))
-    worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
+    # The shared context is rewritten by pull-based workers to identify their host-local
+    # clone.  Prefer it over a legacy per-check value, which may still name the controller's
+    # checkout when a check payload crosses hosts.
+    worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():
         return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
