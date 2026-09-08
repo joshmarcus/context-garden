@@ -450,8 +450,6 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
         assert run.read_exit_code() == 0
 
 
-
-
 def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
     """The leader's real status is retained while completion waits for live work."""
     run_dir = tmp_path / "nonzero"
