@@ -129,7 +129,7 @@ of the loop touch different files.
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now 1 (`/now1`, `garden now --page 1`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
-| `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
 | `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
