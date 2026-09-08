@@ -278,6 +278,13 @@ that looks like a login failure (`"not logged in"`) with `env_error: true, env_k
 "auth"`, so this is told apart from a worker's own failure and pauses the harness (an
 environment stop) rather than counting toward the task's attempts.
 
+Tools outside the harness can receive individual approved configuration files through
+`worker_env.config_files`. Each entry is named and supplies a host-local `source`, a
+`destination` relative to the isolated HOME, and optional `required: true`. The local, SSH,
+and pull-based remote paths refresh only these files for each run, remove a stale optional
+copy when its source disappears, and reject traversal or destination symlinks. Directories
+are mode 0700 and files mode 0600. File contents never enter the brief or remote claim.
+
 `start` returns at once. The scheduler records the `running` transition, bumps
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick
 moves on.

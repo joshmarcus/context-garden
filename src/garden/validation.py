@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import shlex
@@ -22,6 +23,26 @@ def bounded_validation_timeout_seconds(raw: object | None = None) -> float:
     if not math.isfinite(configured) or configured <= 0:
         configured = HARD_VALIDATION_TIMEOUT_SECONDS
     return min(configured, HARD_VALIDATION_TIMEOUT_SECONDS)
+
+
+def validation_timeout_result(run_dir: Path, exit_code: int | None) -> dict[str, str] | None:
+    """Translate a supervisor timeout receipt into one stable check result."""
+    if exit_code != 124:
+        return None
+    try:
+        receipt = json.loads((run_dir / "validation_timeout.json").read_text())
+        if (receipt.get("kind") != "validation_execution_timeout"
+                or int(receipt.get("exit_code")) != 124):
+            return None
+        reason = str(receipt.get("reason") or "").strip()
+    except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not reason:
+        return None
+    return {
+        "name": "checks", "status": "error", "summary": "check execution timed out",
+        "details": reason[:2000],
+    }
 
 
 def main() -> int:
