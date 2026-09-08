@@ -54,8 +54,34 @@ The copied, independent Git fixture seed removed repeated initial repository cre
 initial push from each requesting test. Its files are copied rather than linked, so a test
 cannot alter the session seed or another test's mutable remote/worktree state.
 
-## Status
+## Final comparison
 
-The cold target has not yet been met and no warm result is claimed. The profile is retained
-to make the remaining work reproducible without confusing dependency installation,
-admission waiting, descendant leaks, and pytest execution.
+The remaining profile showed that walkthrough HTML-to-text conversion reparsed every CSS
+selector for every element. The final implementation caches at most 512 selector component
+lists and 1,024 simple selectors, keyed by the complete selector text, and builds a fresh
+id/class/tag rule index for each parsed page. Unsupported selectors remain conservative
+(visible), and no page-specific declarations or mutable capture state enter either cache.
+
+On source `3c037ca4804a9015c161bd6ecf505474bb71f2d5`, the cold command above (with
+`--basetemp=/tmp/cg453-final.mkgbTe/cold-pytest`) passed **1,713 tests**, skipped 3, and
+deselected the same 4 explicitly marked stress tests in **424.93s**; the supervised wrapper
+took 427.90s and pytest's peak RSS was 278,664KiB. The immediate warm command removed
+`--cache-clear`, used `/tmp/cg453-final.mkgbTe/warm-pytest`, and passed the identical
+collection in **432.31s**; its wrapper took 435.26s and peak RSS was 278,264KiB. Both were
+serial and passed below 480 seconds. The slowest final nodes were the real upgrade re-exec
+(30.54s cold / 30.95s warm), current-build canary (10.14s / 10.28s), failing canary
+(8.88s / 8.95s), and standalone remote lifecycle (8.56s / 8.52s).
+
+The affected `tests/test_walkthrough.py` suite went from **63.38s** in the pre-optimization
+cold profile to **19.62s** (36 passed). The combined retro and retro-verdict suites, whose
+captures exercised the same conversion path, passed 50 tests in **34.00s**, versus 103.25s
+for those files in the cold profile. The Git fixture seed remains copied into independent
+mutable repositories; the selector caches are bounded pure parse results and each page's
+rule index is discarded with its parser.
+
+The representative host was Linux 7.0.0-1012-aws x86_64, Python 3.12.14 and pip 25.0.1.
+Its worker service caps were CPUQuota 300%, MemoryMax 12GiB, no swap and TasksMax 17,120;
+pytest itself remained serial. The runner had already prepared dependencies and Chromium,
+so installation time was excluded as required but no trustworthy install-duration receipt
+was available for this continuation. CI retains separate install steps, making their time
+visible independently from the pytest `--durations=40` diagnostic.

@@ -104,6 +104,12 @@ completed process with descendants still alive.  CI runs the same ordinary selec
 `--durations=40`, so a regression leaves the slow-node table in its job log.  Stress tests
 remain excluded unless `--run-stress` is explicitly supplied.
 
+The current representative AWS measurement and environment are recorded in the
+[CG-453 report](validation/cg453/report.md): 1,713 passed, 3 skipped and 4 stress tests
+deselected in 424.93s cold and 432.31s warm on Python 3.12.14. Compare the slowest-node
+table before changing fixtures; a validation record still in `waiting` is admission time,
+while a completed pytest process whose wrapper remains live indicates a descendant leak.
+
 For a retro document renderer/parser change, the baseline must precede the extraction.
 This comparison uses `58e13b99ddaf62b751b01771e5660039a421d46c`, the parent of split commit
 `4cfcc8c`, with its original **34-test** mixed `tests/test_retro.py`. The focused selection
