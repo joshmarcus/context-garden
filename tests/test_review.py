@@ -639,7 +639,7 @@ def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkey
 
     persisted = sched.runs.latest(task.id)
     assert persisted is not None and persisted.result["verdict"] == "request_changes"
-    assert "structured interaction artifact" in persisted.result["findings"][-1]["summary"]
+    assert "affected interaction is missing or failed" in persisted.result["findings"][-1]["summary"]
 
 
 def interaction_events() -> list[dict[str, object]]:
@@ -1453,3 +1453,83 @@ def test_queued_replays_do_not_recursively_drain_or_duplicate_checks(sched, monk
     sched._drain_pending_reviews(sched.store.tasks(), second)
     assert second.dispatched == []
     assert sched.review_wait_reason(sched.store.task("DM-001"))[0] == "check"
+
+
+def _performed_interaction(head="head-a"):
+    return {
+        "head": head, "environment": "disposable", "command": "python -m uvicorn app:app",
+        "states": {name: {"status": "pass", "actions": ["request"], "observed": "verified consequence"}
+                   for name in ("affected", "empty", "failure_recovery")},
+        "events": interaction_events(), "artifacts": [], "automated_checks": ["focused checks passed"],
+        "unverified": [],
+    }
+
+
+@pytest.mark.parametrize("missing", ["head", "environment", "command", "artifacts", "automated_checks", "unverified"])
+def test_missing_interaction_metadata_is_advisory(missing):
+    row = _performed_interaction()
+    del row[missing]
+    warnings = []
+    assert interaction_evidence_gaps(
+        {"interaction": row}, required=True, scalability=False, expected_head="head-a",
+        metadata_warnings=warnings,
+    ) == []
+    assert warnings
+
+
+def test_artifact_may_use_equivalent_schema_and_reviewer_paraphrase(tmp_path):
+    artifact = tmp_path / "performed.json"
+    artifact.write_text(json.dumps({"head": "head-a", "states": {"affected": "recorded by harness"},
+                                    "events": [{"action": "actual request", "observed": "raw response"}]}))
+    row = _performed_interaction()
+    row["artifacts"] = [str(artifact)]
+    warnings = []
+    assert interaction_evidence_gaps(
+        {"interaction": row}, required=True, scalability=False, expected_head="head-a",
+        metadata_warnings=warnings,
+    ) == []
+    assert warnings == []
+    artifact.write_text(json.dumps({"head": "another-commit"}))
+    assert any("contradicts" in gap for gap in interaction_evidence_gaps(
+        {"interaction": row}, required=True, scalability=False, expected_head="head-a"))
+
+
+@pytest.mark.parametrize("bug", [False, True])
+def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, monkeypatch, bug):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    row = _performed_interaction(run.env_snapshot["review_head"])
+    del row["command"]
+    findings = ([{"severity": "blocking", "file": "src/garden/review.py", "line": 1,
+                 "summary": "A wrong repository can be accepted", "fix": "Reject foreign repository identity"}]
+                if bug else [])
+    review = {"verdict": "request_changes" if bug else "approve", "summary": "Verified behavior",
+              "pages_seen": [], "criteria": [], "description_ok": True, "findings": findings,
+              "improvements": [], "interaction": row}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+    sched.reap_review(task, TickReport())
+    persisted = sched.runs.latest(task.id).result
+    assert persisted["verdict"] == ("request_changes" if bug else "approve")
+    notes = [f for f in persisted["findings"] if f["summary"].startswith("Evidence metadata advisory:")]
+    assert len(notes) == 1 and notes[0]["severity"] == "nit"
+    assert any(f["severity"] == "blocking" for f in persisted["findings"]) is bug
+
+
+def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):
+    from garden.brief import EVIDENCE_GUIDANCE, build_brief
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    author = build_brief(store, task).text
+    reviewer = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B",
+                            diff="+x", max_diff_chars=1000)
+    assert EVIDENCE_GUIDANCE in author and EVIDENCE_GUIDANCE in reviewer
+    assert "Missing artifact metadata alone is advisory" in author
+    assert '"events": [{"kind": "http_request"' in reviewer
+    assert "A missing item is a blocking finding" not in reviewer

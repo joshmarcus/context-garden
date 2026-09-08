@@ -683,6 +683,7 @@ class ReviewMixin:
                 review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
                                                           "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
                                                           "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
+            metadata_warnings: list[str] = []
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
@@ -690,7 +691,15 @@ class ReviewMixin:
                 replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
                 replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
                 replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
+                metadata_warnings=metadata_warnings,
             ) if review else []
+            if metadata_warnings:
+                review.setdefault("findings", []).append({
+                    "severity": "nit", "file": "", "line": None,
+                    "summary": "Evidence metadata advisory: " + "; ".join(metadata_warnings),
+                    "fix": "Attach available source, command and artifact references; reuse inspected evidence. "
+                           "Do not rerun implementation or passing verification solely for metadata.",
+                })
             if gaps:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({
