@@ -207,6 +207,7 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
                               expected_head: str, replay_manifest: Path | None = None,
                               replay_nonce: str = "", replay_digest: str = "",
                               affected_flow: str = "",
+                              expected_criteria: list[str] | None = None,
                               metadata_warnings: list[str] | None = None) -> list[str]:
     """Return substantive blockers; report missing packaging separately as advisories."""
     if not required and not scalability:
@@ -272,6 +273,11 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     if not isinstance(row.get("unverified"), list):
         warnings.append("unverified requirements were not explicitly recorded")
     else:
+        frozen_criteria = ({str(criterion).strip() for criterion in expected_criteria}
+                           if expected_criteria is not None else {
+                               str(entry.get("criterion") or "").strip()
+                               for entry in review.get("criteria") or [] if isinstance(entry, dict)
+                           })
         for item in row["unverified"]:
             if not isinstance(item, dict):
                 continue  # Legacy strings are resolved by the scheduler's bounded re-ask.
@@ -290,10 +296,7 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
             target = f"criterion: {criterion}" if criterion else f"affected flow: {flow}" if flow else ""
             if not target or not outcome or not reason:
                 gaps.append("required unverified outcome must name its criterion or affected flow and explain the missing outcome")
-            elif criterion and criterion not in {
-                str(entry.get("criterion") or "").strip() for entry in review.get("criteria") or []
-                if isinstance(entry, dict)
-            }:
+            elif criterion and criterion not in frozen_criteria:
                 gaps.append(f"required unverified outcome names no frozen criterion: {criterion}")
             elif flow and (not affected_flow or flow != affected_flow):
                 gaps.append(f"required unverified outcome names no justified affected flow: {flow}")
@@ -326,14 +329,39 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     return gaps
 
 
-def ambiguous_unverified(review: dict[str, Any]) -> list[str]:
-    """Legacy/unscoped entries that need reviewer clarification, not an author revision."""
+def ambiguous_unverified(review: dict[str, Any], *, expected_criteria: list[str] | None = None,
+                         affected_flow: str = "") -> list[str]:
+    """Entries whose target/classification needs reviewer clarification, not author work."""
     interaction = review.get("interaction")
     values = interaction.get("unverified") if isinstance(interaction, dict) else None
     if not isinstance(values, list):
         return []
-    return [str(value).strip() for value in values
-            if not isinstance(value, dict) and str(value).strip()]
+    frozen_criteria = ({str(criterion).strip() for criterion in expected_criteria}
+                       if expected_criteria is not None else {
+                           str(entry.get("criterion") or "").strip()
+                           for entry in review.get("criteria") or [] if isinstance(entry, dict)
+                       })
+    ambiguous: list[str] = []
+    for value in values:
+        if not isinstance(value, dict):
+            if str(value).strip():
+                ambiguous.append(str(value).strip())
+            continue
+        scope = str(value.get("scope") or "").strip()
+        has_required_fields = any(value.get(name) for name in
+                                  ("criterion", "affected_flow", "outcome", "reason"))
+        if scope == "limitation" and not has_required_fields:
+            continue
+        criterion = str(value.get("criterion") or "").strip()
+        flow = str(value.get("affected_flow") or "").strip()
+        outcome = str(value.get("outcome") or "").strip()
+        reason = str(value.get("reason") or "").strip()
+        invalid_target = (bool(criterion) == bool(flow)
+                          or bool(criterion and criterion not in frozen_criteria)
+                          or bool(flow and (not affected_flow or flow != affected_flow)))
+        if scope not in {"required", "limitation"} or invalid_target or not outcome or not reason:
+            ambiguous.append(json.dumps(value, sort_keys=True))
+    return ambiguous
 
 
 def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
@@ -588,10 +616,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     ]
     if clarify_unverified:
         parts.append(
-            "## Clarification required\n\nThe prior review used ambiguous legacy strings in "
-            "`interaction.unverified`. Preserve each observation, but classify it under the "
-            "structured contract as a required gap or an out-of-scope limitation. Do not ask "
-            "the author to revise unless a required outcome actually failed. Prior entries:\n\n"
+            "## Clarification required\n\nThe prior review used ambiguous or malformed entries in "
+            "`interaction.unverified`. Preserve each observation, classify it under the "
+            "structured contract, and target required gaps only to an exact frozen criterion "
+            "or the declared affected flow. Do not ask the author to revise unless a required "
+            "outcome actually failed. Prior entries:\n\n"
             + "\n".join(f"- {item}" for item in clarify_unverified) + "\n"
         )
     if criteria_note:

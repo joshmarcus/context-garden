@@ -2142,8 +2142,103 @@ def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
 
     gaps = interaction_evidence_gaps(
         review, required=True, scalability=False, expected_head="head-a",
+        expected_criteria=["Recovery is demonstrated"],
     )
     assert any("criterion: Recovery is demonstrated" in gap for gap in gaps)
+    assert ambiguous_unverified(
+        review, expected_criteria=["Recovery is demonstrated"],
+    ) == []
+
+
+def test_required_gap_cannot_target_a_reviewer_invented_criterion():
+    review = {"criteria": [{"criterion": "Invented by reviewer"}],
+              "interaction": _performed_interaction()}
+    review["interaction"]["unverified"] = [{
+        "scope": "required", "criterion": "Invented by reviewer",
+        "outcome": "was not observed", "reason": "the reviewer expanded scope",
+    }]
+
+    gaps = interaction_evidence_gaps(
+        review, required=True, scalability=False, expected_head="head-a",
+        expected_criteria=["Frozen task criterion"],
+    )
+    assert gaps == ["required unverified outcome names no frozen criterion: Invented by reviewer"]
+    assert ambiguous_unverified(
+        review, expected_criteria=["Frozen task criterion"],
+    ) == [json.dumps(review["interaction"]["unverified"][0], sort_keys=True)]
+
+
+def test_fabricated_required_target_gets_one_reviewer_clarification_then_operator_stop(
+        sched, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    writer = sched.runs.new_run(task.id, "local", mode="work")
+    writer.status = "done"
+    writer.env_snapshot = {"criteria": ["Frozen task criterion"]}
+    writer.save()
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    interaction = _performed_interaction(run.env_snapshot["review_head"])
+    interaction["unverified"] = [{
+        "scope": "required", "criterion": "Invented by reviewer",
+        "outcome": "was not observed", "reason": "the reviewer expanded scope",
+    }]
+    review = {"verdict": "approve", "summary": "Everything passed", "pages_seen": [],
+              "criteria": [{"criterion": "Invented by reviewer", "met": True,
+                            "evidence": "reviewer assertion"}],
+              "description_ok": True, "findings": [], "improvements": [],
+              "interaction": interaction}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    first = TickReport()
+    assert sched.reap_review(task, first)
+    assert first.transitions == ["DM-001 review re-asked to classify unverified observations"]
+    clarification = sched.runs.latest(task.id)
+    assert clarification.run_id != run.run_id
+    assert clarification.env_snapshot["count_round"] is False
+    assert clarification.env_snapshot["criteria"] == ["Frozen task criterion"]
+    assert "Invented by reviewer" in (clarification.path / "brief.md").read_text()
+    task = sched.store.task(task.id)
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    assert task.status == Status.IN_REVIEW
+    assert not sched.state.get(task.id).get("pending_feedback")
+    assert not [candidate for candidate in sched.runs.runs_for(task.id) if candidate.mode == "revise"]
+
+    (clarification.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+    second = TickReport()
+    assert sched.reap_review(task, second)
+    assert second.transitions == ["DM-001 reviewer clarification needs operator attention"]
+    stopped = sched._run_by_id(task, clarification.run_id)
+    assert stopped.status == "failed"
+    assert stopped.result["interaction"]["unverified"] == interaction["unverified"]
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["kind"] == "review_clarification"
+    assert state["needs_human"]["owner"] == "reviewer"
+    assert not state.get("review_run")
+    assert not state.get("last_review")
+    assert not state.get("pending_feedback")
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert not [candidate for candidate in sched.runs.runs_for(task.id) if candidate.mode == "revise"]
+
+    page = TestClient(create_app(Store(sched.store.root), watch=False, github=sched.github)).get("/inbox")
+    assert page.status_code == 200
+    assert "Reviewer clarification needs attention" in page.text
+    assert "implementation author has not been asked to change code" in page.text
+    assert "One more automated review" in page.text
 
 
 def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):

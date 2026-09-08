@@ -570,6 +570,7 @@ class ReviewMixin:
         author_gaps = interaction_evidence_gaps(
             {"interaction": author_interaction}, required=True, scalability=needs_scalability,
             expected_head=review_head, affected_flow=affected_flow,
+            expected_criteria=criteria_snapshot,
         ) if needs_interaction and author_interaction is not None else ["not reported"]
         reusable_author_interaction = needs_interaction and not author_gaps
         replay_matches = (replay.get("head") == review_head
@@ -884,7 +885,11 @@ class ReviewMixin:
                                                           "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
                                                           "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
             metadata_warnings: list[str] = []
-            ambiguous = ambiguous_unverified(review)
+            frozen_criteria = (list((run.env_snapshot or {})["criteria"])
+                               if "criteria" in (run.env_snapshot or {}) else None)
+            affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
+            ambiguous = ambiguous_unverified(
+                review, expected_criteria=frozen_criteria, affected_flow=affected_flow)
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
                 # classify legacy prose. The implementation author is not involved.
@@ -896,6 +901,25 @@ class ReviewMixin:
                 self.dispatch_review(task, count_round=False, clarify_unverified=ambiguous)
                 rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
                 return True
+            if ambiguous:
+                reason = ("reviewer clarification remained malformed or targeted requirements "
+                          "outside the frozen criteria and declared affected flow")
+                run.result = review
+                run.status = "failed"
+                run.error = reason
+                run.save()
+                st["review_run"] = ""
+                self._set_needs_human(task, "review_clarification", reason,
+                                      run=run.run_id, entries=ambiguous, owner="reviewer")
+                task.log(reason + "; operator review is required and no author revision was queued")
+                self.store.save(task)
+                self.events.emit("run_finished", task.id, run=run.run_id, mode="review",
+                                 cost_usd=run.cost_usd, usage=run.usage, status="failed")
+                self.events.emit("needs_human", task.id, stop_kind="review_clarification",
+                                 reason=reason, run=run.run_id)
+                rep.transitions.append(f"{task.id} reviewer clarification needs operator attention")
+                self.state.save()
+                return True
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
@@ -903,11 +927,10 @@ class ReviewMixin:
                 replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
                 replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
                 replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
-                affected_flow=str((run.env_snapshot or {}).get("affected_flow") or ""),
+                affected_flow=affected_flow,
+                expected_criteria=frozen_criteria,
                 metadata_warnings=metadata_warnings,
             ) if review else []
-            if ambiguous:
-                gaps.append("unverified observations remain unscoped after one reviewer clarification")
             if metadata_warnings:
                 review.setdefault("findings", []).append({
                     "severity": "nit", "file": "", "line": None,
