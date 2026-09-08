@@ -219,6 +219,7 @@ DEFAULTS: dict[str, Any] = {
     "notify": {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
+        "recipient": "",          # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
     },
     "worker_env": {
         "pass": [],               # extra environment variable names or globs a worker and its setup
