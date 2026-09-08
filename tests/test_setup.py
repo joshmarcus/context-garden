@@ -194,10 +194,72 @@ def test_pre_pr_explicit_checks_still_win_and_get_env(garden, fake_github):
     assert specs[0]["env"] == {"WIDGET_HOME": "/opt/widget"}
 
 
+def test_product_check_overrides_keep_each_product_validation_contract(garden, fake_github):
+    """A lightweight product can opt out without changing the compiled product's checks."""
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["checks"] = {
+        "pre_pr": [{"name": "compiled", "command": "make verify"}],
+        "ci": [{"name": "ci-log", "command": "analyse-ci"}],
+        "timeout_seconds": 900,
+    }
+    cfg["products"]["demo"]["setup"] = {"env": {"BUILD_KIND": "compiled"}}
+    cfg["products"]["handbook"] = {
+        "repo": ".",
+        "setup": {"test": "make docs", "env": {"BUILD_KIND": "docs"}},
+        "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 45},
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+
+    compiled = sc._check_settings(sc.store.task("DM-001"))
+    handbook_task = SimpleNamespace(product="handbook", body="", extra={})
+    handbook = sc._check_settings(handbook_task)
+
+    assert compiled["specs"] == [{"name": "compiled", "command": "make verify",
+                                   "env": {"BUILD_KIND": "compiled"}}]
+    assert compiled["timeout"] == 900
+    assert sc._check_settings(sc.store.task("DM-001"), "ci")["specs"][0]["name"] == "ci-log"
+    assert handbook["specs"] == []  # explicit [] also suppresses setup.test fallback
+    assert sc._check_settings(handbook_task, "ci")["specs"] == []
+    assert handbook["timeout"] == 45
+
+
+def test_check_run_persists_resolved_product_settings(garden, fake_github):
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["checks"] = {"pre_pr": [{"name": "global", "command": "true"}], "ci": [], "timeout_seconds": 900}
+    cfg["products"]["demo"]["checks"] = {
+        "pre_pr": [{"name": "product", "command": "true", "env": {"CHECK_LEVEL": "product"}}],
+        "timeout_seconds": 45,
+    }
+    cfg["products"]["demo"]["setup"] = {"env": {"CHECK_LEVEL": "setup", "KEEP": "yes"}}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    task = sc.store.task("DM-001")
+    settings = sc._check_settings(task)
+
+    assert settings["specs"][0]["env"] == {"CHECK_LEVEL": "product", "KEEP": "yes"}
+    # The detached job's durable payload, and the continuation used by probes/retries, retain
+    # the same product-specific command and timeout after garden.yaml later changes.
+    from garden import gitops
+    from garden.scheduler.report import TickReport
+    worktree = gitops.prepare_worktree(sc.repo_for(task), sc.worktree_for(task), "garden/dm-001", "main")
+    run = sc._dispatch_check_run(task, worktree=worktree, branch="garden/dm-001", base="main",
+                                 specs=settings["specs"], stage="pre_pr", cont={}, rep=TickReport())
+    payload = yaml.safe_load((run.path / "checks_input.json").read_text())
+    continuation = sc.state.get(task.id)["check_run"]["cont"]["check_settings"]
+    assert payload["timeout"] == continuation["timeout"] == 45
+    assert payload["specs"] == continuation["specs"] == settings["specs"]
+    assert payload["config"] == continuation["config"]
+    sc.cfg.data["checks"]["timeout_seconds"] = 1
+    sc.cfg.data["products"]["demo"]["checks"]["pre_pr"] = []
+    assert continuation["timeout"] == 45
+    assert continuation["specs"][0]["name"] == "product"
+
+
 def test_check_cli_pre_pr_uses_the_resolver(garden):
     """`garden check ID` for pre_pr goes through the same resolver as the automated gate:
-    it falls back to setup.test/setup.lint (no more 'no checks configured') and merges setup.env,
-    so the manual command agrees with what the scheduler runs."""
+    it falls back to setup.test/setup.lint (no more 'no checks configured'), merges setup.env,
+    and uses the product's timeout, so the manual command agrees with the scheduler."""
     import os
 
     from typer.testing import CliRunner
