@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import hashlib
 import json
@@ -165,7 +166,11 @@ class PollMixin:
                         or self.cfg.product_setup(task.product).get("worker_push") is True)
         policy = dict(self.cfg.get("ci", {}) or {})
         policy["required"] = required
-        return resolve_status(provider, self.cfg.garden_dir, task.id, pr, policy)
+        status_pr = pr
+        if not pr.head_sha:
+            status_pr = copy.copy(pr)
+            status_pr.head_sha = str(self.state.get(task.id).get("head_sha") or "")
+        return resolve_status(provider, self.cfg.garden_dir, task.id, status_pr, policy)
 
     # ---- poll --------------------------------------------------------------
     def poll(self, task: Task, rep: TickReport, observed: tuple[PRInfo, Feedback] | None = None) -> None:
@@ -179,8 +184,6 @@ class PollMixin:
         if not number:
             return
         pr, observed_feedback = observed or (self.github.get_pr(slug, number), None)
-        if not pr.head_sha:
-            pr.head_sha = str(st.get("head_sha") or "")
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
