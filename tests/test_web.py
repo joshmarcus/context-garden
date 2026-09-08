@@ -96,8 +96,8 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert 'action="/tasks/DM-001/take"' not in task_page
 
     # Replaying a rendered-but-stale take form cannot create a second run.
-    stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
-    assert stale.status_code == 200
+    stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=False)
+    assert stale.status_code == 409
     assert "already claimed" in stale.text
     assert len(RunStore(garden / ".garden").runs_for("DM-001")) == 1
 
