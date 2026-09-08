@@ -539,6 +539,45 @@ def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypat
     assert time.monotonic() - started < 0.5
 
 
+def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
+    """The worker and controller fence the same generation at the 120 + 300 boundary."""
+    now = 0.0
+    controller_online = False
+
+    def monotonic():
+        return now
+
+    class RecoveringClient:
+        def post(self, path, payload):
+            if not controller_online:
+                raise ConnectionRefusedError("controller restarting")
+            return 200, {}
+
+    run = {
+        "id": "run-1", "lease_token": "lease", "heartbeat_seconds": 120,
+        "recovery_seconds": 300, "recovery_window_seconds": 420,
+    }
+    heartbeat = _LeaseHeartbeat(run, RecoveringClient())
+
+    def advance(delay):
+        nonlocal now, controller_online
+        now += delay
+        if now >= 301:
+            controller_online = True
+        return False
+
+    monkeypatch.setattr(time, "monotonic", monotonic)
+    monkeypatch.setattr(heartbeat.stop_event, "wait", advance)
+    heartbeat.ensure_current()
+    assert now >= 301
+    assert heartbeat.recovery_deadline == pytest.approx(now + 420)
+
+    controller_online = False
+    now = heartbeat.recovery_deadline + 0.01
+    with pytest.raises(ConnectionRefusedError, match="controller restarting"):
+        heartbeat.ensure_current()
+
+
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
     isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch, validation_timeout=731)
