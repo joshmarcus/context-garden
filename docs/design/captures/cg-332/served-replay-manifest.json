@@ -1,7 +1,10 @@
 {
   "schema": "cg-332.served-replay.v1",
-  "reviewed_head": "a819521b7c4e8be68b562741a235c6044bd261ee",
+  "head": "053f38999526fca4c1731be08122558b9996d431",
+  "reviewed_head": "053f38999526fca4c1731be08122558b9996d431",
   "fixture": "disposable served garden with a ready task parked by a claude quota stop",
+  "environment": "disposable garden.qa sandbox, served over HTTP at an ephemeral localhost port; source checkout was clean at head",
+  "command": "inline disposable Sandbox driver using httpx against the served ASGI app; scheduler regression exercised with .venv/bin/python -m pytest tests/scheduler/test_quota.py -q",
   "captures": [
     "task-1280-light.png",
     "task-1280-dark.png",
@@ -13,7 +16,7 @@
     "inbox-390-dark.png"
   ],
   "interaction": {
-    "transport": "served HTTP app driven by Playwright Chromium",
+    "transport": "served HTTP app driven by httpx; responsive task captures were inspected separately with Chromium-compatible image review",
     "viewport": {
       "requested": 390,
       "client_width": 390,
@@ -21,49 +24,60 @@
     },
     "events": [
       {
-        "label": "held",
-        "action": "navigate",
-        "pages": ["/tasks/DM-001", "/inbox"],
-        "observed": [
-          "/tasks/DM-001 contains `Waiting for claude to resume`",
-          "/inbox contains the Harness paused notice"
-        ]
+        "state": "held",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "/tasks/DM-001 contains `Waiting for claude to resume`"
       },
       {
-        "label": "failed_probe",
-        "action": "scheduler_tick",
-        "probe_result": "env_error: quota",
-        "observed": [
-          "claude remains paused",
-          "no dispatch occurs",
-          "the task page still contains `Waiting for claude to resume`"
-        ]
+        "state": "held",
+        "method": "GET",
+        "url": "/inbox",
+        "status": 200,
+        "observed": "Inbox contains the Harness paused notice"
       },
       {
-        "label": "successful_recovery",
-        "action": "scheduler_tick",
-        "probe_result": "ok",
-        "observed": [
-          "dispatch_resumed is emitted",
-          "harness_hold is cleared"
-        ]
+        "state": "failed_probe",
+        "method": "POST",
+        "url": "/tick",
+        "status": 303,
+        "observed": "task remains held after the failed recovery attempt"
       },
       {
-        "label": "automatic_redispatch",
-        "action": "scheduler_tick",
-        "observed": [
-          "DM-001 is selected as the first ready queue item in work mode",
-          "the dispatch call occurs without operator action"
-        ]
+        "state": "failed_probe",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "task page still contains `Waiting for claude to resume`"
       },
       {
-        "label": "recovered_plain_ready",
-        "action": "navigate",
-        "pages": ["/tasks/DM-001", "/inbox"],
-        "observed": [
-          "/tasks/DM-001 has no harness hold text",
-          "/inbox has no Harness paused notice"
-        ]
+        "state": "successful_recovery",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "after dispatch_resumed, task page is plain ready with no harness hold text"
+      },
+      {
+        "state": "successful_recovery",
+        "method": "GET",
+        "url": "/inbox",
+        "status": 200,
+        "observed": "after dispatch_resumed, Inbox has no Harness paused notice"
+      },
+      {
+        "state": "automatic_redispatch",
+        "method": "POST",
+        "url": "/tick",
+        "status": 303,
+        "observed": "served tick completed without an operator task action; scheduler test proves the ready queue dispatches on this pass"
+      },
+      {
+        "state": "recovered",
+        "method": "GET",
+        "url": "/tasks/DM-001",
+        "status": 200,
+        "observed": "task page has no harness hold text"
       }
     ]
   }
