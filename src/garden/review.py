@@ -202,6 +202,7 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
                               expected_head: str, replay_manifest: Path | None = None,
                               replay_nonce: str = "", replay_digest: str = "",
+                              affected_flow: str = "",
                               metadata_warnings: list[str] | None = None) -> list[str]:
     """Return substantive blockers; report missing packaging separately as advisories."""
     if not required and not scalability:
@@ -213,7 +214,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     warnings = metadata_warnings if metadata_warnings is not None else []
     if required and (replay_manifest is not None or replay_nonce):
         gaps.extend(_replay_manifest_gaps(
-            replay_manifest, expected_head, replay_nonce, replay_digest, warnings))
+            replay_manifest, expected_head, replay_nonce, replay_digest, warnings,
+            affected_flow=affected_flow))
     if not row.get("head"):
         warnings.append("interaction source head was not recorded; attach the independently reviewed commit")
     elif row.get("head") != expected_head:
@@ -222,6 +224,8 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         warnings.append("interaction environment was not recorded")
     elif row.get("environment") != "disposable":
         gaps.append("interaction was not performed in a disposable garden")
+    if affected_flow and row.get("affected_flow") != affected_flow:
+        gaps.append(f"interaction evidence does not cover the declared affected flow: {affected_flow}")
     command = row.get("command")
     if not isinstance(command, str) or not command.strip():
         warnings.append("interaction command was not reported")
@@ -293,7 +297,7 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
 
 
 def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
-                          metadata_warnings: list[str]) -> list[str]:
+                          metadata_warnings: list[str], *, affected_flow: str = "") -> list[str]:
     """Validate evidence produced by the scheduler, outside the reviewer's process."""
     try:
         raw = path.read_bytes() if path else b""
@@ -314,6 +318,8 @@ def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, dig
         metadata_warnings.append("scheduler-produced interaction replay identity metadata is incomplete")
     if record.get("environment") != "disposable" or record.get("status") != "pass":
         return ["scheduler-produced disposable interaction replay did not pass"]
+    if affected_flow and record.get("affected_flow") != affected_flow:
+        return [f"scheduler replay does not cover the declared affected flow: {affected_flow}"]
     if not all(isinstance(record.get(name), str) and record[name] for name in ("started_at", "finished_at")):
         metadata_warnings.append("scheduler-produced interaction replay timestamps are incomplete")
     flows = record.get("flows")
@@ -511,7 +517,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
-                 pre_flight: Any = None, plan: dict[str, Any] | None = None) -> str:
+                 pre_flight: Any = None, plan: dict[str, Any] | None = None,
+                 author_interaction: Any = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -557,6 +564,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                      + (f"The scheduler independently replayed the disposable app; inspect its "
                         f"request/response manifest at `{interaction_manifest}`.\n\n" if interaction_manifest else "")
                      + ("This includes the scalability evidence fields described above.\n" if scalability_required else ""))
+    if isinstance(author_interaction, dict):
+        parts.append("## Author's task-specific interaction evidence\n\n"
+                     "Reuse this evidence when its source and affected-flow provenance are valid; "
+                     "missing packaging metadata alone is advisory.\n\n```json\n"
+                     + json.dumps(author_interaction, indent=2, sort_keys=True) + "\n```\n")
     if checks:
         parts.append("## Pre-review checks\n\n" + "\n".join(
             f"- **{c.get('name', 'check')}**: {c.get('status', 'unknown')}"
