@@ -36,6 +36,23 @@ from .resources import ResourcePressureError
 
 
 class ReviewMixin:
+    def _review_ci_ready(self, task: Task) -> bool:
+        """Required exact-head validation must land before an automated code review."""
+        provider = str(self.cfg.get("ci.status_provider", "github") or "github")
+        required = bool(self.cfg.get("ci.required", False) or provider == "worker_check"
+                        or self.cfg.product_setup(task.product).get("worker_push") is True)
+        if not required:
+            return True
+        st = self.state.get(task.id)
+        status = st.get("ci_status") or {}
+        head = str(st.get("head_sha") or "")
+        if provider == "worker_check":
+            from ..ci_status import worker_check_status
+            status = worker_check_status(self.cfg.garden_dir, task.id, head,
+                                         dict(self.cfg.get("ci.worker_check", {}) or {})).to_dict()
+            st["ci_status"] = status
+        return bool(status.get("green") and status.get("queried_sha") == head)
+
     # ---- automated review --------------------------------------------------
     def _review_round_pending(self, st: dict[str, Any]) -> bool:
         """True when `_maybe_review` will still dispatch (or queue) an automated review round
@@ -189,6 +206,9 @@ class ReviewMixin:
             if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
                 deferred.append(item)
                 continue
+            if item["kind"] == "review" and not self._review_ci_ready(task):
+                deferred.append(item)
+                continue
             if self.review_slots_free() <= 0:
                 deferred.append(item)
                 continue
@@ -314,6 +334,8 @@ class ReviewMixin:
         harness_reason = next((reason for reason in item_reasons if reason[0] == "harness"), None)
         if harness_reason is not None:
             return harness_reason
+        if any(item.get("kind") == "review" for item in pending) and not self._review_ci_ready(task):
+            return "ci", "waits for required exact-head CI evidence"
         predecessor = self._queued_review_predecessor(task)
         if predecessor is not None:
             return "queue", (f"queued behind {predecessor.id} (priority {predecessor.priority}; "
@@ -395,6 +417,8 @@ class ReviewMixin:
         for item in st.get("pending_reviews") or []:
             if item.get("kind") == "review":
                 if any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
+                    continue
+                if not self._review_ci_ready(task):
                     continue
             if self._review_item_wait_reason(task, item) is None:
                 return True
@@ -837,6 +861,14 @@ class ReviewMixin:
                             author_interaction=author_interaction,
                             clarify_unverified=clarify_unverified,
                             author_source_run=source_run, author_source_head=source_head)
+        ci_status = self.state.get(task.id).get("ci_status") or {}
+        if ci_status:
+            text += ("\n\n## Exact-head CI evidence\n\nThe controller admitted this review with "
+                     f"`{ci_status.get('provider', 'unknown')}` status `{ci_status.get('state', 'unknown')}` "
+                     f"for `{ci_status.get('queried_sha', '')}`. Evidence: "
+                     f"{ci_status.get('evidence_url') or 'not available'}. Treat a different review head "
+                     "as stale and do not approve it.\n")
+>>>>>>> 36845c4d (Add pluggable exact-head CI status gate)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
