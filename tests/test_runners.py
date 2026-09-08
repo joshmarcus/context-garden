@@ -7,6 +7,8 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,7 @@ import yaml
 from garden.model import Status
 from garden.runner.local import LocalRunner
 from garden.runner.manual import ManualRunner
+from garden.runs import Run
 
 
 def _local_process_snapshot(pgid: int) -> list[dict[str, object]]:
@@ -38,7 +41,38 @@ def _local_process_snapshot(pgid: int) -> list[dict[str, object]]:
     return processes
 
 
-def _wait_for_local_run(run, *, timeout: float = 3.0) -> None:
+def _stop_and_reap_local_run(run: Run) -> None:
+    """End a detached local fixture and reap its supervisor before returning."""
+    if run.pid is None:
+        return
+    run.stop(timeout=1.0)
+    try:
+        os.waitpid(run.pid, 0)
+    except ChildProcessError:
+        pass
+
+
+@contextmanager
+def _launched_local_run(
+    runner: LocalRunner,
+    run: Run,
+    worktree: Path,
+    brief: Path,
+    env: dict[str, str],
+    *,
+    cleanup: Callable[[], None] | None = None,
+) -> Iterator[Run]:
+    """Launch one real supervisor and always return its process ownership to pytest."""
+    runner.launch(run, worktree, brief, env)
+    try:
+        yield run
+    finally:
+        if cleanup is not None:
+            cleanup()
+        _stop_and_reap_local_run(run)
+
+
+def _wait_for_local_run(run: Run, *, timeout: float = 3.0) -> None:
     """Wait for the supervisor's completion signal without an unbounded ``waitpid``.
 
     The supervisor remains the scheduler's process-group owner.  This test helper only
@@ -56,13 +90,7 @@ def _wait_for_local_run(run, *, timeout: float = 3.0) -> None:
             f"exit_code={run.read_exit_code()}, group={_local_process_snapshot(run.pid) if run.pid else []})"
         )
     finally:
-        if not run.process_finished():
-            run.stop(timeout=1.0)
-        if run.pid is not None:
-            try:
-                os.waitpid(run.pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
+        _stop_and_reap_local_run(run)
 
 
 def _wait_for_local_stdin_owner(run, brief: Path, *, timeout: float = 1.0) -> None:
@@ -272,13 +300,13 @@ def test_local_runner_launch_flips_process_finished(tmp_path):
     brief = tmp_path / "brief.md"
     brief.write_text("hello from the brief\n")
 
-    runner.launch(run, tmp_path, brief, dict(os.environ))
-    assert run.pid is not None and run.harness == "tiny"
-    assert not run.process_finished()  # still sleeping: pid alive, exit_code not written yet
-    _wait_for_local_stdin_owner(run, brief)
-    _wait_for_local_run(run)
-    assert (d / "exit_code").read_text().strip() == "0"
-    assert "hello from the brief" in (d / "stdout.json").read_text()
+    with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
+        assert run.pid is not None and run.harness == "tiny"
+        assert not run.process_finished()  # still sleeping: pid alive, exit_code not written yet
+        _wait_for_local_stdin_owner(run, brief)
+        _wait_for_local_run(run)
+        assert (d / "exit_code").read_text().strip() == "0"
+        assert "hello from the brief" in (d / "stdout.json").read_text()
 
 
 def test_local_runner_reports_nonzero_after_stdin_eof(tmp_path):
@@ -294,10 +322,9 @@ def test_local_runner_reports_nonzero_after_stdin_eof(tmp_path):
     brief = tmp_path / "brief.md"
     brief.write_text("input that must reach EOF\n")
 
-    runner.launch(run, tmp_path, brief, dict(os.environ))
-    _wait_for_local_run(run)
-
-    assert run.read_exit_code() == 7
+    with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
+        _wait_for_local_run(run)
+        assert run.read_exit_code() == 7
 
 
 def test_local_runner_cancellation_stops_a_stdin_consumer(tmp_path):
@@ -313,13 +340,34 @@ def test_local_runner_cancellation_stops_a_stdin_consumer(tmp_path):
     brief = tmp_path / "brief.md"
     brief.write_text("input that must not keep a cancelled run alive\n")
 
-    runner.launch(run, tmp_path, brief, dict(os.environ))
-    assert not run.process_finished()
-    _wait_for_local_stdin_owner(run, brief)
-    assert run.stop(timeout=2.0)
-    _wait_for_local_run(run)
+    with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
+        assert not run.process_finished()
+        _wait_for_local_stdin_owner(run, brief)
+        assert run.stop(timeout=2.0)
+        _wait_for_local_run(run)
+        assert run.read_exit_code() in (-signal.SIGTERM, 143)
 
-    assert run.read_exit_code() in (-signal.SIGTERM, 143)
+
+def test_local_runner_lifecycle_fixture_reaps_after_an_early_assertion(tmp_path):
+    """An assertion before completion cannot strand the detached stdin consumer."""
+    from garden.harness import Harness
+
+    h = Harness("tiny", {"command": ["sh", "-c", "sleep 30; cat"]})
+    runner = LocalRunner({"timeout_minutes": 0}, h)
+    d = tmp_path / "run"
+    d.mkdir()
+    run = Run(task_id="T-001", run_id="r1", dir=str(d), runner="local")
+    brief = tmp_path / "brief.md"
+    brief.write_text("input that must not outlive a failed assertion\n")
+
+    with pytest.raises(AssertionError, match="intentional fixture failure"):
+        with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
+            _wait_for_local_stdin_owner(run, brief)
+            raise AssertionError("intentional fixture failure")
+
+    assert run.process_finished()
+    with pytest.raises(ChildProcessError):
+        os.waitpid(run.pid, os.WNOHANG)
 
 
 def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
@@ -335,18 +383,18 @@ def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
     brief = tmp_path / "brief.md"
     brief.write_text("")
 
-    runner.launch(run, tmp_path, brief, dict(os.environ))
-    assert run.pid is not None
-    # The harness shell returns immediately, but the supervisor remains the subreaper for
-    # its new-session descendant and withholds the completion signal.
-    deadline = time.monotonic() + 0.5
-    while not (d / "stdout.json").exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert not run.process_finished()
-    _wait_for_local_run(run)
-    isolation = __import__("json").loads((d / "isolation.json").read_text())
-    assert isolation == {"configured": False, "enforced": False,
-                         "reason": "execution cgroup is not configured"}
+    with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
+        assert run.pid is not None
+        # The harness shell returns immediately, but the supervisor remains the subreaper for
+        # its new-session descendant and withholds the completion signal.
+        deadline = time.monotonic() + 0.5
+        while not (d / "stdout.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not run.process_finished()
+        _wait_for_local_run(run)
+        isolation = __import__("json").loads((d / "isolation.json").read_text())
+        assert isolation == {"configured": False, "enforced": False,
+                             "reason": "execution cgroup is not configured"}
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires Linux subreaper semantics")
@@ -381,22 +429,25 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     runner = LocalRunner({"timeout_minutes": 1}, Harness("orphan", {"command": [sys.executable, str(leader)]}))
     pids = tmp_path / "orphan-pids"
     release = tmp_path / "release"
-    runner.launch(run, tmp_path, brief, {**os.environ, "ORPHAN_SCRIPT": str(orphan),
-                                        "ORPHAN_PIDS": str(pids), "LEADER_RELEASE": str(release)})
+    with _launched_local_run(
+        runner, run, tmp_path, brief,
+        {**os.environ, "ORPHAN_SCRIPT": str(orphan), "ORPHAN_PIDS": str(pids),
+         "LEADER_RELEASE": str(release)},
+        cleanup=release.touch,
+    ):
+        deadline = time.monotonic() + 3
+        while (not pids.exists() or len(pids.read_text().splitlines()) < 3) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        orphan_pids = pids.read_text().splitlines()
+        assert len(orphan_pids) == 3
+        while any(Path(f"/proc/{pid}").exists() for pid in orphan_pids) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not any(Path(f"/proc/{pid}").exists() for pid in orphan_pids)
+        assert not run.process_finished()  # the primary leader and its run lease remain live
 
-    deadline = time.monotonic() + 3
-    while (not pids.exists() or len(pids.read_text().splitlines()) < 3) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    orphan_pids = pids.read_text().splitlines()
-    assert len(orphan_pids) == 3
-    while any(Path(f"/proc/{pid}").exists() for pid in orphan_pids) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert not any(Path(f"/proc/{pid}").exists() for pid in orphan_pids)
-    assert not run.process_finished()  # the primary leader and its run lease remain live
-
-    release.touch()
-    _wait_for_local_run(run)
-    assert run.read_exit_code() == 0
+        release.touch()
+        _wait_for_local_run(run)
+        assert run.read_exit_code() == 0
 
 
 def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
