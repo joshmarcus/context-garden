@@ -258,11 +258,12 @@ def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
 
     page = client(garden).get("/inbox")
     assert page.status_code == 200
-    assert '<div class="v">1</div><div class="l">need you</div>' in page.text
+    assert '<div class="v">0</div><div class="l">need you</div>' in page.text
     assert "automated review queued: queued: the next tick starts it" in page.text
     assert "prior automated verdict: request changes" in page.text
     assert "Deferred work" in page.text and "View freeze policy" in page.text
     assert "Deployment prerequisite" in page.text
+    assert "Operator recovery: Deployment prerequisite" in page.text
     assert "Deployment completed, resume" in page.text
     assert "set-status DM-001 done" not in page.text
 
