@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from garden.model import Status
 from garden import interaction_replay
+from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
     enforce_criteria_verdict,
@@ -1609,7 +1609,7 @@ def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, m
     monkeypatch.setattr(runner_type, "start_checks",
                         lambda _self, _run, _worktree, payload: submitted.append(payload))
 
-    check = sched.dispatch_review(task)
+    sched.dispatch_review(task)
 
     command = submitted[0]["specs"][0]["command"]
     argv = shlex.split(command)
