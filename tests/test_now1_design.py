@@ -45,6 +45,15 @@ def _strip(**over):
     return {**base, **over}
 
 
+def test_mock_uses_the_canonical_now_navigation(mock, snapshot):
+    html = mock.render(snapshot)
+    nav = re.search(r'<nav class="nav">(.*?)</nav>', html, re.S).group(1)
+    assert nav.index('href="/"') < nav.index('href="/now"') < nav.index('href="/board"')
+    assert '<a href="/now" class="on">Now</a>' in nav
+    assert "Now 1" not in html and "Now 2" not in html
+    assert 'href="/now1"' not in html and 'href="/now2"' not in html
+
+
 # ---- the live clock -------------------------------------------------------------------
 
 def test_running_card_carries_the_start_time_the_clock_reads(mock, snapshot):

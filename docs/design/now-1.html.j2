@@ -1,5 +1,5 @@
-{#- The Now 1 mock. Rendered by now_1_mock.py from now-1-snapshot.json; the markup and the
-    `now-` styles are what the build lifts into src/garden/web/templates/now1.html. -#}
+{#- The retained Now mock. Rendered by now_1_mock.py from now-1-snapshot.json; the markup
+    and `now-` styles are what the application uses for its canonical /now page. -#}
 {%- set g = garden -%}
 {%- set runs = now | selectattr("kind", "equalto", "run") | list -%}
 {%- set hands = now | rejectattr("kind", "equalto", "run") | list -%}
@@ -60,12 +60,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Now 1 · {{ g.name }} (mock)</title>
+<title>Now · {{ g.name }} (mock)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
 <style>{{ base_css }}</style>
 <style>
-/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+/* ---- the retained Now page (docs/design/now-1.md) ---------------------------------- */
 .now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
 .now-five a { text-decoration-color:var(--line-strong); }
 .now-five .pause { color:var(--stamp); }
@@ -260,9 +260,8 @@ body.page-now .rail-running { display:none; }
 <aside class="rail">
   <a class="wordmark" href="/">{{ stage("ready", 18, "mark") }}<span>{{ g.name }}<small>context garden</small></span></a>
   <nav class="nav">
-    <a href="/now1" class="on">Now 1</a>
-    <a href="/now2">Now 2</a>
     <a href="/">Inbox <span class="count {{ 'hot' if g.inbox_decisions else '' }}">{{ g.inbox_decisions }}</span></a>
+    <a href="/now" class="on">Now</a>
     <a href="/board">Board</a>
     <a href="/trellis">Trellis</a>
     <a href="/events">Timeline</a>

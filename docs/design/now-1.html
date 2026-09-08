@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Now 1 · context-garden (mock)</title>
+<title>Now · context-garden (mock)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
 <style>
@@ -143,6 +143,7 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .panel + .panel, .stack > * + * { margin-top:14px; }
 .panel h3 { margin:0 0 10px; font:500 15px/1.2 var(--display); color:var(--ink); }
 .grid2 { display:grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap:16px; align-items:start; }
+.grid2 > * { min-width:0; } /* let wide table scrollers stay inside their grid column */
 @media (max-width: 1000px) { .shell { grid-template-columns: 1fr; } .rail { position:static; height:auto; } .grid2 { grid-template-columns:1fr; } }
 .kpis { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
 .kpi { background:var(--label); border:1px solid var(--line); padding:10px 12px; }
@@ -294,6 +295,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   main { padding:18px 14px 42px; }
+  .kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .item { grid-template-columns:26px minmax(18rem,1fr); gap:8px 10px; }
   .item .card-actions, .item .do { align-items:stretch; }
   .item .do form { align-items:stretch; }
@@ -317,7 +319,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .trellis a:hover .halo { stroke-width:1.6; }
 </style>
 <style>
-/* ---- the Now 1 page (docs/design/now-1.md) ----------------------------------------- */
+/* ---- the retained Now page (docs/design/now-1.md) ---------------------------------- */
 .now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
 .now-five a { text-decoration-color:var(--line-strong); }
 .now-five .pause { color:var(--stamp); }
@@ -617,9 +619,8 @@ body.page-now .rail-running { display:none; }
 <aside class="rail">
   <a class="wordmark" href="/"><svg class="mark" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="sprout"><title>sprout</title><use href="#st-sprout"/></svg><span>context-garden<small>context garden</small></span></a>
   <nav class="nav">
-    <a href="/now1" class="on">Now 1</a>
-    <a href="/now2">Now 2</a>
     <a href="/">Inbox <span class="count ">0</span></a>
+    <a href="/now" class="on">Now</a>
     <a href="/board">Board</a>
     <a href="/trellis">Trellis</a>
     <a href="/events">Timeline</a>
@@ -644,7 +645,7 @@ body.page-now .rail-running { display:none; }
   <div><h1>Now</h1></div>
   <div class="tools mock-tools"><span class="badge">mock · snapshot 2026-09-06T03:45Z</span><button class="quiet" type="button" data-theme-toggle>dark / light</button><button class="quiet" type="button" data-gallery-toggle>states</button><button class="quiet" type="button" data-arrive title="insert a strip as a dispatch would">a run arrives</button></div>
 </div>
-<p class="now-five"><a href="#now">6 runs in flight</a> on 5 of 5 worker slots and 1 of 3 review slots. <a href="#next">Next</a>: Build Now 1 at /now1 from the Fable design: live view…, then A dispatch that fails before its process starts closes…. <a href="#where">phase-05</a>: 13 of 49 merged.
+<p class="now-five"><a href="#now">6 runs in flight</a> on 5 of 5 worker slots and 1 of 3 review slots. <a href="#next">Next</a>: Build the retained Now page at /now: live view of what…, then A dispatch that fails before its process starts closes…. <a href="#where">phase-05</a>: 13 of 49 merged.
   <a href="#period">Last hour</a>: 4 merged, $65.72.
 </p>
 <div class="now-live" aria-live="polite"></div>
@@ -711,7 +712,7 @@ body.page-now .rail-running { display:none; }
   <span class="tape"></span>
   <div class="glyphs"><span class="state s-running" title="running"></span><svg class="stage" viewBox="0 0 24 24" width="22" height="22" role="img" aria-label="in leaf"><title>in leaf</title><use href="#st-leaf"/></svg></div>
   <div class="head">
-    <a class="t" href="/tasks/CG-314">Design Now 2: astra&#39;s take on the Now page, information architecture, visual system, motion, and a static mock of every state</a><span class="id">CG-314</span>
+    <a class="t" href="/tasks/CG-314">Document an alternative operational-dashboard study for historical design evidence</a><span class="id">CG-314</span>
   </div>
   <div class="meta">
     revise · codex gpt-6-astra · <a class="open-run" href="/runs/CG-314/20260906T034122Z-revise">open run</a>
@@ -775,7 +776,7 @@ body.page-now .rail-running { display:none; }
   
   <ol class="queue">
     
-    <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><a class="lt" href="/tasks/CG-308">Build Now 1 at /now1 from the Fable design: live view of what is running, what is next, where the phase is, and the last period</a>
+    <li><span class="pos">1</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><a class="lt" href="/tasks/CG-308">Build the retained Now page at /now: live view of what is running, what is next, where the phase is, and the last period</a>
       <span class="why"><span class="id">CG-308</span> · revise round 1 of 3 · revise · hard → claude claude-fable-5-1</span></li>
     
     <li><span class="pos">2</span><svg class="stage" viewBox="0 0 24 24" width="18" height="18" role="img" aria-label="pruned"><title>pruned</title><use href="#st-cut"/></svg><a class="lt" href="/tasks/CG-316">A dispatch that fails before its process starts closes the run record at once, and the orphan sweep closes any running record with no live process</a>

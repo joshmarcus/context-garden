@@ -25,7 +25,7 @@
     "skip": "",
     "status": "changes_requested",
     "task": "CG-308",
-    "title": "Build Now 1 at /now1 from the Fable design: live view of what is running, what is next, where the phase is, and the last period",
+    "title": "Build the retained Now page at /now: live view of what is running, what is next, where the phase is, and the last period",
     "why": "revise round 1 of 3"
    },
    {
@@ -484,7 +484,7 @@
    "started_at": "2026-09-06T03:41:22+00:00",
    "state": "running",
    "task": "CG-314",
-   "title": "Design Now 2: astra's take on the Now page, information architecture, visual system, motion, and a static mock of every state",
+   "title": "Document an alternative operational-dashboard study for historical design evidence",
    "tokens_so_far": 0,
    "typical_s": 611.9674975
   },

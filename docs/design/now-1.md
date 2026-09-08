@@ -582,12 +582,13 @@ Named here so the build makes no design choice:
 
 ## The mock
 
-`docs/design/now-1.html` is rendered by `docs/design/now_1_mock.py` from
+`docs/design/now-1.html` is the retained Now design mock and is rendered by
+`docs/design/now_1_mock.py` from
 `docs/design/now-1-snapshot.json`, a snapshot of this garden taken on 2026-09-06 03:45Z
 through the store, the state file, the run records and the event log (read-only; the script
 never imports the scheduler's writers). The snapshot caught the garden with six runs in
-flight on five worker slots and one review slot (this design's own revise run, the Now 2
-design's revise run, a review, two checks and the onboarding revise), eight PRs open, 28
+flight on five worker slots and one review slot (two design revise runs, a review, two
+checks and the onboarding revise), eight PRs open, 28
 lines in the dispatch queue, and a day of history behind it: seven models at work in the
 24-hour window, so the difficulty-by-model tables have real columns and real comparisons.
 The builder inlines `base.html`'s stylesheet and `plants.DEFS` so the mock tracks the app's
