@@ -375,6 +375,8 @@ def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tup
             dt.datetime.fromisoformat(started_at) + dt.timedelta(seconds=timeout_seconds)
         ).isoformat(),
     })
+    if os.environ.get("GARDEN_VALIDATION_INHERITS_LEASE") == "1":
+        status["inherited_lease"] = True
     _write_execution_state(run_dir, status)
     return started_monotonic, started_at
 

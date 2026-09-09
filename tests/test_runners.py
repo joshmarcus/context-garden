@@ -28,6 +28,7 @@ def _synthetic_child_env(
     inherited_execution = {
         "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
         "GARDEN_OWNER_SCOPED", "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+        "GARDEN_VALIDATION_INHERITS_LEASE",
     }
     child = dict(os.environ if env is None else env)
     for key in inherited_execution:
@@ -967,6 +968,9 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(outer))
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owned-run")
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "731")
+    monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
+    monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
+    monkeypatch.delenv("GARDEN_VALIDATION_INHERITS_LEASE", raising=False)
     monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
     captured = {}
 
@@ -985,6 +989,34 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
 
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
     assert validation.bounded_validation_timeout_seconds() == 900
+
+
+def test_nested_validation_inherits_an_enclosing_validation_lease(tmp_path):
+    """A full suite can run a supported validation without waiting on itself."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    inner_status = tmp_path / "inner-status.json"
+    child = (
+        "import json; from pathlib import Path; "
+        f"Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))"
+    )
+    nested = (
+        f"{shlex.quote(sys.executable)} -m garden.validation -- "
+        f"{shlex.quote(sys.executable)} -c "
+        f"{shlex.quote(child)}"
+    )
+    env = _supervisor_test_env(tmp_path)
+    env.pop("GARDEN_HEAVY_EXECUTION")
+    result = subprocess.run(
+        _supervisor_command(outer, [sys.executable, "-m", "garden.validation", "--", "sh", "-c", nested]),
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(inner_status.read_text()) == {"ok": True}
+    statuses = list((outer / "validations").glob("*/execution.json"))
+    assert len(statuses) == 2
+    assert any(json.loads(path.read_text()).get("inherited_lease") is True for path in statuses)
 
 
 def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
