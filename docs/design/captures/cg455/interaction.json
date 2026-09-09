@@ -1,5 +1,5 @@
 {
-  "head": "6f457ecdcb1b9e1ac07bfc918d41279133ad06ae",
+  "head": "4f3d33f6af64f4f9666ccc1b13e14638f6456fef",
   "environment": "disposable",
   "command": "python scripts/replay_cg455_now.py --out OUTPUT",
   "pages": [
@@ -16,35 +16,35 @@
     {
       "state": "populated",
       "method": "GET",
-      "url": "http://127.0.0.1:39283/now",
+      "url": "http://127.0.0.1:32925/now",
       "status": 200,
       "observed": "One live run and queued work appear in the summary."
     },
     {
       "state": "failure",
       "method": "GET",
-      "url": "http://127.0.0.1:39283/partials/now/nope",
+      "url": "http://127.0.0.1:32925/partials/now/nope",
       "status": 404,
       "observed": "An invalid live-refresh region fails without corrupting the page."
     },
     {
       "state": "recovery",
       "method": "GET",
-      "url": "http://127.0.0.1:39283/partials/now/head",
+      "url": "http://127.0.0.1:32925/partials/now/head",
       "status": 200,
       "observed": "The valid head fragment recovers with the current summary and slot facts."
     },
     {
       "state": "sparse",
       "method": "GET",
-      "url": "http://127.0.0.1:39283/now",
+      "url": "http://127.0.0.1:32925/now",
       "status": 200,
       "observed": "No run or dispatch candidate is reported literally."
     },
     {
       "state": "paused",
       "method": "GET",
-      "url": "http://127.0.0.1:39283/now",
+      "url": "http://127.0.0.1:32925/now",
       "status": 200,
       "observed": "The explicit pause leads the neutral measurements."
     }
