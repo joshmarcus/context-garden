@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from .. import operator_spend as ops
 from ..events import EventLog, metrics, parse_since
-from ..github import GitHubError, PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
+from ..github import PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
 from ..graph import validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import Status, dispatch_sort_key, now_iso
