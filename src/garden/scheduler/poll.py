@@ -63,11 +63,14 @@ class PollMixin:
         st["last_polled"] = now_iso()
         if self._manual_reserved(task):
             # Observation continues in Manual mode, including terminal PR state, but every
-            # lifecycle consequence stays parked until the reservation is removed.  A later
-            # ordinary poll sees the same current PR state and applies its normal transition.
-            st["pr_draft"] = bool(pr.is_draft)
-            st["head_sha"] = pr.head_sha
-            st["pr_updated_at"] = pr.updated_at
+            # lifecycle consequence stays parked until the reservation is removed. Keep the
+            # observation separate from the normal processing cursors so the first ordinary
+            # poll still sees feedback and draft/head changes made during the reservation.
+            st["manual_observed_pr"] = {
+                "draft": bool(pr.is_draft),
+                "head_sha": pr.head_sha,
+                "updated_at": pr.updated_at,
+            }
             return
         if pr.state == "MERGED":
             final_base = self.final_base_for(task)
