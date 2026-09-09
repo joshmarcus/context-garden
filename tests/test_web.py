@@ -2541,6 +2541,20 @@ def test_config_editor_labels_scalar_union_values(garden):
     assert 'data-help-id="config-help-' in list_setting
 
 
+def test_config_editor_scalar_union_can_build_multi_item_list(garden):
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data.setdefault("observe", {})["phases"] = "active"
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    page = client(garden).get("/config").text
+    setting = page.split('id="setting-observe-phases"', 1)[1].split("</section>", 1)[0]
+    assert '<button type="button" data-add-row hidden disabled>Add item</button>' in setting
+    assert 'addButton.hidden = mode.value !== "list"' in page
+    assert 'addButton.disabled = mode.value !== "list"' in page
+    assert 'rows.appendChild(row)' in page
+
+
 def test_config_editor_rejects_stale_invalid_and_locked_edits_without_partial_save(garden):
     import re
 

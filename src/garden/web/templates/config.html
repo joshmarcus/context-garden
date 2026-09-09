@@ -53,6 +53,7 @@
         {% if row.collection_choice %}<select name="collection_kind" data-collection-mode aria-label="Value type"><option value="scalar" {% if row.collection_kind == 'choice' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
         {% if row.collection_kind == "choice" %}
         <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"><input id="config-value-{{ setting_index }}" name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
+        <button type="button" data-add-row hidden disabled>Add item</button>
         {% elif row.collection_kind == "list" %}
         {% if not row.collection_choice %}<input type="hidden" name="collection_kind" value="list">{% endif %}
         <div data-collection-rows class="config-collection"{% if row.collection_choice %} data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"{% endif %}>{% for item in row.list_items %}<div class="config-collection-row config-list-row"><input name="collection_value" value="{{ item }}" aria-label="Item {{ loop.index }}"><button type="button" data-remove-row aria-label="Remove item {{ loop.index }}">×</button></div>{% endfor %}</div>
@@ -289,9 +290,10 @@ document.querySelectorAll(".config-setting-form").forEach(form => {
   const rows = form.querySelector("[data-collection-rows]");
   if (!rows) return;
   const mode = form.querySelector("[data-collection-mode]");
+  const addButton = form.querySelector("[data-add-row]");
   const bindRemove = row => row.querySelector("[data-remove-row]")?.addEventListener("click", () => row.remove());
   rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
-  form.querySelector("[data-add-row]")?.addEventListener("click", () => {
+  addButton?.addEventListener("click", () => {
     const mapping = form.querySelector('input[name="collection_kind"]')?.value === "mapping";
     const row = document.createElement("div");
     row.className = "config-collection-row" + (mapping ? "" : " config-list-row");
@@ -307,6 +309,8 @@ document.querySelectorAll(".config-setting-form").forEach(form => {
       ? '<div class="config-collection-row config-list-row"><input name="collection_value" aria-label="Item 1"><button type="button" data-remove-row aria-label="Remove item 1">×</button></div>'
       : `<input id="${valueId}" name="collection_value" aria-describedby="${helpId}">`;
     rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
+    addButton.hidden = mode.value !== "list";
+    addButton.disabled = mode.value !== "list";
   });
 });
 </script>
