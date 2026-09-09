@@ -997,20 +997,30 @@ class HumanMixin:
         cannot loop indefinitely under delegated authority.
         """
         ensure_open(task)
-        if not bool(self.cfg.get("recovery.delegated", False)):
-            raise RuntimeError("delegated recovery is disabled; an owner must choose a retry")
         st = self.state.get(task.id)
         raw = st.get("needs_human")
         info = raw if isinstance(raw, dict) else {}
         kind = str(info.get("kind") or "")
         if kind not in {"revision_cap", "check_did_not_run"}:
             raise RuntimeError(f"{task.id} has no delegated recovery for {kind or 'this stop'}")
+        if kind == "revision_cap" and not bool(self.cfg.get("recovery.delegated", False)):
+            raise RuntimeError("delegated revision recovery is disabled; an owner must choose a retry")
         feedback = str(st.get("pending_feedback") or "")
         check = dict(st.get("recovery_check") or {})
-        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""), str(check.get("cause") or "")))
+        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""),
+                                    str(check.get("cause") or ""), str(check.get("source_head") or "")))
         used = set(str(item) for item in (st.get("delegated_recovery_fingerprints") or []))
         if fingerprint in used:
             raise RuntimeError("this unchanged recovery has already used its delegated continuation")
+        active = [run for run in self.runs.active() if run.task_id == task.id]
+        if active:
+            raise RuntimeError(f"{task.id} already has active work; recovery was not duplicated")
+        expected_head = str(check.get("source_head") or "")
+        current_head = str(st.get("head_sha") or "")
+        if kind == "check_did_not_run" and expected_head and current_head and expected_head != current_head:
+            raise RuntimeError(
+                f"{task.id} moved to a different PR head; the interrupted check was not retried"
+            )
         rep = rep or TickReport()
         if kind == "revision_cap":
             if not feedback:
@@ -1034,6 +1044,7 @@ class HumanMixin:
             specs=list(check["specs"]), stage=str(check["stage"]),
             cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
             backend=str(check.get("backend") or ""), provenance=str(check.get("provenance") or ""),
+            source_head=expected_head,
         )
         used.add(fingerprint)
         st["delegated_recovery_fingerprints"] = sorted(used)

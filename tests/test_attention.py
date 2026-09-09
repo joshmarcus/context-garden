@@ -1,5 +1,4 @@
-"""Attention cards (CG-045): the card names the kind of decision, shows the evidence,
-describes what each button does, and offers 'nothing to fix, resume' and 'discuss'."""
+"""Attention cards distinguish owner decisions from bounded operator recovery."""
 
 from __future__ import annotations
 
@@ -67,12 +66,12 @@ def test_stall_card_names_kind_evidence_and_button_effects(garden):
     # every button explains its effect
     assert all(a.get("detail") for a in it["actions"])
     labels = [a["label"] for a in it["actions"]]
-    assert labels[0] == "Nothing to fix, resume"
-    assert "Continue the loop" in labels and "Discuss" in labels and "Cancel" in labels and "Open PR" in labels
-    resume = it["actions"][0]
-    assert "in review" in resume["detail"] and "no run starts" in resume["detail"]
+    assert "Nothing to fix, resume" not in labels and "Continue the loop" not in labels
+    assert "Send outstanding work to a worker" in labels
+    assert "Discuss" in labels and "Cancel" in labels and "Open PR" in labels
     retry = next(a for a in it["actions"] if a["kind"] == "retry")
     assert "keeps the PR" in retry["detail"] and "revise" in retry["detail"]
+    assert it["owner"] == "you" and it["user_decision"] is True
 
 
 def test_revision_cap_card(garden):
@@ -80,7 +79,8 @@ def test_revision_cap_card(garden):
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
     _set_state(garden, "DM-001", needs_human={"kind": "revision_cap", "reason": "3 revision rounds used",
                                               "prior_status": "in_review", "at": "2026-09-04T00:00:00+00:00"})
-    it = _attention(garden, "DM-001")
+    it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+              if item["task"] == "DM-001" and item["group"] == "operator")
     assert it["kind"] == "revision_cap"
     assert it["kind_title"] == "Revision cap reached"
     assert "3 revision rounds used" in it["why"]
@@ -195,7 +195,8 @@ def test_parent_closed_card(garden):
     _set_task(store, "DM-002", Status.IN_REVIEW, pr="https://example.com/pull/8")
     _set_state(garden, "DM-002", needs_human={"kind": "parent_closed", "reason": "stack parent DM-001 was closed without merging",
                                               "prior_status": "in_review", "at": "2026-09-04T00:00:00+00:00"})
-    it = _attention(garden, "DM-002")
+    it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+              if item["task"] == "DM-002" and item["group"] == "operator")
     assert it["kind"] == "parent_closed"
     assert it["kind_title"] == "Stack parent closed"
     assert "DM-001" in it["reason"]
@@ -204,7 +205,8 @@ def test_parent_closed_card(garden):
 def test_worker_failed_card_no_resume(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.FAILED, log="attempt 2 failed: worker exited 1: error_max_turns; giving up")
-    it = _attention(garden, "DM-001")
+    it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+              if item["task"] == "DM-001" and item["group"] == "operator")
     assert it["kind"] == "worker_failed"
     assert "error_max_turns" in it["reason"]
     kinds = [a["kind"] for a in it["actions"]]
@@ -217,7 +219,8 @@ def test_worker_failed_card_no_resume(garden):
 def test_env_error_card(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.FAILED, log="dispatch failed: runner not found")
-    it = _attention(garden, "DM-001")
+    it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+              if item["task"] == "DM-001" and item["group"] == "operator")
     assert it["kind"] == "env_error"
     assert it["kind_title"] == "The garden hit an environment error"
 
@@ -234,7 +237,7 @@ def test_deployment_prerequisite_is_an_operator_recovery_card(garden):
     assert it["kind_title"] == "Deployment prerequisite"
     assert "deploy the verified build" in it["reason"]
     assert "operational work" in it["kind_blurb"]
-    assert next(a for a in it["actions"] if a["kind"] == "resume")["label"] == "Deployment completed, resume"
+    assert next(a for a in it["actions"] if a["kind"] == "resume")["label"] == "Deployment completed — continue"
 
 
 def test_legacy_string_needs_human_normalizes():
@@ -262,7 +265,7 @@ def test_discuss_prompt_has_task_reason_pr_and_run_ids(garden):
     assert STOP["reason"] in prompt
     assert "https://example.com/pull/7" in prompt
     assert run.run_id in prompt
-    assert "garden resume DM-001" in prompt and "garden retry DM-001" in prompt
+    assert "garden retry DM-001" in prompt
 
 
 # ---------------------------------------------------------------- nothing to fix, resume
@@ -323,14 +326,12 @@ def test_web_task_page_and_inbox_show_attention_and_resume_works(garden):
     _set_state(garden, "DM-001", needs_human=dict(STOP))
     c = TestClient(create_app(Store(garden), watch=False))
     page = c.get("/tasks/DM-001").text
-    assert "Needs a decision: The loop stalled" in page
-    assert "Nothing to fix, resume" in page and "no run starts" in page
+    assert "Needs your decision: The loop stalled" in page
+    assert "Send outstanding work to a worker" in page
+    assert "Nothing to fix, resume" not in page
     assert "Discuss" in page and "Copy prompt" in page
     inbox = c.get("/").text
-    assert "The loop stalled" in inbox and "Nothing to fix, resume" in inbox
-    r = c.post("/tasks/DM-001/resume", follow_redirects=False)
-    assert r.status_code == 303
-    assert Store(garden).task("DM-001").status == Status.IN_REVIEW
+    assert "The loop stalled" in inbox and "Your decision</dt><dd>Required" in inbox
 
 
 def test_evidence_includes_diff_summary(garden):
@@ -351,3 +352,80 @@ def test_attention_view_none_for_quiet_task(garden):
     store = Store(garden)
     t = store.task("DM-001")
     assert attention_view(t, {}, None) is None
+
+
+def test_interrupted_check_keeps_source_and_review_blockers_separate(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    runs = RunStore(garden / ".garden")
+    run = runs.new_run("DM-001", "local", mode="check")
+    run.status = "timeout"
+    run.error = "validation supervisor timed out"
+    run.save()
+    _set_state(
+        garden,
+        "DM-001",
+        needs_human={"kind": "check_did_not_run", "reason": "lint timed out twice", "run": run.run_id},
+        pending_feedback="CI tests fail in src/example.py",
+        checks="FAILURE",
+        last_review={"verdict": "changes_requested", "summary": "Fix the source failure"},
+        head_sha="abcdef123456",
+        recovery_check={"stage": "ci", "specs": [{"name": "lint", "command": "ruff check"}], "cont": {}},
+    )
+
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
+    assert card["group"] == "operator"
+    assert card["owner"] == "operator" and card["user_decision"] is False
+    assert [blocker["category"] for blocker in card["blockers"]] == [
+        "Interrupted check", "Source or CI failure", "Review findings"]
+    assert next(action for action in card["actions"] if action["kind"] == "recover")["label"] == "Retry the interrupted check"
+    assert not {"resume", "retry"} & {action["kind"] for action in card["actions"]}
+    html = TestClient(create_app(Store(garden), watch=False)).get("/").text
+    assert "Your decision</dt><dd>Not required" in html
+    assert f'/runs/DM-001/{run.run_id}' in html and "Current PR at abcdef12" in html
+
+
+def test_plain_interrupted_check_is_operator_owned(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED)
+    _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "check timed out twice"},
+               recovery_check={"stage": "pre_pr", "specs": [{"name": "unit", "command": "pytest"}], "cont": {}})
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
+    assert card["group"] == "operator" and len(card["blockers"]) == 1
+    assert card["recommendation"] == "Retry the interrupted check"
+
+
+def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
+               checks="SUCCESS", head_sha="abcdef123456")
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
+    assert card["category"] == "Stale bookkeeping"
+    assert next(action for action in card["actions"] if action["kind"] == "recover-check")["label"] == "Clear resolved stop"
+    client = TestClient(create_app(Store(garden), watch=False))
+    page = client.get("/").text
+    assert "Clear resolved stop" in page and "stale" in page.lower()
+
+    response = client.post("/tasks/DM-001/recover-check", follow_redirects=False)
+
+    assert response.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert not state.get("needs_human")
+    assert Store(garden).task("DM-001").status == Status.IN_REVIEW
+
+
+def test_explicit_hold_and_real_question_name_the_correct_owner(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "deployment", "reason": "owner hold: wait for launch approval"})
+    _set_task(store, "DM-002", Status.WAITING_HUMAN)
+    _set_state(garden, "DM-002", question="Should this public API remain compatible?")
+    html = TestClient(create_app(Store(garden), watch=False)).get("/").text
+    assert "Complete the named deployment step" in html
+    assert "Your decision</dt><dd>Not required" in html
+    assert "Should this public API remain compatible?" in html
+    assert "Answer and resume" in html
