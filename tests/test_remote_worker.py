@@ -671,6 +671,11 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
 
     _, store = remote_client(garden, monkeypatch)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
+    # The simulated remote host runs on this test process's machine.  Give its detached
+    # check supervisors their own lease namespace so they cannot wait on the enclosing
+    # validation command's host-wide slot after this test has returned.
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    config["worker_env"]["pass"].append("XDG_RUNTIME_DIR")
     config["products"]["demo"]["setup"] = {
         "command": "echo configured-product-setup", "timeout_seconds": 37,
         "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
@@ -739,7 +744,8 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                                json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
             # Reclaim through the actual CLI, without a controller object in that process.
             env = {k: v for k, v in os.environ.items() if k in
-                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "XDG_RUNTIME_DIR"}
+                   or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
             setup_counts = {}

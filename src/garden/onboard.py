@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from .config import CONFIG_NAME
+from .github import repo_slug_from_remote
 from .planner import import_plan, parse_plan, plan_prompt, run_planner
 from .scaffold import init_garden, new_phase
 from .store import Store
@@ -86,10 +87,9 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
     remote = subprocess.run(
         ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=False
     ).stdout.strip()
-    match = re.search(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?$", remote)
-    if not match:
+    slug = repo_slug_from_remote(remote)
+    if not slug:
         return
-    slug = f"{match.group(1)}/{match.group(2)}"
     repo_info = _gh_json(repo, ["repo", "view", slug, "--json", "defaultBranchRef"])
     if isinstance(repo_info, dict):
         default = (repo_info.get("defaultBranchRef") or {}).get("name")
