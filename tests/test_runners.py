@@ -1008,6 +1008,7 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     receipt = json.loads(next((outer / "validations").glob("*/result.json")).read_text())
     assert receipt["source_sha"] == "abc123"
     assert receipt["selection"] == ["true"] and receipt["exit_code"] == 0
+    assert (Path(receipt["log_location"]) / "stderr.log").read_text() == ""
 
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
     assert validation.bounded_validation_timeout_seconds() == 900
