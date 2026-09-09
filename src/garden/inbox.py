@@ -170,6 +170,11 @@ def _automated_review_is_current(st: Any) -> bool:
             and str(st.get("last_review_head") or "") == str(st.get("head_sha") or ""))
 
 
+def automated_review_is_queued(t: Task, st: Any) -> bool:
+    """Whether the scheduler owns the next review step for an in-review task."""
+    return t.status == Status.IN_REVIEW and bool(st.get("review_run") or st.get("pending_reviews"))
+
+
 def _automated_review_wait(t: Task, st: Any, sched: Any) -> str:
     """A concise operational explanation for a review the scheduler still owns."""
     pending = list(st.get("pending_reviews") or [])
@@ -444,7 +449,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                     card["attention"]["actions"], kind="state_mismatch", kind_title="Waiting state is incomplete",
                     kind_blurb=card["blurb"], reason=card["reason"], resume_to="", evidence=card["evidence"],
                     discuss="", decision_card=card, card_task=t)
-        elif t.status == Status.IN_REVIEW and (st.get("review_run") or st.get("pending_reviews")):
+        elif automated_review_is_queued(t, st):
             # A queued review owns the next step even when an earlier stop remains in state.
             # The scheduler's fresh review is the authority for this head; showing the old
             # stop as a human action would invite a person to bypass that workflow.
