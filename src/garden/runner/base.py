@@ -322,6 +322,10 @@ class Runner(ABC):
     def assign(self, run: Run, active: list[Run]) -> None:  # noqa: B027
         """Optional: pick a host / slot before start (ssh runner)."""
 
+    def canonical_checkout_identity(self, run: Run) -> str | None:
+        """Identify a remotely provisioned checkout when the transport can do so."""
+        return None
+
     @abstractmethod
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         """Launch the worker. Must return immediately; must arrange for run.dir/exit_code."""

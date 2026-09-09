@@ -287,10 +287,24 @@ class Scheduler(
             # ``unreaped`` covers a restart after finalize's terminal save but before the task
             # transition completed.  The next remote claim may recover the durable lease only
             # after neither source names its owner.
-            protected_ids = {item.run_id for item in self.runs.active()}
-            protected_ids.update(self.unreaped_run_ids())
+            if runner.name == "ssh" and not run.host:
+                runner.assign(run, [item for item in self.active_runs() if item.run_id != run.run_id])
+                run.save()
+            protected_runs = {item.run_id: item for item in self.runs.active()}
+            unreaped_ids = self.unreaped_run_ids()
+            protected_runs.update(
+                (item.run_id, item) for item in self.runs.all_runs()
+                if item.run_id in unreaped_ids
+            )
+            identity = runner.canonical_checkout_identity(run)
+            if identity is not None:
+                run.env_snapshot["canonical_checkout_identity"] = identity
+                run.save()
             run.env_snapshot["canonical_active_run_ids"] = sorted(
-                item for item in protected_ids if item != run.run_id
+                item.run_id for item in protected_runs.values()
+                if item.run_id != run.run_id
+                and (identity is None
+                     or item.env_snapshot.get("canonical_checkout_identity") == identity)
             )
             run.save()
             return None

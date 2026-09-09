@@ -171,6 +171,7 @@ def test_ssh_canonical_lease_survives_process_exit_until_run_is_reaped(garden, t
 
     first = scheduler.runs.new_run(task.id, "ssh")
     first.host, first.branch, first.base = "boxA", task.default_branch(), "main"
+    scheduler.prepare_canonical_run(task, first, runner, first.branch, first.base)
     runner.start(first, tmp_path, "brief")
     assert _wait_run(first) == 0
     lease = remote / ".git" / "garden-canonical-lease"
@@ -229,6 +230,8 @@ def test_remote_canonical_owner_remains_protected_during_interrupted_reap(garden
     task = scheduler.store.task("DM-001")
     runner = scheduler.runner_for(task, "ssh")
     owner = scheduler.runs.new_run(task.id, "ssh")
+    owner.host, owner.branch, owner.base = "boxA", task.default_branch(), "main"
+    scheduler.prepare_canonical_run(task, owner, runner, owner.branch, owner.base)
     owner.finished_at = "2026-09-08T00:00:00+00:00"
     owner.status = "done"
     owner.save()
@@ -239,6 +242,51 @@ def test_remote_canonical_owner_remains_protected_during_interrupted_reap(garden
     scheduler.prepare_canonical_run(scheduler.store.task("DM-002"), competitor, runner,
                                     "garden/dm-002-second-task", "main")
     assert competitor.env_snapshot["canonical_active_run_ids"] == [owner.run_id]
+
+
+def test_ssh_canonical_claims_are_scoped_to_host_and_checkout(garden, tmp_path):
+    first_repo = (garden / "../remote-clone").resolve()
+    second_repo = (tmp_path / "other-remote-clone").resolve()
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["products"]["demo"]["checkout"] = {
+        "strategy": "in_place",
+        "root": str((garden / "../repo").resolve()),
+    }
+    data["ssh"]["hosts"].append({
+        "name": "boxB",
+        "host": "boxB",
+        "repos": {"demo": str(second_repo)},
+        "max_parallel": 1,
+    })
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+    scheduler = Scheduler(Store(garden))
+    task = scheduler.store.task("DM-001")
+
+    owner_runner = scheduler.runner_for(task, "ssh")
+    owner = scheduler.runs.new_run(task.id, "ssh", initial_status="preparing")
+    owner.host, owner.branch, owner.base = "boxA", task.default_branch(), "main"
+    scheduler.prepare_canonical_run(task, owner, owner_runner, owner.branch, owner.base)
+    assert json.loads(owner.env_snapshot["canonical_checkout_identity"]) == [
+        "boxA", str(first_repo)
+    ]
+
+    other_host = scheduler.runs.new_run("DM-002", "ssh", initial_status="preparing")
+    other_host.host = "boxB"
+    scheduler.prepare_canonical_run(
+        scheduler.store.task("DM-002"), other_host,
+        scheduler.runner_for(scheduler.store.task("DM-002"), "ssh"),
+        "garden/dm-002-second-task", "main",
+    )
+    assert other_host.env_snapshot["canonical_active_run_ids"] == []
+
+    same_checkout = scheduler.runs.new_run("DM-002", "ssh", initial_status="preparing")
+    same_checkout.host = "boxA"
+    scheduler.prepare_canonical_run(
+        scheduler.store.task("DM-002"), same_checkout,
+        scheduler.runner_for(scheduler.store.task("DM-002"), "ssh"),
+        "garden/dm-002-second-task", "main",
+    )
+    assert same_checkout.env_snapshot["canonical_active_run_ids"] == [owner.run_id]
 
 
 def test_ssh_in_place_refuses_reconciliation_without_working_timeout(garden, tmp_path, monkeypatch):
