@@ -2454,6 +2454,29 @@ def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
                   headers={"Accept": "application/json"}).status_code == 400
 
 
+def test_operating_profile_slider_renders_a_removed_selected_stop(garden):
+    """A stale custom override remains honestly selectable after its stop is removed."""
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["profiles"] = {"turbo": {"workers": 9, "reviews": 4}}
+    config_path.write_text(yaml.safe_dump(config))
+    c = client(garden)
+    assert c.post("/config/operating-profile", data={"value": "turbo"}).status_code == 200
+
+    config.pop("profiles")
+    config_path.write_text(yaml.safe_dump(config))
+
+    # A fresh app reads the updated stop list while retaining the live override.
+    c = client(garden)
+    home = c.get("/")
+    assert home.status_code == 200
+    assert 'value="turbo"' in home.text
+    assert "Unavailable: turbo" in home.text
+    assert "names an unavailable profile; using plain garden.yaml values." in home.text
+
+
 def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_path):
     """The rail control changes a real isolated app, retains its pause state, and reloads."""
     import socket
@@ -2517,6 +2540,39 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.reload(wait_until="networkidle")
             assert "economy" in page.locator(".profile-current").inner_text().lower()
             assert "dispatch paused" in page.locator(".rail .foot").inner_text().lower()
+            # Return to the saved stop while a different request is pending.  The
+            # successful first request must be followed by a request restoring
+            # the newest selection, rather than leaving the range thumb ahead
+            # of the hidden and persisted values.
+            page.evaluate("""
+                () => {
+                  window.profileSaveCalls = [];
+                  window.originalProfileFetch = window.fetch;
+                  window.fetch = (url, options) => {
+                    const value = new URLSearchParams(options.body).get("value");
+                    window.profileSaveCalls.push({url, value});
+                    if (window.profileSaveCalls.length === 1) {
+                      return new Promise(resolve => { window.resolveProfileSave = resolve; });
+                    }
+                    return window.originalProfileFetch(url, options);
+                  };
+                }
+            """)
+            slider.press("End")
+            page.wait_for_function("window.profileSaveCalls.length === 1")
+            page.evaluate("""
+                () => {
+                  const input = document.querySelector("#operating-profile-slider");
+                  input.value = "1";  // Economy, the value saved before the pending request.
+                  input.dispatchEvent(new Event("change", {bubbles: true}));
+                  window.resolveProfileSave(new Response("", {status: 200}));
+                }
+            """)
+            page.wait_for_function("window.profileSaveCalls.length === 2")
+            assert page.evaluate("window.profileSaveCalls.map(call => call.value)") == ["fast", "economy"]
+            page.get_by_text("saved ✓").wait_for()
+            page.reload(wait_until="networkidle")
+            assert "economy" in page.locator(".profile-current").inner_text().lower()
             page.set_viewport_size({"width": 390, "height": 844})
             page.screenshot(path=str(tmp_path / "profile-slider-390-light.png"), full_page=True)
             page.emulate_media(color_scheme="dark")

@@ -262,6 +262,17 @@ class Site:
         rail_events = history if history is not None else EventLog(s.config.garden_dir / "events.jsonl").read()
         rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
         rail_metrics = metrics(rail_events, s.tasks())
+        profile_options = [
+            {"value": "", "label": "Plain config"},
+            *[{"value": name, "label": name.capitalize()} for name in stops],
+        ]
+        # A live override may name a custom stop that was later removed from
+        # garden.yaml.  The scheduler deliberately treats that as an empty
+        # profile until the operator chooses another stop; keep it visible in
+        # the rail rather than making the rendered control claim a different
+        # selection (or fail to render).
+        if active and active not in stops:
+            profile_options.append({"value": active, "label": f"Unavailable: {active}"})
         return {
             "request": request,
             "page": page,
@@ -293,10 +304,7 @@ class Site:
             # override and leaves the garden's ordinary configuration in effect.  Include
             # it in the rail picker so its selected state is never represented as an
             # arbitrary named profile.
-            "operating_profile_options": [
-                {"value": "", "label": "Plain config"},
-                *[{"value": name, "label": name.capitalize()} for name in stops],
-            ],
+            "operating_profile_options": profile_options,
             "operating_profile": active,
             "operating_profile_source": (
                 "live override" if "operating_profile" in profile_overrides

@@ -380,7 +380,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   <div>
     <h4>Operating profile</h4>
     {% set profile_option_values = operating_profile_options|map(attribute='value')|list %}
-    {% set selected_index = profile_option_values.index(operating_profile) %}
+    {% set selected_index = profile_option_values.index(operating_profile) if operating_profile in profile_option_values else 0 %}
     <form method="post" action="/config/operating-profile" class="profile-slider" data-profile-slider data-selected="{{ operating_profile }}" data-profile-options='{{ operating_profile_options|tojson }}'>
       <div class="profile-current"><span>Selected</span><output for="operating-profile-slider">{{ operating_profile|capitalize if operating_profile else "Plain config" }}</output></div>
       <input id="operating-profile-slider" type="range" min="0" max="{{ operating_profile_options|length - 1 }}" step="1" value="{{ selected_index }}" aria-label="{{ operating_profile|capitalize ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}" aria-valuetext="{{ operating_profile|capitalize ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}">
@@ -389,7 +389,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
       <noscript><select name="value" aria-label="Operating profile">{% for option in operating_profile_options %}<option value="{{ option.value }}" {% if option.value == operating_profile %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    {% if operating_profile %}<span class="profile-note">{{ operating_profile_source }} requests {{ operating_profile_meaning }}.</span>{% else %}<span class="profile-note">No profile requested; using plain garden.yaml values.</span>{% endif %}
+    {% if operating_profile_meaning %}<span class="profile-note">{{ operating_profile_source }} requests {{ operating_profile_meaning }}.</span>{% elif operating_profile %}<span class="profile-note">{{ operating_profile_source }} names an unavailable profile; using plain garden.yaml values.</span>{% else %}<span class="profile-note">No profile requested; using plain garden.yaml values.</span>{% endif %}
     {% if operating_profile_overrides %}<span class="profile-note">Specific overrides still apply: {{ operating_profile_overrides|join(', ') }}.</span>{% endif %}
     <span class="profile-note">Profile changes do not resume dispatch or raise resource caps.</span>
     {% if operating_profile_spend_rate %}<span class="faint" style="display:block">${{ '%.2f' % operating_profile_spend_rate }}/hr last hour</span>{% endif %}
@@ -605,10 +605,20 @@ document.querySelectorAll("form[data-profile-slider]").forEach(form => {
   }
   slider.addEventListener("change", () => {
     const option = options[Number(slider.value)];
-    if (!option || option.value === saved) return;
+    if (!option) return;
     const name = option.value;
+    if (saving) {
+      // The request already in flight can still save a different value.  Keep
+      // this newest target even when it is the previously saved stop: if the
+      // in-flight request succeeds, it needs a final request to restore it;
+      // if it fails, the finally block sees it already saved and clears it.
+      setVisible(name);
+      queued = name;
+      return;
+    }
+    if (name === saved) return;
     setVisible(name);
-    if (saving) queued = name; else save(name);
+    save(name);
   });
 });
 // ---- brief repair: validate the proposed criteria and reading list through the same gate as
