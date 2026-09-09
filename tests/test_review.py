@@ -209,6 +209,38 @@ def test_started_review_env_error_preserves_collected_usage_and_cost(sched, monk
     assert st["review_recovery"]["started"] is True
 
 
+def test_review_materialization_error_requeues_without_pausing_model_harness(sched, monkeypatch):
+    """Checkout preparation is a host failure even when collected by the review reaper."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"]["enabled"] = True
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    collected = {
+        "env_error": True,
+        "env_kind": "materialization",
+        "error": "could not materialize claimed checkout",
+        "usage": {},
+        "cost_usd": 0.0,
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+
+    assert sched.reap_review(task, TickReport())
+
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None and saved.status == "env_error"
+    assert saved.error == collected["error"]
+    assert not sched.is_harness_paused(run.harness)
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_recovery"]["started"] is True
+
+
 def test_repeated_review_env_errors_exhaust_bounded_recovery_after_restart(
         sched, fake_github, monkeypatch):
     sched.cfg.data["stack"] = False
