@@ -718,8 +718,11 @@ passing evidence and identify the concrete defect or unmet outcome behind a send
 Remote work, review and persona harnesses run through the same execution supervisor as
 local harnesses. The host creates a private per-claim metadata directory and a fresh owner
 identity; the supervisor supplies `GARDEN_VALIDATION_RUNNER` and `GARDEN_EXECUTION_RUN_DIR`.
-Workers can invoke `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` exactly as
-the brief says. Validation remains serialized per owner and uses the host's heavy-work
+Workers invoke direct pytest commands through
+`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <pytest command>`. Opaque scripts and
+build-tool launchers fail closed because they could discard the current selection policy before
+delegating to an older pytest configuration; non-pytest tools run directly. Validation remains
+serialized per owner and uses the host's heavy-work
 admission and service limits. Controller paths and inherited execution ownership are not
 forwarded as a substitute. The controller's `checks.timeout_seconds` value travels with a
 remote claim and in the scrubbed local/SSH worker environment. Its hard clock starts only
