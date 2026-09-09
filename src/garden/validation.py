@@ -66,6 +66,45 @@ class ValidationPolicyError(RuntimeError):
     """The current policy cannot safely govern the requested validation command."""
 
 
+def receipt_has_current_policy(receipt: object) -> bool:
+    """Whether a supervisor receipt proves the complete current pytest policy contract."""
+    if not isinstance(receipt, dict):
+        return False
+    try:
+        command = str(receipt["command"])
+        selection = receipt["selection"]
+        policy = receipt["policy"]
+        requested = policy["requested_selection"]
+        effective = policy["effective_selection"]
+        excluded = policy["excluded_nodes"]
+        stress_opt_in = policy["stress_opt_in"]
+    except (KeyError, TypeError):
+        return False
+    if not all(isinstance(value, list) and all(isinstance(item, str) for item in value)
+               for value in (selection, requested, effective, excluded)):
+        return False
+    if (receipt.get("version") != 1
+            or receipt.get("source_dirty") != ""
+            or receipt.get("source_changed") is not False
+            or policy.get("version") != 1
+            or policy.get("source_sha") != POLICY_SOURCE_SHA
+            or policy.get("kind") != "pytest"
+            or not isinstance(stress_opt_in, bool)
+            or not requested
+            or not _pytest_command(requested)
+            or command != shlex.join(requested)
+            or selection != effective):
+        return False
+    if stress_opt_in:
+        without_legacy_flag = [item for item in requested if item != "--run-stress"]
+        return (excluded == []
+                and "--run-stress" in requested
+                and effective in (requested, without_legacy_flag))
+    return ("--run-stress" not in requested
+            and excluded == list(STRESS_NODES)
+            and effective == [*requested, *POLICY_ADDOPTS])
+
+
 def enforce_validation_policy_env(env: dict[str, str]) -> None:
     """Make even a branch-issued plain pytest command obey the current default policy."""
     existing = shlex.split(env.get("PYTEST_ADDOPTS", ""))
