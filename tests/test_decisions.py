@@ -282,7 +282,9 @@ def test_terminal_check_recovery_resumes_green_pr_without_a_revision(sched):
     st = sched.state.get(task.id)
     assert not st.get("check_run") and not st.get("needs_human") and not st.get("recovery_check")
     assert sched.store.task(task.id).status == Status.IN_REVIEW
-    assert sched._run_by_id(task, run.run_id).error == "original check diagnostic"
+    preserved = sched._run_by_id(task, run.run_id)
+    assert preserved.error == "original check diagnostic" and preserved.result == {"checks": []}
+    assert [item.run_id for item in sched.runs.runs_for(task.id)] == [run.run_id]
     assert sched.recover_waiting_check(task) == "no check recovery is needed"
     sched.tick(dispatch=False)
     assert not sched.state.get(task.id).get("needs_human")
