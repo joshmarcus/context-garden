@@ -68,7 +68,6 @@ class PersonaMixin:
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
-                            required_evidence: bool = False) -> Run:
                             required_evidence: bool = False,
                             member: dict[str, Any] | None = None) -> Run:
         if self._manual_reserved(task):
