@@ -165,6 +165,39 @@ def resume(task_id: str = typer.Argument(..., help="The task to clear")):
     console.print(f"{t.id}: nothing to fix; resumed as {t.status.value}")
 
 
+@app.command("manual-mode", rich_help_panel=PANEL_DECIDE)
+def manual_mode(task_id: str, note: str = typer.Option("", "--note", "-n"),
+                actor: str = typer.Option("operator", help="operator|human_owner")):
+    """Reserve a task from automatic lifecycle actions without stopping active work."""
+    store = _store()
+    sched = _scheduler(store)
+    try:
+        reservation = sched.reserve_manual(_task(store, task_id), actor=actor, note=note)
+    except RuntimeError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: Manual mode reserved by {reservation['actor']}")
+
+
+@app.command("return-automation", rich_help_panel=PANEL_DECIDE)
+def return_automation(task_id: str):
+    """Return a reserved task to the normal scheduler lifecycle."""
+    store = _store()
+    sched = _scheduler(store)
+    task = _task(store, task_id)
+    reservation = sched.manual_reservation(task)
+    if not reservation:
+        err.print(f"[red]{task_id} is not in Manual mode[/red]")
+        raise typer.Exit(1)
+    try:
+        sched.return_to_automation(task, reservation_id=str(reservation["id"]),
+                                   expected_head=str(sched.state.get(task_id).get("head_sha") or ""))
+    except RuntimeError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: returned to automation")
+
+
 # keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
 LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int, "observe.profile": str}
 

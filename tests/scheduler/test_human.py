@@ -16,6 +16,62 @@ from garden.store import Store
 from tests.scheduler.conftest import statuses
 
 
+def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
+    task = sched.store.task("DM-001")
+    first = sched.reserve_manual(task, actor="operator", note="repairing directly")
+    again = sched.reserve_manual(task, actor="operator", note="repairing directly")
+
+    assert again == first
+    assert sched.tick().dispatched == []
+    assert statuses(sched)[task.id] == "ready"
+    assert sched.state.get(task.id)["manual_reservation"]["actor"] == "operator"
+    assert "Manual mode reserved by operator" in sched.store.task(task.id).body
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=first["id"], expected_head=""
+    )
+    assert sched.manual_reservation(task) is None
+    assert "DM-001(work)" in sched.tick().dispatched
+
+
+def test_manual_reservation_does_not_interrupt_active_work_and_return_is_guarded(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", "work")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    reservation = sched.reserve_manual(task, actor="human_owner")
+
+    assert sched.runs.runs_for(task.id)[-1].run_id == run.run_id
+    with pytest.raises(RuntimeError, match="still active"):
+        sched.return_to_automation(task, reservation_id=reservation["id"])
+    with pytest.raises(RuntimeError, match="stale"):
+        sched.return_to_automation(task, reservation_id="not-current")
+
+
+def test_manual_reservation_guards_every_new_task_run_kind(sched):
+    task = sched.store.task("DM-001")
+    task.branch = task.default_branch()
+    task.pr = "https://example.com/pull/1"
+    sched.store.save(task)
+    sched.reserve_manual(task)
+
+    for mode in ("work", "revise", "resume", "rebase"):
+        with pytest.raises(RuntimeError, match="Manual mode"):
+            sched.dispatch(task, mode=mode)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_review(task)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_persona_pr(task, "security")
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_edit(task)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched._dispatch_check_run(
+            task, worktree=sched.worktree_for(task), branch=task.branch, base="main",
+            specs=[], stage="pre_pr", cont={}, rep=sched.tick(dispatch=False),
+        )
+    assert sched.mechanical_rebase(task, "main", sched.tick(dispatch=False), reason="test") == "held"
+
+
 def test_take_manual_refuses_a_stale_ready_task_with_an_active_manual_claim(sched):
     """A manual run owns its task even if an interrupted state write left it READY."""
     task = sched.store.task("DM-001")

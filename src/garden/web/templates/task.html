@@ -50,6 +50,15 @@
 </div>
 {% endif %}
 
+{% if manual_reservation %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:14px" role="status">
+  <div class="eyebrow" style="color:var(--warn)">Manual mode</div>
+  <p style="margin:6px 0 10px">Reserved by <b>{{ manual_reservation.actor.replace('_', ' ') }}</b>{% if manual_reservation.note %}: {{ manual_reservation.note }}{% endif %}. Garden observes active work, PRs, and checks but starts no automatic lifecycle action.</p>
+  {% if latest_run and latest_run.status in ('requested','preparing','running') %}<p class="muted">Active work {{ latest_run.run_id }} continues to its safe boundary; this reservation does not stop or cancel it.</p>{% endif %}
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/return-automation" onsubmit="return confirm('Return this task to normal automation using its current observed state?');"><input type="hidden" name="applies_to" value="{{ manual_reservation.id }}"><input type="hidden" name="note" value="{{ state.head_sha or '' }}"><button class="primary">Return to automation</button></form>
+</div>
+{% endif %}
+
 {% if state.operator_scope and state.operator_scope.steps %}
 <div class="panel" style="border-color:var(--s-running);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--s-running)">Operator-owned configuration</div>
@@ -60,6 +69,7 @@
 {% endif %}
 
 <div class="actions" style="margin-bottom:14px">
+  {% if not manual_reservation and not task.status.terminal %}<button class="quiet" data-toggle="manual-mode-form">Manual mode…</button>{% endif %}
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
@@ -88,6 +98,7 @@
 </div>
 {% if not task.status.terminal and not state.investigation %}<div id="deep-dive-form" class="panel" hidden><div class="eyebrow">Deep dive</div><p>Ask a local investigation agent to examine the complete Garden diagnostics. Work already in flight drains safely.</p><form method="post" action="/tasks/{{ task.id }}/investigate"><textarea name="note" required placeholder="What happened, and what should the investigation explain?"></textarea><input type="hidden" name="applies_to" value="agent"><div class="actions" style="margin-top:8px"><button class="primary">Queue deep dive</button></div></form></div>{% endif %}
 {% if state.investigation %}{% set publication = state.investigation.get('publication', {}) %}<div class="panel" style="margin-bottom:14px"><div class="eyebrow">Deep dive · {{ state.investigation.status }}</div><p>{{ state.investigation.reason }}</p>{% if state.investigation.get('run_id') %}<a class="btn" href="/runs/{{ task.id }}/{{ state.investigation.run_id }}">Investigation run</a>{% endif %}{% if state.investigation.get('report_paths') %}<a class="btn" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.html">Read HTML report</a><a class="btn quiet" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.md">Markdown source</a>{% endif %}{% if publication.get('status') == 'failed' %}<p class="warn">Publication failed: {{ publication.error }}</p><form class="inline" method="post" action="/tasks/{{ task.id }}/investigation-publish-retry"><button>Retry report publication</button></form>{% elif publication.get('commit') %}<p class="muted">Published {{ publication.markdown }} and {{ publication.html }} at {{ publication.commit[:12] }}.</p>{% endif %}</div>{% endif %}
+{% if not manual_reservation and not task.status.terminal %}<div id="manual-mode-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/manual-mode"><div class="eyebrow">Reserve from automation</div><p class="muted">Existing work keeps running. Garden applies the reservation at the next safe lifecycle boundary.</p><label for="manual-note">Short note (optional)</label><input id="manual-note" name="note" maxlength="240" style="width:min(100%,420px)"><input type="hidden" name="actor" value="human_owner"><div class="actions" style="margin-top:8px"><button class="primary">Enable Manual mode</button></div></form></div>{% endif %}
 {% if manual_take_reason %}<p class="muted" style="margin:-6px 0 14px">{{ manual_take_reason }}</p>{% endif %}
 {% if manual_runner and task.status.value == 'running' and latest_run and latest_run.runner == 'manual' %}
 <div class="panel" style="margin-bottom:14px">

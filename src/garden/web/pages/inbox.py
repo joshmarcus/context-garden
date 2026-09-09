@@ -44,6 +44,11 @@ def register(app: FastAPI, site: Site) -> None:
         )
         investigation_scopes = [(ph.key, f"{prod.name} / {ph.name}")
                                 for prod in s.products() for ph in prod.phases if not ph.closed]
+        manual_reservations = {
+            task_id: sched.state.get(task_id).get("manual_reservation")
+            for task_id in tasks
+            if sched.state.get(task_id).get("manual_reservation")
+        }
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, owner_filter=owner,
             owner_task_items=owner_task_items, inbox_count=len(decisions(items)), prs_open=sum(1 for t in open_tasks if t.pr),
@@ -51,4 +56,4 @@ def register(app: FastAPI, site: Site) -> None:
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
             burnup=burnup_svg(all_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}),
             tiers=tier_bars_svg(tier_rows(s, tasks, all_events)), history=all_events,
-            investigation_scopes=investigation_scopes))
+            investigation_scopes=investigation_scopes, manual_reservations=manual_reservations))

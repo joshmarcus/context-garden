@@ -35,7 +35,7 @@ class EditsMixin:
         active = {r.task_id for r in self.active_runs()}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
             st = self.state.get(t.id)
-            if st.get("edit_run") or t.id in active:
+            if st.get("edit_run") or t.id in active or self._manual_reserved(t):
                 continue
             if t.status not in (Status.DRAFT, Status.READY):
                 continue
@@ -67,6 +67,8 @@ class EditsMixin:
         The old body is kept in the run directory so the page can show the diff."""
         from ..suggestions import edit_brief, pending_suggestions
 
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
 
         harness_name = str(self.cfg.get("review.harness") or "")

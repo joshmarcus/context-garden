@@ -47,6 +47,34 @@ def test_pages_render(garden):
     for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials", "/costs"]:
         r = c.get(url)
         assert r.status_code == 200, url
+
+
+def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
+    c = client(garden)
+    response = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"actor": "operator", "note": "working directly"},
+    )
+    assert response.status_code == 200
+    reservation = response.json()["reservation"]
+
+    page = c.get("/tasks/DM-001")
+    assert "Manual mode" in page.text
+    assert "working directly" in page.text
+    assert "Return to automation" in page.text
+    assert "Manual mode · return" in c.get("/inbox").text
+
+    stale = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"enabled": "false", "reservation_id": "stale", "expected_head": ""},
+    )
+    assert stale.status_code == 409
+    returned = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"enabled": "false", "reservation_id": reservation["id"], "expected_head": ""},
+    )
+    assert returned.status_code == 200
+    assert "Return to automation" not in c.get("/tasks/DM-001").text
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
