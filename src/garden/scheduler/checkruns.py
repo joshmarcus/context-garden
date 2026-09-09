@@ -133,7 +133,7 @@ class CheckRunMixin:
                                   # Its shared context already identifies the worktree, while
                                   # this relative sibling stays writable whether the check runs
                                   # beside the controller checkout or an independent host clone.
-                                  "out_dir": out_dir, "worktree": str(worktree),
+                                  "out_dir": out_dir,
                                   "changed": changed, "pages": plan["pages"],
                                   "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
                                   "_garden_generated_ui_check": True}]
