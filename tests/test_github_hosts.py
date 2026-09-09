@@ -663,6 +663,48 @@ def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
     assert calls == [("team/repo", 7)]
 
 
+def test_exact_head_check_reads_are_coalesced_and_refresh(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+    calls = []
+    clock = [100.0]
+
+    def rest(method, path, **kwargs):
+        calls.append((method, path))
+        return {"check_runs": [{"name": "tests", "status": "completed", "conclusion": "success"}]}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert len(calls) == 1
+    clock[0] += 11
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert len(calls) == 2
+
+
+def test_rate_limited_check_read_is_pending_until_reset_then_recovers(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+    clock = [100.0]
+    calls = [0]
+
+    def rest(method, path, **kwargs):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise GitHubError("GET checks: 403 API rate limit; rate_limit_reset=120")
+        return {"check_runs": [{"name": "tests", "status": "completed", "conclusion": "success"}]}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
+    state, failures = github._checks_for_sha("team/repo", "abc")
+    assert state == "PENDING" and "rate limited" in failures[0]
+    clock[0] = 110
+    assert github._checks_for_sha("team/repo", "other")[0] == "PENDING"
+    assert calls[0] == 1
+    clock[0] = 121
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert calls[0] == 2
+
+
 @pytest.mark.parametrize("slug", [
     RepositorySlug("team/repo", "unconfigured.test"),
     "team/repo",
