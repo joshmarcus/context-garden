@@ -786,6 +786,7 @@ class ReviewMixin:
                 review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
                                                           "summary": "Current-head pre-review check result was not available; reviewer attestation used",
                                                           "fix": ""})
+            metadata_warnings: list[str] = []
             unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
             mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
             mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
@@ -794,10 +795,9 @@ class ReviewMixin:
                         and str(row.get("reason") or "").strip()}
             unresolved = sorted(path for path in unknown if path not in mapped and path not in expanded)
             if review and unresolved:
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Optional UI scope mapping omitted for: " + ", ".join(unresolved),
-                                                          "fix": ""})
-            metadata_warnings: list[str] = []
+                metadata_warnings.append(
+                    "Optional UI scope mapping omitted for: " + ", ".join(unresolved)
+                )
             frozen_criteria = (list((run.env_snapshot or {})["criteria"])
                                if "criteria" in (run.env_snapshot or {}) else None)
             affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
