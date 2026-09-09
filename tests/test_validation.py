@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from garden import validation
 from garden.validation import (
     POLICY_SOURCE_SHA,
     STRESS_NODES,
@@ -96,11 +98,39 @@ def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path):
     assert policy["excluded_nodes"] == []
 
 
-def test_shell_hidden_pytest_is_blocked_before_execution(tmp_path):
+@pytest.mark.parametrize("command", [
+    ["sh", "-c", "pytest -q"],
+    ["env", "-u", "PYTEST_ADDOPTS", "pytest", "-q"],
+    ["uv", "run", "pytest"],
+    ["tox"],
+    ["make", "test"],
+])
+def test_indirect_validation_launcher_is_blocked_before_execution(tmp_path, command):
     repo = _checkout(tmp_path, "old")
 
-    with pytest.raises(ValidationPolicyError, match="invoke pytest directly"):
-        resolve_validation(["sh", "-c", "pytest -q"], repo)
+    with pytest.raises(ValidationPolicyError, match="cannot be proven non-pytest"):
+        resolve_validation(command, repo)
+
+
+def test_policy_block_writes_auditable_receipt_without_execution(tmp_path, monkeypatch):
+    repo = _checkout(tmp_path, "old")
+    run_dir = tmp_path / "run"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(run_dir))
+    monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "test-owner")
+    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "make", "test"])
+
+    assert validation.main() == 2
+
+    receipts = list((run_dir / "validations").glob("*/result.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text())
+    assert receipt["source_sha"] == _git(repo, "rev-parse", "HEAD")
+    assert receipt["selection"] == []
+    assert receipt["exit_code"] == 2
+    assert receipt["policy"]["source_sha"] == POLICY_SOURCE_SHA
+    assert receipt["policy"]["kind"] == "blocked"
+    assert receipt["policy"]["requested_selection"] == ["make", "test"]
 
 
 def test_worker_environment_enforces_policy_for_plain_pytest(tmp_path):
