@@ -3,8 +3,10 @@ describes what each button does, and offers 'nothing to fix, resume' and 'discus
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from garden.inbox import attention_view, build_inbox, needs_human_info
@@ -146,6 +148,50 @@ def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     assert persisted["investigation_history"][-1]["status"] == "report_ready"
     assert persisted["investigation"]["status"] == "requested"
     assert persisted["investigation"]["reason"] == "check the replacement verifier"
+
+
+@pytest.mark.parametrize("current,selected,options", [
+    ("easy", "medium", ["easy", "medium", "hard"]),
+    ("medium", "hard", ["medium", "hard"]),
+    ("hard", "hard", ["hard"]),
+])
+def test_web_troubled_continue_selects_same_or_higher_difficulty(garden, current, selected, options):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    task = store.task("DM-001")
+    task.difficulty = current
+    store.save(task)
+    _set_state(garden, "DM-001", needs_human={"kind": "troubled_task", "reason": "choose next step"},
+               substantive_revisions=6, pending_feedback="preserve the existing finding")
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    for page in ("/inbox", "/tasks/DM-001"):
+        response = client.get(page)
+        assert response.status_code == 200
+        form = re.search(r'<form[^>]+action="/tasks/DM-001/troubled-continue".*?</form>',
+                         response.text, re.S)
+        assert form is not None
+        assert re.findall(r'<option value="([^"]+)"', form.group()) == options
+        assert f"Continue at {current}" in form.group()
+        if selected != current:
+            assert f"Escalate to {selected}" in form.group()
+
+    if current != "easy":
+        refused = client.post("/tasks/DM-001/troubled-continue", data={"applies_to": "easy"},
+                              follow_redirects=False)
+        assert refused.status_code == 303 and "preserve+or+raise" in refused.headers["location"]
+        assert Store(garden).task("DM-001").difficulty == current
+        assert State(garden / ".garden" / "state.json").get("DM-001")["needs_human"]
+
+    response = client.post("/tasks/DM-001/troubled-continue", data={"applies_to": selected},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    assert Store(garden).task("DM-001").difficulty == selected
+    persisted = State(garden / ".garden" / "state.json").get("DM-001")
+    assert persisted["revision_allowance"] == 1
+    assert not persisted.get("needs_human")
+    assert persisted["troubled_decisions"][-1]["difficulty"] == selected
+    assert persisted["pending_feedback"] == "preserve the existing finding"
 
 
 def test_served_operator_report_failure_recovery_and_explicit_followup(garden):
