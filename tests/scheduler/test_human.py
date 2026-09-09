@@ -514,8 +514,8 @@ def test_external_blocked_result_uses_ordinary_manual_completion(sched, fake_git
 def test_external_merged_pr_completes_without_rechecks_after_final_base_verification(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
-    pr.state, pr.head_sha = "MERGED", "verified-head"
-    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
+    monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                          branch_override=pr.head, completion_mode="external", external_pr=pr.url)
@@ -528,15 +528,117 @@ def test_external_merged_pr_completes_without_rechecks_after_final_base_verifica
     assert not any(r.mode == "review" for r in sched.runs.runs_for(task.id))
     with pytest.raises(RuntimeError, match="no active run to finish"):
         sched.finish_manual(sched.store.task(task.id), {"status": "done", "pr": pr.url})
+
+
+def _merged_external_topology(sched, fake_github, method: str, *, mismatch: bool = False):
+    """Build the same source change with merge, squash, or rebased commits on main."""
+    repo = sched.repo_for(sched.store.task("DM-001"))
+    base = gitops.git("rev-parse", "main", cwd=repo).strip()
+    branch = f"operator/{method}"
+    gitops.git("checkout", "-q", "-b", branch, base, cwd=repo)
+    (repo / "one.txt").write_text("one\n")
+    gitops.git("add", "one.txt", cwd=repo)
+    gitops.git("commit", "-q", "-m", "one", cwd=repo)
+    (repo / "two.txt").write_text("two\n")
+    gitops.git("add", "two.txt", cwd=repo)
+    gitops.git("commit", "-q", "-m", "two", cwd=repo)
+    head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    source_commits = gitops.git("rev-list", "--reverse", f"{base}..{head}", cwd=repo).split()
+    gitops.git("checkout", "-q", "main", cwd=repo)
+    if method == "merge":
+        gitops.git("merge", "-q", "--no-ff", "-m", "merge", head, cwd=repo)
+    elif method == "squash":
+        gitops.git("merge", "-q", "--squash", head, cwd=repo)
+        gitops.git("commit", "-q", "-m", "squash", cwd=repo)
+    else:
+        for commit in source_commits:
+            gitops.git("cherry-pick", commit, cwd=repo)
+    if mismatch:
+        (repo / "two.txt").write_text("different\n")
+        gitops.git("add", "two.txt", cwd=repo)
+        gitops.git("commit", "-q", "--amend", "--no-edit", cwd=repo)
+    merge_commit = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    gitops.git("push", "-q", "origin", "main", cwd=repo)
+    pr = fake_github.create_pr("test/demo", branch, "main", "external", "")
+    pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", head, merge_commit
+    return pr, head, merge_commit
+
+
+@pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
+def test_external_merged_pr_accepts_verified_git_topologies(sched, fake_github, method):
+    task = sched.store.task("DM-001")
+    pr, head, merge_commit = _merged_external_topology(sched, fake_github, method)
+    run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.DONE
+    state = sched.state.get(task.id)
+    assert state["head_sha"] == head
+    assert state["merge_commit_sha"] == merge_commit
+    assert not state.get("automerged")
+    assert sched.runs.latest(task.id).run_id == run.run_id
+
+
+def test_external_squash_rejects_partial_or_different_content(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr, _, _ = _merged_external_topology(sched, fake_github, "squash", mismatch=True)
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    with pytest.raises(RuntimeError, match="does not match the result"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    assert sched.store.task(task.id).status == Status.RUNNING
+
+
+def test_external_merged_pr_retains_refusal_before_verified_retry(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr, head, merge_commit = _merged_external_topology(sched, fake_github, "squash")
+    pr.merge_commit_sha = ""
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    with pytest.raises(RuntimeError, match="missing immutable"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+    pr.head_sha, pr.merge_commit_sha = head, merge_commit
+
+    sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.runs.latest(task.id).completion_attempts[-1]["status"] == "refused"
+    assert sched.runs.latest(task.id).result["status"] == "done"
+
+
+def test_external_claim_rejects_a_head_that_moves_before_completion(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr, _, _ = _merged_external_topology(sched, fake_github, "squash")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    pr.head_sha = "f" * 40
+
+    with pytest.raises(RuntimeError, match="head moved since it was claimed"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+
+def test_external_completion_rejects_same_pr_number_from_another_repository(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr, _, _ = _merged_external_topology(sched, fake_github, "squash")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    wrong_url = f"https://wrong.example/other/repository/pull/{pr.number}"
+
+    with pytest.raises(RuntimeError, match="does not match the provider identity"):
+        sched.finish_manual(task, {"status": "done", "pr": wrong_url})
+
+
 def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
     """An external parent merge shares the normal stacked-child lifecycle."""
     parent = sched.store.task("DM-001")
     child = sched.store.task("DM-002")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
-    pr.state, pr.head_sha = "MERGED", "verified-head"
+    pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
     sched.state.get(child.id)["stack_parent"] = parent.id
     restacked: list[str] = []
-    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
     monkeypatch.setattr(sched, "_restack", lambda task, _: restacked.append(task.id))
     sched.dispatch(parent, runner=ManualRunner({}), worktree=False,
@@ -550,18 +652,18 @@ def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
 def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
-    pr.state, pr.head_sha = "MERGED", "stacked-head"
-    monkeypatch.setattr(gitops, "fetch", lambda _: None)
+    pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "stacked-head", "stacked-merge"
+    monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: False)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                          branch_override=pr.head, completion_mode="external", external_pr=pr.url)
 
-    with pytest.raises(RuntimeError, match="not included in final base"):
+    with pytest.raises(RuntimeError, match="does not match configured final base"):
         sched.finish_manual(task, {"status": "done", "pr": pr.url})
     assert sched.store.task(task.id).status == Status.RUNNING
     failed = sched.runs.latest(task.id)
     assert failed.run_id == run.run_id and failed.status == "running"
-    assert "not included in final base" in failed.completion_attempts[-1]["reason"]
+    assert "does not match configured final base" in failed.completion_attempts[-1]["reason"]
     assert failed.completion_attempts[-1]["pr_url"] == pr.url
     assert failed.completion_attempts[-1]["pr_number"] == pr.number
     event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")

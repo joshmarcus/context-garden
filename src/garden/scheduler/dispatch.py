@@ -12,7 +12,7 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import is_safe_pr_url
+from ..github import GitHubError, is_safe_pr_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -520,6 +520,24 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.completion_mode = completion_mode
         run.external_pr = external_pr
+        if completion_mode == "external" and external_pr and external_pr_number is not None:
+            slug = self.slug_for(task)
+            if not slug or not self.github.available:
+                raise RuntimeError("external claim needs an accessible configured repository")
+            try:
+                claimed_pr = self.github.get_pr(slug, external_pr_number)
+            except (GitHubError, KeyError):
+                claimed_pr = None
+            if claimed_pr is not None and claimed_pr.head != branch:
+                raise RuntimeError(
+                    f"external PR head {claimed_pr.head!r} does not match claimed branch {branch!r}"
+                )
+            if claimed_pr is not None:
+                run.env_snapshot.update({
+                    "external_repository": slug,
+                    "external_base": claimed_pr.base,
+                    "external_head_sha": claimed_pr.head_sha,
+                })
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty

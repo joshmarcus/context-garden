@@ -574,6 +574,20 @@ def patch_id(worktree: Path, base: str) -> str:
     return proc.stdout.split()[0]
 
 
+def patch_id_between(repo: Path, base: str, head: str) -> str:
+    """Return a stable id for the aggregate change from ``base`` to ``head``."""
+    diff_text = git("diff", "--binary", base, head, cwd=repo)
+    if not diff_text.strip():
+        return ""
+    _ensure_not_blocked(repo)
+    with _git_env() as env:
+        proc = subprocess.run(["git", "patch-id", "--stable"], input=diff_text, cwd=repo,
+                              capture_output=True, text=True, env=env)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return ""
+    return proc.stdout.split()[0]
+
+
 def log_summary(worktree: Path, base: str, n: int = 20) -> str:
     try:
         ref = base_ref(worktree, base)
