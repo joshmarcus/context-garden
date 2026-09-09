@@ -12,6 +12,7 @@ module never imports the web package.
 from __future__ import annotations
 
 import datetime as dt
+import html
 import json
 import re
 import statistics
@@ -164,6 +165,39 @@ def live_clock_html(run: Run) -> str:
     return f'<span data-started="{iso_utc(run.started_at)}"><span data-elapsed>{clock(secs)}</span></span>'
 
 
+def _clock_from(started_at: str, *, stopped: bool = False) -> str:
+    if not started_at:
+        return ""
+    start = dt.datetime.fromisoformat(started_at)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=dt.UTC)
+    secs = max(0, (dt.datetime.now(dt.UTC) - start).total_seconds())
+    stop = f' data-stopped="{int(secs)}"' if stopped else ""
+    return f'<span data-started="{iso_utc(started_at)}"{stop}><span data-elapsed>{clock(secs)}</span></span>'
+
+
+def board_run_fact_html(run: Run) -> str:
+    """Board wording and clock origin for each presentation lifecycle."""
+    lifecycle = html.escape(run.presentation_lifecycle)
+    if lifecycle == "finished; awaiting collection":
+        return lifecycle
+    if run.runner == "manual":
+        age = _clock_from(run.started_at)
+        return f"{lifecycle} · {age} since reservation" if age else lifecycle
+    if not run.is_local_execution:
+        claimed = run.execution_started_at or run.claimed_at
+        if claimed:
+            age = _clock_from(claimed)
+            return f"{lifecycle} · {age} since claim" if age else lifecycle
+        queued = run.queued_at or run.started_at
+        age = _clock_from(queued)
+        return f"{lifecycle} · {age} queued" if age else lifecycle
+    if run.no_process:
+        age = _clock_from(run.started_at)
+        return f"{lifecycle} · {age} since reservation" if age else lifecycle
+    return live_clock_html(run)
+
+
 # ---- runs in flight -------------------------------------------------------------------
 
 def typical_key(mode: str, harness: str, difficulty: str = "") -> str:
@@ -231,9 +265,9 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
     t = tasks.get(run.task_id)
     # An exit code is the runner's completion signal. A dead pid without one is a
     # crashed process that the reaper still needs to diagnose, not completed work.
-    finished = run.status != "running" or (run.path / "exit_code").exists()
-    # A record written at dispatch and never launched holds a slot until a tick reaps it, so
-    # the page shows it as what it is rather than as a run that has said nothing for an hour.
+    finished = (run.status not in ("requested", "preparing", "running")
+                or (run.path / "exit_code").exists()
+                or (run.path / "remote_result.json").exists() or run.final_received_at)
     no_process = run.no_process
     p = run_progress(run, store)
     out = {
@@ -243,6 +277,7 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
         "started_at": iso_utc(run.started_at), "elapsed_s": int(round(run.elapsed_minutes() * 60)),
         "typical_s": typical_for(run, typical), "said": p["said"], "spend_usd": p["cost_usd"],
         "tokens_so_far": p["tokens"], "no_process": no_process,
+        "lifecycle_detail": run.presentation_lifecycle,
         "glyph": MODE_GLYPH.get(run.mode, "running"), "dot": MODE_DOT.get(run.mode, "running"),
     }
     if finished:
@@ -260,7 +295,7 @@ def strips_in_flight(runs: RunStore, tasks: dict[str, Any], events: list[dict[st
     typical = typical_seconds(runs.all_runs(), now)
     stage_of_run = {e.get("run"): str(e.get("stage") or "") for e in events if e.get("kind") == "dispatch" and e.get("stage")}
     out = [strip_for_run(r, tasks, store, typical, stage_of_run.get(r.run_id, ""))
-           for r in runs.active() if r.runner != "manual"]  # the scheduler's `active_runs` rule
+           for r in runs.active()]
     newest: dict[str, str] = {}
     for s in out:
         newest[s["task"]] = max(newest.get(s["task"], ""), s["started_at"])
@@ -571,9 +606,11 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
             spent[tasks[r.task_id].key] += float(r.cost_usd or 0.0)
 
     strips = strips_in_flight(runs, tasks, events, store, now)
-    worker_busy = sum(1 for s in strips if s["mode"] in WORKER_MODES)
+    # Use the scheduler's admission counters.  The strips intentionally also show manual
+    # reservations, while those sessions consume neither automated worker nor review slots.
+    worker_busy = len(sched.worker_runs_active())
     worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES and s["no_process"])
-    review_busy = sum(1 for s in strips if s["mode"] in REVIEW_MODES)
+    review_busy = len(sched.review_runs_active())
     max_parallel = sched.effective_max_parallel()
     review_parallel = sched.review_parallel_limit()
     hands = cards_needing_a_hand(tasks, state, control)
@@ -598,7 +635,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
                    "last_tick": str(tick.get("at") or ""), "next_tick_at": str(tick.get("next_at") or ""),
                    "max_parallel": max_parallel, "review_parallel": review_parallel,
                    "worker_busy": worker_busy, "worker_without_process": worker_without_process, "review_busy": review_busy,
-                   "free": max(max_parallel - worker_busy, 0),
+                   "free": sched.slots_free(),
                    "dispatch_paused": {k: str(control.get(k) or "") for k in ("by", "at", "reason")} if paused else None,
                    "drafts": drafts, "inbox_decisions": len(hands)},
         "now": strips + hands,
@@ -652,9 +689,9 @@ def render_text(snap: dict[str, Any]) -> str:
     for s in runs:
         who = f"{s['harness']} {s['model']}".strip() if s["harness"] else "token-free"
         line = f"  {s['task']:<8} {s['mode']:<8} {who:<28} {clock(s['elapsed_s']):>9}"
-        if s["no_process"]:
-            line += "  no process recorded · a slot is held until a tick reaps it"
-        else:
+        if s["lifecycle_detail"]:
+            line += f"  {s['lifecycle_detail']}"
+        if not s["no_process"]:
             if s["typical_s"]:
                 line += f" · typically {minutes(s['typical_s'])}" + (" · longer than usual" if s["elapsed_s"] > s["typical_s"] else "")
             if "verdict" in s:

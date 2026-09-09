@@ -311,7 +311,7 @@ def test_no_process_record_and_hands_are_visible(garden):
     t.status = now1.Status.WAITING_HUMAN
     store.save(t)
     page = _client(garden).get("/now").text
-    assert "no process recorded" in page and "1 without a process" in page
+    assert "local launch not recorded" in page and "1 without a process" in page
     assert 'class="stamp">needs you</span>' in page and "Which fixture: Go or Node?" in page
     assert 'class="stamp">paused</span>' in page and "codex harness paused" in page and "usage limit reached" in page
     assert "Dispatch paused" in page and "by cli since" in page and "quota on both accounts" in page
@@ -357,6 +357,47 @@ def test_served_now_and_inbox_agree_on_review_ownership_and_owner_decisions(gard
     assert "the loop stopped for an owner decision" in now
     assert now.count('href="/tasks/DM-001"') >= 1
     assert len(decisions(build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub())))) == 1
+
+
+def test_remote_and_manual_lifecycle_labels_do_not_invent_local_processes(garden):
+    store = Store(garden)
+    runs = RunStore(store.config.garden_dir)
+    queued = runs.new_run("DM-001", "remote", "work")
+    queued.status = "preparing"
+    queued.save()
+    claimed = runs.new_run("DM-002", "remote", "review")
+    claimed.claimed_at = "2026-09-09T15:00:00+00:00"
+    claimed.lease_expires_at = "2026-09-09T15:10:00+00:00"
+    claimed.save()
+    manual = runs.new_run("DM-002", "manual", "work")
+    manual.save()
+
+    sched = Scheduler(store, github=FakeGitHub())
+    snap = now1.snapshot(store, sched)
+    by_run = {strip["run"]: strip for strip in snap["now"] if strip["kind"] == "run"}
+
+    assert by_run[queued.run_id]["lifecycle_detail"] == "queued; waiting for a remote worker to claim it"
+    assert by_run[queued.run_id]["state"] == "running" and "verdict" not in by_run[queued.run_id]
+    assert "worker liveness is not known" in by_run[claimed.run_id]["lifecycle_detail"]
+    assert by_run[manual.run_id]["lifecycle_detail"] == "manual reservation; waiting for operator completion"
+    assert all(not by_run[run.run_id]["no_process"] for run in (queued, claimed, manual))
+    assert snap["garden"]["worker_busy"] == len(sched.worker_runs_active()) == 1
+    assert snap["garden"]["review_busy"] == len(sched.review_runs_active()) == 1
+    assert snap["garden"]["worker_without_process"] == 0
+
+
+def test_remote_result_is_finished_awaiting_collection(garden):
+    store = Store(garden)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", "work")
+    run.claimed_at = "2026-09-09T15:00:00+00:00"
+    run.save()
+    (run.path / "remote_result.json").write_text("{}")
+
+    strip = now1.strip_for_run(run, store.tasks(), store, {})
+
+    assert strip["state"] == "finishing"
+    assert strip["verdict"] == "finished; awaiting collection"
+    assert strip["lifecycle_detail"] == "finished; awaiting collection"
 
 
 def test_next_region_is_the_schedulers_dispatch_order_with_reasons(garden):
@@ -445,11 +486,34 @@ def test_review_wait_reason_is_the_first_of_the_ticks_gates(garden):
     sched.pause_harness("claude", "quota")
     assert reason() == ("harness", "claude harness paused")
     _record_running(garden, task="DM-002", mode="revise", pid=None)  # a record without a process
-    assert reason() == ("worker", "its revise record has no process; the tick that reaps it starts the review")
+    assert reason() == ("worker", "its revise local launch was not recorded; the tick that reaps it starts the review")
     _record_running(garden, task="DM-002", mode="revise")
     assert reason() == ("worker", "waits for its revise run to finish")
     sched.pause("cli", "quota on both accounts")
     assert reason() == ("paused", "dispatch paused: reviews start again with dispatch")
+
+
+def test_review_wait_reason_describes_remote_queue_and_claim_without_liveness_claim(garden):
+    store = Store(garden)
+    sched = Scheduler(store, github=FakeGitHub())
+    task = store.task("DM-002")
+    task.status = now1.Status.IN_REVIEW
+    store.save(task)
+    queued = sched.runs.new_run(task.id, "remote", "revise")
+    queued.save()
+
+    assert sched.review_wait_reason(task) == (
+        "worker", "its revise run is queued for a remote worker to claim")
+
+    queued.claimed_at = "2026-09-09T15:00:00+00:00"
+    queued.lease_expires_at = "2099-01-01T00:00:00+00:00"
+    queued.save()
+    assert sched.review_wait_reason(task) == (
+        "worker", "waits for its revise remote run; a claim is recorded but liveness is not known")
+
+    (queued.path / "remote_result.json").write_text("{}")
+    assert sched.review_wait_reason(task) == (
+        "worker", "its revise run finished and awaits collection")
 
 
 def test_phase_sheet_grows_with_merges_and_closed_phases_are_specimens(garden):
