@@ -29,6 +29,63 @@ def test_take_manual_refuses_a_stale_ready_task_with_an_active_manual_claim(sche
     assert sched.runs.runs_for(task.id) == [claimed]
 
 
+def test_releasing_runner_hold_clears_only_its_operational_stop(sched):
+    """A temporary manual route must not erase feedback or a separately-owned decision."""
+    from garden.inbox import build_inbox, needs_you
+
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- retain this review finding"
+    st["decision"] = {"kind": "no_change", "reason": "needs product approval"}
+    sched.state.save()
+
+    sched.hold_runner(task, "operator is checking runner capacity")
+    assert task.runner == "manual"
+    assert st["runner_hold"]["actor"] == "delegated_operator"
+    # A pre-existing decision stays authoritative; the temporary routing is still a notice.
+    cards = [card for card in build_inbox(sched.store, sched) if card["task"] == task.id]
+    assert any(card["group"] == "operator" and card["kind"] == "runner_hold" for card in cards)
+    assert not any(needs_you(card) for card in cards if card["group"] == "operator")
+
+    sched.tick()
+    assert sched.runs.runs_for(task.id) == []
+    sched.release_runner_hold(task)
+
+    st = sched.state.get(task.id)
+    assert task.runner == ""
+    assert st["pending_feedback"] == "- retain this review finding"
+    assert st["decision"]["reason"] == "needs product approval"
+    assert not st.get("runner_hold")
+
+
+def test_released_runner_hold_defers_at_capacity_then_dispatches_one_revision(sched, monkeypatch):
+    """Release makes retained feedback eligible again without bypassing capacity or duplicating work."""
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- revise this boundary"
+    st["revisions"] = 0
+    sched.state.save()
+
+    sched.hold_runner(task, "temporary runner maintenance")
+    sched.tick()
+    assert sched.runs.runs_for(task.id) == []
+    sched.release_runner_hold(task)
+    assert not sched.state.get(task.id).get("needs_human")
+
+    monkeypatch.setattr(sched, "slots_free", lambda: 0)
+    assert sched.tick().dispatched == []
+    assert sched.runs.runs_for(task.id) == []
+
+    monkeypatch.undo()
+    report = sched.tick()
+    assert report.dispatched == ["DM-001(revise)"]
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
 def test_retry_grants_one_more_round_past_cap(sched, fake_github):
     """Resuming a capped task rolls the revision counter back one so a revise run runs."""
     t = sched.store.task("DM-001")
