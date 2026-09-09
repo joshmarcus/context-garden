@@ -58,7 +58,11 @@ class LocalRunner(Runner):
         env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
-        env["GARDEN_ROOT"] = no_live_garden_root(run.path)
+        # Deep dives are controller diagnostics, not implementation workers. They are the
+        # one run type intentionally given the real workspace root for read access; the
+        # ordinary worktree fence still prevents writes there.
+        env["GARDEN_ROOT"] = (str(run.path.parents[3]) if run.mode == "investigation"
+                              else no_live_garden_root(run.path))
         work_dir = self.config.get("work_dir")
         if work_dir:
             temp_dir = run_temp_dir(work_dir, run)
