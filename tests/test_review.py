@@ -1,10 +1,12 @@
 import hashlib
 import json
+import shlex
+from pathlib import Path
 
 import pytest
 
-from garden.brief import build_brief
 from garden import interaction_replay
+from garden.brief import build_brief
 from garden.inbox import build_inbox
 from garden.model import Status
 from garden.now1 import strip_for_run
@@ -173,6 +175,39 @@ def test_timed_out_review_applies_a_collected_verdict_once(sched, monkeypatch):
     assert not st.get("review_recovery")
     assert sched.reap_review(task, TickReport()) is False
     assert collected == [run.run_id]
+
+
+def test_started_review_env_error_preserves_collected_usage_and_cost(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"]["enabled"] = True
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    collected = {
+        "env_error": True,
+        "env_kind": "quota",
+        "error": "reviewer quota exhausted",
+        "usage": {"input_tokens": 123, "output_tokens": 7},
+        "cost_usd": 0.42,
+        "model": "review-model-with-usage",
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+
+    assert sched.reap_review(task, TickReport())
+
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None
+    assert saved.status == "env_error"
+    assert saved.usage == collected["usage"]
+    assert saved.cost_usd == collected["cost_usd"]
+    assert saved.model == collected["model"]
+    assert saved.error == collected["error"]
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
 
 
 def test_review_audit_preserves_the_round_of_a_lost_started_review(sched):
