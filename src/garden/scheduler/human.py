@@ -600,6 +600,8 @@ class HumanMixin:
         if not raw:
             raise RuntimeError(f"{task.id} has no needs-human stop to resume from")
         info = raw if isinstance(raw, dict) else {"reason": str(raw)}
+        if info.get("kind") == "check_did_not_run":
+            raise RuntimeError(f"{task.id} has a terminal check stop; use garden recover-check {task.id}")
         st.pop("needs_human", None)
         st.pop("pending_feedback", None)
         st.pop("pending_feedback_easy", None)

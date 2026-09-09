@@ -1055,6 +1055,32 @@ def test_empty_waiting_card_is_operational_recovery_not_an_absent_question(garde
     assert 'action="/tasks/DM-001/recover-check"' in page
 
 
+def test_terminal_check_card_uses_guarded_recovery_not_plain_resume(garden):
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    store.save(task)
+    state = State(store.config.garden_dir / "state.json")
+    state.get(task.id)["needs_human"] = {"kind": "check_did_not_run", "run": "terminal-check",
+                                           "reason": "check did not run"}
+    state.get(task.id)["check_run"] = {"run_id": "terminal-check", "stage": "ci", "cont": {}}
+    state.get(task.id)["recovery_check"] = {"run": "terminal-check", "stage": "ci"}
+    state.get(task.id)["checks"] = "SUCCESS"
+    state.save()
+
+    page = client(garden).get("/").text
+
+    assert "Recover check and resume pipeline" in page
+    assert 'action="/tasks/DM-001/recover-check"' in page
+    assert 'action="/tasks/DM-001/resume"' not in page
+    assert 'action="/tasks/DM-001/retry"' not in page
+
+
 def test_inbox_attention_cards_keep_their_discuss_prompts_separate(garden):
     """Each shared card targets its own discuss prompt when the Inbox has several stops."""
     from garden.model import Status
