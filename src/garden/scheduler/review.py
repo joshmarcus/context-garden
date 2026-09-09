@@ -154,6 +154,9 @@ class ReviewMixin:
         on a later tick, so a full review_parallel does not lose the round — it just waits its
         turn, the same way a full max_parallel makes a work task wait in the ready queue."""
         st = self.state.get(task.id)
+        if self._manual_reserved(task):
+            self._queue_pending_reviews(st, wanted)
+            return
         required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
                              if item["kind"] == "persona"}
         evidence = st.setdefault("required_evidence", {})
@@ -545,6 +548,8 @@ class ReviewMixin:
                         reask_missing_fixes: bool = False,
                         clarify_unverified: list[str] | None = None,
                         clarifies_review_run: str = "") -> Run:
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)

@@ -121,6 +121,7 @@ def register(app: FastAPI, site: Site) -> None:
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
             dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
+            manual_reservation=(st.get("manual_reservation") if isinstance(st.get("manual_reservation"), dict) else None),
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
             evidence_rows=evidence_rows,
