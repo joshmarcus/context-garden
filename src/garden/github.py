@@ -152,6 +152,32 @@ def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | 
     return number if number > 0 else None
 
 
+def is_safe_pr_url(url: str) -> bool:
+    """Whether a provider-returned PR URL is safe to retain as an identifier.
+
+    The CLI additionally requires a canonical URL for the configured repository
+    before it asks a provider for PR details.  Scheduler callers may instead be
+    handing back the provider's own identity URL, whose path and host need not
+    be the browser URL shape.  It still must not contain URL components that
+    could carry credentials or alter its identity.
+    """
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and port in (None, 443)
+    )
+
+
 # Appended to every comment the garden posts, so its own comments can be told apart from a
 # person's even when both use the same GitHub login. Invisible on GitHub (an HTML comment).
 GARDEN_MARKER = "<!-- context-garden -->"
