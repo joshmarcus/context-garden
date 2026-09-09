@@ -513,11 +513,17 @@ class DispatchMixin:
         # stacked parent's changes and files a dependency created — not the stale base repo.
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
+        generated_context: Path | None = None
         if worktree and not runner.remote:
             wt = (canonical_root if canonical_root is not None else
                   gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base))
-            from .snapshot import write_snapshot
-            write_snapshot(self, task, wt)
+            # Operational design context belongs to this run, outside the checkout.  A
+            # generated file in source makes an otherwise clean branch dirty and can be
+            # swept into a worker commit or collide with a tracked snapshot on rebase.
+            if mode in ("work", "revise", "resume"):
+                from .snapshot import write_snapshot
+
+                generated_context = write_snapshot(self, task, run.path)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
@@ -553,7 +559,8 @@ class DispatchMixin:
                                         "reason": "changed paths unavailable: " + inspection_error})
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
-                                criteria_snapshot=criteria_snapshot, validation_plan=plan)
+                                criteria_snapshot=criteria_snapshot, validation_plan=plan,
+                                generated_context=generated_context)
             text = prompt_override or brief.text
         prompt_bytes = len(text.encode("utf-8", "replace"))
         if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:

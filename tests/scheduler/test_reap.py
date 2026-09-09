@@ -182,12 +182,12 @@ def test_design_snapshot_includes_the_real_merge_and_dispatch_queues(sched, tmp_
     """CG-318: queue state belongs to task records, never a nonexistent `_queue` entry."""
     sched.state.get("DM-001").update(automerge_candidate=True, merge_head=True,
                                        automerge_ready_at="2026-09-06T12:00:00+00:00")
-    output = tmp_path / "worktree"
+    output = tmp_path / "run"
     task = sched.store.task("DM-001")
     task.title = "Design the queue"
     write_snapshot(sched, task, output)
 
-    queue = json.loads((output / "docs" / "design" / "snapshot.json").read_text())["queue"]
+    queue = json.loads((output / "design-context.json").read_text())["queue"]
     assert queue["merge"] == [{"task": "DM-001", "candidate": True, "head": True,
                                 "ready_at": "2026-09-06T12:00:00+00:00", "blocked": ""}]
     assert queue["dispatch"] == [{"task": "DM-001", "mode": "work", "reason": "priority 1"}]

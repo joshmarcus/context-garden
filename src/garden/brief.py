@@ -384,6 +384,7 @@ def build_brief(
     commits_ahead: list[str] | None = None,
     validation_plan: dict[str, Any] | None = None,
     criteria_snapshot: list[str] | None = None,
+    generated_context: Path | None = None,
 ) -> Brief:
     cfg = store.config
     inline_max = int(cfg.get("brief.inline_max_chars", 24000))
@@ -443,6 +444,14 @@ def build_brief(
         inlined.append(store.rel(phase.goals_path))
 
     sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
+    if generated_context is not None:
+        sections.append((
+            "generated_context",
+            "## Generated design context\n\n"
+            "The scheduler saved sanitized, read-only operational context for this run at "
+            f"`{generated_context}`. Read it when it helps with this task. Do not copy it into "
+            "the product checkout or commit it.\n",
+        ))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)

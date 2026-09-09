@@ -118,6 +118,44 @@ def test_design_dependency_can_explicitly_override_default_with_stack(sched):
     assert "DM-002(work)" in rep.dispatched
 
 
+def test_design_context_is_run_scoped_and_referenced_without_dirtying_checkout(sched):
+    from tests.conftest import git
+
+    task = sched.store.task("DM-001")
+    task.title = "Design the queue UI"
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    tracked = repo / "docs" / "design" / "snapshot.json"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text('{"curated": true}\n')
+    git("add", "docs/design/snapshot.json", cwd=repo)
+    git("commit", "-q", "-m", "add curated snapshot", cwd=repo)
+    git("push", "-q", "origin", "main", cwd=repo)
+
+    run = sched.dispatch(task)
+
+    context = run.path / "design-context.json"
+    assert context.exists()
+    assert str(context) in (run.path / "brief.md").read_text()
+    assert (Path(run.worktree) / "docs" / "design" / "snapshot.json").read_text() == '{"curated": true}\n'
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=run.worktree, capture_output=True, text=True, check=True,
+    ).stdout == ""
+
+
+def test_rebase_does_not_generate_design_context(sched):
+    task = sched.store.task("DM-001")
+    task.title = "Design the queue UI"
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+
+    run = sched.dispatch(task, mode="rebase")
+
+    assert not (run.path / "design-context.json").exists()
+    assert "Generated design context" not in (run.path / "brief.md").read_text()
+
+
 def test_brief_drops_reading_not_present_at_the_task_base(sched, tmp_path):
     """A branch-only file is not context at the task's base and must not leak into its brief."""
     from tests.conftest import git, write
