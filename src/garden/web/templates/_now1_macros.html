@@ -1,18 +1,22 @@
 {#- Now 1's pieces (docs/design/now-1.md): a run strip, a phase sheet, a queue line, a
     difficulty-by-model table. Imported `with context` so `f` (the formatters) is in scope. -#}
-{%- macro five(snap) -%}
-{#- The five-second sentence: the four answers in one line, each clause a link to its region. -#}
+{%- macro summary(snap) -%}
+{#- A field reading, not a score: each value is a literal fact repeated in the region it
+    links to. Attention leads only when the garden has explicitly asked for it. -#}
 {%- set g = snap.garden -%}
 {%- set runs = snap.now | selectattr("kind", "equalto", "run") | list -%}
 {%- set hands = snap.now | rejectattr("kind", "equalto", "run") | list -%}
 {%- set p = snap.where.primary -%}
-<p class="now-five" id="now-five">
-  {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
-  <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
-  {%- if snap.next.dispatch %} <a href="#next">Next</a>: {{ f.short(snap.next.dispatch[0].title) }}{% if snap.next.dispatch | length > 1 %}, then {{ f.short(snap.next.dispatch[1].title) }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
-  {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
-  <a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a>: {{ snap.period.merged }} merged, ${{ '%.2f' % snap.period.cost }}.
-</p>
+<section class="now-summary{% if g.dispatch_paused or hands %} has-attention{% endif %}" id="now-summary" aria-labelledby="now-summary-title">
+  <h2 id="now-summary-title">Garden at a glance</h2>
+  {% if g.dispatch_paused or hands %}<a class="summary-attention" href="#now"><span class="stamp">attention</span><strong>{% if g.dispatch_paused %}Dispatch paused{% else %}{{ hands | length }} waiting on you{% endif %}</strong><span>{% if g.dispatch_paused %}by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %} · {{ g.dispatch_paused.reason }}{% endif %}{% if hands %} · {{ hands | length }} item{{ 's' if hands | length != 1 }} need you{% endif %}{% else %}Open the current cards{% endif %}</span></a>{% endif %}
+  <dl>
+    <div><dt><a href="#now">Capacity now</a></dt><dd><strong>{{ g.worker_busy }} / {{ g.max_parallel }}</strong><span>worker slots used{% if g.worker_without_process %} · {{ g.worker_without_process }} without a process{% endif %}</span><small>{{ g.review_busy }} / {{ g.review_parallel }} review slots used · {{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</small></dd></div>
+    <div><dt><a href="#next">Next dispatch</a></dt><dd>{% if snap.next.dispatch %}<strong class="summary-title">{{ f.short(snap.next.dispatch[0].title) }}</strong><span>{{ snap.next.dispatch | length }} queued item{{ 's' if snap.next.dispatch | length != 1 }}</span>{% else %}<strong>Nothing queued</strong><span>no dispatch candidate</span>{% endif %}</dd></div>
+    <div><dt><a href="#where">Current phase</a></dt><dd>{% if p %}<strong>{{ p.done }} / {{ p.total }}</strong><span>{{ p.name }} tasks merged</span><small>{{ p.stage_word }}, from merged tasks</small>{% else %}<strong>No open phase</strong><span>nothing in progress</span>{% endif %}</dd></div>
+    <div><dt><a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a></dt><dd><strong>{{ snap.period.merged }}</strong><span>merged · ${{ '%.2f' % snap.period.cost }} recorded cost</span><small>{{ snap.period.runs }} run{{ 's' if snap.period.runs != 1 }} finished in this window</small></dd></div>
+  </dl>
+</section>
 {%- endmacro -%}
 
 {%- macro slots(snap) -%}
